@@ -481,8 +481,8 @@ function OptionsPane({
       <PanelSection title="Advanced tools">
         <PanelSectionRow>
           <ToggleField
-            label="Show Decky HV tab"
-            description="Show the legacy Decky HV hypervisor controls in Advanced. Hidden by default; Anti-Denuvo now uses the Tokeer page."
+            label="Show Hypervisor Bypass Module tab"
+            description="Show the Hypervisor Bypass Module controls in Advanced. Hidden by default; Anti-Denuvo uses the Tokeer page."
             checked={showDeckyHv}
             onChange={(v) => onShowDeckyHvChange(v)}
           />
@@ -704,7 +704,7 @@ export function AdvancedPage() {
           content: <Body><TokeerSection /></Body>,
         },
         ...(showDeckyHv ? [{
-          title: "Decky HV",
+          title: "Hypervisor Bypass Module",
           icon: <FaShieldAlt />,
           content: <Body><HypervisorSection /></Body>,
         }] : []),
