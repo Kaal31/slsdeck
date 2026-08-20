@@ -1,10 +1,16 @@
-"""Manual CloudRedirect reinstall policy.
+"""CloudRedirect install/reinstall policy for the moon runtime.
 
-Auto-ensure remains cheap/idempotent. The manual ensure endpoint is a true
-replacement operation: remove any existing companion Flatpak regardless of its
-origin, remove stale user-level/native CloudRedirect launchers and old redirect
-hook binaries while preserving provider configuration/tokens, then install the
-standard companion Flatpak plus the fresh cloudredirect-moon hook.
+The authoritative runtime used by slsteam-moon is swwayps/cloudredirect-moon's
+32-bit ``cloud_redirect.so`` loaded through LD_PRELOAD.  The fork also carries
+Flatpak packaging for its UI, but its build script labels that path local-test
+only and the bundled flatpakrepo still points at Selectively11's hosted remote.
+
+Therefore SLSDeck's dependency install is native-first:
+  * auto ensure installs/repairs only the moon hook;
+  * manual Reinstall removes any legacy companion Flatpak/native hook first,
+    preserves provider config/tokens, then installs a fresh moon hook;
+  * the optional provider UI remains available through the explicit Open action,
+    which may install/run the companion Flatpak on demand.
 """
 from __future__ import annotations
 
@@ -30,6 +36,52 @@ def _remove_path(path: str, log: list[str]) -> None:
         log.append(f"could not remove {path}: {exc}")
 
 
+def _hook_present(cloudredirect: Any) -> bool:
+    try:
+        return any(
+            os.path.isfile(os.path.join(d, "cloud_redirect.so"))
+            for d in cloudredirect._cr_dirs()
+        )
+    except Exception:
+        return False
+
+
+def _install_moon_hook(cloudredirect: Any, log: list[str] | None = None) -> dict:
+    """Install only the cloudredirect-moon LD_PRELOAD hook."""
+    lines = list(log or [])
+    for d in cloudredirect._cr_dirs():
+        try:
+            os.makedirs(d, exist_ok=True)
+            cloudredirect.chown_to_user(d, recursive=False)
+        except Exception as exc:
+            lines.append(f"mkdir {d}: {exc}")
+
+    result = cloudredirect._download_cr_lib()
+    lines.append(result)
+    have_lib = _hook_present(cloudredirect)
+    if have_lib:
+        try:
+            cloudredirect.settings.reset_dep_fail("cloudredirect")
+        except Exception:
+            pass
+    else:
+        try:
+            cloudredirect.settings.inc_dep_fail("cloudredirect")
+        except Exception:
+            pass
+    logger.log(
+        "CloudRedirect moon hook install: %s"
+        % ("ok" if have_lib else "incomplete")
+    )
+    return {
+        "success": have_lib,
+        "installed": have_lib,
+        "hasLib": have_lib,
+        "nativeMoon": True,
+        "log": "\n".join(lines)[-3200:],
+    }
+
+
 def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
     """Remove old user-level/native CloudRedirect executables and hook binaries.
 
@@ -40,7 +92,7 @@ def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
     home = cloudredirect.slssteam._home()
 
     # The injected redirect hook is the part that must never survive from an old
-    # implementation. cloudredirect.install_app() writes a fresh moon build here.
+    # implementation. A fresh moon build is written after cleanup.
     for d in cloudredirect._cr_dirs():
         _remove_path(os.path.join(d, "cloud_redirect.so"), log)
 
@@ -58,8 +110,7 @@ def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
         _remove_path(p, log)
 
     # Remove native user desktop launchers only when their contents clearly point
-    # at CloudRedirect. Flatpak exports are removed by `flatpak uninstall`; this
-    # catches manual/native launchers with arbitrary filenames.
+    # at CloudRedirect. Flatpak exports are removed by `flatpak uninstall`.
     appdir = os.path.join(home, ".local", "share", "applications")
     try:
         for name in os.listdir(appdir):
@@ -81,13 +132,28 @@ def patch(cloudredirect: Any) -> None:
     if getattr(cloudredirect, "_slsdeck_force_reinstall_patched", False):
         return
 
+    def ensure_native() -> dict:
+        """Cheap auto-ensure: never installs a Flatpak."""
+        if _hook_present(cloudredirect):
+            try:
+                cloudredirect.settings.reset_dep_fail("cloudredirect")
+            except Exception:
+                pass
+            return {
+                "success": True,
+                "installed": True,
+                "hasLib": True,
+                "nativeMoon": True,
+                "log": "",
+            }
+        return _install_moon_hook(cloudredirect)
+
     def reinstall() -> dict:
         log: list[str] = []
 
-        # Always ask Flatpak to uninstall the canonical app ID. This removes it
-        # regardless of which repo originally supplied it (Selectively11, a local
-        # repo, etc.). A "not installed" return code is harmless if it is absent
-        # afterwards.
+        # Remove a legacy companion Flatpak regardless of which remote supplied
+        # the canonical app id. Provider data is preserved because --delete-data
+        # is deliberately NOT used.
         try:
             cmd = cloudredirect._wrap_cr([
                 "flatpak", "uninstall", "--user", "-y", "--noninteractive",
@@ -101,26 +167,30 @@ def patch(cloudredirect: Any) -> None:
                     (r.stderr or b"").decode("utf-8", "replace")).strip()
             log.append(f"CloudRedirect Flatpak uninstall rc={r.returncode}\n{tail[-600:]}")
             if cloudredirect._installed():
-                return {"success": False, "installed": True,
-                        "log": "\n".join(log) + "\nExisting Flatpak could not be removed."}
+                return {
+                    "success": False,
+                    "installed": False,
+                    "log": "\n".join(log) + "\nExisting Flatpak could not be removed.",
+                }
         except Exception as exc:
-            # If flatpak itself is unavailable but there is no Flatpak app, keep
-            # going so a stale native install can still be replaced/cleaned.
             if cloudredirect._installed():
-                return {"success": False, "installed": True,
-                        "log": f"CloudRedirect Flatpak uninstall failed: {exc}"}
+                return {
+                    "success": False,
+                    "installed": False,
+                    "log": f"CloudRedirect Flatpak uninstall failed: {exc}",
+                }
             log.append(f"Flatpak uninstall skipped/failed while app absent: {exc}")
 
         _remove_legacy_native(cloudredirect, log)
-
-        # install_app() installs the normal companion Flatpak and then downloads
-        # cloud_redirect.so specifically from swwayps/cloudredirect-moon.
-        r = cloudredirect.install_app()
-        r = dict(r)
-        r["log"] = ("\n".join(log) + "\n" + str(r.get("log") or ""))[-3200:]
+        r = _install_moon_hook(cloudredirect, log)
         r["replacedLegacy"] = True
         return r
 
+    # Dependency setup must never pull the Selectively11-hosted Flatpak anymore.
+    # The optional Open CloudRedirect UI path remains explicit/on-demand.
+    cloudredirect.ensure_installed_auto = ensure_native
     cloudredirect.ensure_installed = reinstall
     cloudredirect._slsdeck_force_reinstall_patched = True
-    logger.log("SLSDeck: CloudRedirect manual reinstall now replaces Flatpak/native legacy installs")
+    logger.log(
+        "SLSDeck: CloudRedirect dependency install now manages native cloudredirect-moon only"
+    )
