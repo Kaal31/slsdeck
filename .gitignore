@@ -1,0 +1,13 @@
+# dependencies / build tooling
+node_modules/
+# python caches
+__pycache__/
+*.pyc
+# sourcemaps (regenerable)
+*.map
+# editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+# packaged artifacts
+*.zip
