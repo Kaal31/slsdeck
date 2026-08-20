@@ -4712,73 +4712,25 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
                                             ` · DLC included: ${state.contentCheckResult.dlc.included.length}, missing: ${state.contentCheckResult.dlc.missing.length}`] }))] }) })), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: onCancel, children: "Cancel" }) }))] }), showInstalled && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: onChanged }), SP_JSX.jsx(CustomManifestsPanel, {})] }));
 }
 
-const CR_FLATPAK$1 = "org.cloudredirect.CloudRedirect";
-/** Reassert an existing CloudRedirect Steam shortcut after reinstall.
+/**
+ * Native cloudredirect-moon reinstalls intentionally do not rebind a Steam
+ * shortcut.  The authoritative runtime is ~/.local/share/CloudRedirect/
+ * cloud_redirect.so loaded into Steam via LD_PRELOAD, not a Flatpak launcher.
  *
- * This does not launch the app and does not create a new shortcut. It repairs
- * the already-stored shortcut so a reinstall cannot leave it pointing at stale
- * metadata. The shortcut intentionally launches the normal Flatpak companion;
- * the actual redirect hook is cloudredirect-moon's cloud_redirect.so.
+ * Keep this compatibility hook so existing callers do not need branching; the
+ * explicit "Open CloudRedirect app" flow still repairs/creates the optional
+ * companion shortcut when the user actually chooses to use that UI.
  */
 async function rebindExistingCloudRedirectShortcut() {
-    const SC = window.SteamClient;
-    if (!SC?.Apps)
-        return false;
-    let appId = 0;
     try {
-        const g = await crGetShortcut();
-        appId = Number(g?.appId || 0);
+        // Touch the stored value only to preserve the old RPC/cache behaviour; no
+        // shortcut metadata is changed during a native moon reinstall.
+        await crGetShortcut();
     }
     catch {
-        return false;
+        /* ignore */
     }
-    if (!appId || Number.isNaN(appId))
-        return false;
-    try {
-        const ov = window.appStore?.GetAppOverviewByAppID?.(appId);
-        if (!ov)
-            return false;
-    }
-    catch {
-        return false;
-    }
-    try {
-        await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK$1}`);
-    }
-    catch { /* best effort */ }
-    try {
-        await SC.Apps.SetShortcutName(appId, "CloudRedirect");
-    }
-    catch { /* best effort */ }
-    try {
-        await crSetShortcut(appId);
-    }
-    catch { /* best effort */ }
-    try {
-        const a = await crArtwork();
-        if (a?.success && SC.Apps.SetCustomArtworkForApp) {
-            const jobs = [
-                [a.cover, 0], [a.hero, 1], [a.capsule, 3], [a.logo, 2],
-            ];
-            for (const [b64, kind] of jobs) {
-                if (!b64)
-                    continue;
-                try {
-                    await SC.Apps.SetCustomArtworkForApp(appId, b64, "png", kind);
-                }
-                catch { /* best effort */ }
-            }
-        }
-    }
-    catch { /* best effort */ }
-    try {
-        const ic = await crIconPath();
-        if (ic?.success && ic.path && SC.Apps.SetShortcutIcon) {
-            await SC.Apps.SetShortcutIcon(appId, ic.path);
-        }
-    }
-    catch { /* best effort */ }
-    return true;
+    return false;
 }
 
 function Dot({ health }) {
