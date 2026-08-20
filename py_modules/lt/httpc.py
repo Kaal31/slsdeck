@@ -24,6 +24,11 @@ from .logger import logger
 
 _HTTP_CLIENT: Optional[httpx.Client] = None
 _CLIENT_LOCK = threading.Lock()
+# Some large-file paths explicitly pass timeout=None so a healthy transfer can
+# run as long as it needs. Do not let that become an infinite hang when a crack
+# host/CDN stops sending bytes: keep connect/pool bounded and allow at most two
+# minutes of read inactivity between chunks.
+_STREAM_TIMEOUT = httpx.Timeout(connect=20.0, read=120.0, write=120.0, pool=20.0)
 
 
 def _auth_request(url, headers):
@@ -82,6 +87,13 @@ class _SLSDeckClient(httpx.Client):
                 follow_redirects=None, timeout=httpx.USE_CLIENT_DEFAULT,
                 extensions=None):
         clean_url, clean_headers = _auth_request(url, headers)
+        # ``timeout=None`` disables *every* timeout in httpx. Several crack/file
+        # downloaders used it intentionally for large archives, but a dead host
+        # then left the Fixes menu stuck on "Downloading fix" forever. A read
+        # inactivity timeout preserves unlimited total transfer duration while
+        # still failing a connection that has stopped delivering data.
+        if timeout is None:
+            timeout = _STREAM_TIMEOUT
         return super().request(
             method, clean_url, content=content, data=data, files=files, json=json,
             params=params, headers=clean_headers, cookies=cookies, auth=auth,
