@@ -2,8 +2,8 @@
 
 The authoritative runtime used by slsteam-moon is swwayps/cloudredirect-moon's
 32-bit ``cloud_redirect.so`` loaded through LD_PRELOAD. The provider UI is a
-separate concern: keep it when present, and only install it when provider setup
-is needed or the user explicitly opens CloudRedirect.
+separate concern: preserve it when present, and only install it when provider
+setup is actually needed.
 """
 from __future__ import annotations
 
@@ -81,6 +81,23 @@ def _install_moon_hook(cloudredirect: Any, log: list[str] | None = None) -> dict
     })
 
 
+def _ensure_ui_if_needed(cloudredirect: Any, result: dict) -> dict:
+    """When provider setup is missing, make sure the companion login UI exists."""
+    out = _decorate(cloudredirect, result)
+    if not out.get("setupRequired") or out.get("uiInstalled"):
+        return out
+    ui = dict(cloudredirect.install_app())
+    merged = dict(out)
+    merged["uiInstalled"] = bool(cloudredirect._installed())
+    merged["uiInstallAttempted"] = True
+    if not merged["uiInstalled"]:
+        merged["success"] = False
+        merged["installed"] = bool(out.get("installed"))
+    if ui.get("log"):
+        merged["log"] = (str(out.get("log") or "") + "\n" + str(ui.get("log") or ""))[-3200:]
+    return _decorate(cloudredirect, merged)
+
+
 def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
     """Replace old native hook/binaries but preserve UI, config and provider tokens."""
     home = cloudredirect.slssteam._home()
@@ -108,21 +125,26 @@ def patch(cloudredirect: Any) -> None:
                 cloudredirect.settings.reset_dep_fail("cloudredirect")
             except Exception:
                 pass
-            return _decorate(cloudredirect, {
+            base = {
                 "success": True, "installed": True, "hasLib": True,
                 "nativeMoon": True, "log": "",
-            })
-        return _install_moon_hook(cloudredirect)
+            }
+        else:
+            base = _install_moon_hook(cloudredirect)
+        if not base.get("success"):
+            return base
+        return _ensure_ui_if_needed(cloudredirect, base)
 
     def reinstall() -> dict:
         log: list[str] = []
         _remove_legacy_native(cloudredirect, log)
         result = _install_moon_hook(cloudredirect, log)
         result["replacedLegacy"] = True
-        return result
+        if not result.get("success"):
+            return result
+        return _ensure_ui_if_needed(cloudredirect, result)
 
     def ensure_ui() -> dict:
-        """Install the provider UI only when missing; never force-reinstall it."""
         if cloudredirect._installed():
             return _decorate(cloudredirect, {
                 "success": True, "installed": True, "uiInstalled": True,
@@ -136,4 +158,4 @@ def patch(cloudredirect: Any) -> None:
     cloudredirect.ensure_installed = reinstall
     cloudredirect.ensure_ui = ensure_ui
     cloudredirect._slsdeck_force_reinstall_patched = True
-    logger.log("SLSDeck: CloudRedirect runtime/UI installation paths separated")
+    logger.log("SLSDeck: CloudRedirect moon runtime is primary; login UI is setup-only")
