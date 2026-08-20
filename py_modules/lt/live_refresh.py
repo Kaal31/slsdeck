@@ -71,7 +71,6 @@ def wait_for_add(appid: int, start: Dict[str, Any], timeout: float = 15.0) -> Di
         try:
             size = os.path.getsize(path)
             if size < offset:
-                # Log was truncated/recreated after the snapshot.
                 offset = 0
                 carry = ""
             if size > offset:
@@ -134,3 +133,156 @@ def wait_for_add(appid: int, start: Dict[str, Any], timeout: float = 15.0) -> Di
     else:
         reason = "Steam did not confirm the live appinfo request"
     return {"ready": False, "generation": generation, "reason": reason}
+
+
+def patch_downloads(downloads: Any) -> None:
+    """Add verified no-restart behavior around the existing downloader module.
+
+    The original implementation remains the fallback source of truth. We only
+    wrap the manifest install so its already-written stplug-in source is poked
+    and correlated with moon's HotReload generation, then replace the add worker
+    so native install fires only after that generation is confirmed live.
+    """
+    if getattr(downloads, "_slsdeck_live_refresh_patched", False):
+        return
+
+    original_process = downloads._process_and_install_lua
+
+    def process_with_live_refresh(appid: int, zip_path: str) -> None:
+        start = snapshot()
+        original_process(appid, zip_path)
+        state = downloads._get_state(appid)
+        installed_path = str(state.get("installedPath") or "")
+        if installed_path:
+            poke(installed_path)
+
+        downloads._set_state(appid, {"status": "reconciling"})
+        result = wait_for_add(appid, start)
+        ready = bool(result.get("ready"))
+        generation = result.get("generation")
+        reason = str(result.get("reason") or "")
+        downloads._set_state(appid, {
+            "status": "done",
+            "liveReady": ready,
+            "liveGeneration": generation,
+            "liveReason": reason,
+            "needsProvisionRestart": not ready,
+        })
+        if ready:
+            logger.log(
+                f"SLSDeck: live add confirmed for {appid} via moon generation {generation}; "
+                "Steam restart not required")
+        else:
+            logger.warn(
+                f"SLSDeck: live add not confirmed for {appid}: {reason or 'unknown'}; "
+                "restart fallback retained")
+
+    def add_worker_with_live_refresh(appid: int) -> None:
+        try:
+            downloads._download_zip_for_app(appid)
+        finally:
+            st = downloads._get_state(appid)
+            status = st.get("status")
+            if downloads._is_cancelled(appid):
+                status = "cancelled"
+                downloads._set_state(appid, {"status": "cancelled"})
+            if status not in ("done", "failed"):
+                return
+
+            name = ""
+            try:
+                name = downloads._get_loaded_app_name(appid) or ""
+            except Exception:
+                pass
+            ok = bool(status == "done" and st.get("success"))
+            auto_dl = False
+            live_ready = bool(st.get("liveReady"))
+
+            if ok and st.get("manifest") is False and "liveReady" not in st:
+                # SLS-only fallback has no stplug-in source for moon's managed
+                # HotReload path, so do not risk the 0-depot native install.
+                downloads._set_state(appid, {
+                    "liveReady": False,
+                    "needsProvisionRestart": True,
+                    "liveReason": "no managed manifest source was available for live refresh",
+                })
+                st = downloads._get_state(appid)
+                live_ready = False
+
+            if ok:
+                try:
+                    from .steam import clear_phantom_install
+                    cleared = clear_phantom_install(appid)
+                    if cleared.get("cleared"):
+                        logger.log(
+                            f"SLSDeck: cleared stale phantom install for {appid} before download")
+                except Exception as ph_exc:
+                    logger.warn(f"SLSDeck: phantom-install check failed for {appid}: {ph_exc}")
+
+                try:
+                    from .settings import get_auto_add_dlc
+                    if get_auto_add_dlc():
+                        from . import dlc as _dlc
+                        info = _dlc.resolve_dlc(appid)
+                        target = appid
+                        if info.get("isDlc") and info.get("base") and info["base"] != appid:
+                            base = int(info["base"])
+                            try:
+                                bname = downloads._fetch_app_name(base) or f"AppID {base}"
+                                slssteam.add_app(base, bname)
+                                downloads._append_loaded_app(base, bname)
+                                target = base
+                                logger.log(
+                                    f"SLSDeck: chain-added base game {base} for DLC {appid} — "
+                                    "moon unlocks all its DLC")
+                            except Exception as be:
+                                logger.warn(f"SLSDeck: chain-add base failed for DLC {appid}: {be}")
+                        r = _dlc.ensure_all_dlc_keys(target)
+                        logger.log(
+                            f"SLSDeck: auto-DLC registered {r.get('keys',0)} depot key(s) + "
+                            f"{r.get('dlcRegistered',0)} DLC appid(s) for {target} ({r.get('source')})")
+                except Exception as dlc_exc:
+                    logger.warn(f"SLSDeck: auto-DLC step failed for {appid}: {dlc_exc}")
+
+                try:
+                    if downloads.get_auto_download():
+                        if live_ready and slssteam._injection_functional():
+                            trig = slssteam.trigger_steam_install(appid)
+                            auto_dl = bool(trig.get("success"))
+                            if not auto_dl:
+                                logger.warn(
+                                    f"SLSDeck: live install trigger failed for {appid}: "
+                                    f"{trig.get('error') or 'unknown'}")
+                        else:
+                            logger.warn(
+                                f"SLSDeck: skipping auto-download for {appid} — moon live refresh "
+                                "was not confirmed; restart fallback remains available.")
+                except Exception as dl_exc:
+                    logger.warn(f"SLSDeck: auto-download trigger failed for {appid}: {dl_exc}")
+
+                try:
+                    from .art import sync_game_art
+                    sync_game_art(appid)
+                except Exception as art_exc:
+                    logger.warn(f"SLSDeck: post-add art sync failed for {appid}: {art_exc}")
+
+            with downloads._ADD_EVENTS_LOCK:
+                if len(downloads._ADD_EVENTS) >= 200:
+                    del downloads._ADD_EVENTS[:-100]
+                downloads._ADD_EVENTS.append({
+                    "appid": appid,
+                    "name": name or f"AppID {appid}",
+                    "status": status,
+                    "success": ok,
+                    "autoDownload": auto_dl,
+                    "liveReady": live_ready,
+                    "needsProvisionRestart": bool(st.get("needsProvisionRestart")),
+                    "liveGeneration": st.get("liveGeneration"),
+                    "liveReason": st.get("liveReason", ""),
+                    "error": st.get("error", ""),
+                })
+
+    downloads._process_and_install_lua = process_with_live_refresh
+    downloads._add_worker = add_worker_with_live_refresh
+    downloads._slsdeck_live_refresh_patched = True
+    logger.log("SLSDeck: slsteam-moon verified live-add wrapper enabled")
