@@ -19,6 +19,8 @@ import { syncSlsCollection } from "./lib/collection";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
+const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
+const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
@@ -76,13 +78,25 @@ function RepairBanner() {
 function Content() {
   const [refreshToken, setRefreshToken] = useState(0);
   const bump = () => setRefreshToken((t) => t + 1);
+  const [actionsFixesQam, setActionsFixesQam] = useState(true);
   const [gamesInQam, setGamesInQam] = useState(true);
   const [hideToolsQam, setHideToolsQam] = useState(true);
   // Until SLSsteam is installed, the QAM shows only the setup block — no game
-  // controls, game list or tools (there's nothing for them to act on yet).
+  // actions, game list or tools (there's nothing for them to act on yet).
   const [installed, setInstalled] = useState<boolean>(false);
 
   useEffect(() => {
+    const readActionsFixes = () => {
+      try {
+        const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
+        setActionsFixesQam(raw == null ? true : raw === "1");
+      } catch {
+        setActionsFixesQam(true);
+      }
+    };
+    readActionsFixes();
+    const onActionsFixes = () => readActionsFixes();
+    window.addEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes as EventListener);
     getGamesInQam().then((r) => setGamesInQam(!!r.enabled)).catch(() => {});
     getHideToolsQam().then((r) => setHideToolsQam(!!r.enabled)).catch(() => {});
     const checkInstalled = () =>
@@ -90,7 +104,10 @@ function Content() {
     checkInstalled();
     // Re-check so the sections appear right after a first-time install completes.
     const iv = setInterval(checkInstalled, 4000);
-    return () => clearInterval(iv);
+    return () => {
+      clearInterval(iv);
+      window.removeEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes as EventListener);
+    };
   }, []);
 
   const anchor = useRef<HTMLDivElement>(null);
@@ -124,7 +141,7 @@ function Content() {
       <div ref={anchor} style={{ height: 0 }} />
       <RepairBanner />
       <SlsSteamCompact />
-      {installed && <GameControlsSection onChanged={bump} />}
+      {installed && actionsFixesQam && <GameControlsSection onChanged={bump} />}
       {installed && gamesInQam && <InstalledSection refreshToken={refreshToken} onChanged={bump} />}
       {installed && <GameToolsSection />}
       {installed && !hideToolsQam && <ToolsSection />}
