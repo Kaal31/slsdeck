@@ -6,6 +6,7 @@ on:
       - test
     paths-ignore:
       - "dist/**"
+      - "_ci-test-build.log"
   workflow_dispatch:
 
 permissions:
@@ -26,28 +27,42 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Check Python syntax
-        run: python3 -m compileall -q main.py py_modules
-
-      - name: Commit compiled frontend bundle
+      - name: Build and capture diagnostics
         shell: bash
         run: |
-          set -euo pipefail
-          if git diff --quiet -- dist/index.js; then
-            echo "dist/index.js is already current"
-            exit 0
+          set +e
+          : > /tmp/slsdeck-test-build.log
+
+          echo '=== npm ci ===' | tee -a /tmp/slsdeck-test-build.log
+          npm ci 2>&1 | tee -a /tmp/slsdeck-test-build.log
+          npm_rc=${PIPESTATUS[0]}
+
+          build_rc=99
+          if [ "$npm_rc" -eq 0 ]; then
+            echo '=== npm run build ===' | tee -a /tmp/slsdeck-test-build.log
+            npm run build 2>&1 | tee -a /tmp/slsdeck-test-build.log
+            build_rc=${PIPESTATUS[0]}
           fi
+
+          echo '=== python compileall ===' | tee -a /tmp/slsdeck-test-build.log
+          python3 -m compileall -q main.py py_modules 2>&1 | tee -a /tmp/slsdeck-test-build.log
+          py_rc=${PIPESTATUS[0]}
+
+          printf '\nRESULT npm=%s build=%s python=%s\n' "$npm_rc" "$build_rc" "$py_rc" | tee -a /tmp/slsdeck-test-build.log
+          cp /tmp/slsdeck-test-build.log _ci-test-build.log
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/index.js
-          git commit -m "Build test frontend [skip ci]"
+          git add _ci-test-build.log
+          if [ "$build_rc" -eq 0 ] && ! git diff --quiet -- dist/index.js; then
+            git add dist/index.js
+          fi
+          git commit -m "Capture test build result [skip ci]" || true
           git push origin HEAD:test
+
+          if [ "$npm_rc" -ne 0 ] || [ "$build_rc" -ne 0 ] || [ "$py_rc" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Restore tracked dist support files for packaging
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
