@@ -6624,7 +6624,7 @@ function pretty(value) {
         return String(value ?? "");
     }
 }
-/** Tokeer-backed Anti-Denuvo page. */
+/** Tokeer-backed Anti-Denuvo page; intentionally diagnostic until inventory is identified. */
 function TokeerSection() {
     const [busy, setBusy] = SP_REACT.useState(false);
     const [probe, setProbe] = SP_REACT.useState(null);
