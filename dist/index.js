@@ -2567,10 +2567,13 @@ function badgeCapsule(capsule, win) {
         existing.forEach((b) => b.remove());
         return;
     }
+    const emojiMode = getEmojiBadgesEnabled();
+    const mode = emojiMode ? "emoji" : "text";
     const current = existing
         .filter((b) => b.getAttribute("data-appid") === String(appid))
         .map((b) => b.getAttribute("data-kind"));
-    if (current.length === wanted.length && wanted.every((k) => current.includes(k)))
+    const currentMode = existing.every((b) => b.getAttribute("data-mode") === mode);
+    if (current.length === wanted.length && wanted.every((k) => current.includes(k)) && currentMode)
         return;
     box?.remove();
     existing.forEach((b) => b.remove());
@@ -2597,16 +2600,24 @@ function badgeCapsule(capsule, win) {
     container.className = `${BADGE_CLASS}-box`;
     container.style.cssText =
         "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;" +
-            "display:flex;flex-wrap:wrap;gap:3px;";
+            `display:flex;flex-wrap:wrap;gap:${emojiMode ? 6 : 3}px;align-items:center;`;
     for (const kind of wanted) {
         const badge = win.document.createElement("div");
         badge.className = BADGE_CLASS;
         badge.setAttribute("data-appid", String(appid));
         badge.setAttribute("data-kind", kind);
+        badge.setAttribute("data-mode", mode);
         const normal = kind === "nonsteamname" ? (nonSteamNames.get(appid) || "APP") : BADGE_LABELS[kind];
         badge.textContent = kind === "nonsteamname" ? normal : badgeDisplayLabel(kind, normal);
-        badge.style.cssText =
-            "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
+        const standaloneEmoji = emojiMode && kind !== "nonsteamname";
+        badge.style.cssText = standaloneEmoji
+            ? "flex:0 0 auto;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;" +
+                "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
+                "padding:0;margin:0;border:0;border-radius:0;font-size:24px;line-height:27px;" +
+                "font-family:'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif;font-weight:400;letter-spacing:0;" +
+                "color:inherit;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;" +
+                "text-shadow:0 1px 3px rgba(0,0,0,0.75);overflow:visible;"
+            : "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
                 "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
                 "padding:2px 7px;border-radius:4px;font-size:11px;line-height:16px;" +
                 "font-family:'Motiva Sans',Arial,sans-serif;font-weight:700;letter-spacing:0.4px;" +
@@ -2723,6 +2734,7 @@ function removeAllBadges() {
         return;
     try {
         win.document.querySelectorAll(`.${BADGE_CLASS}`).forEach((b) => b.remove());
+        win.document.querySelectorAll(`.${BADGE_CLASS}-box`).forEach((b) => b.remove());
     }
     catch { /* ignore */ }
 }
