@@ -57,6 +57,7 @@ import {
   pinGame,
   unpinGame,
   triggerSteamInstall,
+  validateSteamApp,
   BuildEntry,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
@@ -425,7 +426,8 @@ export function GameToolsSection() {
                 run("rollback", () => buildHistoryRollback(appid, e.id), (r) => {
                   if (!r.success) return r.unsupported ? "Rollback needs the slsteam-moon engine." : (r.error || "Rollback failed");
                   triggerSteamInstall(appid).catch(() => {});
-                  return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam is updating to it.`;
+                  validateSteamApp(appid).catch(() => {});
+                  return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam validation started; changed files will be downloaded automatically.`;
                 })
               }
             />,
@@ -563,8 +565,13 @@ export function GameToolsSection() {
                 if (v.phantom || !v.ok) return { msg: v.text };
                 await noInternetFixBegin(appid).catch(() => ({}));
                 triggerSteamInstall(appid).catch(() => {});
-                const launched = launchGame(appid);
-                if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }
+                const validated = await validateSteamApp(appid).catch(() => ({ success: false }));
+                if (!validated.success) {
+                  // Compatibility fallback for unusual Steam setups where the
+                  // protocol handler cannot be invoked from the backend.
+                  const launched = launchGame(appid);
+                  if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }
+                }
                 return { msg: launched ? `Pinned build ${it.key} — launching to download it…` : v.text };
               }, (res) => {
                 // Toast the result too — the panel note isn't visible while you're

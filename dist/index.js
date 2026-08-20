@@ -335,6 +335,7 @@ const depotdlDownloadDlc = callable("depotdl_download_dlc");
 const depotdlQueue = callable("depotdl_queue");
 callable("ensure_all_dlc_keys");
 const triggerSteamInstall = callable("trigger_steam_install");
+const validateSteamApp = callable("validate_steam_app");
 const popInjectionEvents = callable("pop_injection_events");
 const getAutoReinject = callable("get_auto_reinject");
 const setAutoReinject = callable("set_auto_reinject");
@@ -4123,7 +4124,8 @@ function GameToolsSection() {
                         if (!r.success)
                             return r.unsupported ? "Rollback needs the slsteam-moon engine." : (r.error || "Rollback failed");
                         triggerSteamInstall(appid).catch(() => { });
-                        return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam is updating to it.`;
+                        validateSteamApp(appid).catch(() => { });
+                        return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam validation started; changed files will be downloaded automatically.`;
                     }) }));
             } }));
     };
@@ -4276,12 +4278,17 @@ function GameToolsSection() {
                             return { msg: v.text };
                         await noInternetFixBegin(appid).catch(() => ({}));
                         triggerSteamInstall(appid).catch(() => { });
-                        const launched = launchGame(appid);
-                        if (launched) {
-                            try {
-                                DFL.Navigation.CloseSideMenus?.();
+                        const validated = await validateSteamApp(appid).catch(() => ({ success: false }));
+                        if (!validated.success) {
+                            // Compatibility fallback for unusual Steam setups where the
+                            // protocol handler cannot be invoked from the backend.
+                            const launched = launchGame(appid);
+                            if (launched) {
+                                try {
+                                    DFL.Navigation.CloseSideMenus?.();
+                                }
+                                catch { /* */ }
                             }
-                            catch { /* */ }
                         }
                         return { msg: launched ? `Pinned build ${it.key} — launching to download it…` : v.text };
                     }, (res) => {
