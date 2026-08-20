@@ -9,15 +9,46 @@ every load and every Decky hot-reload. It also silently went stale: it never
 listed ``hypervisor`` or ``proton``.
 """
 
-# main.py imports ``downloads`` during backend startup anyway. Import it once here
-# so the slsteam-moon live-refresh wrapper is installed deterministically before
-# the first Add Game request can start; this does not add a new module to the
-# steady-state backend because main imports downloads immediately afterwards.
+# main.py imports these modules during backend startup anyway. Install the small
+# compatibility/policy wrappers here so they are active before the first RPC.
 try:
     from . import downloads as _downloads
     from . import live_refresh as _live_refresh
     _live_refresh.patch_downloads(_downloads)
 except Exception:
-    # Never make package import fatal. The unchanged downloader remains the
-    # restart-based fallback if a future module layout breaks this optional layer.
+    pass
+
+try:
+    from . import slssteam as _slssteam
+    from . import survival_backup as _survival_backup
+    _survival_backup.patch(_slssteam, _downloads)
+except Exception:
+    pass
+
+try:
+    from . import depotdl as _depotdl
+    from . import watchdog as _watchdog
+    from . import depot_cleanup as _depot_cleanup
+    _depot_cleanup.patch_depotdl(_depotdl)
+    _depot_cleanup.patch_watchdog(_watchdog)
+except Exception:
+    # v1/simple builds intentionally ship without depotdl.py.
+    pass
+
+try:
+    from . import cloudredirect as _cloudredirect
+    from . import cloudredirect_reinstall as _cloudredirect_reinstall
+    _cloudredirect_reinstall.patch(_cloudredirect)
+except Exception:
+    pass
+
+# QAM policy: first-time Install must always show when the engine is absent, but
+# the optional Reinstall control on game pages is hidden by default. Existing
+# users who explicitly enabled the old toggle keep their choice.
+try:
+    from . import settings as _settings
+    def _get_show_reinstall_qam_default_hidden():
+        return bool(_settings.get_value("showReinstallQam", False))
+    _settings.get_show_reinstall_qam = _get_show_reinstall_qam_default_hidden
+except Exception:
     pass
