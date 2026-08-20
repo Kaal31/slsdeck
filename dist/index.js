@@ -112,6 +112,7 @@ function FaWrench (props) {
   return GenIcon({"attr":{"viewBox":"0 0 448 512"},"child":[{"tag":"path","attr":{"d":"M257.5 445.1l-22.2 22.2c-9.4 9.4-24.6 9.4-33.9 0L7 273c-9.4-9.4-9.4-24.6 0-33.9L201.4 44.7c9.4-9.4 24.6-9.4 33.9 0l22.2 22.2c9.5 9.5 9.3 25-.4 34.3L136.6 216H424c13.3 0 24 10.7 24 24v32c0 13.3-10.7 24-24 24H136.6l120.5 114.8c9.8 9.3 10 24.8.4 34.3z"},"child":[]}]})(props);
 }
 
+const tokeerQuotaProbe = callable("tokeer_quota_probe");
 // ── Callables ──────────────────────────────────────────────────────────────
 callable("get_steam_status");
 const hasLua = callable("has_lua");
@@ -6608,6 +6609,35 @@ function HypervisorSection() {
                                         : protonDl.status === "extracting" ? "Extracting…" : protonDl.status })] }) }))] })), games.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 4 }, children: "Marked games" }) }), games.map((aid) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => unmark(aid), children: SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: appDisplayName(Number(aid)) || `AppID ${aid}` }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.6 }, children: "tap to unmark" })] }) }) }, aid)))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("reboot", hvReboot, "Rebooting…"), disabled: working, children: "Reboot Deck now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: loadLog, children: showLog ? "Hide build log ▾" : "Show build log ▸" }) }), showLog && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: log, maxHeight: 240, mono: true, fontSize: 10 }) })), st?.kernel_release && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: 0.5 }, children: ["kernel ", st.kernel_release, st?.compiler_name ? ` · ${st.compiler_name}` : ""] }) }))] }));
 }
 
+function pretty(value) {
+    try {
+        return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+    catch {
+        return String(value ?? "");
+    }
+}
+/** Tokeer-backed Anti-Denuvo page. */
+function TokeerSection() {
+    const [busy, setBusy] = SP_REACT.useState(false);
+    const [probe, setProbe] = SP_REACT.useState(null);
+    const refresh = async () => {
+        setBusy(true);
+        try {
+            setProbe(await tokeerQuotaProbe());
+        }
+        catch (e) {
+            setProbe({ success: false, status: 0, raw: "", json: null, error: String(e) });
+        }
+        finally {
+            setBusy(false);
+        }
+    };
+    SP_REACT.useEffect(() => { refresh(); }, []);
+    const body = probe?.json != null ? pretty(probe.json) : (probe?.raw || "");
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer availability probe", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.72, lineHeight: 1.45 }, children: ["Live diagnostic request to Tokeer's public ", SP_JSX.jsx("code", { children: "/quota" }), " endpoint. This is intentionally shown raw until we know whether it exposes game inventory, per-user quota, or another schema."] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: refresh, disabled: busy, children: busy ? "Checking quota…" : "Refresh quota" }) }), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Contacting luastools.xyz\u2026"] }) })), probe && !busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11 }, children: [SP_JSX.jsxs("div", { style: { marginBottom: 6 }, children: ["HTTP: ", SP_JSX.jsx("b", { children: probe.status || "network error" }), probe.contentType ? ` · ${probe.contentType}` : ""] }), probe.error && SP_JSX.jsx("div", { style: { marginBottom: 8, color: "#f5a623" }, children: probe.error }), SP_JSX.jsx("pre", { style: { whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 420, overflowY: "auto", margin: 0 }, children: body || "(empty response)" })] }) }))] }) }));
+}
+
 function fmtSize$1(bytes) {
     if (!bytes)
         return "0 B";
@@ -7181,6 +7211,15 @@ async function syncSlsCollection() {
 
 const ACTIONS_FIXES_QAM_KEY$1 = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT$1 = "slsdeck-actions-fixes-qam";
+const DECKY_HV_VISIBLE_KEY = "slsdeck.showDeckyHv";
+function readDeckyHvVisible() {
+    try {
+        return window.localStorage.getItem(DECKY_HV_VISIBLE_KEY) === "1";
+    }
+    catch {
+        return false;
+    }
+}
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
     const [on, setOn] = SP_REACT.useState(false);
@@ -7249,7 +7288,7 @@ function OnlineFixUsername() {
     return (SP_JSX.jsxs(DFL.PanelSection, { title: "Online-fix username", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Username", value: draft, onChange: (e) => setDraft(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["Name used by online-fix emulators. Blank = your Steam name", auto ? ` ("${auto}")` : "", ". Applied when a fix is installed."] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: save, disabled: draft.trim() === (saved ?? ""), children: "Save username" }) })] }));
 }
 /* ── Options pane (the old Advanced toggles) ───────────────────────────── */
-function OptionsPane() {
+function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
     const [dlc, setDlc] = SP_REACT.useState(false);
     const [dlcOwnedOnly, setDlcOwnedOnlyState] = SP_REACT.useState(true);
     const [groupCollection, setGroupCollectionState] = SP_REACT.useState(false);
@@ -7348,7 +7387,7 @@ function OptionsPane() {
                                 else {
                                     toaster.toast({ title: "SLSDeck", body: "Collection sync off (existing collection kept)" });
                                 }
-                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Backup custom manifests and fixes", description: "Include imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. When restored, they reappear in the Fixes and Download tabs. Off by default.", checked: backupCustom, onChange: async (v) => { setBackupCustomState(v); await setBackupCustom(v); } }) })] }), SP_JSX.jsx(AddDownloadToggle, {}), SP_JSX.jsx(DlcCloudToggles, {}), SP_JSX.jsx(InjectionRecovery, {}), SP_JSX.jsxs(DFL.PanelSection, { title: "Library badges", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Emoji Badges", description: "Replace each enabled badge with its emoji analogue: SLS \uD83C\uDFF4\u200D\u2620\uFE0F, Legit \uD83D\uDCB5, Fix \uD83D\uDD27, Online Fix \uD83C\uDF10, Denuvo \uD83D\uDC7A, Non-Steam \u2753. Disabled badges stay hidden.", checked: badgeEmoji, onChange: (v) => {
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Backup custom manifests and fixes", description: "Include imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. When restored, they reappear in the Fixes and Download tabs. Off by default.", checked: backupCustom, onChange: async (v) => { setBackupCustomState(v); await setBackupCustom(v); } }) })] }), SP_JSX.jsx(AddDownloadToggle, {}), SP_JSX.jsx(DlcCloudToggles, {}), SP_JSX.jsx(InjectionRecovery, {}), SP_JSX.jsx(DFL.PanelSection, { title: "Advanced tools", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Hypervisor Bypass Module tab", description: "Show the Hypervisor Bypass Module controls in Advanced. Hidden by default; Anti-Denuvo uses the Tokeer page.", checked: showDeckyHv, onChange: (v) => onShowDeckyHvChange(v) }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Library badges", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Emoji Badges", description: "Replace each enabled badge with its emoji analogue: SLS \uD83C\uDFF4\u200D\u2620\uFE0F, Legit \uD83D\uDCB5, Fix \uD83D\uDD27, Online Fix \uD83C\uDF10, Denuvo \uD83D\uDC7A, Non-Steam \u2753. Disabled badges stay hidden.", checked: badgeEmoji, onChange: (v) => {
                                 setBadgeEmoji(v);
                                 setEmojiBadgesEnabled(v);
                                 refreshBadges();
@@ -7401,9 +7440,19 @@ function AdvancedPage() {
     const [tok, setTok] = SP_REACT.useState(0);
     const bump = () => setTok((t) => t + 1);
     const [gamesInQam, setGamesInQam2] = SP_REACT.useState(false);
+    const [showDeckyHv, setShowDeckyHv] = SP_REACT.useState(readDeckyHvVisible);
     SP_REACT.useEffect(() => {
         getGamesInQam().then((r) => setGamesInQam2(!!r.enabled)).catch(() => { });
     }, []);
+    const setDeckyHvVisible = (enabled) => {
+        setShowDeckyHv(enabled);
+        try {
+            window.localStorage.setItem(DECKY_HV_VISIBLE_KEY, enabled ? "1" : "0");
+        }
+        catch {
+            /* ignore */
+        }
+    };
     return (SP_JSX.jsx(DFL.SidebarNavigation, { title: "SLSDeck", showTitle: true, pages: [
             {
                 title: "Dependencies",
@@ -7413,7 +7462,7 @@ function AdvancedPage() {
             {
                 title: "Options",
                 icon: SP_JSX.jsx(FaSlidersH, {}),
-                content: SP_JSX.jsx(OptionsPane, {}),
+                content: SP_JSX.jsx(OptionsPane, { showDeckyHv: showDeckyHv, onShowDeckyHvChange: setDeckyHvVisible }),
             },
             {
                 title: "Sources & keys",
@@ -7438,8 +7487,13 @@ function AdvancedPage() {
             {
                 title: "Anti-Denuvo",
                 icon: SP_JSX.jsx(FaShieldAlt, {}),
-                content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(HypervisorSection, {}) }),
+                content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(TokeerSection, {}) }),
             },
+            ...(showDeckyHv ? [{
+                    title: "Hypervisor Bypass Module",
+                    icon: SP_JSX.jsx(FaShieldAlt, {}),
+                    content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(HypervisorSection, {}) }),
+                }] : []),
             {
                 title: "Mods",
                 icon: SP_JSX.jsx(FaPuzzlePiece, {}),

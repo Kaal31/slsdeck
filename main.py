@@ -24,7 +24,7 @@ import decky
 from lt import (apis, art, audit, backup, buildhistory, buildpicker, cloudredirect, cloudsave, compat, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
                 opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
-                updates, watchdog, workshop, multiplayer,
+                updates, watchdog, workshop, multiplayer, tokeer,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -51,6 +51,10 @@ def _hv_norm(r: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Plugin:
+    # ── Tokeer / Anti-Denuvo ────────────────────────────────────────────────
+    async def tokeer_quota_probe(self) -> Dict[str, Any]:
+        return await self._run(tokeer.quota_probe)
+
     # ── Grid Artwork Sync ──────────────────────────────────────────────────
     async def sync_game_art(self, appid: int, overwrite: bool = False) -> Dict[str, Any]:
         return await self._run(art.sync_game_art, appid, overwrite)

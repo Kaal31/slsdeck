@@ -159,6 +159,20 @@ export interface InstalledFix {
   files: string[];
 }
 
+
+// ── Tokeer / Anti-Denuvo ──────────────────────────────────────────────────
+export interface TokeerQuotaProbe {
+  success: boolean;
+  status: number;
+  url?: string;
+  json: any;
+  raw: string;
+  contentType?: string;
+  parseError?: string;
+  error?: string;
+}
+export const tokeerQuotaProbe = callable<[], TokeerQuotaProbe>("tokeer_quota_probe");
+
 // ── Callables ──────────────────────────────────────────────────────────────
 export const getSteamStatus = callable<[], SteamStatus>("get_steam_status");
 export const hasLua = callable<[appid: number], { success: boolean; exists: boolean; slssteam?: boolean }>("has_lua");
