@@ -8,6 +8,7 @@ import { InstalledSection } from "./sections/Installed";
 import { GameToolsSection } from "./sections/GameTools";
 import { ToolsSection } from "./sections/Tools";
 import { SlsSteamCompact } from "./sections/SlsSteamCompact";
+import { SpecificBuildDownloadStatus } from "./components/SpecificBuildDownloadStatus";
 import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
@@ -144,6 +145,7 @@ function Content() {
       {installed && actionsFixesQam && <GameControlsSection onChanged={bump} />}
       {installed && gamesInQam && <InstalledSection refreshToken={refreshToken} onChanged={bump} />}
       {installed && <GameToolsSection />}
+      {installed && <SpecificBuildDownloadStatus />}
       {installed && !hideToolsQam && <ToolsSection />}
     </>
   );
