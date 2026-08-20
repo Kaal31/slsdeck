@@ -1,91 +1,100 @@
-# SLSDeck for Decky Loader (SteamOS / Steam Deck)
+# SLSDeckUniversal
 
-A SteamOS / Steam Deck port of the **SLSDeck** Millennium plugin, rebuilt as a
-[Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin.
+A **Decky Loader plugin for SteamOS / Steam Deck** that brings the SLSDeck workflow to Linux and collects game-management, manifest, compatibility-fix, and related utilities in one interface.
 
-The original plugin relied on **SteamTools** — a Windows-only `st` Lua loader
-that reads `config/stplug-in/<appid>.lua` scripts. That does not exist on
-SteamOS, so this port swaps it for the Linux-native stack:
+This repository is the SteamOS/Decky version of the project. The current plugin package is named **SLSDeckUniversal**.
 
-| Windows dependency | Linux / SteamOS replacement |
+## What it does
+
+SLSDeckUniversal integrates with Steam on SteamOS and provides tools for managing added games and their supporting data directly from Decky Loader.
+
+Current functionality includes:
+
+- Adding and removing games through **slsteam-moon** integration.
+- Manifest/depot handling from configured sources.
+- Multiple API-key support for sources that require authentication.
+- Installed-game tracking and management.
+- Manifest version selection/pinning.
+- **AppToken** handling for games that require ProductInfo tokens.
+- Optional DLC configuration.
+- Game fixes, including fix sources/workflows based on **Ryuu** and **Perondepot**.
+- Online/game compatibility fixes where supported.
+- Denuvo-related tooling, including the optional hypervisor/custom-Proton workflow.
+- Steam reload/restart helpers after configuration changes.
+
+## Main components and dependencies
+
+| Component | Purpose |
 |---|---|
-| SteamTools (`st` Lua loader) | **SLSsteam** — an `LD_AUDIT` `steamclient.so` hook driven by `~/.config/SLSsteam/config.yaml` |
-| Manual installer | **h3adcr-b** (headcrab) — installs SLSsteam and patches Steam's launch scripts |
-| — | **steamnetsock-patch** (`netsock.so`) — optional multiplayer fix for FakeAppIds |
+| **Decky Loader** | Plugin framework and Steam Deck UI integration |
+| **slsteam-moon** | SteamOS-side game/ownership integration used by the current plugin |
+| **Ryuu** | Source/workflow used by the game-fix system |
+| **Perondepot** | Additional game-fix/depot-related source used by the plugin |
+| **httpx** | Python HTTP client used by the backend |
+| **py7zr** | Python 7z archive support |
+| **@decky/api** | Decky frontend API |
+| **@decky/ui** | Decky UI components used when building the frontend |
+| **Rollup + TypeScript** | Frontend build toolchain |
 
-## How adding a game works now
-
-SLSsteam injects *ownership* rather than depot keys: adding an AppId under
-`AdditionalApps:` in `config.yaml` makes Steam treat the game as owned, and Steam
-then fetches the depot decryption keys from its own servers. No `.lua` script or
-manually supplied depot key is required.
-
-> **Why `AdditionalApps` and not `AppIds`?** Reading SLSsteam's source
-> (`src/config.cpp`, `src/feats/apps.cpp`): `AppIds:` is a black/whitelist
-> *filter* over apps you already own — with the default `UseWhitelist: no` an
-> entry there would *exclude* the app. `AdditionalApps:` is the list that is
-> actually injected (`getSubscribedApps` appends it; `checkAppOwnership` only
-> unlocks apps found there). This matches the reference `yaml_config_manager`.
-
-When you add a game the plugin:
-
-1. Registers the AppId under `AdditionalApps:` in `config.yaml` (primary path),
-   editing the file with line-targeted, comment-preserving, **atomic** writes.
-2. Still downloads the manifest `.lua`/depot files from your configured sources
-   as a fallback (kept for parity with the Windows plugin).
-3. Falls back to a SLSsteam-only add when no manifest source has the game —
-   which alone is enough on SteamOS.
-
-## Features
-
-- **SLSsteam panel (Quick Access)** — detects whether SLSsteam is installed and
-  injected; a one-tap **Install SLSsteam (h3adcr-b)** button runs the bundled
-  headcrab installer with live status, plus a **Reload Steam** button.
-- **Injected game-page UI** — a floating status window (like the Millennium
-  overlay) that shows API-source / key availability and, on a game page, an
-  **Add with SLSsteam** button and a **Reload Steam** button.
-- **Multiple API keys** — one saved field per key-gated source (e.g. Hubcap /
-  Morrenus), entered manually and kept in the plugin's settings.
-- **Installed list** — every added game with its source (SLSsteam / Lua / both)
-  and one-tap removal (deregisters from `config.yaml` and deletes any `.lua`).
-- **Game fixes** — Generic and Online (Unsteam) fixes, applied and cleanly
-  undone.
-- **AppTokens** — `addtoken(...)` values in the manifest `.lua` are extracted
-  into `AppTokens:` automatically (needed for some games' ProductInfo), exactly
-  like the reference app.
-- **DLC (optional)** — a Settings toggle (off by default) writes each game's
-  DLCs into `DlcData:`. Only needed for games past Steam's 64-DLC limit;
-  SLSsteam handles DLC automatically otherwise.
+Older SLSDeck documentation may refer to **SLSsteam**, **h3adcr-b/headcrab**, or **steamnetsock-patch** as the primary dependency stack. Those names describe earlier iterations of the SteamOS port and should not be treated as the best summary of the current SLSDeckUniversal build.
 
 ## Requirements
 
-- Decky Loader on SteamOS / Steam Deck.
-- SLSsteam (install it from the plugin's SLSsteam panel, or beforehand). The
-  headcrab installer needs `wget`, `curl`, `grep`, `awk`, `sed`, and `7zip`.
-- After installing SLSsteam or adding/removing games, **reload Steam** so the
-  `LD_AUDIT` hook and updated config take effect.
+- A Steam Deck or compatible SteamOS environment.
+- **Decky Loader** installed.
+- Network access for features that retrieve manifests, fixes, metadata, or other remote resources.
+- Any API keys required by the manifest/fix sources you choose to use.
 
-## Install
+Python dependencies declared by the plugin are:
 
-1. Copy the `SLSDeck` folder to your Deck at `~/homebrew/plugins/SLSDeck`
-   (or install the zip via Decky's *Developer → Install from ZIP*).
-2. Restart Decky Loader. The panel appears in the Quick Access Menu.
+```text
+httpx==0.27.2
+py7zr==0.22.0
+```
 
-`httpx` (see `requirements.txt`) is installed automatically by Decky. The
-SLSsteam logic uses only the Python standard library.
+Decky handles the plugin's Python dependency installation.
 
-## Bundled dependency assets
+## Installation
 
-`defaults/slssteam/` ships `headcrab.sh` (the installer), `config.default.yaml`
-(seed config), and `netsock/` (the multiplayer patch source) so the plugin can
-install and configure everything on-device.
+Install the plugin through the Decky Loader developer/plugin installation workflow, or place the plugin directory in your Decky plugins directory and restart/reload Decky as appropriate.
+
+The repository includes a prebuilt frontend bundle in `dist/`, so rebuilding the TypeScript frontend is not required simply to use an existing build.
+
+## Using the plugin
+
+Open SLSDeckUniversal from Decky's Quick Access menu. From there you can configure sources/API keys, manage games, manifests and fixes, and use the plugin's Steam integration features.
+
+Some operations require Steam to be reloaded before changes become visible. Use the plugin's reload controls when prompted.
 
 ## Build from source
 
-The repo ships a prebuilt `dist/index.js`. To rebuild the frontend:
+The frontend source is included in the repository.
 
 ```bash
-cd SLSDeck
-pnpm install      # or: npm install
-pnpm run build    # produces dist/index.js
+npm install
+npm run build
 ```
+
+The build produces the frontend bundle under `dist/`.
+
+The main frontend/runtime dependencies are defined in `package.json`; Python backend dependencies are defined in `requirements.txt`.
+
+## Development branch
+
+The `dev` branch is intended for ongoing development and documentation updates before changes are promoted to `main`.
+
+## Project status
+
+SLSDeckUniversal is under active development. Features, source integrations, dependency names, and compatibility workflows may change between builds, so the current repository files and changelog should be treated as the authoritative reference for a particular version.
+
+## Credits
+
+Built on the work of:
+
+- [SLSsteam](https://github.com/AceSLS/SLSsteam) / [slsteam-moon](https://github.com/swwayps/slsteam-moon) — ownership injection via `LD_AUDIT`
+- [h3adcr-b (headcrab)](https://github.com/Deadboy666/h3adcr-b) — SLSsteam installer & Steam launch-script patcher
+- [steamnetsock-patch](https://github.com/yesyes0649/steamnetsock-patch) — multiplayer patch for FakeAppIds
+- [CloudRedirect](https://github.com/Selectively11/CloudRedirect) — real cloud saves for added games
+- [ryuu manifests](https://generator.ryuu.lol) & the Unsteam project — game fixes
+- [Pareidolia?](https://cs.rin.ru/forum/viewtopic.php?f=20&t=159990&hilit=plugin+Decky) — original creator of the hypervisor plugin
+- DenuvOwO and LinUwUx/whoever made this possible. Without these guys we'd be all buying denuvo.
