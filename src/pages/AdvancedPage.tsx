@@ -14,6 +14,7 @@ import { CloudRedirectSection } from "../sections/CloudRedirect";
 import { UpdatesSection } from "../sections/Updates";
 import { SettingsSection } from "../sections/Settings";
 import { HypervisorSection } from "../sections/Hypervisor";
+import { TokeerSection } from "../sections/Tokeer";
 import { ModsSection } from "../sections/Mods";
 import { BackupSection } from "../sections/Backup";
 import {
@@ -49,6 +50,15 @@ import { getEmojiBadgesEnabled, setEmojiBadgesEnabled } from "../lib/emojiBadges
 
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
+const DECKY_HV_VISIBLE_KEY = "slsdeck.showDeckyHv";
+
+function readDeckyHvVisible(): boolean {
+  try {
+    return window.localStorage.getItem(DECKY_HV_VISIBLE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
@@ -205,7 +215,13 @@ function OnlineFixUsername() {
 }
 
 /* ── Options pane (the old Advanced toggles) ───────────────────────────── */
-function OptionsPane() {
+function OptionsPane({
+  showDeckyHv,
+  onShowDeckyHvChange,
+}: {
+  showDeckyHv: boolean;
+  onShowDeckyHvChange: (enabled: boolean) => void;
+}) {
   const [dlc, setDlc] = useState(false);
   const [dlcOwnedOnly, setDlcOwnedOnlyState] = useState(true);
   const [groupCollection, setGroupCollectionState] = useState(false);
@@ -462,6 +478,17 @@ function OptionsPane() {
 
       <InjectionRecovery />
 
+      <PanelSection title="Advanced tools">
+        <PanelSectionRow>
+          <ToggleField
+            label="Show Decky HV tab"
+            description="Show the legacy Decky HV hypervisor controls in Advanced. Hidden by default; Anti-Denuvo now uses the Tokeer page."
+            checked={showDeckyHv}
+            onChange={(v) => onShowDeckyHvChange(v)}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="Library badges">
         <PanelSectionRow>
           <ToggleField
@@ -621,9 +648,20 @@ export function AdvancedPage() {
   const [tok, setTok] = useState(0);
   const bump = () => setTok((t) => t + 1);
   const [gamesInQam, setGamesInQam2] = useState(false);
+  const [showDeckyHv, setShowDeckyHv] = useState(readDeckyHvVisible);
+
   useEffect(() => {
     getGamesInQam().then((r) => setGamesInQam2(!!r.enabled)).catch(() => {});
   }, []);
+
+  const setDeckyHvVisible = (enabled: boolean) => {
+    setShowDeckyHv(enabled);
+    try {
+      window.localStorage.setItem(DECKY_HV_VISIBLE_KEY, enabled ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
 
   return (
     <SidebarNavigation
@@ -638,7 +676,7 @@ export function AdvancedPage() {
         {
           title: "Options",
           icon: <FaSlidersH />,
-          content: <OptionsPane />,
+          content: <OptionsPane showDeckyHv={showDeckyHv} onShowDeckyHvChange={setDeckyHvVisible} />,
         },
         {
           title: "Sources & keys",
@@ -663,8 +701,13 @@ export function AdvancedPage() {
         {
           title: "Anti-Denuvo",
           icon: <FaShieldAlt />,
-          content: <Body><HypervisorSection /></Body>,
+          content: <Body><TokeerSection /></Body>,
         },
+        ...(showDeckyHv ? [{
+          title: "Decky HV",
+          icon: <FaShieldAlt />,
+          content: <Body><HypervisorSection /></Body>,
+        }] : []),
         {
           title: "Mods",
           icon: <FaPuzzlePiece />,
