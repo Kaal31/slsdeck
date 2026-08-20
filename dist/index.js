@@ -4712,25 +4712,106 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
                                             ` · DLC included: ${state.contentCheckResult.dlc.included.length}, missing: ${state.contentCheckResult.dlc.missing.length}`] }))] }) })), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: onCancel, children: "Cancel" }) }))] }), showInstalled && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: onChanged }), SP_JSX.jsx(CustomManifestsPanel, {})] }));
 }
 
-/**
- * Native cloudredirect-moon reinstalls intentionally do not rebind a Steam
- * shortcut.  The authoritative runtime is ~/.local/share/CloudRedirect/
- * cloud_redirect.so loaded into Steam via LD_PRELOAD, not a Flatpak launcher.
- *
- * Keep this compatibility hook so existing callers do not need branching; the
- * explicit "Open CloudRedirect app" flow still repairs/creates the optional
- * companion shortcut when the user actually chooses to use that UI.
+const CR_FLATPAK$1 = "org.cloudredirect.CloudRedirect";
+async function applyArtwork(appId) {
+    const SC = window.SteamClient;
+    if (!SC?.Apps)
+        return;
+    try {
+        const a = await crArtwork();
+        if (a?.success && SC.Apps.SetCustomArtworkForApp) {
+            const jobs = [
+                [a.cover, 0],
+                [a.hero, 1],
+                [a.capsule, 3],
+                [a.logo, 2],
+            ];
+            for (const [b64, kind] of jobs) {
+                if (!b64)
+                    continue;
+                try {
+                    await SC.Apps.SetCustomArtworkForApp(appId, b64, "png", kind);
+                }
+                catch { /* best effort */ }
+            }
+        }
+    }
+    catch { /* best effort */ }
+    try {
+        const ic = await crIconPath();
+        if (ic?.success && ic.path && SC.Apps.SetShortcutIcon) {
+            await SC.Apps.SetShortcutIcon(appId, ic.path);
+        }
+    }
+    catch { /* best effort */ }
+}
+/** Ensure the provider-login UI has a Steam shortcut and native-looking art.
+ * Creates it when missing; otherwise rebinds the existing shortcut in place.
  */
+async function ensureCloudRedirectShortcut(launch = false) {
+    const SC = window.SteamClient;
+    if (!SC?.Apps)
+        throw new Error("SteamClient unavailable");
+    let appId = 0;
+    try {
+        const g = await crGetShortcut();
+        appId = Number(g?.appId || 0);
+    }
+    catch { /* create below */ }
+    if (appId) {
+        try {
+            const ov = window.appStore?.GetAppOverviewByAppID?.(appId);
+            if (!ov)
+                appId = 0;
+        }
+        catch {
+            appId = 0;
+        }
+    }
+    if (!appId) {
+        if (!SC.Apps.AddShortcut)
+            throw new Error("Steam shortcut API unavailable");
+        const created = await SC.Apps.AddShortcut("CloudRedirect", "/usr/bin/flatpak", "", "");
+        appId = Number(created);
+        if (!appId || Number.isNaN(appId))
+            throw new Error("AddShortcut returned no appId");
+    }
+    try {
+        await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK$1}`);
+    }
+    catch { /* best effort */ }
+    try {
+        await SC.Apps.SetShortcutName(appId, "CloudRedirect");
+    }
+    catch { /* best effort */ }
+    try {
+        await crSetShortcut(appId);
+    }
+    catch { /* best effort */ }
+    await applyArtwork(appId);
+    if (launch) {
+        if (!SC.Apps.RunGame)
+            throw new Error("Steam launch API unavailable");
+        const gameId = ((BigInt(appId) << 32n) | 0x02000000n).toString();
+        SC.Apps.RunGame(gameId, "", -1, 100);
+    }
+    return appId;
+}
 async function rebindExistingCloudRedirectShortcut() {
     try {
-        // Touch the stored value only to preserve the old RPC/cache behaviour; no
-        // shortcut metadata is changed during a native moon reinstall.
-        await crGetShortcut();
+        const g = await crGetShortcut();
+        const appId = Number(g?.appId || 0);
+        if (!appId)
+            return false;
+        const ov = window.appStore?.GetAppOverviewByAppID?.(appId);
+        if (!ov)
+            return false;
+        await ensureCloudRedirectShortcut(false);
+        return true;
     }
     catch {
-        /* ignore */
+        return false;
     }
-    return false;
 }
 
 function Dot({ health }) {
