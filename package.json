@@ -1,7 +1,7 @@
 {
   "name": "SLSDeckUniversal",
-  "version": "0.9.59",
-  "description": "SLSDeck for Decky Loader \u2014 add games to Steam on SteamOS via SLSsteam (SteamTools replacement), with guided h3adcr-b install, multiple API keys, an injected add button + floating status window, and game fixes.",
+  "version": "0.9.60",
+  "description": "SLSDeck for Decky Loader — add games to Steam on SteamOS via SLSsteam (SteamTools replacement), with guided h3adcr-b install, multiple API keys, an injected add button + floating status window, and game fixes.",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
