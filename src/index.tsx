@@ -203,19 +203,23 @@ export default definePlugin(() => {
       (r.events || []).forEach((e) => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
+        const liveReady = !!(e as any).liveReady;
         toaster.toast({
           title: "SLSDeck",
           body:
             e.status === "done" && e.success
               ? (isAssella
                   ? `Installed ${e.name}${dl ? " — reloading Steam…" : " — restart Steam to see it"}`
-                  : (dl ? `Added ${e.name} — downloading in Steam…` : `Added ${e.name} — restart Steam to see it`))
+                  : liveReady
+                    ? (dl ? `Added ${e.name} — downloading in Steam…` : `Added ${e.name} — available in Steam`)
+                    : `Added ${e.name} — restart Steam to finish provisioning`)
               : `${isAssella ? "Install" : "Add"} failed: ${e.name}${e.error ? " — " + e.error : ""}`,
         });
         if (e.status === "done" && e.success) {
-          // Auto-download fired via the SLSsteam API in the live session; a soft
-          // UI reload makes the library tile + download queue show immediately.
-          if (dl) { reloadSteam().catch(() => {}); }
+          // slsteam-moon's verified HotReload path updates package/license/appinfo
+          // in the current Steam session, so normal SLS adds must NOT restart.
+          // Keep ASSella's existing reload behavior separate from this live path.
+          if (isAssella && dl) { reloadSteam().catch(() => {}); }
           getAutoFix()
             .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
             .catch(() => {});
