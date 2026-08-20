@@ -22,6 +22,9 @@ try:
     from . import slssteam as _slssteam
     from . import survival_backup as _survival_backup
     _survival_backup.patch(_slssteam, _downloads)
+    # Keep a current external archive even if the user uninstalls immediately
+    # after plugin startup without changing any pins in this session.
+    _survival_backup.save()
 except Exception:
     pass
 
