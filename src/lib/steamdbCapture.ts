@@ -13,6 +13,7 @@ import { Navigation } from "@decky/ui";
 
 interface CdpTab { id?: string; url: string; webSocketDebuggerUrl?: string }
 export interface ScrapedGid { gid: string; date: string }
+export type SteamdbScrapeCancelled = () => boolean;
 
 /** Close a CEF tab by its target id (so we don't leave a SteamDB page open per
  *  depot). Best-effort over the same debugger endpoint we list tabs from. */
@@ -76,20 +77,28 @@ function evalOnTab(wsUrl: string, expr: string, timeoutMs = 6000): Promise<strin
 }
 
 /** Open a depot's SteamDB manifests page and scrape its gid history. Returns []
- *  if the page never yields a table in time (e.g. not signed in / blocked). */
+ *  if the page never yields a table in time (e.g. not signed in / blocked).
+ *  `isCancelled` lets the caller stop the work immediately when its UI closes. */
 export async function scrapeDepotManifests(
-  depot: string | number, maxMs = 25000, onStatus?: (s: string) => void,
+  depot: string | number,
+  maxMs = 25000,
+  onStatus?: (s: string) => void,
+  isCancelled?: SteamdbScrapeCancelled,
 ): Promise<ScrapedGid[]> {
+  if (isCancelled?.()) return [];
   const urlPart = `steamdb.info/depot/${depot}`;
   try { Navigation.NavigateToExternalWeb(`https://${urlPart}/manifests/`); } catch { /* */ }
   const deadline = Date.now() + maxMs;
   let lastId: string | undefined;
   try {
     while (Date.now() < deadline) {
+      if (isCancelled?.()) return [];
       const tab = await findTab(urlPart);
+      if (isCancelled?.()) return [];
       if (tab?.webSocketDebuggerUrl) {
         lastId = tab.id;
         const raw = await evalOnTab(tab.webSocketDebuggerUrl, SCRAPE_EXPR);
+        if (isCancelled?.()) return [];
         if (raw) {
           try {
             const arr = JSON.parse(raw) as ScrapedGid[];
@@ -100,12 +109,15 @@ export async function scrapeDepotManifests(
       } else {
         onStatus?.(`Opening SteamDB depot ${depot}…`);
       }
-      await new Promise((r) => setTimeout(r, 1500));
+      for (let waited = 0; waited < 1500; waited += 100) {
+        if (isCancelled?.()) return [];
+        await new Promise((r) => setTimeout(r, 100));
+      }
     }
     return [];
   } finally {
-    // Always close the depot page we opened — success or timeout — so a
-    // multi-depot game doesn't leave a stack of SteamDB tabs behind.
+    // Always close the depot page we opened — success, timeout, or cancellation —
+    // so a multi-depot game doesn't leave a stack of SteamDB tabs behind.
     await closeTab(lastId);
   }
 }
