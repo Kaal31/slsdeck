@@ -14,6 +14,7 @@ from typing import Any, Dict
 
 from .logger import logger
 from .paths import get_user_home
+from .utils import chown_to_user
 
 _LOCK = threading.Lock()
 _TASK = None
@@ -46,7 +47,6 @@ def _write(data: Dict[str, Any]) -> None:
             except Exception: pass
         os.replace(tmp, path)
         try:
-            from .utils import chown_to_user
             chown_to_user(path, recursive=False)
         except Exception:
             pass
@@ -68,6 +68,29 @@ def _appmanifest_for(appid: int, install_path: str) -> str:
         return os.path.join(steamapps, f"appmanifest_{int(appid)}.acf")
     except Exception:
         return ""
+
+
+def _hand_install_back_to_user(appid: int, install_path: str) -> None:
+    """Make a completed root-run DepotDownloader install manageable by Steam/Dolphin.
+
+    Decky's backend runs as root, so files created by DepotDownloader can otherwise
+    remain root-owned. That makes later Steam updates and even deleting a stale game
+    from Dolphin's Trash fail with "Access denied". A full-build download is the
+    correct ownership boundary: recursively hand only that game's directory back to
+    the desktop user, plus its appmanifest when present. This deliberately never
+    walks steamapps/common itself.
+    """
+    path = os.path.realpath(str(install_path or ""))
+    if not path or not _safe_managed_path(path):
+        return
+    try:
+        chown_to_user(path, recursive=True)
+        acf = _appmanifest_for(int(appid), path)
+        if acf and os.path.exists(acf):
+            chown_to_user(acf, recursive=False)
+        logger.log(f"depot-cleanup: handed full build {appid} back to desktop user -> {path}")
+    except Exception as exc:
+        logger.warn(f"depot-cleanup: ownership handoff failed for {appid}: {exc}")
 
 
 def register_full_build(appid: int, install_path: str) -> None:
@@ -180,7 +203,9 @@ def patch_depotdl(depotdl: Any) -> None:
         try:
             st = depotdl.get_state(appid)
             if st.get("status") == "done" and st.get("success") and st.get("installPath"):
-                register_full_build(int(appid), str(st["installPath"]))
+                path = str(st["installPath"])
+                _hand_install_back_to_user(int(appid), path)
+                register_full_build(int(appid), path)
         except Exception as exc:
             logger.warn(f"depot-cleanup: post-build tracking failed for {appid}: {exc}")
     depotdl._build_worker = wrapped
