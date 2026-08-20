@@ -1,9 +1,10 @@
-name: Build lumainject
+name: Build feature branches
 
 on:
   push:
     branches:
       - lumainject
+      - test
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
@@ -15,10 +16,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout lumainject
+      - name: Checkout branch
         uses: actions/checkout@v4
         with:
-          ref: lumainject
+          ref: ${{ github.ref_name }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -46,8 +47,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/index.js
-          git commit -m "Build lumainject frontend [skip ci]"
-          git push origin HEAD:lumainject
+          git commit -m "Build ${GITHUB_REF_NAME} frontend [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Restore tracked dist support files for packaging
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
@@ -62,12 +63,12 @@ jobs:
             if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
           done
           cd artifact
-          zip -qr ../SLSDeckUniversal-lumainject.zip SLSDeckUniversal
+          zip -qr "../SLSDeckUniversal-${GITHUB_REF_NAME}.zip" SLSDeckUniversal
 
       - name: Upload compiled plugin
         uses: actions/upload-artifact@v4
         with:
-          name: SLSDeckUniversal-lumainject
-          path: SLSDeckUniversal-lumainject.zip
+          name: SLSDeckUniversal-${{ github.ref_name }}
+          path: SLSDeckUniversal-${{ github.ref_name }}.zip
           if-no-files-found: error
           retention-days: 14
