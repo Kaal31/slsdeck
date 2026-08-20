@@ -1,0 +1,52 @@
+name: Build lumainject
+
+on:
+  push:
+    branches:
+      - lumainject
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout lumainject
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          cd artifact
+          zip -qr ../SLSDeckUniversal-lumainject.zip SLSDeckUniversal
+
+      - name: Upload compiled plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-lumainject
+          path: SLSDeckUniversal-lumainject.zip
+          if-no-files-found: error
+          retention-days: 14
