@@ -343,8 +343,8 @@ export function SettingsSection() {
           {/* Live Hubcap quota under the Hubcap/Morrenus key field. */}
           {f.placeholder === "<moapikey>" && f.hasKey && (
             <PanelSectionRow>
-              <div style={{ fontSize: 11, opacity: 0.85, padding: "2px 2px 6px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: "100%", fontSize: 11, opacity: 0.9, padding: "2px 2px 6px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <span style={{ fontWeight: 600 }}>Hubcap quota</span>
                   <span
                     style={{ textDecoration: "underline", cursor: "pointer", opacity: 0.7 }}
@@ -354,16 +354,26 @@ export function SettingsSection() {
                   </span>
                 </div>
                 {hub ? (
-                  <div style={{ opacity: 0.85, marginTop: 2 }}>
-                    {(["single", "bundle", "workshop"] as const).map((k) =>
-                      hub[k] ? (
-                        <div key={k}>
-                          {k}: {hub[k]!.remaining}/{hub[k]!.limit} left
-                          <span style={{ opacity: 0.6 }}> ({hub[k]!.usage} used)</span>
+                  <div style={{ marginTop: 4 }}>
+                    {(["single", "bundle", "workshop"] as const).map((k) => {
+                      const q = hub[k];
+                      if (!q) return null;
+                      const usedPct = q.limit > 0 ? Math.max(0, Math.min(100, Math.round((q.usage / q.limit) * 100))) : 0;
+                      const low = q.limit > 0 && q.remaining <= Math.max(1, Math.ceil(q.limit * 0.1));
+                      return (
+                        <div key={k} style={{ marginBottom: 7 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                            <span style={{ textTransform: "capitalize" }}>{k}</span>
+                            <span style={{ fontWeight: 600 }}>{q.remaining}/{q.limit} left · {usedPct}% used</span>
+                          </div>
+                          <div style={{ height: 5, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }}>
+                            <div style={{ height: "100%", width: `${usedPct}%`, background: low ? "#d99035" : "#4a90d9", transition: "width 0.25s" }} />
+                          </div>
+                          {low ? <div style={{ marginTop: 2, opacity: 0.8 }}>Low quota — {q.remaining} request{q.remaining === 1 ? "" : "s"} remaining.</div> : null}
                         </div>
-                      ) : null
-                    )}
-                    <div style={{ opacity: 0.6, marginTop: 2 }}>
+                      );
+                    })}
+                    <div style={{ opacity: 0.65, marginTop: 2 }}>
                       Steam service: {hub.steam_service_ready ? "ready ✓" : "not ready"}
                     </div>
                   </div>
@@ -379,15 +389,26 @@ export function SettingsSection() {
       ))}
       <PanelSectionRow>
         <TextField
-          label={`Ryuu API key (for denuvo/gated fixes)${ryuuKey ? " ✓" : ""}`}
+          label={`Ryuu API key (manifests + gated fixes)${ryuuKey ? " ✓" : ""}`}
           value={ryuuDraft}
           onChange={(e) => setRyuuDraft((e.target as HTMLInputElement).value)}
         />
       </PanelSectionRow>
       <PanelSectionRow>
+        <div style={{ width: "100%", fontSize: 11, opacity: 0.75, padding: "2px 2px 6px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ fontWeight: 600 }}>Ryuu quota</span>
+            <span>{ryuuKey ? "API key ready ✓" : "API key not set"}</span>
+          </div>
+          <div style={{ marginTop: 3 }}>Free accounts: 50 manifest downloads per 24 hours.</div>
+          <div style={{ marginTop: 2, opacity: 0.65 }}>
+            Ryuu's documented API does not expose a live remaining-count endpoint, so SLSDeck shows the published limit rather than guessing your balance.
+          </div>
+        </div>
+      </PanelSectionRow>
+      <PanelSectionRow>
         <div style={{ fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }}>
-          From generator.ryuu.lol/api — needed to download Denuvo/gated fixes.
-          Free manifests don't need a key.
+          From generator.ryuu.lol/api. The same X-Auth-Key is used for Ryuu manifest downloads and gated fixes.
         </div>
       </PanelSectionRow>
       <PanelSectionRow>
