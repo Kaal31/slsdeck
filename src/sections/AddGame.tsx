@@ -169,7 +169,13 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
         const status = res.state.status;
         if (status === "done") {
           stopPolling();
-          toaster.toast({ title: "SLSDeck", body: `Added ${name} — restart Steam to see it` });
+          const live = !!(res.state as any).liveReady;
+          toaster.toast({
+            title: "SLSDeck",
+            body: live
+              ? `Added ${name} — available in Steam without restart`
+              : `Added ${name} — restart Steam to finish provisioning`,
+          });
           onChanged();
         } else if (status === "failed") {
           stopPolling();
@@ -189,7 +195,7 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
     setState((s) => ({ ...(s || {}), status: "cancelled" }));
   };
 
-  const busy = !!state && IN_PROGRESS.has(state.status || "");
+  const busy = !!state && (IN_PROGRESS.has(state.status || "") || state.status === "reconciling");
 
   const statusLabel = () => {
     if (!state) return "";
@@ -206,6 +212,8 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
         return "Processing archive…";
       case "installing":
         return "Installing Lua script…";
+      case "reconciling":
+        return "Refreshing Steam ownership and app info…";
       case "done":
         return state.api
           ? `Installed ✓ · source: ${state.api}${state.manifest === false ? " (no manifest found)" : ""}`
@@ -276,6 +284,16 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
           <div style={{ padding: "6px 0", fontSize: 13 }}>
             <div style={{ fontWeight: 600 }}>{activeName || activeAppId}</div>
             <div style={{ opacity: 0.8 }}>{statusLabel()}</div>
+            {state.status === "done" && (state as any).liveReady && (
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+                Steam live refresh confirmed{(state as any).liveGeneration ? ` · generation ${(state as any).liveGeneration}` : ""}
+              </div>
+            )}
+            {state.status === "done" && !(state as any).liveReady && (state as any).liveReason && (
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+                Restart fallback: {(state as any).liveReason}
+              </div>
+            )}
             {state.contentCheckResult && state.status === "done" && (
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
                 Workshop: {state.contentCheckResult.workshop}
