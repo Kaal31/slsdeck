@@ -1,0 +1,73 @@
+name: Build test
+
+on:
+  push:
+    branches:
+      - test
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test
+        uses: actions/checkout@v4
+        with:
+          ref: test
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+
+      - name: Commit compiled frontend bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- dist/index.js; then
+            echo "dist/index.js is already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/index.js
+          git commit -m "Build test frontend [skip ci]"
+          git push origin HEAD:test
+
+      - name: Restore tracked dist support files for packaging
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          cd artifact
+          zip -qr ../SLSDeckUniversal-test.zip SLSDeckUniversal
+
+      - name: Upload compiled plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-test
+          path: SLSDeckUniversal-test.zip
+          if-no-files-found: error
+          retention-days: 14
