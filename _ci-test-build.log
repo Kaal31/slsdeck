@@ -36,20 +36,7 @@ Run `npm audit` for details.
 [7m538[0m               (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
 [7m   [0m [91m                                                 ~~~~~~~~~~[0m
 [39m
-[1m[33m(!) [plugin typescript] src/index.tsx (11:45): @rollup/plugin-typescript TS2307: Cannot find module './components/SpecificBuildDownloadStatus' or its corresponding type declarations.[39m[22m
-[1m/home/runner/work/slsdeck/slsdeck/src/index.tsx:11:45[22m
-[90m
-[7m11[0m import { SpecificBuildDownloadStatus } from "./components/SpecificBuildDownloadStatus";
-[7m  [0m [91m                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
-[39m
-[1m[31m[!] [1mRollupError: Could not resolve "./components/SpecificBuildDownloadStatus" from "src/index.tsx"[22m[1m[39m[22m
-src/index.tsx
-[2m    at getRollupError (/home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/parseAst.js:289:41)
-    at Object.error (/home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/parseAst.js:285:42)
-    at ModuleLoader.handleInvalidResolvedId (/home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/rollup.js:23398:36)
-    at /home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/rollup.js:23358:26[22m
-
-
+[32mcreated [1mdist[22m in [1m5.1s[22m[39m
 === python compileall ===
 
-RESULT npm=0 build=1 python=0
+RESULT npm=0 build=0 python=0
