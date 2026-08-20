@@ -45,6 +45,7 @@ import {
 import { listLibraryAppIds } from "../lib/ownership";
 import { refreshBadges } from "../lib/badges";
 import { syncSlsCollection } from "../lib/collection";
+import { getEmojiBadgesEnabled, setEmojiBadgesEnabled } from "../lib/emojiBadges";
 
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
@@ -222,6 +223,7 @@ function OptionsPane() {
   const [badgeNonSteam, setBadgeNonSteam] = useState(true);
   const [badgeNonSteamName, setBadgeNonSteamName] = useState(true);
   const [badgeLibrary, setBadgeLibrary] = useState(true);
+  const [badgeEmoji, setBadgeEmoji] = useState(false);
   const [autoFix, setAutoFixState] = useState(false);
   const [libButtons, setLibButtons] = useState(true);
   const [autoApply, setAutoApplyState] = useState(false);
@@ -245,6 +247,7 @@ function OptionsPane() {
     getHideOnOwned().then((r) => setHideOwned(!!r.enabled)).catch(() => {});
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
     getShowReinstallQam().then((r) => setReinstallQam(!!r.enabled)).catch(() => {});
+    setBadgeEmoji(getEmojiBadgesEnabled());
     getBadgeOptions()
       .then((r) => {
         if (!r.success) return;
@@ -263,7 +266,6 @@ function OptionsPane() {
     getLibraryButtons().then((r) => setLibButtons(!!r.enabled)).catch(() => {});
     getAutoFix().then((r) => setAutoFixState(!!r.enabled)).catch(() => {});
   }, []);
-
 
   return (
     <Body>
@@ -437,6 +439,18 @@ function OptionsPane() {
       <InjectionRecovery />
 
       <PanelSection title="Library badges">
+        <PanelSectionRow>
+          <ToggleField
+            label="Emoji Badges"
+            description="Replace each enabled badge with its emoji analogue: SLS 🏴‍☠️, Legit 💵, Fix 🔧, Online Fix 🌐, Denuvo 👺, Non-Steam ❓. Disabled badges stay hidden."
+            checked={badgeEmoji}
+            onChange={(v) => {
+              setBadgeEmoji(v);
+              setEmojiBadgesEnabled(v);
+              refreshBadges();
+            }}
+          />
+        </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
             label="SLS badge"
