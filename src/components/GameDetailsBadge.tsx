@@ -5,6 +5,7 @@ import {
 } from "../api";
 import { isInLibrary, isNonSteamShortcut } from "../lib/ownership";
 import { ONLINE_RE } from "../lib/badges";
+import { badgeDisplayLabel } from "../lib/emojiBadges";
 
 type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed";
 
@@ -16,17 +17,19 @@ const STYLES: Record<Kind, { label: string; background: string }> = {
   fixed: { label: "FIXED", background: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)" },
 };
 
-/**
- * The same SLS / LEGIT / DENUVO badges as the library capsules, shown on the
- * game details page. Independent of the library-button and hide-on-owned
- * toggles — this is purely informational.
- */
 export function GameDetailsBadge() {
   const params = useParams<{ appid: string }>();
   const appid =
     params?.appid && /^\d+$/.test(params.appid) ? parseInt(params.appid, 10) : null;
 
   const [kinds, setKinds] = useState<Kind[]>([]);
+  const [, setEmojiVersion] = useState(0);
+
+  useEffect(() => {
+    const onEmoji = () => setEmojiVersion((v) => v + 1);
+    window.addEventListener("slsdeck-emoji-badges", onEmoji as EventListener);
+    return () => window.removeEventListener("slsdeck-emoji-badges", onEmoji as EventListener);
+  }, []);
 
   useEffect(() => {
     if (appid == null) {
@@ -70,7 +73,6 @@ export function GameDetailsBadge() {
       try {
         ours = !!(await hasLua(appid)).exists;
       } catch {
-        // Unknown, not "not ours" — otherwise an SLS game gets badged LEGIT.
         ours = false;
         ownershipKnown = false;
       }
@@ -100,7 +102,6 @@ export function GameDetailsBadge() {
         if (!cancelled && isDenuvo) out.push("denuvo");
       }
 
-      // Fixes we've actually installed for this game.
       if (opts.onlineFix || opts.fixed) {
         try {
           const r = await getInstalledFixes();
@@ -118,9 +119,6 @@ export function GameDetailsBadge() {
           /* ignore */
         }
       }
-      // A fixed game is ours, not owned — never show Legit alongside a fix badge.
-      // No "bypassed" here: Kind has no such member, so that comparison was
-      // always false. Bypass/crack fixes are already classified as "fixed".
       const hasFix = out.some((k) => k === "onlinefix" || k === "fixed");
       const finalKinds = hasFix ? out.filter((k) => k !== "legit") : out;
       if (!cancelled) setKinds(finalKinds);
@@ -148,7 +146,7 @@ export function GameDetailsBadge() {
             boxShadow: "0 1px 4px rgba(0,0,0,0.35)",
           }}
         >
-          {STYLES[k].label}
+          {badgeDisplayLabel(k, STYLES[k].label)}
         </div>
       ))}
     </div>
