@@ -72,13 +72,11 @@ export async function ensureCloudRedirectShortcut(launch = false): Promise<numbe
   return appId;
 }
 
+/** Historical name kept for callers. It now creates the login shortcut when it
+ * does not exist, then rebinds artwork/launch metadata when it does.
+ */
 export async function rebindExistingCloudRedirectShortcut(): Promise<boolean> {
   try {
-    const g = await crGetShortcut();
-    const appId = Number(g?.appId || 0);
-    if (!appId) return false;
-    const ov = (window as any).appStore?.GetAppOverviewByAppID?.(appId);
-    if (!ov) return false;
     await ensureCloudRedirectShortcut(false);
     return true;
   } catch {
