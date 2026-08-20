@@ -43,6 +43,7 @@ import {
   customApplyFix,
   CustomItem,
   getDlcOwnedOnly,
+  triggerSteamInstall,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
@@ -118,8 +119,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [msg, setMsg] = useState("");
   const [autoApply, setAutoApplyState] = useState(false);
   // Guided build-accurate apply: after pin+update we wait for the user to press
-  // "Apply now". `awaiting` holds the deferred apply and its label.
-  const [awaiting, setAwaiting] = useState<{ label: string; run: () => Promise<void> } | null>(null);
+  // "Apply now". `awaiting` holds the deferred apply and the originating fix row.
+  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void> } | null>(null);
+  const [activeFixKey, setActiveFixKey] = useState("");
+  const [fixState, setFixState] = useState<AddState>({});
   const [dlComplete, setDlComplete] = useState(false);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
   const dlPoll = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -248,6 +251,8 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setCheck(null);
     setApplied([]);
     setAwaiting(null);
+    setActiveFixKey("");
+    setFixState({});
     setDlComplete(false);
     refresh();
   }, [appid]);
@@ -263,6 +268,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       try {
         const st: AddState = (await getState()).state || {};
         setMsg(st.status || "");
+        setFixState(st);
         if (["done", "failed", "cancelled"].includes(st.status || "")) {
           stop();
           setBusy("");
@@ -352,6 +358,8 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean }>
   ) => {
     setAwaiting(null);
+    setActiveFixKey(key);
+    setFixState({});
     stopFlag.current = false;
     setBusy(key);
     resetFixRuntime(appid);
@@ -360,10 +368,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       stopDl();
       setBusy(`${key}:apply`);
       setMsg(`Applying ${label}…`);
+      setFixState({ status: "starting" });
       const res = await startExtract();
       if (!res || !res.success) {
         setBusy("");
         setMsg(res?.error || "Fix failed");
+        setFixState({ status: "failed", error: res?.error || "Fix failed" });
         throw new Error("apply-start-failed");
       }
       watch(
@@ -396,7 +406,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       });
       if (result === "awaiting") {
         setBusy("");
-        setAwaiting({ label, run: doApply });
+        setAwaiting({ key, label, run: doApply });
         startDlPoll();
       }
     } catch {
@@ -755,6 +765,101 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const working = busy !== "";
   const bs: CSSProperties = { minWidth: 0, flex: 1, padding: "5px 8px", fontSize: 12 };
 
+  const renderFixFlow = (key: string) => {
+    const showProgress = activeFixKey === key && !!fixState.status;
+    const total = Number(fixState.totalBytes || 0);
+    const read = Number(fixState.bytesRead || 0);
+    const percent = total > 0
+      ? Math.max(0, Math.min(100, Math.round((read / total) * 100)))
+      : fixState.status === "done"
+      ? 100
+      : undefined;
+    return (
+      <>
+        {showProgress && (
+          <div style={{ marginTop: 7, padding: 7, borderRadius: 6, background: "rgba(255,255,255,0.05)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, marginBottom: 4 }}>
+              <span>
+                {fixState.status === "downloading"
+                  ? "Downloading fix…"
+                  : fixState.status === "extracting"
+                  ? "Extracting fix…"
+                  : fixState.status === "done"
+                  ? "Fix applied"
+                  : fixState.status === "failed"
+                  ? "Fix failed"
+                  : "Applying fix…"}
+              </span>
+              <span style={{ opacity: 0.7 }}>
+                {percent != null
+                  ? `${percent}%`
+                  : read > 0
+                  ? `${(read / 1024 / 1024).toFixed(1)} MB`
+                  : ""}
+              </span>
+            </div>
+            <progress
+              max={100}
+              {...(percent != null ? { value: percent } : {})}
+              style={{ width: "100%", height: 8 }}
+            />
+          </div>
+        )}
+        {awaiting?.key === key && (
+          <div
+            style={{
+              border: "1px solid rgba(120,180,255,0.4)",
+              borderRadius: 8,
+              padding: 8,
+              marginTop: 7,
+              background: "rgba(80,130,220,0.08)",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+              Pinned — waiting for Steam to update the game
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>
+              {dlComplete
+                ? "Download complete. Press Apply now to install the fix onto this build."
+                : "Press Start download now to retry Steam's pinned-build update. The game is launched too, which helps Steam begin the download if it is still idle."}
+            </div>
+            {!dlComplete && (
+              <DialogButton
+                style={{ ...bs, marginBottom: 6 }}
+                onClick={async () => {
+                  await noInternetFixBegin(appid).catch(() => ({}));
+                  await triggerSteamInstall(appid).catch(() => ({}));
+                  launchGame(appid);
+                }}
+              >
+                ▶ Start download now
+              </DialogButton>
+            )}
+            <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
+              <DialogButton
+                style={bs}
+                onClick={() => awaiting.run().catch(() => {})}
+              >
+                {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
+              </DialogButton>
+              <DialogButton
+                style={bs}
+                onClick={() => {
+                  stopFlag.current = true;
+                  stopDl();
+                  setAwaiting(null);
+                  setMsg("Cancelled — the pin is kept; you can apply later.");
+                }}
+              >
+                Cancel
+              </DialogButton>
+            </Focusable>
+          </div>
+        )}
+      </>
+    );
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }}>
       {pinned && (
@@ -766,52 +871,6 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
                   ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
                   : "")} — the game won't update past the pinned version.
           </div>
-        </div>
-      )}
-      {awaiting && (
-        <div
-          style={{
-            border: "1px solid rgba(120,180,255,0.4)",
-            borderRadius: 8,
-            padding: 8,
-            background: "rgba(80,130,220,0.08)",
-          }}
-        >
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-            Pinned — waiting for Steam to update the game
-          </div>
-          <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>
-            {dlComplete
-              ? "Download complete. Press Apply now to install the fix onto this build."
-              : "If the download won't start on its own, tap Start download to launch the game — Steam then updates to the pinned build. Exit once it's done and press Apply now."}
-          </div>
-          {!dlComplete && (
-            <DialogButton
-              style={{ ...bs, marginBottom: 6 }}
-              onClick={async () => { await noInternetFixBegin(appid).catch(() => ({})); launchGame(appid); }}
-            >
-              ▶ Start download (launch game)
-            </DialogButton>
-          )}
-          <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
-            <DialogButton
-              style={bs}
-              onClick={() => awaiting.run().catch(() => {})}
-            >
-              {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
-            </DialogButton>
-            <DialogButton
-              style={bs}
-              onClick={() => {
-                stopFlag.current = true;
-                stopDl();
-                setAwaiting(null);
-                setMsg("Cancelled — the pin is kept; you can apply later.");
-              }}
-            >
-              Cancel
-            </DialogButton>
-          </Focusable>
         </div>
       )}
       <DialogButton
@@ -873,6 +932,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       {rows.map((row) => {
         const avail = !!row.info?.available;
         const done = isApplied(row.fixType);
+        const flowKey = `${row.key}:fix`;
         return (
           <div
             key={row.key}
@@ -900,9 +960,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             )}
             <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
               <DialogButton style={bs} disabled={working || !!awaiting || !avail} onClick={() => doFix(row)}>
-                {busy.startsWith(`${row.key}:fix`) ? "Working…" : avail ? "Apply this fix" : "No fix"}
+                {busy.startsWith(flowKey) ? "Working…" : avail ? "Apply this fix" : "No fix"}
               </DialogButton>
             </Focusable>
+            {renderFixFlow(flowKey)}
           </div>
         );
       })}
@@ -979,6 +1040,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
               ]
                 .filter(Boolean)
                 .join(" · ");
+              const flowKey = `lt:${fix.id}`;
               return (
                 <div
                   key={`lt-${fix.id || i}`}
@@ -995,9 +1057,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
                   )}
                   <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
                     <DialogButton style={bs} disabled={working || !!awaiting} onClick={() => doLtFix(fix)}>
-                      {busy.startsWith(`lt:${fix.id}`) ? "Working…" : "Apply & pin to build"}
+                      {busy.startsWith(flowKey) ? "Working…" : "Apply & pin to build"}
                     </DialogButton>
                   </Focusable>
+                  {renderFixFlow(flowKey)}
                 </div>
               );
             })}
