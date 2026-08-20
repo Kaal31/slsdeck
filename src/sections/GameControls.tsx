@@ -24,9 +24,9 @@ interface Props {
 }
 
 /**
- * Sidebar controls that act on whichever game page is currently open (library
- * app page or Steam store page). This is the reliable, default way to drive the
- * plugin. Restart Steam lives here — the single restart button.
+ * Actions & fixes for whichever game page is currently open (library app page
+ * or Steam store page). This is the reliable, default way to drive the plugin.
+ * Restart Steam lives here — the single restart button.
  */
 export function GameControlsSection({ onChanged }: Props) {
   const [appid, setAppid] = useState<number | null>(null);
@@ -152,7 +152,7 @@ export function GameControlsSection({ onChanged }: Props) {
   const working = busy !== "";
 
   return (
-    <PanelSection title="Game controls">
+    <PanelSection title="Actions & fixes">
       <PanelSectionRow>
         <div style={{ fontSize: 12, opacity: 0.75, padding: "2px 0" }}>
           {noGame
