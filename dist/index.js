@@ -6631,18 +6631,20 @@ function TokeerSection() {
     const refresh = async () => {
         setBusy(true);
         try {
-            setProbe(await tokeerQuotaProbe());
+            setProbe((await tokeerQuotaProbe()));
         }
         catch (e) {
-            setProbe({ success: false, status: 0, raw: "", json: null, error: String(e) });
+            setProbe({ success: false, results: [], error: String(e) });
         }
         finally {
             setBusy(false);
         }
     };
     SP_REACT.useEffect(() => { refresh(); }, []);
-    const body = probe?.json != null ? pretty(probe.json) : (probe?.raw || "");
-    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer availability probe", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.72, lineHeight: 1.45 }, children: ["Live diagnostic request to Tokeer's public ", SP_JSX.jsx("code", { children: "/quota" }), " endpoint. This is intentionally shown raw until we know whether it exposes game inventory, per-user quota, or another schema."] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: refresh, disabled: busy, children: busy ? "Checking quota…" : "Refresh quota" }) }), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Contacting luastools.xyz\u2026"] }) })), probe && !busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11 }, children: [SP_JSX.jsxs("div", { style: { marginBottom: 6 }, children: ["HTTP: ", SP_JSX.jsx("b", { children: probe.status || "network error" }), probe.contentType ? ` · ${probe.contentType}` : ""] }), probe.error && SP_JSX.jsx("div", { style: { marginBottom: 8, color: "#f5a623" }, children: probe.error }), SP_JSX.jsx("pre", { style: { whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 420, overflowY: "auto", margin: 0 }, children: body || "(empty response)" })] }) }))] }) }));
+    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer availability probe", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.72, lineHeight: 1.45 }, children: "Read-only diagnostic probe of Tokeer's public quota routes. No activation code is redeemed or generated. Responses stay raw until we identify the live inventory schema." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: refresh, disabled: busy, children: busy ? "Checking routes…" : "Refresh quota routes" }) }), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Probing luastools.xyz\u2026"] }) })), probe?.error && !busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623" }, children: probe.error }) })), !busy && (probe?.results || []).map((r, idx) => {
+                    const body = r.json != null ? pretty(r.json) : (r.raw || "");
+                    return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11 }, children: [SP_JSX.jsxs("div", { style: { marginBottom: 5, fontWeight: 600 }, children: [r.method, " ", r.path] }), SP_JSX.jsxs("div", { style: { marginBottom: 6 }, children: ["HTTP: ", SP_JSX.jsx("b", { children: r.status || "network error" }), r.contentType ? ` · ${r.contentType}` : ""] }), r.error && SP_JSX.jsx("div", { style: { marginBottom: 8, color: "#f5a623" }, children: r.error }), SP_JSX.jsx("pre", { style: { whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 220, overflowY: "auto", margin: 0 }, children: body || "(empty response)" })] }) }, `${r.method}-${r.path}-${idx}`));
+                })] }) }));
 }
 
 function fmtSize$1(bytes) {
