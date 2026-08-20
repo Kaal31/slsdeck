@@ -1,16 +1,13 @@
 import { fetchNoCors } from "@decky/api";
 
 // Generic API-key capture over the gaming-mode CEF debugger — the same transport
-// Hubcap/StorePatch use (localhost:8080/json to list tabs, then CDP over a tab's
-// debugger WebSocket). Two flavours:
+// Hubcap/StorePatch use (localhost:8080/json to list tabs, then Runtime.evaluate
+// over a tab's debugger WebSocket). Two flavours:
 //   * DOM scrape  — read a key that's rendered on the page (Steam Web API key).
-//   * Authenticated request — call a same-origin endpoint from the signed-in page
-//     and read the key from JSON (Ryuu).
-//
-// Ryuu additionally captures its live `session` cookie through CDP
-// Storage.getCookies. Unlike document.cookie this includes httpOnly cookies and,
-// like LumaDeck's approach, sees the cookie immediately without waiting for CEF
-// to flush its SQLite cookie DB.
+//   * Network hook — inject a fetch/XHR wrapper that captures the key from any
+//     JSON response body, optionally clicking a button (Ryuu "Reset") to force a
+//     fresh key, with a DOM fallback. Used for Ryuu, whose key has no expiry so
+//     regenerating on capture is harmless.
 
 interface CdpTab {
   url: string;
@@ -68,45 +65,6 @@ function evalOnTab(wsUrl: string, expr: string, timeoutMs = 5000): Promise<strin
   });
 }
 
-/** Read the live cookie store from a CEF target. Storage.getCookies returns
- * httpOnly cookies already decrypted, which is both faster and more reliable
- * than copying/decrypting Chromium's SQLite cookie database. */
-function cookiesOnTab(wsUrl: string, timeoutMs = 5000): Promise<any[]> {
-  return new Promise((resolve) => {
-    let done = false;
-    let sock: WebSocket;
-    const finish = (v: any[]) => {
-      if (done) return;
-      done = true;
-      try { sock.close(); } catch { /* ignore */ }
-      resolve(v);
-    };
-    try {
-      sock = new WebSocket(wsUrl);
-    } catch {
-      resolve([]);
-      return;
-    }
-    const id = 1;
-    sock.onopen = () => {
-      try {
-        sock.send(JSON.stringify({ id, method: "Storage.getCookies", params: {} }));
-      } catch { finish([]); }
-    };
-    sock.onmessage = (ev) => {
-      try {
-        const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-        if (m && m.id === id) {
-          const cookies = m?.result?.cookies;
-          finish(Array.isArray(cookies) ? cookies : []);
-        }
-      } catch { /* ignore */ }
-    };
-    sock.onerror = () => finish([]);
-    setTimeout(() => finish([]), timeoutMs);
-  });
-}
-
 async function pollTab(
   domain: string, expr: string, valid: (k: string) => boolean,
   maxMs: number, onStatus?: (s: string) => void,
@@ -127,11 +85,21 @@ async function pollTab(
 }
 
 // ── Ryuu ──────────────────────────────────────────────────────────────────────
+// Idempotent per-poll expression. Installs a fetch/XHR interceptor that grabs an
+// auth_key-shaped field out of ANY response body (so we don't depend on the exact
+// JSON shape). If a key was already produced by the first-login auto-generation,
+// returns it immediately. Otherwise triggers Ryuu's OAuth login if needed, then
+// clicks "Reset" once to regenerate — the interceptor catches that response, and
+// a DOM read of the displayed key backs it up.
 const RYUU_KEY_RE = /^[A-Za-z0-9]{12,40}$/;
 // Verified live: POST /api/refresh_my_auth_key (session-cookie auth) returns
-// {"auth_key":"<16 alnum>","success":true}. Rather than intercept a page-bound
-// fetch after load, make the authenticated request ourselves from the page
-// context. If not signed in, start the page's Discord OAuth once.
+// {"auth_key":"<16 alnum>","success":true}. So rather than click the page's Reset
+// button and try to intercept its pre-bound fetch (which a post-load override
+// can't see), we make the authenticated request ourselves from the page context
+// and read the key straight out of the JSON response — deterministic network
+// capture. Only fires when a session exists (a "Log out" control is present);
+// otherwise it clicks Log in to start Ryuu's Discord OAuth. Each success rotates
+// the key by design, which is the intended "reset to regenerate" behaviour.
 const RYUU_EXPR = `(async function(){try{
   var q=function(s){return [].slice.call(document.querySelectorAll(s));};
   var txt=function(e){return (e.innerText||e.textContent||"").trim();};
@@ -147,42 +115,12 @@ const RYUU_EXPR = `(async function(){try{
   return "";
 }catch(e){return "";}})()`;
 
-export async function captureRyuuSession(maxMs = 15000): Promise<string> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    const tab = await findTab("generator.ryuu.lol");
-    if (tab?.webSocketDebuggerUrl) {
-      const cookies = await cookiesOnTab(tab.webSocketDebuggerUrl);
-      const session = cookies.find((c) =>
-        c?.name === "session" && String(c?.domain || "").includes("ryuu.lol"),
-      );
-      const value = String(session?.value || "").trim();
-      if (value) return value;
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return "";
-}
-
 export async function captureRyuuKey(maxMs = 180000, onStatus?: (s: string) => void): Promise<string> {
-  const key = await pollTab("generator.ryuu.lol", RYUU_EXPR, (k) => RYUU_KEY_RE.test(k), maxMs, onStatus);
-  if (key) {
-    // One Discord login now supplies both credentials: the API key used for
-    // gated fixes and the browser session used by the Ryuu manifest endpoint.
-    // Reuse the existing secure settings endpoint with a hidden internal key so
-    // no new backend RPC or plaintext plugin-dir credential file is needed.
-    try {
-      const session = await captureRyuuSession();
-      if (session) {
-        const { setApiKeyFor } = await import("../api");
-        await setApiKeyFor("__ryuu_session__", session);
-      }
-    } catch { /* API-key capture still succeeds if session persistence fails */ }
-  }
-  return key;
+  return pollTab("generator.ryuu.lol", RYUU_EXPR, (k) => RYUU_KEY_RE.test(k), maxMs, onStatus);
 }
 
 // ── Steam Web API key ─────────────────────────────────────────────────────────
+// steamcommunity.com/dev/apikey renders the key in full (32 hex) once registered.
 const STEAM_KEY_RE = /^[0-9A-Fa-f]{32}$/;
 const STEAM_EXPR = `(function(){try{
   var t=document.body.innerText||"";
