@@ -30,7 +30,7 @@ type ProbeMatrix = {
   error?: string;
 };
 
-/** Tokeer-backed Anti-Denuvo page. */
+/** Tokeer-backed Anti-Denuvo page; intentionally diagnostic until inventory is identified. */
 export function TokeerSection() {
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<ProbeMatrix | null>(null);
