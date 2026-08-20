@@ -546,6 +546,10 @@ export function GameToolsSection() {
                 if (depotdl && primary !== "{}") {
                   setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
                   const dr = await depotdlDownloadBuildGids(appid, it.key, primary);
+                  if (dr.success) {
+                    await pollDdlOnce();
+                    startDdl();
+                  }
                   return { msg: dr.success
                     ? `Downloading build ${it.key} directly via DepotDownloader — progress shows below (needs a Hubcap key).`
                     : `DepotDownloader: ${dr.error || "failed"}` };
