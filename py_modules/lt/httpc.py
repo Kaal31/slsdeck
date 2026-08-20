@@ -1,9 +1,22 @@
-"""Shared HTTP client management for the SLSDeck Decky backend."""
+"""Shared HTTP client management for the SLSDeck Decky backend.
+
+The client also centralises credential transport for manifest services.  Callers
+can keep using their existing source URLs while secrets are removed before the
+request leaves the process:
+
+* Hubcap's legacy ``?api_key=...`` form is converted to ``Authorization: Bearer``.
+* Ryuu manifest downloads reuse the live browser ``session`` cookie captured by
+  the frontend's Discord-login flow.
+
+This mirrors the useful part of LumaDeck's auth model without duplicating auth
+logic throughout every downloader call site.
+"""
 
 from __future__ import annotations
 
 import threading
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx  # type: ignore
 
@@ -12,6 +25,70 @@ from .logger import logger
 
 _HTTP_CLIENT: Optional[httpx.Client] = None
 _CLIENT_LOCK = threading.Lock()
+_RYUU_SESSION_KEY = "__ryuu_session__"
+
+
+def _auth_request(url, headers):
+    """Return ``(url, headers)`` with service credentials moved into headers.
+
+    This is deliberately best-effort: an unavailable settings store must never
+    break unrelated HTTP traffic, and unauthenticated requests still get their
+    normal service response/fallback behaviour.
+    """
+    raw = str(url)
+    out_headers = dict(headers or {})
+    try:
+        parts = urlsplit(raw)
+        host = (parts.hostname or "").lower()
+
+        # Hubcap historically accepted an API key in the query string.  Remove it
+        # before httpx logs/sends the URL and use the service's Bearer form.
+        if host == "hubcapmanifest.com":
+            pairs = parse_qsl(parts.query, keep_blank_values=True)
+            key = ""
+            clean = []
+            for k, v in pairs:
+                if k.lower() == "api_key" and v:
+                    key = v
+                else:
+                    clean.append((k, v))
+            if key:
+                out_headers.setdefault("Authorization", f"Bearer {key}")
+                raw = urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                  urlencode(clean), parts.fragment))
+
+        # The Ryuu session is captured from Steam CEF over CDP and saved in our
+        # existing 0600 settings file.  Do not expose it as a visible API-key
+        # field; it is an implementation detail of browser-session auth.
+        if host.endswith("ryuu.lol") and parts.path.startswith("/download"):
+            try:
+                from .settings import get_api_key_for
+                session = str(get_api_key_for(_RYUU_SESSION_KEY) or "").strip()
+            except Exception:
+                session = ""
+            if session:
+                if not session.startswith("session="):
+                    session = "session=" + session
+                out_headers.setdefault("Cookie", session)
+    except Exception as exc:
+        logger.warn(f"SLSDeck: auth transport preparation failed: {exc}")
+    return raw, out_headers
+
+
+class _SLSDeckClient(httpx.Client):
+    """httpx client that applies service auth immediately before transport."""
+
+    def request(self, method, url, *, content=None, data=None, files=None,
+                json=None, params=None, headers=None, cookies=None, auth=None,
+                follow_redirects=None, timeout=httpx.USE_CLIENT_DEFAULT,
+                extensions=None):
+        clean_url, clean_headers = _auth_request(url, headers)
+        return super().request(
+            method, clean_url, content=content, data=data, files=files, json=json,
+            params=params, headers=clean_headers, cookies=cookies, auth=auth,
+            follow_redirects=follow_redirects, timeout=timeout,
+            extensions=extensions,
+        )
 
 
 def ensure_http_client(context: str = "") -> httpx.Client:
@@ -22,7 +99,7 @@ def ensure_http_client(context: str = "") -> httpx.Client:
                 prefix = f"{context}: " if context else ""
                 logger.log(f"{prefix}Initializing shared HTTPX client with connection pooling...")
                 limits = httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=30.0)
-                _HTTP_CLIENT = httpx.Client(timeout=HTTP_TIMEOUT_SECONDS, limits=limits)
+                _HTTP_CLIENT = _SLSDeckClient(timeout=HTTP_TIMEOUT_SECONDS, limits=limits)
     return _HTTP_CLIENT
 
 
