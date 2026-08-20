@@ -51,10 +51,10 @@ def poke(path: str) -> None:
 def wait_for_add(appid: int, start: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
     """Wait for the first new moon HotReload generation to complete live add.
 
-    The Add Game UI starts one add at a time, so the first generation after the
-    captured log offset is the generation produced by the source file we just
-    published. We still require added>0 and correlate every downstream line by
-    that exact generation number.
+    OwnerWork is intentionally asynchronous, so its completion/appinfo lines can
+    race the coordinator's human-readable "generation dispatched" log. Record
+    every per-generation signal first and correlate it once the added generation
+    is known instead of assuming a particular log-line order.
     """
     path = str(start.get("path") or "")
     offset = int(start.get("offset") or 0)
@@ -62,8 +62,10 @@ def wait_for_add(appid: int, start: Dict[str, Any], timeout: float = 15.0) -> Di
         return {"ready": False, "reason": "moon log unavailable"}
 
     generation = None
-    processed = False
-    appinfo = False
+    processed = set()
+    appinfo_ok = set()
+    deferred: Dict[int, str] = {}
+    appinfo_bad: Dict[int, str] = {}
     deadline = time.monotonic() + max(1.0, float(timeout))
     carry = ""
 
@@ -86,40 +88,47 @@ def wait_for_add(appid: int, start: Dict[str, Any], timeout: float = 15.0) -> Di
 
                 for raw in lines:
                     line = raw.strip()
+
+                    m = _PROCESSED_RE.search(line)
+                    if m:
+                        processed.add(int(m.group(1)))
+
+                    m = _APPINFO_OK_RE.search(line)
+                    if m:
+                        appinfo_ok.add(int(m.group(1)))
+
+                    m = _DEFERRED_RE.search(line)
+                    if m:
+                        deferred[int(m.group(1))] = (
+                            m.group(2).strip() or "moon deferred runtime refresh")
+
+                    m = _APPINFO_BAD_RE.search(line)
+                    if m:
+                        appinfo_bad[int(m.group(1))] = (
+                            m.group(2).strip() or "Steam rejected live appinfo refresh")
+
                     if generation is None:
                         m = _HOT_RE.search(line)
                         if m and int(m.group(2)) > 0:
                             generation = int(m.group(1))
                             logger.log(
                                 f"SLSDeck: moon hot-add generation {generation} observed for {appid}")
-                        continue
 
-                    m = _DEFERRED_RE.search(line)
-                    if m and int(m.group(1)) == generation:
-                        return {
-                            "ready": False,
-                            "generation": generation,
-                            "reason": m.group(2).strip() or "moon deferred runtime refresh",
-                        }
-
-                    m = _APPINFO_BAD_RE.search(line)
-                    if m and int(m.group(1)) == generation:
-                        return {
-                            "ready": False,
-                            "generation": generation,
-                            "reason": m.group(2).strip() or "Steam rejected live appinfo refresh",
-                        }
-
-                    m = _PROCESSED_RE.search(line)
-                    if m and int(m.group(1)) == generation:
-                        processed = True
-
-                    m = _APPINFO_OK_RE.search(line)
-                    if m and int(m.group(1)) == generation:
-                        appinfo = True
-
-                    if processed and appinfo:
-                        return {"ready": True, "generation": generation, "reason": ""}
+                    if generation is not None:
+                        if generation in deferred:
+                            return {
+                                "ready": False,
+                                "generation": generation,
+                                "reason": deferred[generation],
+                            }
+                        if generation in appinfo_bad:
+                            return {
+                                "ready": False,
+                                "generation": generation,
+                                "reason": appinfo_bad[generation],
+                            }
+                        if generation in processed and generation in appinfo_ok:
+                            return {"ready": True, "generation": generation, "reason": ""}
         except Exception as exc:
             logger.warn(f"SLSDeck: live-refresh log observation failed for {appid}: {exc}")
             return {"ready": False, "generation": generation, "reason": str(exc)}
@@ -128,7 +137,7 @@ def wait_for_add(appid: int, start: Dict[str, Any], timeout: float = 15.0) -> Di
 
     if generation is None:
         reason = "no moon HotReload generation observed"
-    elif not processed:
+    elif generation not in processed:
         reason = "moon did not confirm runtime license/package processing"
     else:
         reason = "Steam did not confirm the live appinfo request"
