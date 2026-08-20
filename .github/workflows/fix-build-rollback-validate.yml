@@ -1,0 +1,103 @@
+name: Fix build rollback validation
+
+on:
+  push:
+    branches: [tokeer-implement]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tokeer-implement
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Patch rollback validation flow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Backend: expose an explicit Steam validation trigger. Running
+          # `steam steam://validate/<appid>` as the desktop user forwards the URI
+          # to the already-running Steam client and starts the same validation as
+          # Properties -> Installed Files -> Verify integrity.
+          p = Path('py_modules/lt/slssteam.py')
+          s = p.read_text()
+          anchor = '''def injection_health() -> Dict[str, Any]:\n'''
+          fn = '''def validate_steam_app(appid) -> Dict[str, Any]:\n    """Ask the running Steam client to validate an installed app.\n\n    Historical manifest pins on an already-installed game do not reliably react\n    to the SLSsteam `install|...` IPC because Steam may still consider the app\n    fully installed. `steam://validate/<appid>` is Steam's own Verify integrity\n    action, which forces it to reconcile the newly pinned manifests and download\n    the changed files.\n    """\n    try:\n        appid = int(appid)\n        if appid <= 0:\n            raise ValueError()\n    except Exception:\n        return {"success": False, "error": "invalid appid"}\n    try:\n        cmd = _wrap_as_user(["steam", f"steam://validate/{appid}"])\n        subprocess.Popen(\n            cmd, env=_rich_env(), stdin=subprocess.DEVNULL,\n            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n            start_new_session=True,\n        )\n        logger.log(f"SLSsteam: Steam validation trigger -> {appid}")\n        return {"success": True}\n    except Exception as exc:\n        logger.warn(f"SLSsteam: Steam validation trigger failed: {exc}")\n        return {"success": False, "error": str(exc)}\n\n\n'''
+          if 'def validate_steam_app(' not in s:
+              if anchor not in s:
+                  raise SystemExit('slssteam validation anchor not found')
+              s = s.replace(anchor, fn + anchor, 1)
+          p.write_text(s)
+
+          # Decky RPC.
+          p = Path('main.py')
+          s = p.read_text()
+          anchor = '''    async def trigger_steam_install(self, appid: int, library: int = 0) -> Dict[str, Any]:\n        return await self._run(slssteam.trigger_steam_install, appid, library)\n'''
+          repl = anchor + '''\n    async def validate_steam_app(self, appid: int) -> Dict[str, Any]:\n        return await self._run(slssteam.validate_steam_app, appid)\n'''
+          if 'async def validate_steam_app(' not in s:
+              if anchor not in s:
+                  raise SystemExit('main.py trigger anchor not found')
+              s = s.replace(anchor, repl, 1)
+          p.write_text(s)
+
+          # Frontend callable.
+          p = Path('src/api.ts')
+          s = p.read_text()
+          anchor = '''export const triggerSteamInstall = callable<[appid: number, library?: number], { success: boolean; error?: string }>("trigger_steam_install");\n'''
+          repl = anchor + '''export const validateSteamApp = callable<[appid: number], { success: boolean; error?: string }>("validate_steam_app");\n'''
+          if 'export const validateSteamApp' not in s:
+              if anchor not in s:
+                  raise SystemExit('api.ts trigger anchor not found')
+              s = s.replace(anchor, repl, 1)
+          p.write_text(s)
+
+          # Both historical rollback paths: force Steam to reconcile the pinned
+          # manifests instead of assuming install IPC / launch will wake it up.
+          p = Path('src/sections/GameTools.tsx')
+          s = p.read_text()
+          s = s.replace('''  triggerSteamInstall,\n  BuildEntry,\n''', '''  triggerSteamInstall,\n  validateSteamApp,\n  BuildEntry,\n''', 1)
+
+          old = '''                  triggerSteamInstall(appid).catch(() => {});\n                  return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam is updating to it.`;\n'''
+          new = '''                  triggerSteamInstall(appid).catch(() => {});\n                  validateSteamApp(appid).catch(() => {});\n                  return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam validation started; changed files will be downloaded automatically.`;\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'Steam validation started; changed files will be downloaded automatically.' not in s:
+              raise SystemExit('saved rollback flow anchor not found')
+
+          old = '''                await noInternetFixBegin(appid).catch(() => ({}));\n                triggerSteamInstall(appid).catch(() => {});\n                const launched = launchGame(appid);\n                if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }\n'''
+          new = '''                await noInternetFixBegin(appid).catch(() => ({}));\n                triggerSteamInstall(appid).catch(() => {});\n                const validated = await validateSteamApp(appid).catch(() => ({ success: false }));\n                if (!validated.success) {\n                  // Compatibility fallback for unusual Steam setups where the\n                  // protocol handler cannot be invoked from the backend.\n                  const launched = launchGame(appid);\n                  if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }\n                }\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'const validated = await validateSteamApp' not in s:
+              raise SystemExit('build picker rollback flow anchor not found')
+          p.write_text(s)
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+
+      - name: Commit fix and compiled frontend
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add py_modules/lt/slssteam.py main.py src/api.ts src/sections/GameTools.tsx dist/index.js
+          git diff --cached --quiet && exit 0
+          git commit -m "Force Steam validation after build rollback [skip ci]"
+          git push origin HEAD:tokeer-implement
