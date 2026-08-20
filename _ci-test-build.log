@@ -1,0 +1,55 @@
+=== npm ci ===
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+
+added 198 packages, and audited 199 packages in 3s
+
+39 packages are looking for funding
+  run `npm fund` for details
+
+2 high severity vulnerabilities
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+=== npm run build ===
+
+> SLSDeckUniversal@0.9.60 build
+> rollup -c
+
+[36m
+[1m./src/index.tsx[22m → [1mdist[22m...[39m
+[1m[33m(!) [plugin typescript] src/components/FixPicker.tsx (538:18): @rollup/plugin-typescript TS2339: Property 'protonTool' does not exist on type '{ success: boolean; buildid?: string | undefined; pinned?: boolean | undefined; buildStatus?: string | undefined; currentBuildid?: string | undefined; installed?: number | undefined; ... 6 more ...; error?: string | undefined; } | { ...; }'.
+  Property 'protonTool' does not exist on type '{ success: boolean; buildid?: string | undefined; pinned?: boolean | undefined; buildStatus?: string | undefined; installed?: number | undefined; badges?: string[] | undefined; note?: string | undefined; needsManual?: boolean | undefined; url?: string | undefined; notFound?: boolean | undefined; error?: string | und...'.[39m[22m
+[1m/home/runner/work/slsdeck/slsdeck/src/components/FixPicker.tsx:538:18[22m
+[90m
+[7m538[0m               (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
+[7m   [0m [91m                 ~~~~~~~~~~[0m
+[39m
+[1m[33m(!) [plugin typescript] src/components/FixPicker.tsx (538:50): @rollup/plugin-typescript TS2339: Property 'protonTool' does not exist on type '{ success: boolean; buildid?: string | undefined; pinned?: boolean | undefined; buildStatus?: string | undefined; currentBuildid?: string | undefined; installed?: number | undefined; ... 6 more ...; error?: string | undefined; } | { ...; }'.
+  Property 'protonTool' does not exist on type '{ success: boolean; buildid?: string | undefined; pinned?: boolean | undefined; buildStatus?: string | undefined; installed?: number | undefined; badges?: string[] | undefined; note?: string | undefined; needsManual?: boolean | undefined; url?: string | undefined; notFound?: boolean | undefined; error?: string | und...'.[39m[22m
+[1m/home/runner/work/slsdeck/slsdeck/src/components/FixPicker.tsx:538:50[22m
+[90m
+[7m538[0m               (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
+[7m   [0m [91m                                                 ~~~~~~~~~~[0m
+[39m
+[1m[33m(!) [plugin typescript] src/index.tsx (11:45): @rollup/plugin-typescript TS2307: Cannot find module './components/SpecificBuildDownloadStatus' or its corresponding type declarations.[39m[22m
+[1m/home/runner/work/slsdeck/slsdeck/src/index.tsx:11:45[22m
+[90m
+[7m11[0m import { SpecificBuildDownloadStatus } from "./components/SpecificBuildDownloadStatus";
+[7m  [0m [91m                                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[39m
+[1m[31m[!] [1mRollupError: Could not resolve "./components/SpecificBuildDownloadStatus" from "src/index.tsx"[22m[1m[39m[22m
+src/index.tsx
+[2m    at getRollupError (/home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/parseAst.js:289:41)
+    at Object.error (/home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/parseAst.js:285:42)
+    at ModuleLoader.handleInvalidResolvedId (/home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/rollup.js:23398:36)
+    at /home/runner/work/slsdeck/slsdeck/node_modules/rollup/dist/shared/rollup.js:23358:26[22m
+
+
+=== python compileall ===
+
+RESULT npm=0 build=1 python=0
