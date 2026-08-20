@@ -35,19 +35,22 @@ jobs:
       - name: Check Python syntax
         run: python3 -m compileall -q main.py py_modules
 
-      - name: Commit compiled dist
+      - name: Commit compiled frontend bundle
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- dist; then
-            echo "dist is already current"
+          if git diff --quiet -- dist/index.js; then
+            echo "dist/index.js is already current"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist
+          git add dist/index.js
           git commit -m "Build lumainject frontend [skip ci]"
           git push origin HEAD:lumainject
+
+      - name: Restore tracked dist support files for packaging
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
 
       - name: Package Decky plugin
         shell: bash
