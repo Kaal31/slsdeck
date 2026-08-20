@@ -49,6 +49,7 @@ import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
+import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 
@@ -111,8 +112,8 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   // they just downloaded.
   const [manualDl, setManualDl] = useState<{ url: string; kind: "crak" | "hv" } | null>(null);
   const [customFixes, setCustomFixes] = useState<CustomItem[]>([]);
-  const [hv, setHv] = useState<{ found: boolean; buildid?: string; status?: string; href?: string } | null>(null);
-  const [crak, setCrak] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; badges?: string[] } | null>(null);
+  const [hv, setHv] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; gids?: { [d: string]: string } } | null>(null);
+  const [crak, setCrak] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; badges?: string[]; gids?: { [d: string]: string } } | null>(null);
   const [hasRyuuKey, setHasRyuuKey] = useState(true);
   const [busy, setBusy] = useState("");
   const [ns, setNs] = useState<NetsockStatus | null>(null);
@@ -227,7 +228,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const r = await hvAutoStatus(appid);
       setHv(r.success && r.found
-        ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0] }
+        ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0], gids: (r.resolve as any)?.gids || {} }
         : { found: false });
     } catch {
       setHv({ found: false });
@@ -235,7 +236,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const r = await crakStatus(appid);
       setCrak(r.success && r.found
-        ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0], badges: r.badges }
+        ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0], badges: r.badges, gids: (r.resolve as any)?.gids || {} }
         : { found: false });
     } catch {
       setCrak({ found: false });
@@ -517,53 +518,108 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     }
   };
 
-  const doCrak = async () => {
-    setBusy("crak");
-    setMsg("Applying crack (pinning build + downloading)…");
+  const applyCatalogPayload = async (kind: "hv" | "crak", key: string) => {
+    setAwaiting(null);
+    stopDl();
+    setBusy(key);
+    setActiveFixKey(key);
+    setFixState({ status: "fix_installing" } as any);
+    setMsg(kind === "hv" ? "Downloading / extracting HV crack…" : "Downloading / extracting CrakFiles crack…");
     try {
-      const r = await crakApply(appid, crak?.href || "");
+      const r = kind === "hv"
+        ? await hvAutoApply(appid, hv?.href || "")
+        : await crakApply(appid, crak?.href || "");
       if (r.success) {
         setManualDl(null);
-        setMsg(
-          `Crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}) — ${r.installed || 0} file(s). ` +
-            (r.note || "") + " Restart Steam.",
-        );
-      } else if (r.needsManual && r.url) {
-        setManualDl({ url: r.url, kind: "crak" });
-        openManual(r.url);
-      } else {
-        setMsg(r.notFound ? "No CrakFiles crack for this title." : r.error || "Crack apply failed");
+        setFixState({ status: "done" });
+        if (kind === "hv") {
+          setMsg(
+            `HV crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}). ` +
+              (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
+              (r.note || ""),
+          );
+        } else {
+          setMsg(
+            `Crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}) — ${r.installed || 0} file(s). ` +
+              (r.note || "") + " Restart Steam.",
+          );
+        }
+        onReload?.();
+        refresh();
+        return;
       }
-    } catch {
-      setMsg("Crack apply failed");
+      if (r.needsManual && r.url) {
+        setFixState({ status: "failed", error: "Manual download required" });
+        setManualDl({ url: r.url, kind });
+        openManual(r.url);
+        return;
+      }
+      const error = r.notFound
+        ? kind === "hv" ? "No HV crack for this title." : "No CrakFiles crack for this title."
+        : r.error || (kind === "hv" ? "HV apply failed" : "Crack apply failed");
+      setFixState({ status: "failed", error });
+      setMsg(error);
+    } catch (e) {
+      const error = `${kind === "hv" ? "HV" : "CrakFiles"} apply failed: ${e}`;
+      setFixState({ status: "failed", error });
+      setMsg(error);
     } finally {
       setBusy("");
     }
   };
 
-  const doHv = async () => {
-    setBusy("hv");
-    setMsg("Applying HV crack (pinning build + downloading)…");
-    try {
-      const r = await hvAutoApply(appid, hv?.href || "");
-      if (r.success) {
-        setManualDl(null);
-        setMsg(
-          `HV crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}). ` +
-            (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
-            (r.note || ""),
-        );
-      } else if (r.needsManual && r.url) {
-        setManualDl({ url: r.url, kind: "hv" });
-        openManual(r.url);
-      } else {
-        setMsg(r.notFound ? "No HV crack for this title." : r.error || "HV apply failed");
-      }
-    } catch {
-      setMsg("HV apply failed");
-    } finally {
-      setBusy("");
+  const runCatalogFix = async (kind: "hv" | "crak") => {
+    const target = kind === "hv" ? hv : crak;
+    const key = `catalog:${kind}`;
+    const label = kind === "hv" ? "HV crack" : "CrakFiles crack";
+    if (!target?.found) {
+      setMsg(kind === "hv" ? "No HV crack for this title." : "No CrakFiles crack for this title.");
+      return;
     }
+    if (!installPath) {
+      setMsg("Game is not installed yet — install the target build before applying this fix.");
+      return;
+    }
+    setAwaiting(null);
+    setActiveFixKey(key);
+    setFixState({ status: "resolving" } as any);
+    setBusy(key);
+    setMsg(`Resolving required build ${target.buildid || "?"}…`);
+    stopFlag.current = false;
+    try {
+      const prepared = await prepareCatalogFixBuild(
+        appid,
+        target.buildid || "",
+        target.gids || {},
+        (p) => {
+          setMsg(p.message || "");
+          setFixState({
+            status: p.phase,
+            ...((p.percent != null) ? { percent: p.percent } : {}),
+          } as any);
+        },
+      );
+      if (prepared.status === "ready") {
+        await applyCatalogPayload(kind, key);
+        return;
+      }
+      setBusy("");
+      setAwaiting({ key, label, run: () => applyCatalogPayload(kind, key) });
+      startDlPoll();
+    } catch (e) {
+      const error = `${e}`.replace(/^Error:\s*/, "");
+      setBusy("");
+      setFixState({ status: "failed", error });
+      setMsg(error);
+    }
+  };
+
+  const doCrak = async () => {
+    await runCatalogFix("crak");
+  };
+
+  const doHv = async () => {
+    await runCatalogFix("hv");
   };
 
   const doCustomFix = async (item: CustomItem) => {
@@ -769,7 +825,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     const showProgress = activeFixKey === key && !!fixState.status;
     const total = Number(fixState.totalBytes || 0);
     const read = Number(fixState.bytesRead || 0);
-    const percent = total > 0
+    const phasePercent = Number((fixState as any).percent);
+    const percent = Number.isFinite(phasePercent)
+      ? Math.max(0, Math.min(100, Math.round(phasePercent)))
+      : total > 0
       ? Math.max(0, Math.min(100, Math.round((read / total) * 100)))
       : fixState.status === "done"
       ? 100
@@ -780,7 +839,19 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           <div style={{ marginTop: 7, padding: 7, borderRadius: 6, background: "rgba(255,255,255,0.05)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, marginBottom: 4 }}>
               <span>
-                {fixState.status === "downloading"
+                {fixState.status === "resolving"
+                  ? "Resolving required build…"
+                  : fixState.status === "already_ready"
+                  ? "Correct build already installed"
+                  : fixState.status === "build_downloading"
+                  ? "Downloading required build…"
+                  : fixState.status === "build_ready"
+                  ? "Required build ready"
+                  : fixState.status === "steam_downloading"
+                  ? "Waiting for Steam build download…"
+                  : fixState.status === "fix_installing"
+                  ? "Downloading / extracting fix…"
+                  : fixState.status === "downloading"
                   ? "Downloading fix…"
                   : fixState.status === "extracting"
                   ? "Extracting fix…"
@@ -1100,27 +1171,50 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       )}
 
       {hv?.found && (
-        <DialogButton
-          style={{ fontSize: 12, padding: "5px 8px" }}
-          disabled={working || !!awaiting}
-          onClick={doHv}
-        >
-          {busy === "hv"
-            ? "Applying HV crack…"
-            : `Apply HV crack (build ${hv.buildid || "?"}${hv.status === "older" ? " · build mismatch" : ""})`}
-        </DialogButton>
+        <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+            HVAuto crack · build {hv.buildid || "?"}
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
+            Build-matched: installs the required Steam build first, then applies the HV fix.
+          </div>
+          <DialogButton
+            style={{ fontSize: 12, padding: "5px 8px" }}
+            disabled={working || !!awaiting}
+            onClick={doHv}
+          >
+            {busy === "catalog:hv"
+              ? "Preparing / applying HV crack…"
+              : `Apply HV crack${hv.status === "older" ? " · older target build" : ""}`}
+          </DialogButton>
+          {renderFixFlow("catalog:hv")}
+        </div>
       )}
 
       {crak?.found && (
-        <DialogButton
-          style={{ fontSize: 12, padding: "5px 8px" }}
-          disabled={working || !!awaiting}
-          onClick={doCrak}
-        >
-          {busy === "crak"
-            ? "Applying crack…"
-            : `Apply crack — CrakFiles${crak.buildid ? ` (build ${crak.buildid}${crak.status === "older" ? " · outdated crack" : ""})` : ""}`}
-        </DialogButton>
+        <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+            CrakFiles · build {crak.buildid || "?"}
+          </div>
+          {!!crak.badges?.length && (
+            <div style={{ marginBottom: 4 }}>
+              {crak.badges.map((b, i) => <BadgeChip key={i} badge={b} />)}
+            </div>
+          )}
+          <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
+            Build-matched: installs the required Steam build first, then applies the crack.
+          </div>
+          <DialogButton
+            style={{ fontSize: 12, padding: "5px 8px" }}
+            disabled={working || !!awaiting}
+            onClick={doCrak}
+          >
+            {busy === "catalog:crak"
+              ? "Preparing / applying crack…"
+              : `Apply CrakFiles crack${crak.status === "older" ? " · older target build" : ""}`}
+          </DialogButton>
+          {renderFixFlow("catalog:crak")}
+        </div>
       )}
 
       {customFixes.map((item) => (
