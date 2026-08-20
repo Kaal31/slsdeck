@@ -1,18 +1,15 @@
 import { fetchNoCors } from "@decky/api";
 import { Navigation } from "@decky/ui";
 
-// Fetch a game's build history from SteamDB's PatchnotesRSS THROUGH the Steam
-// browser. The feed is public but Cloudflare-gated, so the plugin backend
-// (bot User-Agent, no CF cookie) gets blocked — but a same-origin fetch inside a
-// steamdb.info tab passes, because the browser holds the cf_clearance cookie (and
-// the SteamDB login session, if signed in). We never read the cookie; the browser
-// applies it. Result is cached per appid so re-opening the picker is instant.
-
 export interface BuildRow { buildid: string; date: string }
-
 interface CdpTab { url: string; webSocketDebuggerUrl?: string }
 
 const _cache = new Map<number, BuildRow[]>();
+let _cancelToken = 0;
+
+export function cancelSteamdbBuildFetch(): void {
+  _cancelToken++;
+}
 
 async function findSteamdbTab(): Promise<CdpTab | null> {
   try {
@@ -22,8 +19,7 @@ async function findSteamdbTab(): Promise<CdpTab | null> {
   } catch { return null; }
 }
 
-// Same-origin fetch of the RSS inside the steamdb tab, returned as text.
-function fetchRssInTab(wsUrl: string, appid: number, timeoutMs = 8000): Promise<string> {
+function fetchRssInTab(wsUrl: string, appid: number, timeoutMs = 5000): Promise<string> {
   const expr = `fetch('/api/PatchnotesRSS/?appid=${appid}',{credentials:'include'}).then(function(r){return r.status===200?r.text():'';}).catch(function(){return '';})`;
   return new Promise((resolve) => {
     let done = false;
@@ -62,33 +58,32 @@ function parseRss(xml: string): BuildRow[] {
   return out;
 }
 
-/** Full build history for a game via the browser RSS (cached). Opens/reuses a
- *  steamdb.info tab; returns [] if it can't be read (offline / hard block). */
 export async function fetchSteamdbBuilds(
   appid: number, onStatus?: (s: string) => void,
 ): Promise<BuildRow[]> {
   if (_cache.has(appid)) return _cache.get(appid)!;
-  // Ensure a steamdb.info tab exists (clears Cloudflare + carries cookies). Point
-  // it at this app's page so the origin/session is warm.
+  const token = _cancelToken;
   let tab = await findSteamdbTab();
   if (!tab) {
-    onStatus?.("Opening SteamDB…");
+    onStatus?.("Opening SteamDB once for build history…");
     try { Navigation.NavigateToExternalWeb(`https://steamdb.info/app/${appid}/patchnotes/`); } catch { /* */ }
   }
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline && token === _cancelToken) {
     tab = await findSteamdbTab();
     if (tab?.webSocketDebuggerUrl) {
+      onStatus?.("Reading SteamDB build history…");
       const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
+      if (token !== _cancelToken) return [];
       if (xml && xml.includes("<item>")) {
         const rows = parseRss(xml);
         if (rows.length) { _cache.set(appid, rows); return rows; }
       }
-      onStatus?.("Reading build history…");
+      onStatus?.("SteamDB opened, but build history is not available yet. Sign in there for full history.");
     } else {
-      onStatus?.("Waiting for SteamDB…");
+      onStatus?.("Waiting briefly for the SteamDB page…");
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 1000));
   }
   return [];
 }
