@@ -2,6 +2,7 @@ import { PanelSection, PanelSectionRow, ButtonItem, Spinner } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { toaster } from "@decky/api";
 import { ScrollableResult } from "../components/ScrollableResult";
+import { rebindExistingCloudRedirectShortcut } from "../lib/cloudRedirectShortcut";
 import {
   SlsStatus,
   SlsInstallState,
@@ -176,11 +177,16 @@ export function DependenciesSection() {
   };
 
   const installCloud = async () => {
-    setB("cr", true); setN("cr", "installing… (first run is slow)");
+    setB("cr", true); setN("cr", "replacing CloudRedirect…");
     try {
       const r = await crEnsureInstalled();
-      setN("cr", r.installed ? "installed" : "failed — " + (r.log || "check network"));
-      toaster.toast({ title: "SLSDeck", body: r.installed ? "CloudRedirect ready" : "CloudRedirect install failed" });
+      if (r.installed) {
+        const rebound = await rebindExistingCloudRedirectShortcut();
+        setN("cr", rebound ? "installed · shortcut rebound" : "installed");
+      } else {
+        setN("cr", "failed — " + (r.log || "check network"));
+      }
+      toaster.toast({ title: "SLSDeck", body: r.installed ? "CloudRedirect replaced" : "CloudRedirect install failed" });
     } catch (e) { setN("cr", `error: ${e}`); }
     setB("cr", false);
   };
@@ -297,7 +303,7 @@ export function DependenciesSection() {
         <DepRow
           label="CloudRedirect"
           hint="Cloud saves for added games — installs automatically after setup. Off by default; enable in Advanced ▸ Cloud saves."
-          health={busy.cr ? "unknown" : note.cr === "installed" ? "ok" : "unknown"}
+          health={busy.cr ? "unknown" : note.cr === "installed" || note.cr === "installed · shortcut rebound" ? "ok" : "unknown"}
           statusText={note.cr || "installs automatically after SLSsteam setup"}
           busy={!!busy.cr}
           actionLabel="Reinstall CloudRedirect"
