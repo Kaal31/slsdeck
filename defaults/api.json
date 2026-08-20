@@ -1,6 +1,13 @@
 {
   "api_list": [
     {
+      "name": "Forced Ryu (Session)",
+      "url": "https://generator.ryuu.lol/download?appid=<appid>&file_type=manifest",
+      "success_code": 200,
+      "unavailable_code": 404,
+      "enabled": true
+    },
+    {
       "name": "Ryuu Mirror",
       "url": "http://167.235.229.108/<appid>",
       "success_code": 200,
