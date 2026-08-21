@@ -90,6 +90,13 @@ async function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Pr
   return result?.result?.value ?? null;
 }
 
+async function evalDetailed(wsUrl: string, expression: string, timeoutMs = 5000): Promise<{ value?: any; error?: string }> {
+  const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
+  const error = result?.exceptionDetails?.exception?.description || result?.exceptionDetails?.text;
+  if (error) return { error: String(error) };
+  return { value: result?.result?.value };
+}
+
 function looksLikeDiscordUrl(url: string): boolean {
   return /(^|\.)discord\.com(?:\/|$)/i.test(String(url || "").replace(/^https?:\/\//i, ""));
 }
@@ -230,17 +237,17 @@ async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
 
 const SNAPSHOT_EXPR = `(function(){try{
   var id=${JSON.stringify(TARGET_MESSAGE)};
-  var article=document.querySelector('[data-list-item-id$="-'+id+'"]') || document.querySelector('#message-accessories-'+id)?.closest('[role="article"]') || document.querySelector('#message-reactions-'+id)?.closest('[role="article"]');
-  if(!article) return JSON.stringify({found:false,error:'Discord CEF is connected, but the target Tokeer message is not rendered yet. Open the linked message (or wait for Discord to finish loading).'});
+  var article=document.querySelector('[data-list-item-id$="-'+id+'"]') || (document.querySelector('#message-accessories-'+id) && document.querySelector('#message-accessories-'+id).closest('[role="article"]')) || (document.querySelector('#message-reactions-'+id) && document.querySelector('#message-reactions-'+id).closest('[role="article"]'));
+  if(!article) return {found:false,selectors:[],error:'Discord CEF is connected, but the target Tokeer message is not rendered yet. Open the linked message (or wait for Discord to finish loading).'};
   var text=(article.innerText||'').replace(/\u00a0/g,' ');
   var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
-  var s=function(re){var m=text.match(re);return m?m[1].trim():undefined};
+  var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};
   var selects=[].slice.call(article.querySelectorAll('[aria-haspopup="listbox"]')).map(function(e,i){
     var label=(e.innerText||e.textContent||'').trim();
     return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};
   });
-  return JSON.stringify({found:true,steamStatus:s(/Steam\s*:\s*([^\n]+)/i),gamesListed:n(/Games listed:\s*(\d+)/i),steamGames:n(/Games listed:[\s\S]*?Steam[^\d]*(\d+)/i),keysRemaining:n(/Keys remaining:\s*(\d+)/i),highDemand:n(/High demand:\s*(\d+)/i),selectors:selects,rawText:text.slice(0,12000)});
-}catch(e){return JSON.stringify({found:false,error:String(e),selectors:[]});}})()`;
+  return {found:true,steamStatus:sv(/Steam\s*:\s*([^\n]+)/i),gamesListed:n(/Games listed:\s*(\d+)/i),steamGames:n(/Games listed:[\s\S]*?Steam[^\d]*(\d+)/i),keysRemaining:n(/Keys remaining:\s*(\d+)/i),highDemand:n(/High demand:\s*(\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
+}catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
 
 export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
   const tab = await findDiscordTab();
@@ -251,9 +258,10 @@ export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
   if (!tab.url?.includes(TOKEER_CHANNEL)) {
     return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
   }
-  const raw = await evalJson(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
-  try { return { ...JSON.parse(String(raw || "")), tabUrl: tab.url }; }
-  catch { return { found: false, selectors: [], tabUrl: tab.url, error: "Could not parse Discord DOM snapshot." }; }
+  const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
+  if (snap.error) return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };
+  if (!snap.value || typeof snap.value !== "object") return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object." };
+  return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
 }
 
 export async function openSelectorAndReadOptions(index: number): Promise<string[]> {
