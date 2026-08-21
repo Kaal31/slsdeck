@@ -86,3 +86,4 @@ The `dev` branch is intended for ongoing development and documentation updates b
 ## Project status
 
 SLSDeckUniversal is under active development. Features, source integrations, dependency names, and compatibility workflows may change between builds, so the current repository files and changelog should be treated as the authoritative reference for a particular version.
+
