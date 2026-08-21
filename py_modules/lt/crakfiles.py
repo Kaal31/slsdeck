@@ -234,6 +234,12 @@ def apply(appid: int, install_path: str, name: str = "", href: str = "") -> Dict
                 "(needs 7z/unrar; may be password-protected)", "buildid": buildid, "pinned": pinned}
     mir = hvauto._mirror_game_files(staging, install_path)
     shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        from .fixes import _write_fix_log
+        _write_fix_log(install_path, int(appid), name or match.get("name", ""),
+                       "CrakFiles Crack", href, mir["extracted"], mir["replaced"])
+    except Exception as exc:
+        logger.warn(f"crakfiles: could not record crack for unfix: {exc}")
 
     src = "from your Downloads " if from_downloads else ""
     return {"success": True, "buildid": buildid, "pinned": pinned, "buildStatus": build_status,
@@ -260,6 +266,12 @@ def apply_local(appid: int, install_path: str, archive_path: str, name: str = ""
                 "(needs 7z/unrar; may be password-protected or not the crack file)"}
     mir = hvauto._mirror_game_files(staging, install_path)
     shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        from .fixes import _write_fix_log
+        _write_fix_log(install_path, int(appid), name, "CrakFiles Crack",
+                       archive_path, mir["extracted"], mir["replaced"])
+    except Exception as exc:
+        logger.warn(f"crakfiles: could not record local crack for unfix: {exc}")
     return {"success": True, "installed": len(mir["extracted"]),
             "note": "Crack installed from your download. Restart Steam."}
 
