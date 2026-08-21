@@ -4577,9 +4577,10 @@ function Chip$1({ ok, label }) {
 }
 /**
  * Compact SLSsteam block for the quick-access panel: status chips + setup.
- * First-time install always appears when the engine is missing. Once installed,
- * Reinstall is hidden on game pages by default and can be opted back in with the
- * existing Quick Access option; outside a game page it remains available.
+ * First-time setup remains available while the engine is missing. Once the
+ * engine is installed, the whole block is hidden on library game pages so the
+ * SLSsteam title / Installed / Injected chips / Reinstall control do not sit
+ * above the per-game actions. Outside a game page the maintenance block remains.
  */
 function SlsSteamCompact() {
     const [status, setStatus] = SP_REACT.useState(null);
@@ -4725,6 +4726,12 @@ function SlsSteamCompact() {
     const working = busy || inst?.status === "running" || inst?.status === "queued";
     const onGamePage = currentLibraryAppId() != null;
     const showReinstallButton = !!status?.installed && (!onGamePage || showReinstall);
+    // On an actual game page the installed engine is global plumbing, not a
+    // per-game action. Hide the entire maintenance/status section there; repair
+    // warnings still come from RepairBanner and missing-engine onboarding still
+    // appears so a fresh install remains possible.
+    if (onGamePage && status?.installed && !working)
+        return null;
     return (SP_JSX.jsxs(DFL.PanelSection, { title: "SLSsteam", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "2px 0" }, children: [SP_JSX.jsx(Chip$1, { ok: !!status?.installed, label: "Installed" }), SP_JSX.jsx(Chip$1, { ok: !!status?.injected, label: "Injected" })] }) }), working && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), inst?.status === "queued" ? "Starting…" : "Installing…", typeof inst?.percent === "number" && inst.percent > 0 ? ` ${inst.percent}%` : ""] }) })), inst?.status === "failed" && inst?.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", whiteSpace: "pre-wrap", wordBreak: "break-word" }, children: inst.error }) })), sys?.foreignEngine && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, color: "#f5a623", padding: "0 2px" }, children: ["Detected ", sys.foreignName || "another engine", " \u2014 Install will disable it (reversibly) and set up slsteam-moon."] }) })), !working && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: quickInstall, children: "Install SLSDeck (one-tap setup)" }) })), !working && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["Installs slsteam-moon", sys?.foreignEngine ? " (disabling any other engine first)" : "", " + CloudRedirect and applies the client fix, in order."] }) })), !working && showReinstallButton && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: install, children: "Reinstall SLSsteam" }) })), qmsg ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8, padding: "0 2px", whiteSpace: "pre-wrap" }, children: qmsg }) })) : null] }));
 }
 
