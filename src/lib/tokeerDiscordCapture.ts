@@ -5,8 +5,9 @@ export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270
 const GUILD_ID = "1464130182364270696";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
+const CDP_PORTS = [8080, 8081];
 
-interface CdpTab { url: string; title?: string; type?: string; webSocketDebuggerUrl?: string; resolvedUrl?: string }
+interface CdpTab { url: string; title?: string; type?: string; webSocketDebuggerUrl?: string; resolvedUrl?: string; cdpPort?: number }
 export type TokeerDiscordState = {
   found: boolean;
   steamStatus?: string;
@@ -39,13 +40,24 @@ export type TokeerTicketContext = {
 };
 
 async function listCdpTabs(): Promise<CdpTab[]> {
-  try {
-    const r = await fetchNoCors("http://localhost:8080/json");
-    const tabs: CdpTab[] = await r.json();
-    return Array.isArray(tabs) ? tabs : [];
-  } catch {
-    return [];
+  const merged: CdpTab[] = [];
+  const seen = new Set<string>();
+  for (const port of CDP_PORTS) {
+    try {
+      const r = await fetchNoCors(`http://localhost:${port}/json`);
+      const tabs: CdpTab[] = await r.json();
+      if (!Array.isArray(tabs)) continue;
+      for (const tab of tabs) {
+        const key = String(tab.webSocketDebuggerUrl || `${tab.type || ""}|${tab.title || ""}|${tab.url || ""}`);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ ...tab, cdpPort: port });
+      }
+    } catch {
+      /* this debugger port is not active */
+    }
   }
+  return merged;
 }
 
 function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
@@ -65,10 +77,6 @@ function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<
 
 function looksLikeDiscordUrl(url: string): boolean {
   return /(^|\.)discord\.com(?:\/|$)/i.test(String(url || "").replace(/^https?:\/\//i, ""));
-}
-
-function isDiscordTab(t: CdpTab): boolean {
-  return !!t.webSocketDebuggerUrl && (looksLikeDiscordUrl(t.resolvedUrl || "") || looksLikeDiscordUrl(t.url || ""));
 }
 
 /** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
@@ -110,14 +118,14 @@ async function findDiscordTab(): Promise<CdpTab | null> {
 
 async function cdpDiagnostic(): Promise<string> {
   const tabs = await listCdpTabs();
-  if (!tabs.length) return "CDP /json returned no targets.";
+  if (!tabs.length) return "CDP 8080/8081 returned no targets.";
   const parts: string[] = [];
-  for (const t of tabs.slice(0, 8)) {
+  for (const t of tabs.slice(0, 10)) {
     let live = "";
     if (t.webSocketDebuggerUrl) {
       try { live = await resolveTabUrl(t); } catch {}
     }
-    parts.push(`${t.type || "target"}: ${String(t.title || "").slice(0, 40)} | ${String(t.url || "").slice(0, 90)}${live && live !== t.url ? ` => ${live.slice(0, 90)}` : ""}`);
+    parts.push(`${t.cdpPort || "?"}/${t.type || "target"}: ${String(t.title || "").slice(0, 40)} | ${String(t.url || "").slice(0, 90)}${live && live !== t.url ? ` => ${live.slice(0, 90)}` : ""}`);
   }
   return parts.join(" ; ");
 }
@@ -249,6 +257,16 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
   return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
+async function waitForDiscordCdp(timeoutMs = 4500): Promise<CdpTab | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await findDiscordTab();
+    if (tab?.webSocketDebuggerUrl) return tab;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return null;
+}
+
 export async function openTokeerDiscord(): Promise<boolean> {
   try {
     const existing = await findDiscordTab();
@@ -257,17 +275,30 @@ export async function openTokeerDiscord(): Promise<boolean> {
     }
   } catch {}
 
+  // Important: create a normal popup from the plugin's own CEF context first.
+  // Steam's NavigateToExternalWeb surface is a BrowserView on some Deck builds
+  // and does not appear in the remote-debug target list at all.
+  try {
+    const popup = window.open("about:blank", "slsdeck_tokeer_discord");
+    if (popup) {
+      try { popup.location.href = TOKEER_DISCORD_URL; } catch {}
+      const tab = await waitForDiscordCdp();
+      if (tab?.webSocketDebuggerUrl) {
+        if (!tab.url?.includes(TOKEER_CHANNEL)) await navigateDiscordTabToTokeer(tab);
+        return true;
+      }
+      try { popup.close(); } catch {}
+    }
+  } catch {}
+
+  // Fallback for builds where popups are blocked. This still lets the user open
+  // Discord manually, but the diagnostic will clearly show if it is not CDP-visible.
   try {
     const nav: any = Navigation as any;
     if (typeof nav?.NavigateToExternalWeb === "function") {
       nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
       return true;
     }
-  } catch {}
-
-  try {
-    const w = window.open(TOKEER_DISCORD_URL, "_blank");
-    if (w) return true;
   } catch {}
 
   try {
