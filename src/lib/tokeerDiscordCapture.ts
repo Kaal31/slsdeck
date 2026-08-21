@@ -6,6 +6,7 @@ const GUILD_ID = "1464130182364270696";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
 const CDP_PORTS = [8080, 8081];
+const TOKEER_VIEW_NAME = "slsdeck_tokeer";
 
 interface CdpTab { url: string; title?: string; type?: string; webSocketDebuggerUrl?: string; resolvedUrl?: string; cdpPort?: number }
 export type TokeerDiscordState = {
@@ -60,19 +61,33 @@ async function listCdpTabs(): Promise<CdpTab[]> {
   return merged;
 }
 
-function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
+function cdpCommand(wsUrl: string, method: string, params: Record<string, any> = {}, timeoutMs = 5000): Promise<any> {
   return new Promise((resolve) => {
-    let done = false; let sock: WebSocket;
-    const finish = (v: any) => { if (done) return; done = true; try { sock.close(); } catch {} resolve(v); };
+    let done = false;
+    let sock: WebSocket;
+    const finish = (v: any) => {
+      if (done) return;
+      done = true;
+      try { sock.close(); } catch {}
+      resolve(v);
+    };
     try { sock = new WebSocket(wsUrl); } catch { resolve(null); return; }
     const id = 1;
-    sock.onopen = () => sock.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
+    sock.onopen = () => sock.send(JSON.stringify({ id, method, params }));
     sock.onmessage = (ev) => {
-      try { const m = JSON.parse(String(ev.data)); if (m?.id === id) finish(m?.result?.result?.value ?? null); } catch {}
+      try {
+        const m = JSON.parse(String(ev.data));
+        if (m?.id === id) finish(m?.result ?? null);
+      } catch {}
     };
     sock.onerror = () => finish(null);
     setTimeout(() => finish(null), timeoutMs);
   });
+}
+
+async function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
+  const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
+  return result?.result?.value ?? null;
 }
 
 function looksLikeDiscordUrl(url: string): boolean {
@@ -116,6 +131,79 @@ async function findDiscordTab(): Promise<CdpTab | null> {
   return fallback;
 }
 
+async function findSharedJsContext(): Promise<CdpTab | null> {
+  const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
+  return tabs.find((t) => String(t.title || "") === "SharedJSContext")
+    || tabs.find((t) => /SharedJSContext/i.test(String(t.title || "")))
+    || null;
+}
+
+async function waitForExactUrl(url: string, timeoutMs = 6500): Promise<CdpTab | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tabs = await listCdpTabs();
+    const tab = tabs.find((t) => !!t.webSocketDebuggerUrl && String(t.url || "") === url);
+    if (tab) return tab;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return null;
+}
+
+/**
+ * Steamcord-style creation path: create a BrowserView from Steam's debuggable
+ * SharedJSContext, tag it with a unique data: URL, discover that exact CDP target,
+ * then navigate the target to Discord. This avoids NavigateToExternalWeb, whose
+ * BrowserView is not exposed in CDP on some Steam Deck builds.
+ */
+async function createTokeerDiscordBrowserView(): Promise<CdpTab | null> {
+  const shared = await findSharedJsContext();
+  if (!shared?.webSocketDebuggerUrl) return null;
+
+  const placeholder = `data:text/plain,slsdeck_tokeer_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const expr = `(function(){try{
+    if(window.SLSDECK_TOKEER_VIEW!==undefined){
+      try{window.SLSDECK_TOKEER_VIEW.m_browserView.SetVisible(false);}catch(e){}
+      try{window.SLSDECK_TOKEER_VIEW.Destroy();}catch(e){}
+      window.SLSDECK_TOKEER_VIEW=undefined;
+    }
+    var main=window.DFL&&window.DFL.Router&&window.DFL.Router.WindowStore&&window.DFL.Router.WindowStore.GamepadUIMainWindowInstance;
+    if(!main||typeof main.CreateBrowserView!=='function') return JSON.stringify({ok:false,error:'CreateBrowserView unavailable'});
+    var view=main.CreateBrowserView(${JSON.stringify(TOKEER_VIEW_NAME)});
+    window.SLSDECK_TOKEER_VIEW=view;
+    try{view.WIDTH=860;view.HEIGHT=495;view.m_browserView.SetBounds(0,0,860,495);}catch(e){}
+    try{view.m_browserView.SetVisible(false);}catch(e){}
+    view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
+    return JSON.stringify({ok:true});
+  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
+
+  const raw = await evalJson(shared.webSocketDebuggerUrl, expr, 4000);
+  try {
+    const created = JSON.parse(String(raw || ""));
+    if (!created?.ok) return null;
+  } catch {
+    return null;
+  }
+
+  const target = await waitForExactUrl(placeholder);
+  if (!target?.webSocketDebuggerUrl) return null;
+
+  // Keep the hidden view active enough for Discord's SPA to continue rendering.
+  await cdpCommand(target.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+  const nav = await cdpCommand(target.webSocketDebuggerUrl, "Page.navigate", {
+    url: TOKEER_DISCORD_URL,
+    transitionType: "address_bar",
+  }, 4000);
+  if (!nav) return null;
+
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    const tab = await findDiscordTab();
+    if (tab?.webSocketDebuggerUrl) return tab;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return null;
+}
+
 async function cdpDiagnostic(): Promise<string> {
   const tabs = await listCdpTabs();
   if (!tabs.length) return "CDP 8080/8081 returned no targets.";
@@ -133,8 +221,11 @@ async function cdpDiagnostic(): Promise<string> {
 async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
   if (!tab.webSocketDebuggerUrl) return false;
   if (tab.url?.includes(TOKEER_CHANNEL)) return true;
-  const expr = `(function(){try{location.href=${JSON.stringify(TOKEER_DISCORD_URL)};return true;}catch(e){return false;}})()`;
-  return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+  const nav = await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+    url: TOKEER_DISCORD_URL,
+    transitionType: "address_bar",
+  }, 4000);
+  return !!nav;
 }
 
 const SNAPSHOT_EXPR = `(function(){try{
@@ -257,16 +348,6 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
   return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
-async function waitForDiscordCdp(timeoutMs = 4500): Promise<CdpTab | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const tab = await findDiscordTab();
-    if (tab?.webSocketDebuggerUrl) return tab;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return null;
-}
-
 export async function openTokeerDiscord(): Promise<boolean> {
   try {
     const existing = await findDiscordTab();
@@ -275,24 +356,13 @@ export async function openTokeerDiscord(): Promise<boolean> {
     }
   } catch {}
 
-  // Important: create a normal popup from the plugin's own CEF context first.
-  // Steam's NavigateToExternalWeb surface is a BrowserView on some Deck builds
-  // and does not appear in the remote-debug target list at all.
   try {
-    const popup = window.open("about:blank", "slsdeck_tokeer_discord");
-    if (popup) {
-      try { popup.location.href = TOKEER_DISCORD_URL; } catch {}
-      const tab = await waitForDiscordCdp();
-      if (tab?.webSocketDebuggerUrl) {
-        if (!tab.url?.includes(TOKEER_CHANNEL)) await navigateDiscordTabToTokeer(tab);
-        return true;
-      }
-      try { popup.close(); } catch {}
-    }
+    const created = await createTokeerDiscordBrowserView();
+    if (created?.webSocketDebuggerUrl) return true;
   } catch {}
 
-  // Fallback for builds where popups are blocked. This still lets the user open
-  // Discord manually, but the diagnostic will clearly show if it is not CDP-visible.
+  // Fallback only: useful for login/manual inspection if Steam's internal
+  // CreateBrowserView API changes, but this external BrowserView may not be CDP-visible.
   try {
     const nav: any = Navigation as any;
     if (typeof nav?.NavigateToExternalWeb === "function") {
