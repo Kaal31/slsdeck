@@ -1592,6 +1592,9 @@ class Plugin:
     async def cr_ensure_installed(self) -> Dict[str, Any]:
         return await self._run(cloudredirect.ensure_installed)
 
+    async def cr_uninstall(self) -> Dict[str, Any]:
+        return await self._run(cloudredirect.uninstall)
+
     async def cr_icon_path(self) -> Dict[str, Any]:
         return await self._run(cloudredirect.icon_path)
 
