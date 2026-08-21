@@ -99,3 +99,5 @@ jobs:
           path: SLSDeckUniversal-tokeer-implement.zip
           if-no-files-found: error
           retention-days: 14
+
+# Trigger: guided Tokeer prepare/verify/redeem UI.
