@@ -1140,18 +1140,6 @@ async function listTargets() {
     }
     return out;
 }
-async function closeTab(tab) {
-    if (!tab?.id)
-        return;
-    const ports = tab._port ? [tab._port] : [8080, 8081];
-    for (const port of ports) {
-        try {
-            await fetchNoCors(`http://localhost:${port}/json/close/${tab.id}`);
-            return;
-        }
-        catch { /* try next */ }
-    }
-}
 function evalOnTab$2(wsUrl, expr, timeoutMs = 6000) {
     return new Promise((resolve) => {
         let done = false;
@@ -1188,25 +1176,45 @@ function evalOnTab$2(wsUrl, expr, timeoutMs = 6000) {
         setTimeout(() => finish(undefined), timeoutMs);
     });
 }
-async function findTab$1(depot) {
+async function liveHref(t) {
+    if (!t.webSocketDebuggerUrl)
+        return "";
+    const href = await evalOnTab$2(t.webSocketDebuggerUrl, "location.href", 1800);
+    return typeof href === "string" ? href : "";
+}
+async function findAnySteamdbTab() {
+    const tabs = await listTargets();
+    const direct = tabs.find((t) => (t.url || "").includes("steamdb.info"));
+    if (direct)
+        return direct;
+    for (const t of tabs) {
+        const href = await liveHref(t);
+        if (href.includes("steamdb.info"))
+            return { ...t, url: href };
+    }
+    return null;
+}
+async function findDepotTab(depot) {
     const needle = `/depot/${depot}`;
     const tabs = await listTargets();
     const direct = tabs.find((t) => (t.url || "").includes("steamdb.info") && (t.url || "").includes(needle));
     if (direct)
         return direct;
     for (const t of tabs) {
-        if (!t.webSocketDebuggerUrl)
-            continue;
-        const href = await evalOnTab$2(t.webSocketDebuggerUrl, "location.href", 1800);
-        if (typeof href === "string" && href.includes("steamdb.info") && href.includes(needle))
+        const href = await liveHref(t);
+        if (href.includes("steamdb.info") && href.includes(needle))
             return { ...t, url: href };
     }
     return null;
 }
-// Layout-tolerant parser. It does not depend on SteamDB responsive CSS classes.
-// It first finds any table that looks like a ManifestID/manifest-history table,
-// then falls back to rows containing a long numeric manifest id. Dates may be in
-// <time datetime>, title/data-sort attributes, or visible desktop text.
+async function navigateExistingSteamdbTab(tab, url) {
+    if (!tab.webSocketDebuggerUrl)
+        return false;
+    const expr = `(()=>{try{location.href=${JSON.stringify(url)};return true}catch(e){return false}})()`;
+    return (await evalOnTab$2(tab.webSocketDebuggerUrl, expr, 3000)) === true;
+}
+// Layout-tolerant parser. It targets semantic table content, not SteamDB CSS or
+// viewport-specific classes, so it works with Deck and desktop/Steam Machine UI.
 const SCRAPE_EXPR$1 = `(()=>{try{
   const out=[], seen=new Set();
   const normDate=(raw)=>{raw=String(raw||'').trim();if(!raw)return '';let m=raw.match(/(20\\d{2})[-\\/.](\\d{1,2})[-\\/.](\\d{1,2})/);if(m)return m[1]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[3]).padStart(2,'0');try{const d=new Date(raw);if(!isNaN(d.getTime()))return d.toISOString().slice(0,10)}catch(e){}return ''};
@@ -1220,8 +1228,7 @@ const SCRAPE_EXPR$1 = `(()=>{try{
   if(!chosen.length) chosen=tables;
   for(const table of chosen){
     for(const tr of Array.from(table.querySelectorAll('tr'))){
-      let gid=''; let date='';
-      const cells=Array.from(tr.querySelectorAll('td'));
+      let gid=''; let date=''; const cells=Array.from(tr.querySelectorAll('td'));
       for(const td of cells){
         const txt=(td.textContent||'').replace(/\\s+/g,' ').trim();
         if(!gid){const exact=txt.match(/^\\d{12,}$/);if(exact)gid=exact[0];else{const a=td.querySelector('a[href]');const h=a&&a.getAttribute('href')||'';const hm=h.match(/(?:manifest|manifests)[^0-9]*(\\d{12,})/i);if(hm)gid=hm[1];}}
@@ -1234,42 +1241,44 @@ const SCRAPE_EXPR$1 = `(()=>{try{
   return out;
 }catch(e){return []}})()`;
 async function scrapeDepotManifests(depot, maxMs = 30000, onStatus, isCancelled) {
-    // Only honour cancellation before navigation. Opening SteamDB intentionally
-    // unmounts the game-tools surface on some SteamOS layouts; treating that as a
-    // cancellation was the same race that previously broke the build list.
     if (isCancelled?.())
         return [];
-    try {
-        DFL.Navigation.NavigateToExternalWeb(`https://steamdb.info/depot/${depot}/manifests/`);
+    const targetUrl = `https://steamdb.info/depot/${depot}/manifests/`;
+    // Prefer reusing the SteamDB tab opened by the build-history step. Navigating
+    // it through CDP avoids NavigateToExternalWeb, which can unmount GameTools and
+    // was falsely interpreted as user cancellation on Steam Machine/SteamOS.
+    let existing = await findAnySteamdbTab();
+    if (existing?.webSocketDebuggerUrl) {
+        onStatus?.(`Opening SteamDB depot ${depot} in the existing SteamDB tab…`);
+        await navigateExistingSteamdbTab(existing, targetUrl);
     }
-    catch { /* */ }
-    const deadline = Date.now() + maxMs;
-    let tab = null;
-    try {
-        while (Date.now() < deadline) {
-            tab = await findTab$1(depot);
-            if (tab?.webSocketDebuggerUrl) {
-                onStatus?.(`Reading SteamDB manifest history for depot ${depot}…`);
-                const value = await evalOnTab$2(tab.webSocketDebuggerUrl, SCRAPE_EXPR$1, 7000);
-                if (Array.isArray(value)) {
-                    const rows = value
-                        .filter((r) => r && /^\d{12,}$/.test(String(r.gid || "")))
-                        .map((r) => ({ gid: String(r.gid), date: String(r.date || "") }));
-                    if (rows.length)
-                        return rows;
-                }
-                onStatus?.(`SteamDB depot ${depot} is open, but no manifest rows were parsed yet…`);
-            }
-            else {
-                onStatus?.(`Opening SteamDB depot ${depot}…`);
-            }
-            await new Promise((r) => setTimeout(r, 1200));
+    else {
+        try {
+            DFL.Navigation.NavigateToExternalWeb(targetUrl);
         }
-        return [];
+        catch { /* */ }
     }
-    finally {
-        await closeTab(tab);
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+        const tab = await findDepotTab(depot);
+        if (tab?.webSocketDebuggerUrl) {
+            onStatus?.(`Reading SteamDB manifest history for depot ${depot}…`);
+            const value = await evalOnTab$2(tab.webSocketDebuggerUrl, SCRAPE_EXPR$1, 7000);
+            if (Array.isArray(value)) {
+                const rows = value
+                    .filter((r) => r && /^\d{12,}$/.test(String(r.gid || "")))
+                    .map((r) => ({ gid: String(r.gid), date: String(r.date || "") }));
+                if (rows.length)
+                    return rows;
+            }
+            onStatus?.(`SteamDB depot ${depot} is visible, but no manifest rows were parsed yet…`);
+        }
+        else {
+            onStatus?.(`Waiting for SteamDB depot ${depot}…`);
+        }
+        await new Promise((r) => setTimeout(r, 1200));
     }
+    return [];
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
