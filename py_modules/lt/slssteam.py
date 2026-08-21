@@ -2903,6 +2903,16 @@ def full_uninstall_cleanup() -> Dict[str, Any]:
         except Exception as e:
             report["errors"].append("%s: %s" % (p, e))
 
+    # 5) A deliberate full removal also purges every known CloudRedirect
+    # version/layout, including Flatpak data and the moon hook.
+    try:
+        from . import cloudredirect
+        from .cloudredirect_reinstall import purge_all as _purge_cloudredirect
+        cr = _purge_cloudredirect(cloudredirect)
+        report["removedPaths"].extend(cr.get("removed") or [])
+    except Exception as e:
+        report["errors"].append("CloudRedirect: %s" % e)
+
     try:
         _log("Full uninstall cleanup: %d path(s), %d game(s) removed"
              % (len(report["removedPaths"]), len(report["removedGames"])))
