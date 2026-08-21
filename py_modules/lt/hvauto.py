@@ -369,8 +369,14 @@ def _extract_archive(archive: str, out_dir: str) -> bool:
 
 
 def _mirror_game_files(staging: str, install_path: str) -> Dict[str, Any]:
-    """Copy the crack's GAME-folder files from *staging* into the game, dropping
-    Windows-HV setup bits. Then mirror the emulator DLLs next to the real exe."""
+    """Copy crack payload files using the standard reversible-fix semantics.
+
+    Returned paths are relative to the game directory, including any DLLs
+    mirrored beside a nested executable, so the normal fix log/unfix worker can
+    delete newly-created files and restore replaced files from .slsdeck-orig.
+    """
+    from .fixes import _is_safe_path, _mirror_fix_to_exe_dir, _stash_original
+
     extracted: List[str] = []
     replaced: List[str] = []
     for root, _dirs, files in os.walk(staging):
@@ -382,22 +388,22 @@ def _mirror_game_files(staging: str, install_path: str) -> Dict[str, Any]:
                 continue  # Windows-HV / setup / notes — our HV module handles this
             src = os.path.join(root, fn)
             rel = fn if rel_root == "." else os.path.join(rel_root, fn)
-            dst = os.path.join(install_path, rel)
+            norm = rel.replace("\\", "/")
+            if not _is_safe_path(install_path, norm):
+                logger.warn(f"hvauto: refusing out-of-tree crack path: {norm}")
+                continue
+            dst = os.path.join(install_path, norm.replace("/", os.sep))
             try:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                if os.path.exists(dst):
-                    bak = dst + "_o"
-                    if not os.path.exists(bak):
-                        shutil.copy2(dst, bak)
-                    replaced.append(dst)
+                if _stash_original(install_path, norm):
+                    replaced.append(norm)
                 shutil.copy2(src, dst)
                 chown_to_user(dst, recursive=False)
-                extracted.append(dst)
+                extracted.append(norm)
             except Exception as exc:
-                logger.warn(f"hvauto: copy failed for {rel}: {exc}")
-    # Mirror recognised emulator DLLs next to the real nested exe (reuses fix logic).
+                logger.warn(f"hvauto: copy failed for {norm}: {exc}")
+    # This helper appends mirrored relative paths to both lists as appropriate.
     try:
-        from .fixes import _mirror_fix_to_exe_dir
         _mirror_fix_to_exe_dir(install_path, extracted, replaced)
     except Exception as exc:
         logger.warn(f"hvauto: exe-dir mirror failed: {exc}")
@@ -423,6 +429,12 @@ def apply_hv_local(appid: int, install_path: str, archive_path: str, name: str =
                 "(needs 7z/unrar/bsdtar; may not be the crack file)"}
     mir = _mirror_game_files(staging, install_path)
     shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        from .fixes import _write_fix_log
+        _write_fix_log(install_path, int(appid), name, "HV Crack",
+                       archive_path, mir["extracted"], mir["replaced"])
+    except Exception as exc:
+        logger.warn(f"hvauto: could not record local HV crack for unfix: {exc}")
     proton_tool = ""
     try:
         from . import proton
@@ -494,6 +506,12 @@ def apply_hv(appid: int, install_path: str, name: str = "", href: str = "") -> D
                 "(needs 7z/unrar/bsdtar)", "buildid": buildid, "pinned": pinned}
     mir = _mirror_game_files(staging, install_path)
     shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        from .fixes import _write_fix_log
+        _write_fix_log(install_path, int(appid), name or match.get("name", ""),
+                       "HV Crack", href, mir["extracted"], mir["replaced"])
+    except Exception as exc:
+        logger.warn(f"hvauto: could not record HV crack for unfix: {exc}")
 
     # 4) ensure the Denuvo/HV Proton is installed; frontend sets it per-game + loads HV
     proton_tool = ""
