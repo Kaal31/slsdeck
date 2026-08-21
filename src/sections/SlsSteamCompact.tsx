@@ -37,9 +37,10 @@ function Chip({ ok, label }: { ok: boolean; label: string }) {
 
 /**
  * Compact SLSsteam block for the quick-access panel: status chips + setup.
- * First-time install always appears when the engine is missing. Once installed,
- * Reinstall is hidden on game pages by default and can be opted back in with the
- * existing Quick Access option; outside a game page it remains available.
+ * First-time setup remains available while the engine is missing. Once the
+ * engine is installed, the whole block is hidden on library game pages so the
+ * SLSsteam title / Installed / Injected chips / Reinstall control do not sit
+ * above the per-game actions. Outside a game page the maintenance block remains.
  */
 export function SlsSteamCompact() {
   const [status, setStatus] = useState<SlsStatus | null>(null);
@@ -160,6 +161,12 @@ export function SlsSteamCompact() {
   const working = busy || inst?.status === "running" || inst?.status === "queued";
   const onGamePage = currentLibraryAppId() != null;
   const showReinstallButton = !!status?.installed && (!onGamePage || showReinstall);
+
+  // On an actual game page the installed engine is global plumbing, not a
+  // per-game action. Hide the entire maintenance/status section there; repair
+  // warnings still come from RepairBanner and missing-engine onboarding still
+  // appears so a fresh install remains possible.
+  if (onGamePage && status?.installed && !working) return null;
 
   return (
     <PanelSection title="SLSsteam">
