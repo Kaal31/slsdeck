@@ -17,5 +17,5 @@
     "description": "Pirate helper for SteamOS/Steam Deck: add games via slsteam-moon, apply game fixes (ryuu + perondepot), manifest version pinning, and anti-Denuvo hypervisor + custom Proton.",
     "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
   },
-  "version": "0.9.60"
+  "version": "0.9.61"
 }
