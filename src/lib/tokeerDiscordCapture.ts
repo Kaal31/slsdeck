@@ -334,6 +334,22 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   return JSON.stringify(m?{found:true,appid:Number(m[1]),rawText:text.slice(0,16000)}:{found:false,error:'Ticket opened, waiting for the setup commands…'});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
+const TICKET_LINK_EXPR = `(function(){try{
+  var channel=${JSON.stringify(TOKEER_CHANNEL)};
+  var guild=${JSON.stringify(`/channels/${GUILD_ID}/`)};
+  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+  for(var i=0;i<Math.min(arts.length,30);i++){
+    var a=arts[i], text=(a.innerText||'').replace(/\u00a0/g,' ');
+    if(!/(?:ticket|activation|private|continue|created|opened)/i.test(text))continue;
+    var links=[].slice.call(a.querySelectorAll('a[href*="/channels/"]'));
+    for(var j=0;j<links.length;j++){
+      var href=String(links[j].href||links[j].getAttribute('href')||'');
+      if(href.indexOf(guild)>=0 && href.indexOf(channel)<0)return JSON.stringify({found:true,url:href,text:text.slice(0,3000)});
+    }
+  }
+  return JSON.stringify({found:false});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+
 export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Promise<TokeerTicketContext> {
   void fromUrl; // retained for callers from older builds; same-tab tickets are now inspected
   const deadline = Date.now() + timeoutMs;
@@ -359,10 +375,41 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
         if (parsed?.found && parsed?.appid) return { ...parsed, url: tab.url };
         if (parsed?.error) lastError = parsed.error;
       } catch {}
+
+      // Ticket bots often post a private-channel link instead of changing the
+      // current SPA route. Discover that link from recent messages and move the
+      // same hidden target into it.
+      try {
+        const linkRaw = await evalJson(tab.webSocketDebuggerUrl, TICKET_LINK_EXPR);
+        const link = JSON.parse(String(linkRaw || ""));
+        if (link?.found && looksLikeDiscordUrl(link.url || "")) {
+          await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+            url: String(link.url), transitionType: "link",
+          }, 4000);
+          lastError = "Ticket found; waiting for its setup commands…";
+        }
+      } catch {}
     }
     await new Promise((r) => setTimeout(r, 600));
   }
   return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
+}
+
+/** Connect the automation surface without putting Discord on screen. The
+ * BrowserView shares Steam CEF's Discord session, so a prior visible login is
+ * reused. */
+export async function connectTokeerDiscordHidden(): Promise<boolean> {
+  try { await hideTokeerBrowserView(); } catch {}
+  try {
+    const existing = await findDiscordTab();
+    if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) return true;
+  } catch {}
+  try {
+    const created = await createTokeerDiscordBrowserView();
+    return !!created?.webSocketDebuggerUrl;
+  } catch {
+    return false;
+  }
 }
 
 export async function openTokeerDiscord(): Promise<boolean> {
@@ -370,38 +417,14 @@ export async function openTokeerDiscord(): Promise<boolean> {
   // BrowserView has no Steam navigation chrome and traps the B button.
   try { await hideTokeerBrowserView(); } catch {}
 
-  // Preferred path: Steam owns this page and supplies its normal Back action.
-  // Give the target a moment to appear in CDP before considering a hidden
-  // automation fallback.
+  // Visible login/manual path: Steam owns this page and supplies its normal
+  // Back action. Silent automation uses connectTokeerDiscordHidden instead.
   try {
     const nav: any = Navigation as any;
     if (typeof nav?.NavigateToExternalWeb === "function") {
       nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
-      const deadline = Date.now() + 8000;
-      while (Date.now() < deadline) {
-        const tab = await findDiscordTab();
-        if (tab?.webSocketDebuggerUrl) return true;
-        await new Promise((r) => setTimeout(r, 300));
-      }
-      // The page is still useful for login/manual interaction even on Steam
-      // builds that do not expose external BrowserViews through CDP.
       return true;
     }
-  } catch {}
-
-  try {
-    const existing = await findDiscordTab();
-    if (existing?.webSocketDebuggerUrl) {
-      if (await navigateDiscordTabToTokeer(existing)) {
-        try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.bringToFront", {}, 2000); } catch {}
-        return true;
-      }
-    }
-  } catch {}
-
-  try {
-    const created = await createTokeerDiscordBrowserView();
-    if (created?.webSocketDebuggerUrl) return true;
   } catch {}
 
   try {

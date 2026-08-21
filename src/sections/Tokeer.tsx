@@ -4,6 +4,7 @@ import { tokeerPrepare, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerV
 import {
   chooseSelectorOption,
   clickLatestTicketGate,
+  connectTokeerDiscordHidden,
   openSelectorAndReadOptions,
   openTokeerDiscord,
   readLatestTicketGate,
@@ -38,6 +39,20 @@ export function TokeerSection() {
   const openMenu=async(i:number)=>{
     setBusy("Reading live game list…"); setMenu(i);
     try{setOptions(await openSelectorAndReadOptions(i));}
+    finally{setBusy("");}
+  };
+
+  const connectHidden=async()=>{
+    setBusy("Connecting hidden Tokeer panel…");
+    setMessage("Connecting to Discord in the background. Discord will stay hidden.");
+    try{
+      const ok=await connectTokeerDiscordHidden();
+      if(!ok){setMessage("Hidden Discord connection failed. Open Discord login once, sign in, press B, then retry.");return;}
+      await sleep(1400);
+      const state=await readTokeerDiscord();
+      setDiscord(state);
+      setMessage(state.found?"Hidden Tokeer panel connected.":(state.error||"Discord connected, but the activation panel is still loading."));
+    }catch(e){setMessage(String(e));}
     finally{setBusy("");}
   };
 
@@ -121,7 +136,8 @@ export function TokeerSection() {
   return <>
     <PanelSection title="1. Choose game in Tokeer">
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
-      <PanelSectionRow><ButtonItem layout="below" onClick={()=>{openTokeerDiscord();setTimeout(refreshDiscord,1600);}}>Open Tokeer Discord</ButtonItem></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><ButtonItem layout="below" disabled={s.disabled||!!busy} onClick={()=>openMenu(s.index)}>{s.label||`Game menu ${s.index+1}`}</ButtonItem></PanelSectionRow>)}
       {!discord?.found&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>{discord?.error||"Open the Linux activation message once and leave the Discord tab alive."}</div></PanelSectionRow>}
