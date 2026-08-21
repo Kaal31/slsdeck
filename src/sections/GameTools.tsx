@@ -60,7 +60,7 @@ import {
   BuildEntry,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
-import { fetchSteamdbBuilds, cancelSteamdbBuildFetch } from "../lib/steamdbBuilds";
+import { fetchSteamdbBuilds } from "../lib/steamdbBuilds";
 import { scrapeDepotManifests } from "../lib/steamdbCapture";
 import { setLaunchRepoint, hasLaunchRepoint, ensureProtonSelected, applyFixRuntime } from "../lib/fixRuntime";
 import { launchGame } from "../lib/launchGame";
@@ -159,7 +159,6 @@ export function GameToolsSection() {
     steamdbCancelled.current = false;
     return () => {
       steamdbCancelled.current = true;
-      cancelSteamdbBuildFetch();
     };
   }, [appid]);
   useEffect(() => { depotdlStatus().then((r) => setDepotdl(!!r.available)).catch(() => {}); }, []);
@@ -480,6 +479,16 @@ export function GameToolsSection() {
         }
       } catch { /* */ }
     }
+    // Never present a misleading picker containing only the local "Latest"
+    // pseudo-entry. That means SteamDB retrieval failed, not that the game has
+    // no historical builds. Keep the user on the page and make retry explicit.
+    const fetchedHistorical = builds.filter((b) => !b.isCurrent && b.buildid && b.buildid !== "latest");
+    if (!fetchedHistorical.length) {
+      setBusy("");
+      setNote("Could not retrieve SteamDB build history. Leave the SteamDB page open, return here, and try Install a specific build again.");
+      return;
+    }
+
     // Which builds a crack actually targets — exact buildids from the HV / CrakFiles
     // catalogs, so we can highlight the builds that are known-good with a fix.
     const compat = new Map<string, string>(); // buildid -> label (HV / Crack)
