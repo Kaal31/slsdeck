@@ -152,7 +152,7 @@ export function GameControlsSection({ onChanged }: Props) {
   const working = busy !== "";
 
   return (
-    <PanelSection title="Actions & fixes">
+    <PanelSection title="This game">
       <PanelSectionRow>
         <div style={{ fontSize: 12, opacity: 0.75, padding: "2px 0" }}>
           {noGame
