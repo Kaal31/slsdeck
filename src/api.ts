@@ -540,6 +540,7 @@ export const depotdlQueue = callable<[], { success: boolean; items: { appid: num
 export const ensureAllDlcKeys = callable<[appid: number], { success: boolean; keys: number; source: string }>("ensure_all_dlc_keys");
 
 export const triggerSteamInstall = callable<[appid: number, library?: number], { success: boolean; error?: string }>("trigger_steam_install");
+export const validateSteamApp = callable<[appid: number], { success: boolean; error?: string }>("validate_steam_app");
 export const popInjectionEvents = callable<[], { success: boolean; events: { kind: string; message: string }[] }>("pop_injection_events");
 export const getAutoReinject = callable<[], { success: boolean; enabled: boolean }>("get_auto_reinject");
 export const setAutoReinject = callable<[enabled: boolean], { success: boolean }>("set_auto_reinject");

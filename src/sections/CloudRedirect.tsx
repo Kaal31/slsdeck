@@ -1,6 +1,6 @@
 import { PanelSection, PanelSectionRow, ButtonItem, ToggleField } from "@decky/ui";
 import { useEffect, useState } from "react";
-import { crGetEnabled, crSetEnabled, crOpenApp, crEnsureInstalled, crGetShortcut, crSetShortcut, crArtwork, crIconPath, crProviderStatus } from "../api";
+import { crGetEnabled, crSetEnabled, crOpenApp, crEnsureInstalledAuto, crGetShortcut, crSetShortcut, crArtwork, crIconPath, crProviderStatus } from "../api";
 
 const CR_FLATPAK = "org.cloudredirect.CloudRedirect";
 
@@ -61,11 +61,16 @@ async function launchInGameMode(): Promise<string> {
     const created = await SC.Apps.AddShortcut("CloudRedirect", "/usr/bin/flatpak", "", "");
     appId = Number(created);
     if (!appId || Number.isNaN(appId)) throw new Error("AddShortcut returned no appId");
-    try { await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK}`); } catch { /* */ }
-    try { await SC.Apps.SetShortcutName(appId, "CloudRedirect"); } catch { /* */ }
-    try { await crSetShortcut(appId); } catch { /* */ }
-    try { await applyCrArtwork(appId); } catch { /* */ }
   }
+
+  // Rebind EVERY launch, including an already-existing shortcut. A Flatpak
+  // reinstall can leave Steam holding stale shortcut metadata; reasserting the
+  // executable/options/name makes the existing tile point at the fresh install.
+  try { await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK}`); } catch { /* */ }
+  try { await SC.Apps.SetShortcutName(appId, "CloudRedirect"); } catch { /* */ }
+  try { await crSetShortcut(appId); } catch { /* */ }
+  try { await applyCrArtwork(appId); } catch { /* */ }
+
   // Non-Steam shortcuts launch by their 64-bit gameID, not the 32-bit appid.
   const gameId = ((BigInt(appId) << 32n) | 0x02000000n).toString();
   SC.Apps.RunGame(gameId, "", -1, 100);
@@ -125,9 +130,12 @@ export function CloudRedirectSection() {
 
   const onOpen = async () => {
     setBusy(true);
-    setMsg("Checking / installing CloudRedirect… (first run can take a few minutes)");
+    setMsg("Checking CloudRedirect…");
     try {
-      const ins = await crEnsureInstalled();
+      // Opening the app is not a reinstall action. Auto-ensure returns immediately
+      // when the Flatpak is present; the Dependencies "Reinstall" button uses the
+      // manual endpoint, which now removes and reinstalls it first.
+      const ins = await crEnsureInstalledAuto();
       if (!ins.installed) {
         setMsg("Install failed:\n" + (ins.log || "check network + flatpak"));
         setBusy(false);

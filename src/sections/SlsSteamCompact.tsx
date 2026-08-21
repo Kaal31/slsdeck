@@ -13,6 +13,7 @@ import {
   runClientFix,
   crEnsureInstalled,
   disableForeignEngines,
+  currentLibraryAppId,
 } from "../api";
 
 function Chip({ ok, label }: { ok: boolean; label: string }) {
@@ -35,15 +36,17 @@ function Chip({ ok, label }: { ok: boolean; label: string }) {
 }
 
 /**
- * Compact SLSsteam block for the quick-access panel: status chips + the single
- * install button. Everything else (injection, diagnostics, other dependencies)
- * lives on the Advanced page.
+ * Compact SLSsteam block for the quick-access panel: status chips + setup.
+ * First-time setup remains available while the engine is missing. Once the
+ * engine is installed, the whole block is hidden on library game pages so the
+ * SLSsteam title / Installed / Injected chips / Reinstall control do not sit
+ * above the per-game actions. Outside a game page the maintenance block remains.
  */
 export function SlsSteamCompact() {
   const [status, setStatus] = useState<SlsStatus | null>(null);
   const [inst, setInst] = useState<SlsInstallState | null>(null);
   const [busy, setBusy] = useState(false);
-  const [showReinstall, setShowReinstall] = useState(true);
+  const [showReinstall, setShowReinstall] = useState(false);
   const [sys, setSys] = useState<{ engineInstalled: boolean; foreignEngine: boolean; foreignName: string; cloudredirect: boolean } | null>(null);
   const [qmsg, setQmsg] = useState("");
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -71,15 +74,12 @@ export function SlsSteamCompact() {
     }, 1500);
   });
 
-  // One-tap onboarding: install/verify the engine (deferring to a foreign engine
-  // like lumalinux if one is already managing injection), run the client fix, and
-  // install CloudRedirect — in order.
+  // One-tap onboarding: install/verify the engine, run the client fix, then
+  // install CloudRedirect. This button exists only while the engine is missing.
   const quickInstall = async () => {
     setBusy(true); setInst(null);
     try {
       const s = await systemStatus();
-      // First-time install guard: if a different engine (stock SLSsteam / lumalinux)
-      // is present, disable it first so it can't fight moon's injection.
       if (s.success && (s.foreignEngine || (s.engineInstalled && s.engine !== "slsteam-moon"))) {
         setQmsg(`Clearing conflicting engine (${s.foreignName || s.engine})…`);
         try {
@@ -101,11 +101,6 @@ export function SlsSteamCompact() {
       } else {
         setQmsg("slsteam-moon already installed.");
       }
-      // CloudRedirect's first install pulls a ~1GB KDE flatpak runtime and can
-      // take many minutes — do NOT block onboarding completion on it or the
-      // button looks hung. Kick it off in the background; the Dependencies tab
-      // shows its progress and it's only needed for cloud saves, not for adding
-      // games.
       setQmsg("Installing CloudRedirect in the background (cloud saves)…");
       crEnsureInstalled().catch(() => {});
       setQmsg("SLSDeck is set up. Reload Steam to finish. (CloudRedirect finishes in the background.)");
@@ -164,6 +159,14 @@ export function SlsSteamCompact() {
   };
 
   const working = busy || inst?.status === "running" || inst?.status === "queued";
+  const onGamePage = currentLibraryAppId() != null;
+  const showReinstallButton = !!status?.installed && (!onGamePage || showReinstall);
+
+  // On an actual game page the installed engine is global plumbing, not a
+  // per-game action. Hide the entire maintenance/status section there; repair
+  // warnings still come from RepairBanner and missing-engine onboarding still
+  // appears so a fresh install remains possible.
+  if (onGamePage && status?.installed && !working) return null;
 
   return (
     <PanelSection title="SLSsteam">
@@ -215,7 +218,7 @@ export function SlsSteamCompact() {
         </PanelSectionRow>
       )}
 
-      {!working && status?.installed && showReinstall && (
+      {!working && showReinstallButton && (
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={install}>
             Reinstall SLSsteam

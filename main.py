@@ -1560,6 +1560,9 @@ class Plugin:
     async def trigger_steam_install(self, appid: int, library: int = 0) -> Dict[str, Any]:
         return await self._run(slssteam.trigger_steam_install, appid, library)
 
+    async def validate_steam_app(self, appid: int) -> Dict[str, Any]:
+        return await self._run(slssteam.validate_steam_app, appid)
+
     async def get_available_builds(self, appid: int) -> Dict[str, Any]:
         return await self._run(downloads.get_available_builds, appid)
 

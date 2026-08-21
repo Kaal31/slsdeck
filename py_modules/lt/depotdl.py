@@ -158,18 +158,11 @@ def _run(appid: int, app: int, depot_gid: Dict[str, str], keys: Dict[str, str],
             last = f"no depot key for {depot}"
             continue
         mfile = _fetch_manifest_file(depot, gid, mf_dir)
-        # DepotDownloaderMod REQUIRES the pre-fetched manifest file for a pinned
-        # gid — without it DD tries to pull the manifest itself (fails on a
-        # restricted/old build → "no internet" style errors). Fail loud rather
-        # than silently downloading whatever DD picks.
         if not mfile:
             fail += 1
             last = f"could not fetch manifest {gid} for depot {depot}"
             _set(appid, {"percent": int((i + 1) * 100 / max(1, len(depot_gid)))})
             continue
-        # -os windows -osarch 64: the Deck's Linux host otherwise defaults to the
-        # game's Linux depots (usually nonexistent), which is why builds "did
-        # nothing". Force the Windows depots we actually have keys/manifests for.
         args = [dotnet, assella._dll_path(), "-app", str(app), "-depot", str(depot),
                 "-manifest", str(gid), "-os", "windows", "-osarch", "64",
                 "-manifestfile", mfile]
@@ -184,18 +177,44 @@ def _run(appid: int, app: int, depot_gid: Dict[str, str], keys: Dict[str, str],
         else:
             ok += 1
         _set(appid, {"percent": int((i + 1) * 100 / max(1, len(depot_gid)))})
+    try:
+        os.remove(kf)
+    except OSError:
+        pass
     return ok, fail, last
 
 
-def _game_dir(appid: int) -> Tuple[str, str, str]:
-    """(library_root, installdir, full_common_dir) for the game, from its
-    appmanifest; falls back to a name-based dir under the main library."""
+def _existing_game_dir(appid: int) -> Optional[Tuple[str, str, str]]:
+    """Resolve an existing appmanifest even when its common/ folder is still
+    absent (the normal state after moon adds a game but before Steam downloads it)."""
     try:
-        r = steam.get_game_install_path_response(appid)
-        if r.get("success"):
-            return r["libraryPath"], r["installDir"], r["installPath"]
+        for lib in steam._all_library_paths():
+            acf = os.path.join(lib, "steamapps", f"appmanifest_{int(appid)}.acf")
+            if not os.path.isfile(acf):
+                continue
+            try:
+                data = steam._parse_vdf_simple(open(acf, "r", encoding="utf-8", errors="ignore").read())
+                st = data.get("AppState", {}) or {}
+                installdir = str(st.get("installdir", "") or "").strip()
+            except Exception:
+                installdir = ""
+            if installdir and not any(c in installdir for c in ("/", "\\")):
+                return lib, installdir, os.path.join(lib, "steamapps", "common", installdir)
     except Exception:
         pass
+    return None
+
+
+def _game_dir(appid: int) -> Tuple[str, str, str]:
+    """(library_root, installdir, full_common_dir) for a build download.
+
+    Prefer Steam's appmanifest even if the actual common/ folder does not exist
+    yet. That is exactly the freshly-added-by-moon / not-yet-downloaded state.
+    Only fall back to a deterministic name under the primary library when there
+    is no appmanifest at all."""
+    existing = _existing_game_dir(appid)
+    if existing:
+        return existing
     root = steam.detect_steam_install_path()
     name = ""
     try:
@@ -204,6 +223,17 @@ def _game_dir(appid: int) -> Tuple[str, str, str]:
         name = f"App_{appid}"
     installdir = re.sub(r"[^\w\s-]", "", name).strip().replace(" ", "_") or f"App_{appid}"
     return root, installdir, os.path.join(root, "steamapps", "common", installdir)
+
+
+def _dir_size(path: str) -> int:
+    total = 0
+    for base, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(base, name))
+            except OSError:
+                pass
+    return total
 
 
 # ── public jobs ──────────────────────────────────────────────────────────────
@@ -227,10 +257,7 @@ def download_build(appid: int, buildid: str) -> Dict[str, Any]:
 
 def download_build_with_gids(appid: int, buildid: str, depot_gid: Dict[str, str]) -> Dict[str, Any]:
     """Like download_build, but the caller supplies the exact {depot: gid} map
-    (already resolved by the frontend's SteamDB scrape). This skips depot_history's
-    own resolver — which can wrongly report "no older builds" for games SteamDB
-    hasn't archived — and downloads those exact manifests directly via Hubcap,
-    bypassing moon's on-demand fetch (the "no internet" path)."""
+    already resolved by the frontend's SteamDB scrape."""
     try:
         appid = int(appid)
     except Exception:
@@ -239,7 +266,7 @@ def download_build_with_gids(appid: int, buildid: str, depot_gid: Dict[str, str]
              if str(d).isdigit() and str(g).isdigit()}
     if not clean:
         return {"success": False, "error": "no depot:gid pairs supplied"}
-    _set(appid, {"status": "downloading", "op": "build", "percent": 0, "error": ""})
+    _set(appid, {"status": "resolving", "op": "build", "percent": 0, "error": ""})
     threading.Thread(target=_build_worker, args=(appid, clean, str(buildid)),
                      name=f"depotdl-build-{appid}", daemon=True).start()
     return {"success": True}
@@ -248,25 +275,54 @@ def download_build_with_gids(appid: int, buildid: str, depot_gid: Dict[str, str]
 def _build_worker(appid: int, depot_gid: Dict[str, str], buildid: str) -> None:
     try:
         root, installdir, dest = _game_dir(appid)
+        if not root:
+            _set(appid, {"status": "failed", "error": "Steam install path not found"})
+            return
         os.makedirs(dest, exist_ok=True)
         mf_dir = os.path.join(dest, ".slsdeck_manifests")
         os.makedirs(mf_dir, exist_ok=True)
         keys = _keys_for(appid)
+        if not keys:
+            _set(appid, {"status": "failed", "error": "No depot keys resolved for this game"})
+            return
+        _set(appid, {"status": "downloading", "percent": 0, "installPath": dest})
         ok, fail, last = _run(appid, appid, depot_gid, keys, dest, mf_dir)
-        if ok == 0:
+        size = _dir_size(dest)
+        if ok == 0 or size < 1_000_000:
             _set(appid, {"status": "failed", "error": f"No depot downloaded. {last}"})
             return
-        # Pin the build in moon too so Steam agrees on the version.
+        # Register the exact downloaded GIDs in Steam's appmanifest. This is the
+        # missing step for the moon-added-but-not-downloaded case: without it the
+        # bytes exist on disk, but Steam still has no recognized installed build.
+        name = ""
+        try:
+            name = downloads.fetch_app_name(appid) or f"App {appid}"
+        except Exception:
+            name = f"App {appid}"
+        assella._write_appmanifest(root, appid, installdir, name, depot_gid, size)
+        # Pin the build in moon too so ownership/update interception agrees with
+        # the appmanifest we just wrote.
         try:
             slssteam.pin_app_gids(appid, {int(d): g for d, g in depot_gid.items()})
         except Exception:
             pass
+        try:
+            slssteam.add_app(appid, name)
+        except Exception:
+            pass
+        for d, key in keys.items():
+            try:
+                if d in depot_gid:
+                    slssteam.cache_depot_key(appid, int(d), key)
+            except Exception:
+                pass
         try:
             from .utils import chown_to_user
             chown_to_user(dest, recursive=True)
         except Exception:
             pass
         _set(appid, {"status": "done", "success": True, "percent": 100,
+                     "installPath": dest,
                      "error": (f"{fail} depot(s) failed" if fail else "")})
     except Exception as exc:
         _set(appid, {"status": "failed", "error": str(exc)})
@@ -287,17 +343,14 @@ def download_dlc(appid: int) -> Dict[str, Any]:
 
 def _dlc_worker(appid: int) -> None:
     try:
-        # Depots + gids come from the full manifest bundle (Hubcap) / lua.
         bundle = downloads.fetch_manifest_bundle(appid)
-        mf = bundle.get("manifests", {})  # {depot: path}
+        mf = bundle.get("manifests", {})
         keys = _keys_for(appid)
-        # Determine gid per depot from the manifest filename.
         depot_gid: Dict[str, str] = {}
         for depot, path in mf.items():
             m = re.search(r"_(\d+)\.manifest$", os.path.basename(path))
             if m:
                 depot_gid[depot] = m.group(1)
-        # Only fetch depots we have a key for (the DLC content depots).
         depot_gid = {d: g for d, g in depot_gid.items() if d in keys}
         if not depot_gid:
             _set(appid, {"status": "failed",
@@ -307,7 +360,6 @@ def _dlc_worker(appid: int) -> None:
         os.makedirs(dest, exist_ok=True)
         mf_dir = os.path.join(dest, ".slsdeck_manifests")
         os.makedirs(mf_dir, exist_ok=True)
-        # Reuse the .manifest files the bundle already fetched.
         for depot, path in mf.items():
             try:
                 dst = os.path.join(mf_dir, os.path.basename(path))

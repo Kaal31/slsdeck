@@ -45,7 +45,10 @@ import {
 import { listLibraryAppIds } from "../lib/ownership";
 import { refreshBadges } from "../lib/badges";
 import { syncSlsCollection } from "../lib/collection";
+import { getEmojiBadgesEnabled, setEmojiBadgesEnabled } from "../lib/emojiBadges";
 
+const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
+const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
   const [on, setOn] = useState(false);
@@ -210,6 +213,7 @@ function OptionsPane() {
   const [pin, setPin] = useState(true);
   const [noNet, setNoNet] = useState(true);
   const [hideOwned, setHideOwned] = useState(true);
+  const [actionsFixesQam, setActionsFixesQam] = useState(true);
   const [gamesQam, setGamesQam] = useState(false);
   const [reinstallQam, setReinstallQam] = useState(true);
   const [badgeSls, setBadgeSls] = useState(true);
@@ -222,6 +226,7 @@ function OptionsPane() {
   const [badgeNonSteam, setBadgeNonSteam] = useState(true);
   const [badgeNonSteamName, setBadgeNonSteamName] = useState(true);
   const [badgeLibrary, setBadgeLibrary] = useState(true);
+  const [badgeEmoji, setBadgeEmoji] = useState(false);
   const [autoFix, setAutoFixState] = useState(false);
   const [libButtons, setLibButtons] = useState(true);
   const [autoApply, setAutoApplyState] = useState(false);
@@ -245,6 +250,13 @@ function OptionsPane() {
     getHideOnOwned().then((r) => setHideOwned(!!r.enabled)).catch(() => {});
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
     getShowReinstallQam().then((r) => setReinstallQam(!!r.enabled)).catch(() => {});
+    try {
+      const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
+      setActionsFixesQam(raw == null ? true : raw === "1");
+    } catch {
+      setActionsFixesQam(true);
+    }
+    setBadgeEmoji(getEmojiBadgesEnabled());
     getBadgeOptions()
       .then((r) => {
         if (!r.success) return;
@@ -263,7 +275,6 @@ function OptionsPane() {
     getLibraryButtons().then((r) => setLibButtons(!!r.enabled)).catch(() => {});
     getAutoFix().then((r) => setAutoFixState(!!r.enabled)).catch(() => {});
   }, []);
-
 
   return (
     <Body>
@@ -375,8 +386,22 @@ function OptionsPane() {
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
+            label="Show Actions & fixes in Quick Access"
+            description="Show the per-game Actions & fixes section in Quick Access, above the installed-games list. Applies immediately and when the panel is reopened."
+            checked={actionsFixesQam}
+            onChange={(v) => {
+              setActionsFixesQam(v);
+              try {
+                window.localStorage.setItem(ACTIONS_FIXES_QAM_KEY, v ? "1" : "0");
+                window.dispatchEvent(new CustomEvent(ACTIONS_FIXES_QAM_EVENT, { detail: v }));
+              } catch { /* ignore */ }
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
             label="Show added games in Quick Access"
-            description="Move the added-games list into the Quick Access panel, under Game controls (removes the Installed tab here). Applies when the panel is reopened."
+            description="Move the added-games list into the Quick Access panel, under Actions & fixes (removes the Installed tab here). Applies when the panel is reopened."
             checked={gamesQam}
             onChange={async (v) => { setGamesQam(v); await setGamesInQam(v); }}
           />
@@ -437,6 +462,18 @@ function OptionsPane() {
       <InjectionRecovery />
 
       <PanelSection title="Library badges">
+        <PanelSectionRow>
+          <ToggleField
+            label="Emoji Badges"
+            description="Replace each enabled badge with its emoji analogue: SLS 🏴‍☠️, Legit 💵, Fix 🔧, Online Fix 🌐, Denuvo 👺, Non-Steam ❓. Disabled badges stay hidden."
+            checked={badgeEmoji}
+            onChange={(v) => {
+              setBadgeEmoji(v);
+              setEmojiBadgesEnabled(v);
+              refreshBadges();
+            }}
+          />
+        </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
             label="SLS badge"
@@ -583,9 +620,11 @@ export function AdvancedPage() {
   const [tok, setTok] = useState(0);
   const bump = () => setTok((t) => t + 1);
   const [gamesInQam, setGamesInQam2] = useState(false);
+
   useEffect(() => {
     getGamesInQam().then((r) => setGamesInQam2(!!r.enabled)).catch(() => {});
   }, []);
+
 
   return (
     <SidebarNavigation

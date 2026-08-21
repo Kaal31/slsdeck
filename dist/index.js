@@ -334,6 +334,7 @@ const depotdlDownloadDlc = callable("depotdl_download_dlc");
 const depotdlQueue = callable("depotdl_queue");
 callable("ensure_all_dlc_keys");
 const triggerSteamInstall = callable("trigger_steam_install");
+const validateSteamApp = callable("validate_steam_app");
 const popInjectionEvents = callable("pop_injection_events");
 const getAutoReinject = callable("get_auto_reinject");
 const setAutoReinject = callable("set_auto_reinject");
@@ -929,6 +930,433 @@ async function runBuildAccurateApply(h) {
     return "awaiting";
 }
 
+const _cache = new Map();
+let _cancelToken = 0;
+function cancelSteamdbBuildFetch() {
+    _cancelToken++;
+}
+async function findSteamdbTab() {
+    try {
+        const res = await fetchNoCors("http://localhost:8080/json");
+        const tabs = await res.json();
+        return tabs.find((t) => t.url && t.url.includes("steamdb.info") && t.webSocketDebuggerUrl) || null;
+    }
+    catch {
+        return null;
+    }
+}
+function fetchRssInTab(wsUrl, appid, timeoutMs = 5000) {
+    const expr = `fetch('/api/PatchnotesRSS/?appid=${appid}',{credentials:'include'}).then(function(r){return r.status===200?r.text():'';}).catch(function(){return '';})`;
+    return new Promise((resolve) => {
+        let done = false;
+        let sock;
+        const finish = (v) => { if (done)
+            return; done = true; try {
+            sock.close();
+        }
+        catch { /* */ } resolve(v); };
+        try {
+            sock = new WebSocket(wsUrl);
+        }
+        catch {
+            resolve("");
+            return;
+        }
+        sock.onopen = () => {
+            try {
+                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true, awaitPromise: true } }));
+            }
+            catch {
+                finish("");
+            }
+        };
+        sock.onmessage = (ev) => {
+            try {
+                const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+                if (m && m.id === 1) {
+                    const v = m?.result?.result?.value;
+                    finish(typeof v === "string" ? v : "");
+                }
+            }
+            catch { /* */ }
+        };
+        sock.onerror = () => finish("");
+        setTimeout(() => finish(""), timeoutMs);
+    });
+}
+function parseRss(xml) {
+    const out = [];
+    const items = xml.split(/<item>/i).slice(1);
+    for (const it of items) {
+        const link = (it.match(/<link>([^<]*)<\/link>/i) || [])[1] || "";
+        const title = (it.match(/<title>([^<]*)<\/title>/i) || [])[1] || "";
+        const pub = (it.match(/<pubDate>([^<]*)<\/pubDate>/i) || [])[1] || "";
+        let bid = (link.match(/\/patchnotes\/(\d+)/) || [])[1] || "";
+        if (!bid)
+            bid = (title.match(/Build\s+(\d+)/i) || [])[1] || "";
+        if (!bid)
+            continue;
+        let date = "";
+        try {
+            const d = new Date(pub);
+            if (!isNaN(d.getTime()))
+                date = d.toISOString().slice(0, 10);
+        }
+        catch { /* */ }
+        out.push({ buildid: bid, date });
+    }
+    return out;
+}
+async function fetchSteamdbBuilds(appid, onStatus) {
+    if (_cache.has(appid))
+        return _cache.get(appid);
+    const token = _cancelToken;
+    let tab = await findSteamdbTab();
+    if (!tab) {
+        onStatus?.("Opening SteamDB once for build history…");
+        try {
+            DFL.Navigation.NavigateToExternalWeb(`https://steamdb.info/app/${appid}/patchnotes/`);
+        }
+        catch { /* */ }
+    }
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline && token === _cancelToken) {
+        tab = await findSteamdbTab();
+        if (tab?.webSocketDebuggerUrl) {
+            onStatus?.("Reading SteamDB build history…");
+            const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
+            if (token !== _cancelToken)
+                return [];
+            if (xml && xml.includes("<item>")) {
+                const rows = parseRss(xml);
+                if (rows.length) {
+                    _cache.set(appid, rows);
+                    return rows;
+                }
+            }
+            onStatus?.("SteamDB opened, but build history is not available yet. Sign in there for full history.");
+        }
+        else {
+            onStatus?.("Waiting briefly for the SteamDB page…");
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+    }
+    return [];
+}
+
+/** Close a CEF tab by its target id (so we don't leave a SteamDB page open per
+ *  depot). Best-effort over the same debugger endpoint we list tabs from. */
+async function closeTab(id) {
+    if (!id)
+        return;
+    try {
+        await fetchNoCors("http://localhost:8080/json/close/" + id);
+    }
+    catch { /* */ }
+}
+// Table has headers Seen Date / Relative Date / ManifestID. Pull gid (19-ish
+// digits) + normalise the date to YYYY-MM-DD so the backend can build-label it.
+const SCRAPE_EXPR$1 = `(function(){try{
+  var tables=[].slice.call(document.querySelectorAll('table'));
+  var mt=null;
+  for(var i=0;i<tables.length;i++){
+    var hs=[].slice.call(tables[i].querySelectorAll('th')).map(function(x){return (x.textContent||'').trim().toLowerCase();});
+    if(hs.indexOf('manifestid')>=0 || hs.some(function(h){return /manifest\\s*id/.test(h);})){ mt=tables[i]; break; }
+  }
+  if(!mt) return '';
+  var out=[];
+  [].slice.call(mt.querySelectorAll('tbody tr')).forEach(function(tr){
+    var tds=[].slice.call(tr.querySelectorAll('td')).map(function(td){return (td.textContent||'').trim();});
+    var gid=''; var date='';
+    tds.forEach(function(c){
+      if(/^\\d{15,}$/.test(c)) gid=c;
+      else if(!date && /\\d{4}/.test(c) && /UTC|[A-Za-z]{3,}/.test(c)){
+        try{ var dd=new Date(c.replace(/[\\u2013\\u2014-].*$/,'').trim()); if(!isNaN(dd.getTime())) date=dd.toISOString().slice(0,10); }catch(e){}
+      }
+    });
+    if(gid) out.push({gid:gid,date:date});
+  });
+  return JSON.stringify(out);
+}catch(e){return '';}})()`;
+async function findTab$1(urlPart) {
+    try {
+        const res = await fetchNoCors("http://localhost:8080/json");
+        const tabs = await res.json();
+        return tabs.find((t) => t.url && t.url.includes(urlPart) && t.webSocketDebuggerUrl) || null;
+    }
+    catch {
+        return null;
+    }
+}
+function evalOnTab$2(wsUrl, expr, timeoutMs = 6000) {
+    return new Promise((resolve) => {
+        let done = false;
+        let sock;
+        const finish = (v) => { if (done)
+            return; done = true; try {
+            sock.close();
+        }
+        catch { /* */ } resolve(v); };
+        try {
+            sock = new WebSocket(wsUrl);
+        }
+        catch {
+            resolve("");
+            return;
+        }
+        sock.onopen = () => {
+            try {
+                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true } }));
+            }
+            catch {
+                finish("");
+            }
+        };
+        sock.onmessage = (ev) => {
+            try {
+                const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+                if (m && m.id === 1) {
+                    const v = m?.result?.result?.value;
+                    finish(typeof v === "string" ? v : "");
+                }
+            }
+            catch { /* */ }
+        };
+        sock.onerror = () => finish("");
+        setTimeout(() => finish(""), timeoutMs);
+    });
+}
+/** Open a depot's SteamDB manifests page and scrape its gid history. Returns []
+ *  if the page never yields a table in time (e.g. not signed in / blocked).
+ *  `isCancelled` lets the caller stop the work immediately when its UI closes. */
+async function scrapeDepotManifests(depot, maxMs = 25000, onStatus, isCancelled) {
+    if (isCancelled?.())
+        return [];
+    const urlPart = `steamdb.info/depot/${depot}`;
+    try {
+        DFL.Navigation.NavigateToExternalWeb(`https://${urlPart}/manifests/`);
+    }
+    catch { /* */ }
+    const deadline = Date.now() + maxMs;
+    let lastId;
+    try {
+        while (Date.now() < deadline) {
+            if (isCancelled?.())
+                return [];
+            const tab = await findTab$1(urlPart);
+            if (isCancelled?.())
+                return [];
+            if (tab?.webSocketDebuggerUrl) {
+                lastId = tab.id;
+                const raw = await evalOnTab$2(tab.webSocketDebuggerUrl, SCRAPE_EXPR$1);
+                if (isCancelled?.())
+                    return [];
+                if (raw) {
+                    try {
+                        const arr = JSON.parse(raw);
+                        if (Array.isArray(arr) && arr.length)
+                            return arr;
+                    }
+                    catch { /* */ }
+                }
+                onStatus?.("Reading SteamDB — sign in there for full history…");
+            }
+            else {
+                onStatus?.(`Opening SteamDB depot ${depot}…`);
+            }
+            for (let waited = 0; waited < 1500; waited += 100) {
+                if (isCancelled?.())
+                    return [];
+                await new Promise((r) => setTimeout(r, 100));
+            }
+        }
+        return [];
+    }
+    finally {
+        // Always close the depot page we opened — success, timeout, or cancellation —
+        // so a multi-depot game doesn't leave a stack of SteamDB tabs behind.
+        await closeTab(lastId);
+    }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function cleanGids(gids) {
+    const out = {};
+    for (const [depot, gid] of Object.entries(gids || {})) {
+        if (/^\d+$/.test(String(depot)) && /^\d+$/.test(String(gid)))
+            out[String(depot)] = String(gid);
+    }
+    return out;
+}
+function samePinnedGids(pinned, current, target) {
+    if (!pinned)
+        return false;
+    const keys = Object.keys(target);
+    if (!keys.length)
+        return false;
+    const cur = current || {};
+    return keys.every((depot) => String(cur[depot] || "") === String(target[depot]));
+}
+async function resolveGidsViaSteamdb(appid, buildid, onProgress) {
+    onProgress({ phase: "resolving", message: `Loading SteamDB history for build ${buildid}…` });
+    let builds = [];
+    try {
+        builds = await fetchSteamdbBuilds(appid, (s) => onProgress({ phase: "resolving", message: s || `Loading SteamDB history for build ${buildid}…` }));
+    }
+    catch {
+        return {};
+    }
+    const target = builds.find((b) => String(b.buildid) === String(buildid));
+    const buildDate = String(target?.date || "").slice(0, 10);
+    if (!buildDate)
+        return {};
+    let depots = [];
+    try {
+        const r = await bpListDepotManifests(appid);
+        if (r.success)
+            depots = (r.depots || []).map((d) => String(d.depot));
+    }
+    catch {
+        return {};
+    }
+    if (!depots.length)
+        return {};
+    const targetTime = new Date(buildDate).getTime();
+    const out = {};
+    for (let i = 0; i < depots.length; i += 1) {
+        const depot = depots[i];
+        onProgress({
+            phase: "resolving",
+            message: `SteamDB: resolving depot ${depot} (${i + 1}/${depots.length}) for build ${buildid}…`,
+        });
+        let rows = [];
+        try {
+            rows = await scrapeDepotManifests(depot, 25000, (s) => onProgress({ phase: "resolving", message: s || `SteamDB: resolving depot ${depot}…` }));
+        }
+        catch {
+            continue;
+        }
+        let best = "";
+        let bestDelta = Number.POSITIVE_INFINITY;
+        for (const row of rows) {
+            if (String(row.date || "").slice(0, 10) === buildDate) {
+                best = String(row.gid || "");
+                break;
+            }
+            const t = row.date ? new Date(row.date).getTime() : NaN;
+            if (!Number.isFinite(t) || !Number.isFinite(targetTime))
+                continue;
+            const delta = Math.abs(t - targetTime);
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                best = String(row.gid || "");
+            }
+        }
+        if (/^\d+$/.test(best))
+            out[depot] = best;
+    }
+    return out;
+}
+/**
+ * Prepare the exact Steam build required by an HVAuto / CrakFiles entry.
+ *
+ * Prefer the same direct DepotDownloader path used by the SteamDB build picker.
+ * If the game is already pinned to this exact build and fully downloaded, skip
+ * all build work. If HVAuto's backend resolver does not have GIDs for an older
+ * build, resolve them through the same signed-in SteamDB depot-history scraper
+ * used by "Install a specific build". When DepotDownloader is unavailable, pin
+ * the exact GIDs through bpApplyBuild and trigger Steam so the caller can show
+ * its normal "Start download / Apply now" guided prompt.
+ */
+async function prepareCatalogFixBuild(appid, buildid, gidsInput, onProgress) {
+    if (!buildid)
+        throw new Error("This fix does not specify a Steam build.");
+    onProgress({ phase: "resolving", message: `Checking build ${buildid}…` });
+    const pin = await getPinStatus(appid).catch(() => ({ success: false, pinned: false }));
+    const completePinned = !!pin.pinned ? await isDownloadComplete(appid) : false;
+    if (completePinned &&
+        pin.buildid &&
+        String(pin.buildid) === String(buildid)) {
+        onProgress({
+            phase: "already_ready",
+            percent: 100,
+            message: `Correct build ${buildid} is already installed and pinned — skipping build download.`,
+        });
+        return { status: "ready", alreadyReady: true };
+    }
+    let gids = cleanGids(gidsInput);
+    if (samePinnedGids(!!pin.pinned, pin.depots, gids) && completePinned) {
+        onProgress({
+            phase: "already_ready",
+            percent: 100,
+            message: `Correct build ${buildid} is already installed and pinned — skipping build download.`,
+        });
+        return { status: "ready", alreadyReady: true };
+    }
+    // Older-build catalog entries sometimes cannot be reconstructed by the
+    // backend's keyless archive/date join. In that case use the exact same signed-
+    // in SteamDB browser pipeline as the manual specific-build picker.
+    if (!Object.keys(gids).length) {
+        const steamdb = cleanGids(await resolveGidsViaSteamdb(appid, buildid, onProgress));
+        if (Object.keys(steamdb).length)
+            gids = steamdb;
+    }
+    if (!Object.keys(gids).length) {
+        throw new Error(`Build ${buildid} is known, but its depot manifests could not be resolved. ` +
+            "Open SteamDB once/sign in if prompted, then retry this fix.");
+    }
+    // The SteamDB fallback may have discovered the exact same GIDs that are
+    // already pinned. Re-check before starting an unnecessary build download.
+    if (samePinnedGids(!!pin.pinned, pin.depots, gids) && completePinned) {
+        onProgress({
+            phase: "already_ready",
+            percent: 100,
+            message: `Correct build ${buildid} is already installed and pinned — skipping build download.`,
+        });
+        return { status: "ready", alreadyReady: true };
+    }
+    const ddl = await depotdlStatus().catch(() => ({ success: false, available: false }));
+    if (ddl.available) {
+        onProgress({ phase: "build_downloading", percent: 0, message: `Preparing build ${buildid}…` });
+        const started = await depotdlDownloadBuildGids(appid, buildid, JSON.stringify(gids));
+        if (!started.success)
+            throw new Error(started.error || "Could not start the build download.");
+        const deadline = Date.now() + 30 * 60 * 1000;
+        while (Date.now() < deadline) {
+            const q = await depotdlQueue();
+            const job = (q.items || []).find((x) => x.appid === appid);
+            if (job) {
+                const pct = Number.isFinite(Number(job.percent)) ? Math.max(0, Math.min(100, Number(job.percent))) : 0;
+                onProgress({
+                    phase: "build_downloading",
+                    percent: pct,
+                    message: job.status === "resolving" ? `Resolving build ${buildid}…` : `Downloading build ${buildid}…`,
+                });
+                if (job.status === "done") {
+                    onProgress({ phase: "build_ready", percent: 100, message: `Build ${buildid} installed and pinned.` });
+                    return { status: "ready", alreadyReady: false };
+                }
+                if (job.status === "failed")
+                    throw new Error(job.error || "Build download failed.");
+            }
+            await sleep(1000);
+        }
+        throw new Error("Build download timed out after 30 minutes.");
+    }
+    // Same exact-GID fallback as the SteamDB picker when direct DepotDownloader is
+    // not available: pin first, then ask the live Steam client to install/update.
+    const pinned = await bpApplyBuild(appid, buildid, "", JSON.stringify(gids));
+    if (!pinned.success)
+        throw new Error(pinned.error || `Could not pin build ${buildid}.`);
+    await noInternetFixBegin(appid).catch(() => ({}));
+    await triggerSteamInstall(appid).catch(() => ({}));
+    onProgress({
+        phase: "steam_downloading",
+        message: `Build ${buildid} pinned — Steam is downloading it.`,
+    });
+    return { status: "awaiting_steam" };
+}
+
 // Force Steam to download/update a game to its pinned build by launching it.
 //
 // Pinning a build only changes the *target* manifest; Steam won't fetch the new
@@ -1015,8 +1443,10 @@ function FixPicker({ appid, onReload, onClose }) {
     const [msg, setMsg] = SP_REACT.useState("");
     const [autoApply, setAutoApplyState] = SP_REACT.useState(false);
     // Guided build-accurate apply: after pin+update we wait for the user to press
-    // "Apply now". `awaiting` holds the deferred apply and its label.
+    // "Apply now". `awaiting` holds the deferred apply and the originating fix row.
     const [awaiting, setAwaiting] = SP_REACT.useState(null);
+    const [activeFixKey, setActiveFixKey] = SP_REACT.useState("");
+    const [fixState, setFixState] = SP_REACT.useState({});
     const [dlComplete, setDlComplete] = SP_REACT.useState(false);
     const poll = SP_REACT.useRef(null);
     const dlPoll = SP_REACT.useRef(null);
@@ -1132,7 +1562,7 @@ function FixPicker({ appid, onReload, onClose }) {
         try {
             const r = await hvAutoStatus(appid);
             setHv(r.success && r.found
-                ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0] }
+                ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0], gids: r.resolve?.gids || {} }
                 : { found: false });
         }
         catch {
@@ -1141,7 +1571,7 @@ function FixPicker({ appid, onReload, onClose }) {
         try {
             const r = await crakStatus(appid);
             setCrak(r.success && r.found
-                ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0], badges: r.badges }
+                ? { found: true, buildid: r.buildid, status: r.resolve?.status, href: r.hrefs?.[0], badges: r.badges, gids: r.resolve?.gids || {} }
                 : { found: false });
         }
         catch {
@@ -1157,6 +1587,8 @@ function FixPicker({ appid, onReload, onClose }) {
         setCheck(null);
         setApplied([]);
         setAwaiting(null);
+        setActiveFixKey("");
+        setFixState({});
         setDlComplete(false);
         refresh();
     }, [appid]);
@@ -1166,6 +1598,7 @@ function FixPicker({ appid, onReload, onClose }) {
             try {
                 const st = (await getState()).state || {};
                 setMsg(st.status || "");
+                setFixState(st);
                 if (["done", "failed", "cancelled"].includes(st.status || "")) {
                     stop();
                     setBusy("");
@@ -1250,6 +1683,8 @@ function FixPicker({ appid, onReload, onClose }) {
     // installed & downloaded, it skips straight to applying.
     const runApply = async (key, label, startExtract, pinFn) => {
         setAwaiting(null);
+        setActiveFixKey(key);
+        setFixState({});
         stopFlag.current = false;
         setBusy(key);
         resetFixRuntime(appid);
@@ -1258,10 +1693,12 @@ function FixPicker({ appid, onReload, onClose }) {
             stopDl();
             setBusy(`${key}:apply`);
             setMsg(`Applying ${label}…`);
+            setFixState({ status: "starting" });
             const res = await startExtract();
             if (!res || !res.success) {
                 setBusy("");
                 setMsg(res?.error || "Fix failed");
+                setFixState({ status: "failed", error: res?.error || "Fix failed" });
                 throw new Error("apply-start-failed");
             }
             watch(() => getFixStatus(appid), `${label} applied — restart Steam`, "Fix failed", (st) => {
@@ -1289,7 +1726,7 @@ function FixPicker({ appid, onReload, onClose }) {
             });
             if (result === "awaiting") {
                 setBusy("");
-                setAwaiting({ label, run: doApply });
+                setAwaiting({ key, label, run: doApply });
                 startDlPoll();
             }
         }
@@ -1394,56 +1831,100 @@ function FixPicker({ appid, onReload, onClose }) {
             setBusy("");
         }
     };
-    const doCrak = async () => {
-        setBusy("crak");
-        setMsg("Applying crack (pinning build + downloading)…");
+    const applyCatalogPayload = async (kind, key) => {
+        setAwaiting(null);
+        stopDl();
+        setBusy(key);
+        setActiveFixKey(key);
+        setFixState({ status: "fix_installing" });
+        setMsg(kind === "hv" ? "Downloading / extracting HV crack…" : "Downloading / extracting CrakFiles crack…");
         try {
-            const r = await crakApply(appid, crak?.href || "");
+            const r = kind === "hv"
+                ? await hvAutoApply(appid, hv?.href || "")
+                : await crakApply(appid, crak?.href || "");
             if (r.success) {
                 setManualDl(null);
-                setMsg(`Crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}) — ${r.installed || 0} file(s). ` +
-                    (r.note || "") + " Restart Steam.");
+                setFixState({ status: "done" });
+                if (kind === "hv") {
+                    setMsg(`HV crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}). ` +
+                        (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
+                        (r.note || ""));
+                }
+                else {
+                    setMsg(`Crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}) — ${r.installed || 0} file(s). ` +
+                        (r.note || "") + " Restart Steam.");
+                }
+                onReload?.();
+                refresh();
+                return;
             }
-            else if (r.needsManual && r.url) {
-                setManualDl({ url: r.url, kind: "crak" });
+            if (r.needsManual && r.url) {
+                setFixState({ status: "failed", error: "Manual download required" });
+                setManualDl({ url: r.url, kind });
                 openManual(r.url);
+                return;
             }
-            else {
-                setMsg(r.notFound ? "No CrakFiles crack for this title." : r.error || "Crack apply failed");
-            }
+            const error = r.notFound
+                ? kind === "hv" ? "No HV crack for this title." : "No CrakFiles crack for this title."
+                : r.error || (kind === "hv" ? "HV apply failed" : "Crack apply failed");
+            setFixState({ status: "failed", error });
+            setMsg(error);
         }
-        catch {
-            setMsg("Crack apply failed");
+        catch (e) {
+            const error = `${kind === "hv" ? "HV" : "CrakFiles"} apply failed: ${e}`;
+            setFixState({ status: "failed", error });
+            setMsg(error);
         }
         finally {
             setBusy("");
         }
     };
-    const doHv = async () => {
-        setBusy("hv");
-        setMsg("Applying HV crack (pinning build + downloading)…");
+    const runCatalogFix = async (kind) => {
+        const target = kind === "hv" ? hv : crak;
+        const key = `catalog:${kind}`;
+        const label = kind === "hv" ? "HV crack" : "CrakFiles crack";
+        if (!target?.found) {
+            setMsg(kind === "hv" ? "No HV crack for this title." : "No CrakFiles crack for this title.");
+            return;
+        }
+        if (!installPath) {
+            setMsg("Game is not installed yet — install the target build before applying this fix.");
+            return;
+        }
+        setAwaiting(null);
+        setActiveFixKey(key);
+        setFixState({ status: "resolving" });
+        setBusy(key);
+        setMsg(`Resolving required build ${target.buildid || "?"}…`);
+        stopFlag.current = false;
         try {
-            const r = await hvAutoApply(appid, hv?.href || "");
-            if (r.success) {
-                setManualDl(null);
-                setMsg(`HV crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}). ` +
-                    (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
-                    (r.note || ""));
+            const prepared = await prepareCatalogFixBuild(appid, target.buildid || "", target.gids || {}, (p) => {
+                setMsg(p.message || "");
+                setFixState({
+                    status: p.phase,
+                    ...((p.percent != null) ? { percent: p.percent } : {}),
+                });
+            });
+            if (prepared.status === "ready") {
+                await applyCatalogPayload(kind, key);
+                return;
             }
-            else if (r.needsManual && r.url) {
-                setManualDl({ url: r.url, kind: "hv" });
-                openManual(r.url);
-            }
-            else {
-                setMsg(r.notFound ? "No HV crack for this title." : r.error || "HV apply failed");
-            }
-        }
-        catch {
-            setMsg("HV apply failed");
-        }
-        finally {
             setBusy("");
+            setAwaiting({ key, label, run: () => applyCatalogPayload(kind, key) });
+            startDlPoll();
         }
+        catch (e) {
+            const error = `${e}`.replace(/^Error:\s*/, "");
+            setBusy("");
+            setFixState({ status: "failed", error });
+            setMsg(error);
+        }
+    };
+    const doCrak = async () => {
+        await runCatalogFix("crak");
+    };
+    const doHv = async () => {
+        await runCatalogFix("hv");
     };
     const doCustomFix = async (item) => {
         setBusy(`custom-${item.id}`);
@@ -1640,23 +2121,66 @@ function FixPicker({ appid, onReload, onClose }) {
     const isApplied = (fixType) => applied.some((f) => (f.fixType || "").toLowerCase() === fixType.toLowerCase());
     const working = busy !== "";
     const bs = { minWidth: 0, flex: 1, padding: "5px 8px", fontSize: 12 };
+    const renderFixFlow = (key) => {
+        const showProgress = activeFixKey === key && !!fixState.status;
+        const total = Number(fixState.totalBytes || 0);
+        const read = Number(fixState.bytesRead || 0);
+        const phasePercent = Number(fixState.percent);
+        const percent = Number.isFinite(phasePercent)
+            ? Math.max(0, Math.min(100, Math.round(phasePercent)))
+            : total > 0
+                ? Math.max(0, Math.min(100, Math.round((read / total) * 100)))
+                : fixState.status === "done"
+                    ? 100
+                    : undefined;
+        return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [showProgress && (SP_JSX.jsxs("div", { style: { marginTop: 7, padding: 7, borderRadius: 6, background: "rgba(255,255,255,0.05)" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, marginBottom: 4 }, children: [SP_JSX.jsx("span", { children: fixState.status === "resolving"
+                                        ? "Resolving required build…"
+                                        : fixState.status === "already_ready"
+                                            ? "Correct build already installed"
+                                            : fixState.status === "build_downloading"
+                                                ? "Downloading required build…"
+                                                : fixState.status === "build_ready"
+                                                    ? "Required build ready"
+                                                    : fixState.status === "steam_downloading"
+                                                        ? "Waiting for Steam build download…"
+                                                        : fixState.status === "fix_installing"
+                                                            ? "Downloading / extracting fix…"
+                                                            : fixState.status === "downloading"
+                                                                ? "Downloading fix…"
+                                                                : fixState.status === "extracting"
+                                                                    ? "Extracting fix…"
+                                                                    : fixState.status === "done"
+                                                                        ? "Fix applied"
+                                                                        : fixState.status === "failed"
+                                                                            ? "Fix failed"
+                                                                            : "Applying fix…" }), SP_JSX.jsx("span", { style: { opacity: 0.7 }, children: percent != null
+                                        ? `${percent}%`
+                                        : read > 0
+                                            ? `${(read / 1024 / 1024).toFixed(1)} MB`
+                                            : "" })] }), SP_JSX.jsx("progress", { max: 100, ...(percent != null ? { value: percent } : {}), style: { width: "100%", height: 8 } })] })), awaiting?.key === key && (SP_JSX.jsxs("div", { style: {
+                        border: "1px solid rgba(120,180,255,0.4)",
+                        borderRadius: 8,
+                        padding: 8,
+                        marginTop: 7,
+                        background: "rgba(80,130,220,0.08)",
+                    }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginBottom: 4 }, children: "Pinned \u2014 waiting for Steam to update the game" }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginBottom: 6 }, children: dlComplete
+                                ? "Download complete. Press Apply now to install the fix onto this build."
+                                : "Press Start download now to retry Steam's pinned-build update. The game is launched too, which helps Steam begin the download if it is still idle." }), !dlComplete && (SP_JSX.jsx(DFL.DialogButton, { style: { ...bs, marginBottom: 6 }, onClick: async () => {
+                                await noInternetFixBegin(appid).catch(() => ({}));
+                                await triggerSteamInstall(appid).catch(() => ({}));
+                                launchGame(appid);
+                            }, children: "\u25B6 Start download now" })), SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: [SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => awaiting.run().catch(() => { }), children: dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)" }), SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => {
+                                        stopFlag.current = true;
+                                        stopDl();
+                                        setAwaiting(null);
+                                        setMsg("Cancelled — the pin is kept; you can apply later.");
+                                    }, children: "Cancel" })] })] }))] }));
+    };
     return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: SP_JSX.jsxs("div", { children: ["\uD83D\uDD12 Version pinned", pinInfo.buildid
                             ? ` — Build ${pinInfo.buildid}`
                             : (pinInfo.depots && Object.keys(pinInfo.depots).length
                                 ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
-                                : ""), " \u2014 the game won't update past the pinned version."] }) })), awaiting && (SP_JSX.jsxs("div", { style: {
-                    border: "1px solid rgba(120,180,255,0.4)",
-                    borderRadius: 8,
-                    padding: 8,
-                    background: "rgba(80,130,220,0.08)",
-                }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginBottom: 4 }, children: "Pinned \u2014 waiting for Steam to update the game" }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginBottom: 6 }, children: dlComplete
-                            ? "Download complete. Press Apply now to install the fix onto this build."
-                            : "If the download won't start on its own, tap Start download to launch the game — Steam then updates to the pinned build. Exit once it's done and press Apply now." }), !dlComplete && (SP_JSX.jsx(DFL.DialogButton, { style: { ...bs, marginBottom: 6 }, onClick: async () => { await noInternetFixBegin(appid).catch(() => ({})); launchGame(appid); }, children: "\u25B6 Start download (launch game)" })), SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: [SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => awaiting.run().catch(() => { }), children: dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)" }), SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => {
-                                    stopFlag.current = true;
-                                    stopDl();
-                                    setAwaiting(null);
-                                    setMsg("Cancelled — the pin is kept; you can apply later.");
-                                }, children: "Cancel" })] })] })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
+                                : ""), " \u2014 the game won't update past the pinned version."] }) })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
                     ? "🔒 Already pinned"
                     : busy === "game:manifest"
                         ? msg || "Adding…"
@@ -1674,12 +2198,13 @@ function FixPicker({ appid, onReload, onClose }) {
                                 : "Turn multiplayer patch on" }))] })), rows.map((row) => {
                 const avail = !!row.info?.available;
                 const done = isApplied(row.fixType);
+                const flowKey = `${row.key}:fix`;
                 return (SP_JSX.jsxs("div", { style: {
                         border: "1px solid rgba(255,255,255,0.12)",
                         borderRadius: 8,
                         padding: 8,
                         opacity: avail || done ? 1 : 0.55,
-                    }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: [row.label, SP_JSX.jsx(BadgeChip, { badge: row.info?.badge, inline: true }), done ? " · ✓ Applied" : avail ? " · Available" : " · Not available"] }), row.info?.file && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: row.info.file })), (row.info?.url || "").includes("generator.ryuu.lol") && !hasRyuuKey && (SP_JSX.jsx("div", { style: { fontSize: 11, color: "#ffcc66", marginBottom: 4 }, children: "\uD83D\uDD11 Needs a Ryuu API key \u2014 add it in Settings to download this fix." })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting || !avail, onClick: () => doFix(row), children: busy.startsWith(`${row.key}:fix`) ? "Working…" : avail ? "Apply this fix" : "No fix" }) })] }, row.key));
+                    }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: [row.label, SP_JSX.jsx(BadgeChip, { badge: row.info?.badge, inline: true }), done ? " · ✓ Applied" : avail ? " · Available" : " · Not available"] }), row.info?.file && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: row.info.file })), (row.info?.url || "").includes("generator.ryuu.lol") && !hasRyuuKey && (SP_JSX.jsx("div", { style: { fontSize: 11, color: "#ffcc66", marginBottom: 4 }, children: "\uD83D\uDD11 Needs a Ryuu API key \u2014 add it in Settings to download this fix." })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting || !avail, onClick: () => doFix(row), children: busy.startsWith(flowKey) ? "Working…" : avail ? "Apply this fix" : "No fix" }) }), renderFixFlow(flowKey)] }, row.key));
             }), (() => {
                 const cat = (check.luatoolsCatalog || []);
                 const authed = check.luatoolsAuthed;
@@ -1720,7 +2245,8 @@ function FixPicker({ appid, onReload, onClose }) {
                             ]
                                 .filter(Boolean)
                                 .join(" · ");
-                            return (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: title }), tags.length > 0 && (SP_JSX.jsx("div", { style: { marginBottom: 4 }, children: tags.map((t, ti) => SP_JSX.jsx(BadgeChip, { badge: t }, ti)) })), meta && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: meta })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: () => doLtFix(fix), children: busy.startsWith(`lt:${fix.id}`) ? "Working…" : "Apply & pin to build" }) })] }, `lt-${fix.id || i}`));
+                            const flowKey = `lt:${fix.id}`;
+                            return (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: title }), tags.length > 0 && (SP_JSX.jsx("div", { style: { marginBottom: 4 }, children: tags.map((t, ti) => SP_JSX.jsx(BadgeChip, { badge: t }, ti)) })), meta && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: meta })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: () => doLtFix(fix), children: busy.startsWith(flowKey) ? "Working…" : "Apply & pin to build" }) }), renderFixFlow(flowKey)] }, `lt-${fix.id || i}`));
                         })] }));
             })(), (!dlcOwnedOnly || (!added && isInLibrary(appid))) && smoke?.supported && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => doSmoke(!smoke.installed), children: busy === "smoke"
                     ? "Working…"
@@ -1730,14 +2256,44 @@ function FixPicker({ appid, onReload, onClose }) {
                     ? "Working…"
                     : dlcU[kind]?.installed
                         ? `Remove ${UNLOCKER_LABEL[kind]}`
-                        : `Unlock ${UNLOCKER_LABEL[kind]}` }, kind)) : null), hv?.found && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doHv, children: busy === "hv"
-                    ? "Applying HV crack…"
-                    : `Apply HV crack (build ${hv.buildid || "?"}${hv.status === "older" ? " · build mismatch" : ""})` })), crak?.found && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doCrak, children: busy === "crak"
-                    ? "Applying crack…"
-                    : `Apply crack — CrakFiles${crak.buildid ? ` (build ${crak.buildid}${crak.status === "older" ? " · outdated crack" : ""})` : ""}` })), customFixes.map((item) => (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => doCustomFix(item), children: busy === `custom-${item.id}` ? "Applying…" : `Custom fix — ${item.label}` }, item.id))), applied.length > 0 ? (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doUnfix, children: busy === "unfix" ? "Reverting & unpinning…" : "Un-fix and unpin" })) : pinned ? (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doUnpinOnly, children: busy === "unpin" ? "Unpinning…" : "Unpin (back to latest)" })) : null, manualDl && (SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", gap: 4 }, children: [SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: applyFromDownloads, children: busy === "manualdl" ? "Installing…" : "Apply from Downloads…" }), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => { try {
+                        : `Unlock ${UNLOCKER_LABEL[kind]}` }, kind)) : null), hv?.found && (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["HVAuto crack \u00B7 build ", hv.buildid || "?"] }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.65, marginBottom: 6 }, children: "Build-matched: installs the required Steam build first, then applies the HV fix." }), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doHv, children: busy === "catalog:hv"
+                            ? "Preparing / applying HV crack…"
+                            : `Apply HV crack${hv.status === "older" ? " · older target build" : ""}` }), renderFixFlow("catalog:hv")] })), crak?.found && (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["CrakFiles \u00B7 build ", crak.buildid || "?"] }), !!crak.badges?.length && (SP_JSX.jsx("div", { style: { marginBottom: 4 }, children: crak.badges.map((b, i) => SP_JSX.jsx(BadgeChip, { badge: b }, i)) })), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.65, marginBottom: 6 }, children: "Build-matched: installs the required Steam build first, then applies the crack." }), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doCrak, children: busy === "catalog:crak"
+                            ? "Preparing / applying crack…"
+                            : `Apply CrakFiles crack${crak.status === "older" ? " · older target build" : ""}` }), renderFixFlow("catalog:crak")] })), customFixes.map((item) => (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => doCustomFix(item), children: busy === `custom-${item.id}` ? "Applying…" : `Custom fix — ${item.label}` }, item.id))), applied.length > 0 ? (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doUnfix, children: busy === "unfix" ? "Reverting & unpinning…" : "Un-fix and unpin" })) : pinned ? (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doUnpinOnly, children: busy === "unpin" ? "Unpinning…" : "Unpin (back to latest)" })) : null, manualDl && (SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", gap: 4 }, children: [SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: applyFromDownloads, children: busy === "manualdl" ? "Installing…" : "Apply from Downloads…" }), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => { try {
                             DFL.Navigation.NavigateToExternalWeb(manualDl.url);
                         }
                         catch { /* */ } }, children: "Re-open download page" })] })), msg && SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, padding: "0 2px" }, children: msg })] }));
+}
+
+const EMOJI_BADGE_STORAGE_KEY = "slsdeck.emojiBadges";
+const EMOJI_BADGE_LABELS = {
+    sls: "🏴‍☠️",
+    legit: "💵",
+    fixed: "🔧",
+    onlinefix: "🌐",
+    denuvo: "👺",
+    nonsteam: "❓",
+};
+function getEmojiBadgesEnabled() {
+    try {
+        return window.localStorage.getItem(EMOJI_BADGE_STORAGE_KEY) === "1";
+    }
+    catch {
+        return false;
+    }
+}
+function setEmojiBadgesEnabled(enabled) {
+    try {
+        window.localStorage.setItem(EMOJI_BADGE_STORAGE_KEY, enabled ? "1" : "0");
+        window.dispatchEvent(new CustomEvent("slsdeck-emoji-badges", { detail: enabled }));
+    }
+    catch {
+        /* ignore */
+    }
+}
+function badgeDisplayLabel(kind, fallback) {
+    return getEmojiBadgesEnabled() ? (EMOJI_BADGE_LABELS[kind] || fallback) : fallback;
 }
 
 /**
@@ -1772,21 +2328,15 @@ const BADGE_COLORS = {
     denuvo: "linear-gradient(135deg, #a12a2a 0%, #e05252 100%)",
     onlinefix: "linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%)",
     fixed: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)",
-    // Non-Steam: solid black with white text, as requested.
     nonsteam: "#000000",
-    // App-name badge: a neutral dark slate so it reads as secondary info.
     nonsteamname: "linear-gradient(135deg, #3a3f4b 0%, #555b68 100%)",
 };
-/* ── state ─────────────────────────────────────────────────────────────── */
 let observer = null;
 let scanTimer = null;
 let retryTimer = null;
 let rafHandle = null;
 let cachedWindow = null;
 let slsIds = new Set();
-// LEGIT is only trustworthy once we know which games are ours. If the backend
-// lookup ever fails, an SLSsteam game would otherwise fall through and be
-// mislabelled as owned — so suppress LEGIT entirely until this is true.
 let slsLoaded = false;
 let everAddedIds = new Set();
 let denuvoIds = new Set();
@@ -1796,12 +2346,10 @@ let opts = {
     sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true,
     nonSteam: true, nonSteamName: true, library: true,
 };
-// appid -> derived app name (from the shortcut's target exe folder).
 let nonSteamNames = new Map();
 const pendingDenuvo = new Set();
 let denuvoFlushTimer = null;
 let refreshTimer = null;
-/* ── the Big Picture / gamepad window that actually holds the grid ─────── */
 function getLibraryWindow() {
     if (cachedWindow && !cachedWindow.closed)
         return cachedWindow;
@@ -1831,7 +2379,6 @@ function getLibraryWindow() {
     }
     return null;
 }
-/* ── styles ────────────────────────────────────────────────────────────── */
 function injectStyle(win) {
     try {
         if (win.document.getElementById(STYLE_ID))
@@ -1866,22 +2413,11 @@ function injectStyle(win) {
   -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 1px 4px rgba(0,0,0,0.4);
 }
-.${BADGE_CLASS}[data-kind="sls"] {
-  background: linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%);
-}
-.${BADGE_CLASS}[data-kind="legit"] {
-  background: linear-gradient(135deg, #1f7a3f 0%, #2fa85c 100%);
-}
-.${BADGE_CLASS}[data-kind="denuvo"] {
-  background: linear-gradient(135deg, #a12a2a 0%, #e05252 100%);
-}
-.${BADGE_CLASS}[data-kind="onlinefix"] {
-  background: linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%);
-}
-.${BADGE_CLASS}[data-kind="fixed"] {
-  background: linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%);
-}
-
+.${BADGE_CLASS}[data-kind="sls"] { background: linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%); }
+.${BADGE_CLASS}[data-kind="legit"] { background: linear-gradient(135deg, #1f7a3f 0%, #2fa85c 100%); }
+.${BADGE_CLASS}[data-kind="denuvo"] { background: linear-gradient(135deg, #a12a2a 0%, #e05252 100%); }
+.${BADGE_CLASS}[data-kind="onlinefix"] { background: linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%); }
+.${BADGE_CLASS}[data-kind="fixed"] { background: linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%); }
 `;
         win.document.head.appendChild(el);
     }
@@ -1889,7 +2425,6 @@ function injectStyle(win) {
         /* ignore */
     }
 }
-/* ── appid extraction (mirrors the reference plugin's fallbacks) ───────── */
 function appIdFromImage(img) {
     if (!img?.src)
         return null;
@@ -1918,16 +2453,12 @@ function getAppId(capsule) {
         const anchor = capsule.tagName.toLowerCase() === "a" ? capsule : capsule.querySelector("a");
         const href = anchor?.getAttribute("href");
         if (href) {
-            const m = href.match(/\/app\/(\d+)/i) ||
-                href.match(/\/details\/(\d+)/i) ||
-                href.match(/run\/(\d+)/i);
+            const m = href.match(/\/app\/(\d+)/i) || href.match(/\/details\/(\d+)/i) || href.match(/run\/(\d+)/i);
             if (m)
                 return m[1];
         }
     }
-    catch {
-        /* ignore */
-    }
+    catch { /* ignore */ }
     try {
         for (const el of [capsule, ...Array.from(capsule.children)]) {
             const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
@@ -1937,8 +2468,7 @@ function getAppId(capsule) {
             let depth = 0;
             while (fiber && depth < 5) {
                 const p = fiber.memoizedProps || fiber.return?.memoizedProps;
-                const id = p?.appid ?? p?.appId ?? p?.nAppID ?? p?.unAppID ?? p?.overview?.appid ??
-                    p?.appOverview?.appid ?? p?.app?.appid ?? p?.item?.appid;
+                const id = p?.appid ?? p?.appId ?? p?.nAppID ?? p?.unAppID ?? p?.overview?.appid ?? p?.appOverview?.appid ?? p?.app?.appid ?? p?.item?.appid;
                 if (id)
                     return String(id);
                 fiber = fiber.return;
@@ -1946,13 +2476,9 @@ function getAppId(capsule) {
             }
         }
     }
-    catch {
-        /* ignore */
-    }
+    catch { /* ignore */ }
     return null;
 }
-/** Non-Steam shortcuts: a NON-STEAM badge and/or an app-name badge, each
- *  independently toggleable. The name comes from the shortcut's exe folder. */
 function classifyNonSteam(appid) {
     if (!isNonSteamShortcut(appid))
         return [];
@@ -1963,28 +2489,21 @@ function classifyNonSteam(appid) {
         out.push("nonsteamname");
     return out;
 }
-/** Primary badge: what the game IS in our terms. */
 function classifyPrimary(appid) {
     if (slsIds.has(appid))
         return opts.sls ? "sls" : null;
     if (isNonSteamShortcut(appid))
-        return null; // shortcuts are neither
-    // "Legit" means owned — it must never apply to store/search results for games
-    // that merely appear in a list, so the library check is required here.
+        return null;
     if (!isInLibrary(appid))
         return null;
     if (!slsLoaded)
-        return null; // can't distinguish ours from owned yet
-    // A game we ever added via SLSsteam isn't "owned" even if its manifest was
-    // removed while it stays installed — so it must never badge as Legit.
+        return null;
     if (everAddedIds.has(appid))
         return null;
-    // A game we've applied a fix to is ours, not owned — never Legit.
     if (onlineIds.has(appid) || fixedIds.has(appid))
         return null;
     return opts.legit ? "legit" : null;
 }
-/** Status badges: fixes we have actually installed for this game. */
 function classifyApplied(appid) {
     const out = [];
     if (opts.onlineFix && onlineIds.has(appid))
@@ -1993,7 +2512,6 @@ function classifyApplied(appid) {
         out.push("fixed");
     return out;
 }
-/** Secondary badge (right): Denuvo, which can apply to SLS and owned alike. */
 function classifyDenuvo(appid) {
     if (!opts.denuvo)
         return false;
@@ -2001,7 +2519,6 @@ function classifyDenuvo(appid) {
         return false;
     if (denuvoIds.has(appid))
         return true;
-    // Not resolved yet — queue a throttled backend lookup for later passes.
     if (!pendingDenuvo.has(appid)) {
         pendingDenuvo.add(appid);
         scheduleDenuvoFlush();
@@ -2022,12 +2539,9 @@ function scheduleDenuvoFlush() {
             if (r.success)
                 denuvoIds = new Set(r.denuvo || []);
         }
-        catch {
-            /* ignore */
-        }
+        catch { /* ignore */ }
     }, 1200);
 }
-/* ── badge injection ───────────────────────────────────────────────────── */
 function badgeCapsule(capsule, win) {
     const raw = getAppId(capsule);
     const box = capsule.querySelector(`.${BADGE_CLASS}-box`);
@@ -2052,56 +2566,67 @@ function badgeCapsule(capsule, win) {
         existing.forEach((b) => b.remove());
         return;
     }
-    // Already correct — nothing to do.
+    const emojiMode = getEmojiBadgesEnabled();
+    const mode = emojiMode ? "emoji" : "text";
     const current = existing
         .filter((b) => b.getAttribute("data-appid") === String(appid))
         .map((b) => b.getAttribute("data-kind"));
-    if (current.length === wanted.length &&
-        wanted.every((k) => current.includes(k))) {
+    const currentMode = existing.every((b) => b.getAttribute("data-mode") === mode);
+    if (current.length === wanted.length && wanted.every((k) => current.includes(k)) && currentMode)
         return;
-    }
     box?.remove();
     existing.forEach((b) => b.remove());
     const img = capsule.querySelector("img");
     const role = capsule.getAttribute("role");
     let target = null;
     if (role === "gridcell") {
+        // Keep badges out of Steam's overflow-clipped image layer. This is the
+        // working anchor for the normal Library grid.
         target = img ? capsule.querySelector("div") : capsule;
     }
     else if (role === "listitem") {
+        // Steam Home uses a dedicated artwork wrapper. decky-nonsteam-badges uses
+        // this same partial class match because the generic nearest div can be
+        // Steam's native status/action overlay, while the whole listitem can clip
+        // overlays outside the artwork box.
         target = img
-            ? (img.closest("div") ?? capsule)
+            ? (img.closest('div[class*="_1pwP4"]') ?? capsule)
             : capsule;
     }
     if (!target)
         target = capsule;
     if (!target.hasAttribute(POSITIONED_ATTR)) {
         try {
-            if (win.getComputedStyle(target).position === "static") {
+            if (win.getComputedStyle(target).position === "static")
                 target.style.position = "relative";
-            }
         }
-        catch {
-            /* ignore */
-        }
+        catch { /* ignore */ }
         target.setAttribute(POSITIONED_ATTR, "true");
     }
     const container = win.document.createElement("div");
     container.className = `${BADGE_CLASS}-box`;
-    // Inline styles so Steam's own capsule CSS can't override them (it strips the
-    // text on some capsules when we rely on the injected stylesheet).
     container.style.cssText =
-        "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;" +
-            "display:flex;flex-wrap:wrap;gap:3px;";
+        (emojiMode
+            ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;"
+            : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +
+            `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;
     for (const kind of wanted) {
         const badge = win.document.createElement("div");
         badge.className = BADGE_CLASS;
         badge.setAttribute("data-appid", String(appid));
         badge.setAttribute("data-kind", kind);
-        badge.textContent =
-            kind === "nonsteamname" ? (nonSteamNames.get(appid) || "APP") : BADGE_LABELS[kind];
-        badge.style.cssText =
-            "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
+        badge.setAttribute("data-mode", mode);
+        const normal = kind === "nonsteamname" ? (nonSteamNames.get(appid) || "APP") : BADGE_LABELS[kind];
+        badge.textContent = kind === "nonsteamname" ? normal : badgeDisplayLabel(kind, normal);
+        const standaloneEmoji = emojiMode && kind !== "nonsteamname";
+        badge.style.cssText = standaloneEmoji
+            ? "flex:0 0 auto;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;" +
+                "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
+                "padding:0;margin:0;border:0;border-radius:0;font-size:24px;line-height:27px;" +
+                "font-family:'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif;font-weight:400;letter-spacing:0;" +
+                "color:inherit;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;" +
+                "text-shadow:0 1px 3px rgba(0,0,0,0.75);overflow:visible;"
+            : "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
                 "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
                 "padding:2px 7px;border-radius:4px;font-size:11px;line-height:16px;" +
                 "font-family:'Motiva Sans',Arial,sans-serif;font-weight:700;letter-spacing:0.4px;" +
@@ -2122,8 +2647,6 @@ function scan() {
     ];
     for (const sel of selectors) {
         win.document.querySelectorAll(sel).forEach((capsule) => {
-            // Real game capsules nest role="link" below a panel layer; collection
-            // tiles put it as the direct first child — skip those.
             if (!capsule.querySelector('div[role="link"]'))
                 return;
             if (capsule.firstElementChild?.getAttribute("role") === "link")
@@ -2140,7 +2663,6 @@ function debouncedScan() {
         scan();
     });
 }
-/* ── data refresh ──────────────────────────────────────────────────────── */
 async function refreshData() {
     try {
         const r = await getBadgeOptions();
@@ -2157,11 +2679,8 @@ async function refreshData() {
             };
         }
     }
-    catch {
-        /* keep previous */
-    }
+    catch { /* keep previous */ }
     try {
-        // Only pull the (backend-parsed) shortcut names when a name badge is on.
         if (opts.nonSteamName) {
             const r = await getNonSteamApps();
             if (r.success) {
@@ -2175,9 +2694,7 @@ async function refreshData() {
             }
         }
     }
-    catch {
-        /* keep previous names */
-    }
+    catch { /* keep previous names */ }
     try {
         const r = await getInstalledApps();
         if (r.success) {
@@ -2185,30 +2702,22 @@ async function refreshData() {
             slsLoaded = true;
         }
     }
-    catch {
-        /* keep previous set */
-    }
+    catch { /* keep previous set */ }
     try {
         const r = await getEverAdded();
         if (r.success)
             everAddedIds = new Set((r.appids || []).map((a) => Number(a)));
     }
-    catch {
-        /* keep previous set; slsLoaded stays as-is so LEGIT is suppressed on a
-           cold-start failure but survives a transient refresh error */
-    }
+    catch { /* keep previous */ }
     try {
         const r = await denuvoKnown();
         if (r.success)
             denuvoIds = new Set(r.denuvo || []);
     }
-    catch {
-        /* keep previous */
-    }
+    catch { /* keep previous */ }
     try {
         const r = await getInstalledFixes();
         if (r.success) {
-            // One applied-fix badge per game: online fix → ONLINE FIX, else FIXED.
             const perApp = new Map();
             for (const f of r.fixes || []) {
                 const id = Number(f.appid);
@@ -2226,31 +2735,26 @@ async function refreshData() {
             fixedIds = fx;
         }
     }
-    catch {
-        /* keep previous */
-    }
+    catch { /* keep previous */ }
 }
-/* ── public API ────────────────────────────────────────────────────────── */
 function removeAllBadges() {
     const win = getLibraryWindow();
     if (!win)
         return;
     try {
         win.document.querySelectorAll(`.${BADGE_CLASS}`).forEach((b) => b.remove());
+        win.document.querySelectorAll(`.${BADGE_CLASS}-box`).forEach((b) => b.remove());
     }
-    catch {
-        /* ignore */
-    }
+    catch { /* ignore */ }
 }
 async function startBadges() {
     stopBadges();
     await refreshData();
-    // The library grid is its own surface — off means no capsule badges at all.
     if (!opts.library) {
         removeAllBadges();
         return;
     }
-    if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed)
+    if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.nonSteam)
         return;
     const win = getLibraryWindow();
     if (!win) {
@@ -2293,7 +2797,6 @@ function stopBadges() {
         rafHandle = null;
     }
 }
-/** Re-read settings and repaint (call after toggling a badge option). */
 async function refreshBadges() {
     removeAllBadges();
     await startBadges();
@@ -2979,9 +3482,9 @@ function initStorePatch() {
 }
 
 /**
- * Sidebar controls that act on whichever game page is currently open (library
- * app page or Steam store page). This is the reliable, default way to drive the
- * plugin. Restart Steam lives here — the single restart button.
+ * Actions & fixes for whichever game page is currently open (library app page
+ * or Steam store page). This is the reliable, default way to drive the plugin.
+ * Restart Steam lives here — the single restart button.
  */
 function GameControlsSection({ onChanged }) {
     const [appid, setAppid] = SP_REACT.useState(null);
@@ -3106,7 +3609,7 @@ function GameControlsSection({ onChanged }) {
     };
     const noGame = appid == null;
     const working = busy !== "";
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Game controls", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 0" }, children: [noGame
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "This game", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 0" }, children: [noGame
                             ? "Open a game's library or store page to enable these."
                             : `${name || `AppID ${appid}`} (AppID ${appid})`, status ? ` · ${status}` : ""] }) }), ownedElsewhere && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.65, padding: "0 2px 4px" }, children: appid != null && isNonSteamShortcut(appid)
                         ? "Non-Steam shortcut — SLSsteam can't add this. Fixes can still be applied manually from Advanced ▸ Game fixes."
@@ -3176,239 +3679,6 @@ function InstalledSection({ refreshToken, onChanged }) {
             } }));
     };
     return (SP_JSX.jsxs(DFL.PanelSection, { title: `Installed games${apps.length ? ` (${apps.length})` : ""}`, children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: load, children: loading ? "Refreshing…" : "Refresh list" }) }), apps.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: confirmPurge, disabled: loading, children: "Purge list (remove all added games)" }) })), !loading && apps.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6, padding: "4px 0" }, children: "No games added yet." }) })), apps.map((a) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => confirmDelete(a), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsxs("span", { style: { fontWeight: 600 }, children: [a.gameName, a.isDisabled ? " (disabled)" : ""] }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.6 }, children: ["AppID ", a.appid, " \u00B7 ", sourceLabel(a.source), " \u00B7 tap to remove"] })] }) }) }, `${a.appid}-${a.source}`))), apps.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "2px 0" }, children: "Use \"Reload Steam\" in Game controls (top) to apply changes." }) }))] }));
-}
-
-const _cache = new Map();
-async function findSteamdbTab() {
-    try {
-        const res = await fetchNoCors("http://localhost:8080/json");
-        const tabs = await res.json();
-        return tabs.find((t) => t.url && t.url.includes("steamdb.info") && t.webSocketDebuggerUrl) || null;
-    }
-    catch {
-        return null;
-    }
-}
-// Same-origin fetch of the RSS inside the steamdb tab, returned as text.
-function fetchRssInTab(wsUrl, appid, timeoutMs = 8000) {
-    const expr = `fetch('/api/PatchnotesRSS/?appid=${appid}',{credentials:'include'}).then(function(r){return r.status===200?r.text():'';}).catch(function(){return '';})`;
-    return new Promise((resolve) => {
-        let done = false;
-        let sock;
-        const finish = (v) => { if (done)
-            return; done = true; try {
-            sock.close();
-        }
-        catch { /* */ } resolve(v); };
-        try {
-            sock = new WebSocket(wsUrl);
-        }
-        catch {
-            resolve("");
-            return;
-        }
-        sock.onopen = () => {
-            try {
-                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true, awaitPromise: true } }));
-            }
-            catch {
-                finish("");
-            }
-        };
-        sock.onmessage = (ev) => {
-            try {
-                const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-                if (m && m.id === 1) {
-                    const v = m?.result?.result?.value;
-                    finish(typeof v === "string" ? v : "");
-                }
-            }
-            catch { /* */ }
-        };
-        sock.onerror = () => finish("");
-        setTimeout(() => finish(""), timeoutMs);
-    });
-}
-function parseRss(xml) {
-    const out = [];
-    const items = xml.split(/<item>/i).slice(1);
-    for (const it of items) {
-        const link = (it.match(/<link>([^<]*)<\/link>/i) || [])[1] || "";
-        const title = (it.match(/<title>([^<]*)<\/title>/i) || [])[1] || "";
-        const pub = (it.match(/<pubDate>([^<]*)<\/pubDate>/i) || [])[1] || "";
-        let bid = (link.match(/\/patchnotes\/(\d+)/) || [])[1] || "";
-        if (!bid)
-            bid = (title.match(/Build\s+(\d+)/i) || [])[1] || "";
-        if (!bid)
-            continue;
-        let date = "";
-        try {
-            const d = new Date(pub);
-            if (!isNaN(d.getTime()))
-                date = d.toISOString().slice(0, 10);
-        }
-        catch { /* */ }
-        out.push({ buildid: bid, date });
-    }
-    return out;
-}
-/** Full build history for a game via the browser RSS (cached). Opens/reuses a
- *  steamdb.info tab; returns [] if it can't be read (offline / hard block). */
-async function fetchSteamdbBuilds(appid, onStatus) {
-    if (_cache.has(appid))
-        return _cache.get(appid);
-    // Ensure a steamdb.info tab exists (clears Cloudflare + carries cookies). Point
-    // it at this app's page so the origin/session is warm.
-    let tab = await findSteamdbTab();
-    if (!tab) {
-        onStatus?.("Opening SteamDB…");
-        try {
-            DFL.Navigation.NavigateToExternalWeb(`https://steamdb.info/app/${appid}/patchnotes/`);
-        }
-        catch { /* */ }
-    }
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
-        tab = await findSteamdbTab();
-        if (tab?.webSocketDebuggerUrl) {
-            const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
-            if (xml && xml.includes("<item>")) {
-                const rows = parseRss(xml);
-                if (rows.length) {
-                    _cache.set(appid, rows);
-                    return rows;
-                }
-            }
-            onStatus?.("Reading build history…");
-        }
-        else {
-            onStatus?.("Waiting for SteamDB…");
-        }
-        await new Promise((r) => setTimeout(r, 1500));
-    }
-    return [];
-}
-
-/** Close a CEF tab by its target id (so we don't leave a SteamDB page open per
- *  depot). Best-effort over the same debugger endpoint we list tabs from. */
-async function closeTab(id) {
-    if (!id)
-        return;
-    try {
-        await fetchNoCors("http://localhost:8080/json/close/" + id);
-    }
-    catch { /* */ }
-}
-// Table has headers Seen Date / Relative Date / ManifestID. Pull gid (19-ish
-// digits) + normalise the date to YYYY-MM-DD so the backend can build-label it.
-const SCRAPE_EXPR$1 = `(function(){try{
-  var tables=[].slice.call(document.querySelectorAll('table'));
-  var mt=null;
-  for(var i=0;i<tables.length;i++){
-    var hs=[].slice.call(tables[i].querySelectorAll('th')).map(function(x){return (x.textContent||'').trim().toLowerCase();});
-    if(hs.indexOf('manifestid')>=0 || hs.some(function(h){return /manifest\\s*id/.test(h);})){ mt=tables[i]; break; }
-  }
-  if(!mt) return '';
-  var out=[];
-  [].slice.call(mt.querySelectorAll('tbody tr')).forEach(function(tr){
-    var tds=[].slice.call(tr.querySelectorAll('td')).map(function(td){return (td.textContent||'').trim();});
-    var gid=''; var date='';
-    tds.forEach(function(c){
-      if(/^\\d{15,}$/.test(c)) gid=c;
-      else if(!date && /\\d{4}/.test(c) && /UTC|[A-Za-z]{3,}/.test(c)){
-        try{ var dd=new Date(c.replace(/[\\u2013\\u2014-].*$/,'').trim()); if(!isNaN(dd.getTime())) date=dd.toISOString().slice(0,10); }catch(e){}
-      }
-    });
-    if(gid) out.push({gid:gid,date:date});
-  });
-  return JSON.stringify(out);
-}catch(e){return '';}})()`;
-async function findTab$1(urlPart) {
-    try {
-        const res = await fetchNoCors("http://localhost:8080/json");
-        const tabs = await res.json();
-        return tabs.find((t) => t.url && t.url.includes(urlPart) && t.webSocketDebuggerUrl) || null;
-    }
-    catch {
-        return null;
-    }
-}
-function evalOnTab$2(wsUrl, expr, timeoutMs = 6000) {
-    return new Promise((resolve) => {
-        let done = false;
-        let sock;
-        const finish = (v) => { if (done)
-            return; done = true; try {
-            sock.close();
-        }
-        catch { /* */ } resolve(v); };
-        try {
-            sock = new WebSocket(wsUrl);
-        }
-        catch {
-            resolve("");
-            return;
-        }
-        sock.onopen = () => {
-            try {
-                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true } }));
-            }
-            catch {
-                finish("");
-            }
-        };
-        sock.onmessage = (ev) => {
-            try {
-                const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-                if (m && m.id === 1) {
-                    const v = m?.result?.result?.value;
-                    finish(typeof v === "string" ? v : "");
-                }
-            }
-            catch { /* */ }
-        };
-        sock.onerror = () => finish("");
-        setTimeout(() => finish(""), timeoutMs);
-    });
-}
-/** Open a depot's SteamDB manifests page and scrape its gid history. Returns []
- *  if the page never yields a table in time (e.g. not signed in / blocked). */
-async function scrapeDepotManifests(depot, maxMs = 25000, onStatus) {
-    const urlPart = `steamdb.info/depot/${depot}`;
-    try {
-        DFL.Navigation.NavigateToExternalWeb(`https://${urlPart}/manifests/`);
-    }
-    catch { /* */ }
-    const deadline = Date.now() + maxMs;
-    let lastId;
-    try {
-        while (Date.now() < deadline) {
-            const tab = await findTab$1(urlPart);
-            if (tab?.webSocketDebuggerUrl) {
-                lastId = tab.id;
-                const raw = await evalOnTab$2(tab.webSocketDebuggerUrl, SCRAPE_EXPR$1);
-                if (raw) {
-                    try {
-                        const arr = JSON.parse(raw);
-                        if (Array.isArray(arr) && arr.length)
-                            return arr;
-                    }
-                    catch { /* */ }
-                }
-                onStatus?.("Reading SteamDB — sign in there for full history…");
-            }
-            else {
-                onStatus?.(`Opening SteamDB depot ${depot}…`);
-            }
-            await new Promise((r) => setTimeout(r, 1500));
-        }
-        return [];
-    }
-    finally {
-        // Always close the depot page we opened — success or timeout — so a
-        // multi-depot game doesn't leave a stack of SteamDB tabs behind.
-        await closeTab(lastId);
-    }
 }
 
 // Post-pin verification: prove the pin landed AND that a download will actually
@@ -3575,6 +3845,14 @@ function GameToolsSection() {
     const [histCount, setHistCount] = SP_REACT.useState(0);
     // v2 (slsdeckdlc) only: DepotDownloader present → show download buttons.
     const [depotdl, setDepotdl] = SP_REACT.useState(false);
+    const steamdbCancelled = SP_REACT.useRef(false);
+    SP_REACT.useEffect(() => {
+        steamdbCancelled.current = false;
+        return () => {
+            steamdbCancelled.current = true;
+            cancelSteamdbBuildFetch();
+        };
+    }, [appid]);
     SP_REACT.useEffect(() => { depotdlStatus().then((r) => setDepotdl(!!r.available)).catch(() => { }); }, []);
     const [ddl, setDdl] = SP_REACT.useState(null);
     const ddlTimer = SP_REACT.useRef(null);
@@ -3867,7 +4145,8 @@ function GameToolsSection() {
                         if (!r.success)
                             return r.unsupported ? "Rollback needs the slsteam-moon engine." : (r.error || "Rollback failed");
                         triggerSteamInstall(appid).catch(() => { });
-                        return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam is updating to it.`;
+                        validateSteamApp(appid).catch(() => { });
+                        return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam validation started; changed files will be downloaded automatically.`;
                     }) }));
             } }));
     };
@@ -3887,9 +4166,11 @@ function GameToolsSection() {
         catch { /* */ }
         const target = new Date(buildDate).getTime();
         for (const depot of depots) {
+            if (steamdbCancelled.current)
+                break;
             let rows = [];
             try {
-                rows = await scrapeDepotManifests(depot, 25000, onStatus);
+                rows = await scrapeDepotManifests(depot, 25000, onStatus, () => steamdbCancelled.current);
             }
             catch { /* */ }
             let best = "";
@@ -3998,7 +4279,12 @@ function GameToolsSection() {
                         // — and DepotDownloader's own resolver (which wrongly says "no older
                         // builds"). The worker pins the build in moon afterwards too.
                         if (depotdl && primary !== "{}") {
+                            setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
                             const dr = await depotdlDownloadBuildGids(appid, it.key, primary);
+                            if (dr.success) {
+                                await pollDdlOnce();
+                                startDdl();
+                            }
                             return { msg: dr.success
                                     ? `Downloading build ${it.key} directly via DepotDownloader — progress shows below (needs a Hubcap key).`
                                     : `DepotDownloader: ${dr.error || "failed"}` };
@@ -4013,12 +4299,17 @@ function GameToolsSection() {
                             return { msg: v.text };
                         await noInternetFixBegin(appid).catch(() => ({}));
                         triggerSteamInstall(appid).catch(() => { });
-                        const launched = launchGame(appid);
-                        if (launched) {
-                            try {
-                                DFL.Navigation.CloseSideMenus?.();
+                        const validated = await validateSteamApp(appid).catch(() => ({ success: false }));
+                        if (!validated.success) {
+                            // Compatibility fallback for unusual Steam setups where the
+                            // protocol handler cannot be invoked from the backend.
+                            const launched = launchGame(appid);
+                            if (launched) {
+                                try {
+                                    DFL.Navigation.CloseSideMenus?.();
+                                }
+                                catch { /* */ }
                             }
-                            catch { /* */ }
                         }
                         return { msg: launched ? `Pinned build ${it.key} — launching to download it…` : v.text };
                     }, (res) => {
@@ -4128,12 +4419,15 @@ function GameToolsSection() {
             } }));
     };
     const protonLabel = proton == null ? "checking…" : proton || "Steam default";
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "This game", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: ["Proton: ", SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: protonLabel })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: pickProton, children: busy === "proton" ? "Working…" : "Change Proton version" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("backup", () => backupGameSaves(appid, ""), (r) => r.success
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Actions & fixes", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: ["Proton: ", SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: protonLabel })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: pickProton, children: busy === "proton" ? "Working…" : "Change Proton version" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("backup", () => backupGameSaves(appid, ""), (r) => r.success
                         ? `Backed up ${r.fileCount} save file(s) to ${r.zipPath}`
                         : r.error || "Backup failed"), children: busy === "backup" ? "Backing up…" : "Back up this game's saves" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: restoreSaves, children: busy === "listsaves" || busy === "restore" ? "Working…" : "Restore saves from a backup" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("repair", () => repairGame(appid), (r) => r.success
                         ? `Repaired: ${(r.steps || []).join(", ") || "nothing needed"}`
                         : r.error || "Repair failed"), children: busy === "repair" ? "Repairing…" : "Repair this game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("stuck", () => fixStuckUpdate(appid), (r) => r.success ? (r.note || "Depotcache refreshed — retry the update in Steam.") : (r.error || "Couldn't fix the update.")), children: busy === "stuck" ? "Working…" : "Fix stuck update" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "If an update won't finish (a new depot needs a key it doesn't have), this re-deploys the game's manifests/keys so Steam can retry." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: fixLaunchTarget, children: busy === "repoint" ? "Working…" : "Fix launch target (use game's real exe)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["If a fix doesn't take effect, point Steam at the game's real Binaries/Win64 executable. Preserves your other launch options.", repointed ? " · Currently repointed." : ""] }) }), repointed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: resetLaunchTarget, children: "Reset launch target" }) })), (ageSec != null || pinned != null || histCount > 0) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, padding: "2px 2px" }, children: [ageSec != null ? `Manifest age: ${ageSec < 3600 ? Math.round(ageSec / 60) + "m" : ageSec < 86400 ? Math.round(ageSec / 3600) + "h" : Math.round(ageSec / 86400) + "d"}` : "", pinned != null ? `${ageSec != null ? " · " : ""}${pinned ? "version frozen" : "auto-updates"}` : ""] }) })), pinned != null && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: toggleFreeze, children: busy === "freeze" ? "Working…" : pinned ? "Unfreeze version (allow updates)" : "Freeze version (block updates)" }) })), histCount > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: openRollback, children: busy === "rollback" ? "Working…" : "Roll back build…" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: openBuildPicker, children: busy === "bp" ? "Working…" : "Install a specific build…" }) }), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || ddlActive, onClick: async () => {
-                        await run("ddl", () => depotdlDownloadDlc(appid), (r) => r.success ? "Started — downloading content DLC in the background." : (r.error || "Could not start"));
+                        await run("ddl", async () => {
+                            setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
+                            return depotdlDownloadDlc(appid);
+                        }, (r) => r.success ? "Started — downloading content DLC in the background." : (r.error || "Could not start"));
                         await pollDdlOnce();
                         startDdl();
                     }, children: ddlActive && ddl?.op === "dlc" ? "Downloading DLC…" : "Download content DLC (DepotDownloader)" }) })), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: async () => {
@@ -4151,7 +4445,10 @@ function GameToolsSection() {
                             return;
                         }
                         DFL.showModal(SP_JSX.jsx(PickerModal, { title: "Download a build (files)", subtitle: "Fetches the build's depots via DepotDownloader into the game folder.", items: builds.map((b) => ({ key: b.buildid, label: `Build ${b.buildid}`, sublabel: b.date })), onPick: async (it) => {
-                                await run("ddl", () => depotdlDownloadBuild(appid, it.key), (r) => r.success ? `Started — downloading build ${it.key} in the background.` : (r.error || "Could not start"));
+                                await run("ddl", async () => {
+                                    setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
+                                    return depotdlDownloadBuild(appid, it.key);
+                                }, (r) => r.success ? `Started — downloading build ${it.key} in the background.` : (r.error || "Could not start"));
                                 await pollDdlOnce();
                                 startDdl();
                             } }));
@@ -4285,15 +4582,17 @@ function Chip$1({ ok, label }) {
         }, children: [ok ? "✓ " : "• ", label] }));
 }
 /**
- * Compact SLSsteam block for the quick-access panel: status chips + the single
- * install button. Everything else (injection, diagnostics, other dependencies)
- * lives on the Advanced page.
+ * Compact SLSsteam block for the quick-access panel: status chips + setup.
+ * First-time setup remains available while the engine is missing. Once the
+ * engine is installed, the whole block is hidden on library game pages so the
+ * SLSsteam title / Installed / Injected chips / Reinstall control do not sit
+ * above the per-game actions. Outside a game page the maintenance block remains.
  */
 function SlsSteamCompact() {
     const [status, setStatus] = SP_REACT.useState(null);
     const [inst, setInst] = SP_REACT.useState(null);
     const [busy, setBusy] = SP_REACT.useState(false);
-    const [showReinstall, setShowReinstall] = SP_REACT.useState(true);
+    const [showReinstall, setShowReinstall] = SP_REACT.useState(false);
     const [sys, setSys] = SP_REACT.useState(null);
     const [qmsg, setQmsg] = SP_REACT.useState("");
     const poll = SP_REACT.useRef(null);
@@ -4330,16 +4629,13 @@ function SlsSteamCompact() {
             catch { /* keep polling */ }
         }, 1500);
     });
-    // One-tap onboarding: install/verify the engine (deferring to a foreign engine
-    // like lumalinux if one is already managing injection), run the client fix, and
-    // install CloudRedirect — in order.
+    // One-tap onboarding: install/verify the engine, run the client fix, then
+    // install CloudRedirect. This button exists only while the engine is missing.
     const quickInstall = async () => {
         setBusy(true);
         setInst(null);
         try {
             const s = await systemStatus();
-            // First-time install guard: if a different engine (stock SLSsteam / lumalinux)
-            // is present, disable it first so it can't fight moon's injection.
             if (s.success && (s.foreignEngine || (s.engineInstalled && s.engine !== "slsteam-moon"))) {
                 setQmsg(`Clearing conflicting engine (${s.foreignName || s.engine})…`);
                 try {
@@ -4372,11 +4668,6 @@ function SlsSteamCompact() {
             else {
                 setQmsg("slsteam-moon already installed.");
             }
-            // CloudRedirect's first install pulls a ~1GB KDE flatpak runtime and can
-            // take many minutes — do NOT block onboarding completion on it or the
-            // button looks hung. Kick it off in the background; the Dependencies tab
-            // shows its progress and it's only needed for cloud saves, not for adding
-            // games.
             setQmsg("Installing CloudRedirect in the background (cloud saves)…");
             crEnsureInstalled().catch(() => { });
             setQmsg("SLSDeck is set up. Reload Steam to finish. (CloudRedirect finishes in the background.)");
@@ -4439,7 +4730,15 @@ function SlsSteamCompact() {
         }
     };
     const working = busy || inst?.status === "running" || inst?.status === "queued";
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "SLSsteam", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "2px 0" }, children: [SP_JSX.jsx(Chip$1, { ok: !!status?.installed, label: "Installed" }), SP_JSX.jsx(Chip$1, { ok: !!status?.injected, label: "Injected" })] }) }), working && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), inst?.status === "queued" ? "Starting…" : "Installing…", typeof inst?.percent === "number" && inst.percent > 0 ? ` ${inst.percent}%` : ""] }) })), inst?.status === "failed" && inst?.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", whiteSpace: "pre-wrap", wordBreak: "break-word" }, children: inst.error }) })), sys?.foreignEngine && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, color: "#f5a623", padding: "0 2px" }, children: ["Detected ", sys.foreignName || "another engine", " \u2014 Install will disable it (reversibly) and set up slsteam-moon."] }) })), !working && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: quickInstall, children: "Install SLSDeck (one-tap setup)" }) })), !working && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["Installs slsteam-moon", sys?.foreignEngine ? " (disabling any other engine first)" : "", " + CloudRedirect and applies the client fix, in order."] }) })), !working && status?.installed && showReinstall && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: install, children: "Reinstall SLSsteam" }) })), qmsg ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8, padding: "0 2px", whiteSpace: "pre-wrap" }, children: qmsg }) })) : null] }));
+    const onGamePage = currentLibraryAppId() != null;
+    const showReinstallButton = !!status?.installed && (!onGamePage || showReinstall);
+    // On an actual game page the installed engine is global plumbing, not a
+    // per-game action. Hide the entire maintenance/status section there; repair
+    // warnings still come from RepairBanner and missing-engine onboarding still
+    // appears so a fresh install remains possible.
+    if (onGamePage && status?.installed && !working)
+        return null;
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "SLSsteam", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "2px 0" }, children: [SP_JSX.jsx(Chip$1, { ok: !!status?.installed, label: "Installed" }), SP_JSX.jsx(Chip$1, { ok: !!status?.injected, label: "Injected" })] }) }), working && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), inst?.status === "queued" ? "Starting…" : "Installing…", typeof inst?.percent === "number" && inst.percent > 0 ? ` ${inst.percent}%` : ""] }) })), inst?.status === "failed" && inst?.error && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", whiteSpace: "pre-wrap", wordBreak: "break-word" }, children: inst.error }) })), sys?.foreignEngine && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, color: "#f5a623", padding: "0 2px" }, children: ["Detected ", sys.foreignName || "another engine", " \u2014 Install will disable it (reversibly) and set up slsteam-moon."] }) })), !working && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: quickInstall, children: "Install SLSDeck (one-tap setup)" }) })), !working && !status?.installed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["Installs slsteam-moon", sys?.foreignEngine ? " (disabling any other engine first)" : "", " + CloudRedirect and applies the client fix, in order."] }) })), !working && showReinstallButton && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: install, children: "Reinstall SLSsteam" }) })), qmsg ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8, padding: "0 2px", whiteSpace: "pre-wrap" }, children: qmsg }) })) : null] }));
 }
 
 // Pick one of the user's added games. Resolves the chosen {appid,name} or null
@@ -4608,7 +4907,13 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
                 const status = res.state.status;
                 if (status === "done") {
                     stopPolling();
-                    toaster.toast({ title: "SLSDeck", body: `Added ${name} — restart Steam to see it` });
+                    const live = !!res.state.liveReady;
+                    toaster.toast({
+                        title: "SLSDeck",
+                        body: live
+                            ? `Added ${name} — available in Steam without restart`
+                            : `Added ${name} — restart Steam to finish provisioning`,
+                    });
                     onChanged();
                 }
                 else if (status === "failed") {
@@ -4630,7 +4935,7 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
         stopPolling();
         setState((s) => ({ ...(s || {}), status: "cancelled" }));
     };
-    const busy = !!state && IN_PROGRESS.has(state.status || "");
+    const busy = !!state && (IN_PROGRESS.has(state.status || "") || state.status === "reconciling");
     const statusLabel = () => {
         if (!state)
             return "";
@@ -4645,6 +4950,8 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
                 return "Processing archive…";
             case "installing":
                 return "Installing Lua script…";
+            case "reconciling":
+                return "Refreshing Steam ownership and app info…";
             case "done":
                 return state.api
                     ? `Installed ✓ · source: ${state.api}${state.manifest === false ? " (no manifest found)" : ""}`
@@ -4666,8 +4973,106 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
                                 borderRadius: 6,
                                 background: "rgba(0,0,0,0.22)",
                                 marginTop: 2,
-                            }, children: results.slice(0, 20).map((r, i) => (SP_JSX.jsx(DFL.ButtonItem, { layout: "below", bottomSeparator: i === Math.min(results.length, 20) - 1 ? "none" : "standard", onClick: () => beginAdd(r.appid, r.name), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: r.name }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.55, marginLeft: 8, flex: "0 0 auto" }, children: r.appid })] }) }, r.appid))) }) })), state && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "6px 0", fontSize: 13 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 600 }, children: activeName || activeAppId }), SP_JSX.jsx("div", { style: { opacity: 0.8 }, children: statusLabel() }), state.contentCheckResult && state.status === "done" && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, marginTop: 4 }, children: ["Workshop: ", state.contentCheckResult.workshop, state.contentCheckResult.dlc &&
+                            }, children: results.slice(0, 20).map((r, i) => (SP_JSX.jsx(DFL.ButtonItem, { layout: "below", bottomSeparator: i === Math.min(results.length, 20) - 1 ? "none" : "standard", onClick: () => beginAdd(r.appid, r.name), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: r.name }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.55, marginLeft: 8, flex: "0 0 auto" }, children: r.appid })] }) }, r.appid))) }) })), state && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "6px 0", fontSize: 13 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 600 }, children: activeName || activeAppId }), SP_JSX.jsx("div", { style: { opacity: 0.8 }, children: statusLabel() }), state.status === "done" && state.liveReady && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, marginTop: 4 }, children: ["Steam live refresh confirmed", state.liveGeneration ? ` · generation ${state.liveGeneration}` : ""] })), state.status === "done" && !state.liveReady && state.liveReason && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, marginTop: 4 }, children: ["Restart fallback: ", state.liveReason] })), state.contentCheckResult && state.status === "done" && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, marginTop: 4 }, children: ["Workshop: ", state.contentCheckResult.workshop, state.contentCheckResult.dlc &&
                                             ` · DLC included: ${state.contentCheckResult.dlc.included.length}, missing: ${state.contentCheckResult.dlc.missing.length}`] }))] }) })), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: onCancel, children: "Cancel" }) }))] }), showInstalled && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: onChanged }), SP_JSX.jsx(CustomManifestsPanel, {})] }));
+}
+
+const CR_FLATPAK$1 = "org.cloudredirect.CloudRedirect";
+async function applyArtwork(appId) {
+    const SC = window.SteamClient;
+    if (!SC?.Apps)
+        return;
+    try {
+        const a = await crArtwork();
+        if (a?.success && SC.Apps.SetCustomArtworkForApp) {
+            const jobs = [
+                [a.cover, 0],
+                [a.hero, 1],
+                [a.capsule, 3],
+                [a.logo, 2],
+            ];
+            for (const [b64, kind] of jobs) {
+                if (!b64)
+                    continue;
+                try {
+                    await SC.Apps.SetCustomArtworkForApp(appId, b64, "png", kind);
+                }
+                catch { /* best effort */ }
+            }
+        }
+    }
+    catch { /* best effort */ }
+    try {
+        const ic = await crIconPath();
+        if (ic?.success && ic.path && SC.Apps.SetShortcutIcon) {
+            await SC.Apps.SetShortcutIcon(appId, ic.path);
+        }
+    }
+    catch { /* best effort */ }
+}
+/** Ensure the provider-login UI has a Steam shortcut and native-looking art.
+ * Creates it when missing; otherwise rebinds the existing shortcut in place.
+ */
+async function ensureCloudRedirectShortcut(launch = false) {
+    const SC = window.SteamClient;
+    if (!SC?.Apps)
+        throw new Error("SteamClient unavailable");
+    let appId = 0;
+    try {
+        const g = await crGetShortcut();
+        appId = Number(g?.appId || 0);
+    }
+    catch { /* create below */ }
+    if (appId) {
+        try {
+            const ov = window.appStore?.GetAppOverviewByAppID?.(appId);
+            if (!ov)
+                appId = 0;
+        }
+        catch {
+            appId = 0;
+        }
+    }
+    if (!appId) {
+        if (!SC.Apps.AddShortcut)
+            throw new Error("Steam shortcut API unavailable");
+        const created = await SC.Apps.AddShortcut("CloudRedirect", "/usr/bin/flatpak", "", "");
+        appId = Number(created);
+        if (!appId || Number.isNaN(appId))
+            throw new Error("AddShortcut returned no appId");
+    }
+    try {
+        await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK$1}`);
+    }
+    catch { /* best effort */ }
+    try {
+        await SC.Apps.SetShortcutName(appId, "CloudRedirect");
+    }
+    catch { /* best effort */ }
+    try {
+        await crSetShortcut(appId);
+    }
+    catch { /* best effort */ }
+    await applyArtwork(appId);
+    if (launch) {
+        if (!SC.Apps.RunGame)
+            throw new Error("Steam launch API unavailable");
+        const gameId = ((BigInt(appId) << 32n) | 0x02000000n).toString();
+        SC.Apps.RunGame(gameId, "", -1, 100);
+    }
+    return appId;
+}
+/** Historical name kept for callers. It now creates the login shortcut when it
+ * does not exist, then rebinds artwork/launch metadata when it does.
+ */
+async function rebindExistingCloudRedirectShortcut() {
+    try {
+        await ensureCloudRedirectShortcut(false);
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
 
 function Dot({ health }) {
@@ -4822,11 +5227,17 @@ function DependenciesSection() {
     };
     const installCloud = async () => {
         setB("cr", true);
-        setN("cr", "installing… (first run is slow)");
+        setN("cr", "replacing CloudRedirect…");
         try {
             const r = await crEnsureInstalled();
-            setN("cr", r.installed ? "installed" : "failed — " + (r.log || "check network"));
-            toaster.toast({ title: "SLSDeck", body: r.installed ? "CloudRedirect ready" : "CloudRedirect install failed" });
+            if (r.installed) {
+                const rebound = await rebindExistingCloudRedirectShortcut();
+                setN("cr", rebound ? "installed · shortcut rebound" : "installed");
+            }
+            else {
+                setN("cr", "failed — " + (r.log || "check network"));
+            }
+            toaster.toast({ title: "SLSDeck", body: r.installed ? "CloudRedirect replaced" : "CloudRedirect install failed" });
         }
         catch (e) {
             setN("cr", `error: ${e}`);
@@ -4912,109 +5323,122 @@ function DependenciesSection() {
     const setupDone = !!sls?.installed && !!sls?.injected;
     const slsHealth = sls?.installed ? (sls.injected ? "ok" : "warn") : "off";
     const slsBusy = !!busy.sls;
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Setup", children: [sysSt?.foreignEngine && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { margin: "2px 0 6px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "Another engine detected" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: [sysSt.foreignName || "A different engine", " is present alongside slsteam-moon and can fight over injection. Disable it (reversibly) so SLSDeck's engine runs cleanly."] }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy.foreign, onClick: disableForeign, children: busy.foreign ? "Disabling…" : `Disable ${sysSt.foreignName || "other engine"}` }), note.foreign ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: note.foreign }) : null] }) })), !setupDone && !slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: installSls, children: "Install SLSsteam" }) })), slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 13, height: 13, marginRight: 8 } }), note.sls || "installing…"] }) })), SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DepRow, { label: "SLSsteam", hint: "Core steamclient hook that adds games to your library.", health: slsHealth, statusText: sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed", busy: slsBusy, actionLabel: sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam", onAction: installSls }), SP_JSX.jsx(DepRow, { label: "Steam client fix", hint: "Pins the Steam client to a version SLSsteam supports (h3adcr-b).", health: busy.fix ? "unknown" : sls?.clientFixRan ? "ok" : "warn", statusText: note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear"), busy: !!busy.fix, actionLabel: "Run client fix", onAction: runFix }), SP_JSX.jsx(DepRow, { label: "CloudRedirect", hint: "Cloud saves for added games \u2014 installs automatically after setup. Off by default; enable in Advanced \u25B8 Cloud saves.", health: busy.cr ? "unknown" : note.cr === "installed" ? "ok" : "unknown", statusText: note.cr || "installs automatically after SLSsteam setup", busy: !!busy.cr, actionLabel: "Reinstall CloudRedirect", onAction: installCloud }), SP_JSX.jsxs("div", { style: { padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, margin: "2px 0 4px" }, children: "Injection & diagnostics" }), sls?.installed && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, margin: "0 0 4px 2px" }, children: ["Injection is ", sls.injectionActive ? "active" : "inactive", "."] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: sls.injectionActive ? doDeactivate : doActivate, children: sls.injectionActive ? "Deactivate injection" : "Activate injection" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runDiag, children: "Run diagnostics" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runRefreshPatterns, children: "Refresh engine patterns (fix \u201Ccan\u2019t match patterns\u201D)" }) }), diag && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: diag, maxHeight: 300, mono: true, fontSize: 10 }) }))] })] })] }));
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Setup", children: [sysSt?.foreignEngine && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { margin: "2px 0 6px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "Another engine detected" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: [sysSt.foreignName || "A different engine", " is present alongside slsteam-moon and can fight over injection. Disable it (reversibly) so SLSDeck's engine runs cleanly."] }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy.foreign, onClick: disableForeign, children: busy.foreign ? "Disabling…" : `Disable ${sysSt.foreignName || "other engine"}` }), note.foreign ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: note.foreign }) : null] }) })), !setupDone && !slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: installSls, children: "Install SLSsteam" }) })), slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 13, height: 13, marginRight: 8 } }), note.sls || "installing…"] }) })), SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DepRow, { label: "SLSsteam", hint: "Core steamclient hook that adds games to your library.", health: slsHealth, statusText: sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed", busy: slsBusy, actionLabel: sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam", onAction: installSls }), SP_JSX.jsx(DepRow, { label: "Steam client fix", hint: "Pins the Steam client to a version SLSsteam supports (h3adcr-b).", health: busy.fix ? "unknown" : sls?.clientFixRan ? "ok" : "warn", statusText: note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear"), busy: !!busy.fix, actionLabel: "Run client fix", onAction: runFix }), SP_JSX.jsx(DepRow, { label: "CloudRedirect", hint: "Cloud saves for added games \u2014 installs automatically after setup. Off by default; enable in Advanced \u25B8 Cloud saves.", health: busy.cr ? "unknown" : note.cr === "installed" || note.cr === "installed · shortcut rebound" ? "ok" : "unknown", statusText: note.cr || "installs automatically after SLSsteam setup", busy: !!busy.cr, actionLabel: "Reinstall CloudRedirect", onAction: installCloud }), SP_JSX.jsxs("div", { style: { padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, margin: "2px 0 4px" }, children: "Injection & diagnostics" }), sls?.installed && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, margin: "0 0 4px 2px" }, children: ["Injection is ", sls.injectionActive ? "active" : "inactive", "."] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: sls.injectionActive ? doDeactivate : doActivate, children: sls.injectionActive ? "Deactivate injection" : "Activate injection" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runDiag, children: "Run diagnostics" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runRefreshPatterns, children: "Refresh engine patterns (fix \u201Ccan\u2019t match patterns\u201D)" }) }), diag && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: diag, maxHeight: 300, mono: true, fontSize: 10 }) }))] })] })] }));
 }
 
 const TOPICS = [
     {
         key: "dependencies", title: "Dependencies", icon: SP_JSX.jsx(FaBoxOpen, {}),
-        blurb: "The engine and its helpers — install/repair here first.",
+        blurb: "The engine and its helpers — install or repair them here.",
         items: [
-            { name: "SLSsteam", desc: "The core steamclient hook (slsteam-moon) that makes added games appear owned. 'Install' sets it up; 'Reinstall' repairs it." },
-            { name: "Steam client fix", desc: "Pins the Steam client to a version the engine supports (h3adcr-b). Run it if added games don't appear after a Steam update." },
-            { name: "CloudRedirect", desc: "Redirects cloud saves for added games to your own provider. Installs automatically after setup; only needed if you use cloud saves." },
-            { name: "ASSella (direct download)", desc: "Only in the slsdeckdlc build: the DepotDownloader backend (bundled DLL + .NET 9) used for content-DLC and older-build downloads." },
-            { name: "Activate / Deactivate injection", desc: "Turns the engine hook on/off by patching steam.sh. Off = plain Steam." },
-            { name: "Run diagnostics", desc: "Reports engine type (moon vs stock), injection state, and config health so you can see why something isn't working." },
+            { name: "SLSsteam / slsteam-moon", desc: "Core steamclient hook that makes added games appear owned. First install is always offered when missing; Reinstall is a separate repair action once installed." },
+            { name: "Steam client fix", desc: "Pins/downgrades the Steam client with h3adcr-b when a Steam update breaks the engine's supported patterns." },
+            { name: "CloudRedirect runtime", desc: "The required cloudredirect-moon cloud_redirect.so hook. Reinstall refreshes the moon runtime without treating the optional setup UI as the runtime itself." },
+            { name: "CloudRedirect setup UI", desc: "Optional Flatpak companion used when a provider still needs to be configured. Its Steam shortcut is created/rebound when needed and gets cover, hero, wide capsule, logo and icon artwork." },
+            { name: "DepotDownloader / .NET", desc: "Direct downloader used for specific builds and content DLC. First use can prepare a local .NET runtime; status/progress is shown in the current game's QAM tools." },
+            { name: "Activate / Deactivate injection", desc: "Turns the SLSsteam launch hook on or off. Deactivate returns the next Steam launch to vanilla Steam." },
+            { name: "Run diagnostics", desc: "Shows engine type, injection state and config health when adds stop working or a Steam update changes something." },
         ],
     },
     {
         key: "options", title: "Options", icon: SP_JSX.jsx(FaSlidersH, {}),
-        blurb: "Every behaviour toggle: buttons, DLC, cloud, recovery, Quick Access, and badges.",
+        blurb: "All current behaviour toggles: buttons, fixes, DLC/cloud, QAM, recovery, library and badges.",
         items: [
-            { name: "Store buttons", desc: "Floating Add / Fix bar on store game pages." },
-            { name: "Unlock DLC when adding a game", desc: "Marks a game's DLC owned and auto-installs the matching in-process unlocker when the game is on disk (SmokeAPI for Steam, Uplay R1/R2 for Ubisoft). In-game DLC unlocks immediately; DLC delivered as separate files still needs those files." },
-            { name: "DLC unlockers on owned games only", desc: "Only show the CreamAPI/SmokeAPI/Uplay unlock buttons on games you actually own — hidden on SLS-added games where they'd do nothing. On by default." },
-            { name: "Pin game version on fix", desc: "Locks a game to its current build when a fix is applied so an update can't break it. Cleared on un-fix." },
-            { name: "Auto-apply fix after update", desc: "When a fix targets a specific build, pin it, update the game, then apply automatically once the download finishes. Off = you press Apply yourself." },
-            { name: "Auto-fix launch target", desc: "When a fix ships a replacement exe, repoints Steam's launch to the game's real Binaries/Win64 exe so the fix runs. Your other launch options are kept; per-game override lives under Quick Access → This game." },
-            { name: "Achievements (slsteam-moon)", desc: "Enables the engine's achievement handling (moon only)." },
-            { name: "Hide tools & diagnostics in Quick Access", desc: "Hides the Tools and Diagnostics sections from the Quick Access panel for a cleaner menu — they stay here in Advanced." },
-            { name: "Show added games in Quick Access", desc: "Moves the added-games list into Quick Access under Game controls (removes the Installed tab here). Applies when the panel is reopened." },
-            { name: "Show Reinstall SLSsteam in Quick Access", desc: "When SLSsteam is installed, shows its Reinstall button in Quick Access. Install still shows when it isn't installed yet." },
-            { name: "Hide actions on owned games", desc: "On game pages, hides Add with SLSsteam and Fixes for titles already in your library that weren't added by SLSsteam." },
-            { name: "Backup custom manifests and fixes", desc: "Includes imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. Restored ones reappear in Fixes and Download. Off by default." },
-            { name: "Group SLS games into a collection", desc: "Keeps a Steam collection named 'SLSDeck' auto-synced with everything you added, so they're easy to find. Updates on boot and as you add/remove. Off by default." },
-            { name: "Auto-apply fixes after adding", desc: "When an add finishes, downloads and applies the online and/or Denuvo fix if available. A Denuvo fix also marks the game and installs the custom Proton." },
-            { name: "Library buttons on game pages", desc: "The Add / Fixes bar injected into a game's library page. Turn off to use only the Quick Access panel." },
-            { name: "Auto restart after adding", desc: "Auto restart Steam after adding a game. Off by default — restart when you're ready." },
-            { name: "Add DLC automatically", desc: "On add, registers all the game's DLC depot keys (and, on newer engines, flips InjectAllAdvertisedDlc) so DLC show owned and content DLC pulls with the base. Best with a Hubcap key set." },
-            { name: "Disable DLC unlock on owned games", desc: "Stops the engine auto-unlocking (unowned) DLC on games you legit own — scans your library and blacklists their DLC in the engine." },
-            { name: "Disable Steam cloud on SLS games", desc: "Turns off Steam cloud for added games only (avoids Valve's rejected-sync errors). Mutually exclusive with CloudRedirect." },
-            { name: "Auto re-activate injection on boot", desc: "If a Steam update leaves injection off, re-patch steam.sh on startup and fully restart Steam to apply it. Capped so it can't loop." },
-            { name: "Auto re-pin Steam client on boot", desc: "If a client update broke injection, auto-run the client fix (h3adcr-b) — pins/downgrades the client and reboots. Heavy; capped. Leave off unless you want it fully hands-off." },
-            { name: "Library badges (SLS / Legit / Denuvo / Online-fix / Fixed / Non-Steam + placement)", desc: "Toggle each capsule badge (SLS-added, legit, Denuvo, online-fix, fix-applied, non-Steam, non-Steam app-name) and where they show — library grid, game pages, and store pages." },
+            { name: "Store buttons", desc: "Show or hide the floating Add / Fix controls on Steam store game pages." },
+            { name: "Library buttons on game pages", desc: "Show or hide the Add / Fixes bar injected into library game pages." },
+            { name: "Hide actions on owned games", desc: "Hide SLS Add/Fixes actions on titles already owned legitimately." },
+            { name: "No internet fix", desc: "Uses SLSDeck's pinned-build manifest/key recovery path when Steam reports no internet while downloading an older build." },
+            { name: "Pin game version on fix", desc: "Version-lock a game when a fix is applied so a later Steam update cannot immediately break that fix. Un-fix removes the pin." },
+            { name: "Auto-apply fix after update", desc: "For build-specific fixes, wait for the required build to finish downloading and then apply the fix automatically instead of asking again." },
+            { name: "Auto-fix launch target", desc: "When appropriate, repoint Steam to the real/replacement game executable while preserving the rest of the launch options." },
+            { name: "Auto-apply fixes after adding", desc: "After a successful Add Game, automatically apply an available online/Denuvo fix according to the normal fix rules." },
+            { name: "Unlock DLC when adding a game", desc: "Registers DLC entitlement data and can install the appropriate in-process DLC unlocker. File-backed DLC still needs the actual depot files." },
+            { name: "DLC unlockers on owned games only", desc: "Only expose CreamAPI/SmokeAPI/Uplay unlocker controls for legitimately owned games, where those tools are useful." },
+            { name: "Add DLC automatically", desc: "During Add Game, also register advertised/content DLC data so supported DLC is included automatically. Best results use a Hubcap key." },
+            { name: "Disable DLC unlock on owned games", desc: "Prevent moon from blanket-unlocking unowned DLC on games you genuinely own." },
+            { name: "Disable Steam cloud on SLS games", desc: "Disable Valve Steam Cloud only for SLS-added games. Mutually exclusive with using CloudRedirect for those saves." },
+            { name: "Hide tools & diagnostics in Quick Access", desc: "Keep the QAM compact by hiding general Tools/Diagnostics there; those controls remain in Advanced." },
+            { name: "Show Actions & fixes in Quick Access", desc: "Show the per-game Actions & fixes block in QAM." },
+            { name: "Show added games in Quick Access", desc: "Move the added-games list into QAM instead of showing it only on the Add a game page." },
+            { name: "Show Reinstall SLSsteam in Quick Access", desc: "Controls the optional Reinstall button once SLSsteam already exists. First-time Install still appears when SLSsteam is missing regardless of this toggle; reinstall is hidden on game pages by default." },
+            { name: "Achievements (slsteam-moon)", desc: "Allow moon to obtain/use achievement schema support for added games." },
+            { name: "Group SLS games into a collection", desc: "Keep a Steam collection called SLSDeck synchronized with the games added through SLSsteam." },
+            { name: "Backup custom manifests and fixes", desc: "Include imported/custom SLSDeck manifests and fixes in the user-created backup archive." },
+            { name: "Auto restart after adding", desc: "Legacy/fallback behaviour for add paths that still require a Steam restart. Verified moon live-adds avoid the restart when runtime refresh succeeds." },
+            { name: "Auto re-activate injection on boot", desc: "If a Steam update disables the launch hook, re-apply it automatically. Retry limiting prevents loops." },
+            { name: "Auto re-pin Steam client on boot", desc: "Automatically run the heavier client pin/downgrade recovery when the installed Steam client is no longer supported." },
+            { name: "Emoji Badges", desc: "Replace enabled text badges with emoji equivalents, including SLS 🏴‍☠️, Legit 💵, Fix 🔧, Online Fix 🌐, Denuvo 👺 and Non-Steam ❓." },
+            { name: "Individual badge toggles", desc: "Enable or disable SLS, Legit, Denuvo, Online-fix, Fixed, Non-Steam and Non-Steam-name badges independently." },
+            { name: "Badge placement toggles", desc: "Choose whether badges appear in the library grid/home carousel, game details pages and store pages." },
         ],
     },
     {
         key: "sources", title: "Sources & keys", icon: SP_JSX.jsx(FaKey, {}),
-        blurb: "Where manifests and depot keys come from, and your logins.",
+        blurb: "Manifest/fix sources, authentication and API/depot keys.",
         items: [
-            { name: "lua.tools (Discord sign-in)", desc: "Sign in with Discord to use your lua.tools account as a manifest source. Some games only resolve when signed in." },
-            { name: "Hubcap key + 'Log in & capture key'", desc: "Hubcap is a manifest generator (full manifests incl. DLC + older builds). The button opens their site; you generate a key and it's captured straight from the page." },
-            { name: "Ryuu / Steam key fields", desc: "Optional API keys for extra fix/manifest sources. Paste and Save." },
-            { name: "Refresh sources", desc: "Reloads the list of free manifest sources (api.json)." },
+            { name: "lua.tools (Discord sign-in)", desc: "Authenticate to lua.tools for account-gated manifests and fixes." },
+            { name: "Hubcap key / capture", desc: "Hubcap can provide richer manifests including depot information used by specific-build and direct-download flows." },
+            { name: "Ryuu and other keys", desc: "Optional credentials for fix/manifest sources that require an account or API key." },
+            { name: "Refresh sources", desc: "Reload the configured manifest-source list." },
         ],
     },
     {
         key: "addgame", title: "Add a game", icon: SP_JSX.jsx(FaDownload, {}),
-        blurb: "Search for a game and add it; manage what you've added.",
+        blurb: "Find a game, register it with moon and manage your added library.",
         items: [
-            { name: "Search (autocomplete dropdown)", desc: "Type a name or AppID; matches appear in a dropdown. Pick one to add it via the engine." },
-            { name: "Your added games", desc: "The list below search: every game you've added, with a tap-to-remove. Tagged by how it was added." },
-            { name: "Custom manifests / lua", desc: "Import a .lua/.manifest you got elsewhere and bind it to a game." },
+            { name: "Search / AppID", desc: "Search by title or enter an AppID, then add through the configured manifest sources and SLSsteam." },
+            { name: "Live add", desc: "On slsteam-moon, SLSDeck verifies the runtime package/appinfo refresh and avoids restarting Steam when the add became live successfully." },
+            { name: "Your added games", desc: "Lists SLS registrations and lets you remove a registration without deleting the installed game files." },
+            { name: "Survival restore", desc: "Plugin removal keeps an external recovery archive. Reinstall can restore missing AppID registrations, Lua registrations, exact manifest GIDs/files, pinned builds and fix history automatically." },
+            { name: "Custom manifests / Lua", desc: "Import your own manifest/Lua material and bind it to an AppID." },
         ],
     },
     {
         key: "fixes", title: "Game fixes", icon: SP_JSX.jsx(FaWrench, {}),
-        blurb: "Apply per-game fixes (online play, DRM, cracks).",
+        blurb: "Apply, track and undo per-game fixes.",
         items: [
-            { name: "Apply fix", desc: "Applies the matching fix for the open game — online-fix, a crack, or a DLC unlocker — into the game's folder." },
-            { name: "HV crack / CrakFiles", desc: "Anti-Denuvo/crack options. '· build mismatch' or '· outdated crack' means the crack targets a different build than installed — freeze/roll back to match." },
-            { name: "Online-fix username", desc: "The handle emulators use for online play. Set once here." },
+            { name: "Apply fix", desc: "Apply the selected online fix, crack/bypass or other supported payload to the game folder." },
+            { name: "Build-aware fixes", desc: "When a fix targets a specific manifest/build, SLSDeck can pin/download that build first and then apply the payload." },
+            { name: "Fix history / Un-fix", desc: "SLSDeck records exactly what a fix wrote/replaced in luatools-fix-log-<appid>.log so Un-fix can restore originals. Those logs are also preserved by the external survival archive." },
+            { name: "HV crack / CrakFiles", desc: "Alternative crack sources can require a particular build; mismatch indicators tell you when the installed build needs to change first." },
+            { name: "Online-fix username", desc: "Player name written into supported online-fix emulator configs." },
         ],
     },
     {
         key: "cloud", title: "Cloud saves", icon: SP_JSX.jsx(FaCloud, {}),
-        blurb: "Redirect cloud saves to your own provider.",
+        blurb: "Use cloudredirect-moon for SLS game save redirection.",
         items: [
-            { name: "CloudRedirect provider", desc: "Sign into Google Drive / OneDrive / a local folder so added games' cloud saves sync to you instead of Valve (which rejects them)." },
-            { name: "Reinstall CloudRedirect", desc: "Re-runs the flatpak install if it broke. First install pulls a large runtime, so it can take a few minutes." },
+            { name: "cloudredirect-moon runtime", desc: "The actual redirect engine is cloud_redirect.so loaded into Steam. It does not require the setup Flatpak to remain running." },
+            { name: "Provider setup UI", desc: "If no provider is configured yet, the optional CloudRedirect UI/Flatpak is used to sign in and write provider configuration." },
+            { name: "Reinstall CloudRedirect", desc: "Refreshes the moon runtime hook while preserving provider configuration. It does not blindly replace a working setup UI." },
+            { name: "Steam shortcut", desc: "When the setup UI is needed, SLSDeck creates or repairs its Steam shortcut and reapplies cover, hero, wide capsule, logo and icon artwork." },
         ],
     },
     {
         key: "denuvo", title: "Anti-Denuvo", icon: SP_JSX.jsx(FaShieldAlt, {}),
-        blurb: "Hypervisor-based bypass for Denuvo titles.",
+        blurb: "Hypervisor/custom-Proton tooling for supported Denuvo fixes.",
         items: [
-            { name: "Hypervisor", desc: "Sets up the anti-Denuvo hypervisor + custom Proton for supported games. Heavy; only for Denuvo titles." },
+            { name: "Hypervisor", desc: "Install/manage the anti-Denuvo hypervisor support used by compatible fixes. This is a heavy optional dependency and only applies to supported titles." },
         ],
     },
     {
         key: "mods", title: "Mods", icon: SP_JSX.jsx(FaPuzzlePiece, {}),
-        blurb: "Install mods into a game's folder.",
+        blurb: "Install supported mods into an existing game installation.",
         items: [
-            { name: "Install mod", desc: "Drops a mod into the selected game's install folder. Add the game first — mods need the game's files present." },
+            { name: "Install mod", desc: "Install a selected mod into the game's folder. The base game files must already exist." },
         ],
     },
     {
         key: "gametools", title: "Game tools (QAM)", icon: SP_JSX.jsx(FaGamepad, {}),
-        blurb: "Per-game tools on the Quick Access panel while a game page is open.",
+        blurb: "Per-game controls shown while a Steam library game page is open.",
         items: [
-            { name: "Steamless", desc: "Removes a SteamStub DRM wrapper from the game's exe. Only shows when the exe actually has one." },
-            { name: "Freeze / Unfreeze version", desc: "Pins the game at the current build so Steam won't update it (keeps a crack matching). Unfreeze to allow updates again." },
-            { name: "Roll back build", desc: "Pin to one of the builds SLSDeck has saved for this game. Steam re-downloads the changed files." },
-            { name: "Install a specific build", desc: "Pick any build from SteamDB's full history (with dates) and pin it; the engine fetches the manifests and Steam re-downloads the changed files. 'Latest' unpins. Build history loads via the Steam browser (open SteamDB once to clear its bot-check; sign in for the fullest history)." },
-            { name: "Download content DLC / Download a build's files", desc: "Only in slsdeckdlc: fetch DLC depots (works on legit-owned games) or an older build's files directly via DepotDownloader into the game folder." },
+            { name: "Proton / saves / repair", desc: "Change Proton, back up or restore saves, and run per-game repair operations." },
+            { name: "Steamless / DLC unlockers", desc: "Context-sensitive DRM/DLC tools appear only where the game/files support them." },
+            { name: "Freeze / Unfreeze version", desc: "Pin the current version to prevent updates, or unpin it to track latest again." },
+            { name: "Install a specific build", desc: "Pick a SteamDB build and resolve its depot manifest GIDs. Steam can download through moon, or DepotDownloader can place the exact build files directly when available." },
+            { name: "Specific-build download status", desc: "DepotDownloader jobs are polled in the current game's QAM and show preparation/downloading state, percent progress, completion and errors. The old separate global status component was intentionally folded into this game-specific panel." },
+            { name: "Download content DLC", desc: "Directly download file-backed content DLC through DepotDownloader without marking an otherwise legitimate base-game directory as a managed full-game install." },
+            { name: "Steam uninstall cleanup", desc: "For full games installed/overwritten through the managed DepotDownloader build path, SLSDeck tracks the exact install directory and cleans leftover files after a real Steam UI uninstall transition." },
         ],
     },
 ];
@@ -5025,7 +5449,7 @@ function HelpHub() {
     if (topic) {
         return (SP_JSX.jsxs(DFL.PanelSection, { title: topic.title, children: [SP_JSX.jsx("div", { ref: topRef }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => setTopic(null), children: SP_JSX.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx(FaArrowLeft, {}), " Back to help"] }) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 2px 8px" }, children: topic.blurb }) }), topic.items.map((it) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "4px 2px 8px", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 2 }, children: it.name }), SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.8, lineHeight: 1.5 }, children: it.desc })] }) }, it.name))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => scrollTo(topRef), children: SP_JSX.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx(FaArrowUp, {}), " Back to top"] }) }) })] }));
     }
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Help", children: [SP_JSX.jsx("div", { ref: topRef }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 2px 8px", display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx(FaQuestionCircle, {}), " Pick a section to see what each toggle and button does."] }) }), TOPICS.map((t) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => setTopic(t), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", alignItems: "center", gap: 10, textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { opacity: 0.85 }, children: t.icon }), SP_JSX.jsxs("span", { style: { display: "flex", flexDirection: "column" }, children: [SP_JSX.jsx("span", { style: { fontSize: 14, fontWeight: 600 }, children: t.title }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.6 }, children: t.blurb })] })] }) }) }, t.key))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 13, lineHeight: 1.5, opacity: 0.9, padding: "8px 2px 2px", borderTop: "1px solid rgba(255,255,255,0.08)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 6 }, children: "About SLSDeck" }), SP_JSX.jsxs("p", { children: ["SLSDeck adds games to your Steam library on SteamOS. It replaces the Windows-only SteamTools loader with ", SP_JSX.jsx("b", { children: "SLSsteam" }), ", an LD_AUDIT hook into the Steam client, and layers on game fixes and manifest sources."] }), SP_JSX.jsxs("p", { children: [SP_JSX.jsx("b", { children: "First time here?" }), " Open the ", SP_JSX.jsx("b", { children: "Dependencies" }), " tab and run \u201CInstall SLSsteam\u201D. Afterwards each component can be reinstalled on its own from the same tab."] }), SP_JSX.jsx("p", { style: { color: "#f5a623" }, children: "CloudRedirect is experimental. Back up saves you care about. This build has no hypervisor \u2014 Denuvo-protected games are not supported." })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => scrollTo(topRef), children: SP_JSX.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx(FaArrowUp, {}), " Back to top"] }) }) })] }));
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Help & About", children: [SP_JSX.jsx("div", { ref: topRef }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 2px 8px", display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx(FaQuestionCircle, {}), " Pick a section to see what its current controls and toggles do."] }) }), TOPICS.map((t) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => setTopic(t), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", alignItems: "center", gap: 10, textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { opacity: 0.85 }, children: t.icon }), SP_JSX.jsxs("span", { style: { display: "flex", flexDirection: "column" }, children: [SP_JSX.jsx("span", { style: { fontSize: 14, fontWeight: 600 }, children: t.title }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.6 }, children: t.blurb })] })] }) }) }, t.key))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 13, lineHeight: 1.5, opacity: 0.9, padding: "8px 2px 2px", borderTop: "1px solid rgba(255,255,255,0.08)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 6 }, children: "About SLSDeck" }), SP_JSX.jsxs("p", { children: ["SLSDeck integrates ", SP_JSX.jsx("b", { children: "slsteam-moon" }), " with SteamOS/Decky and adds manifest/build management, direct DepotDownloader downloads, game fixes, cloud-save redirection, recovery tools, badges and per-game utilities."] }), SP_JSX.jsxs("p", { children: [SP_JSX.jsx("b", { children: "First install:" }), " open ", SP_JSX.jsx("b", { children: "Dependencies" }), " and install SLSsteam. Once installed, reinstall/repair controls are intentionally separate; the Quick Access reinstall button can be hidden without hiding first-time setup."] }), SP_JSX.jsx("p", { children: "Plugin removal keeps a recovery archive outside the plugin directory. On reinstall SLSDeck can restore missing game registrations, exact build GIDs/manifests, pinned-build state and fix history automatically." }), SP_JSX.jsx("p", { style: { color: "#f5a623" }, children: "Build rollback, cracks, hypervisor tooling and cloud redirection are advanced operations. Keep important saves backed up before modifying a game installation." })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => scrollTo(topRef), children: SP_JSX.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx(FaArrowUp, {}), " Back to top"] }) }) })] }));
 }
 
 function FixesSection() {
@@ -5353,23 +5777,26 @@ async function launchInGameMode() {
         appId = Number(created);
         if (!appId || Number.isNaN(appId))
             throw new Error("AddShortcut returned no appId");
-        try {
-            await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK}`);
-        }
-        catch { /* */ }
-        try {
-            await SC.Apps.SetShortcutName(appId, "CloudRedirect");
-        }
-        catch { /* */ }
-        try {
-            await crSetShortcut(appId);
-        }
-        catch { /* */ }
-        try {
-            await applyCrArtwork(appId);
-        }
-        catch { /* */ }
     }
+    // Rebind EVERY launch, including an already-existing shortcut. A Flatpak
+    // reinstall can leave Steam holding stale shortcut metadata; reasserting the
+    // executable/options/name makes the existing tile point at the fresh install.
+    try {
+        await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK}`);
+    }
+    catch { /* */ }
+    try {
+        await SC.Apps.SetShortcutName(appId, "CloudRedirect");
+    }
+    catch { /* */ }
+    try {
+        await crSetShortcut(appId);
+    }
+    catch { /* */ }
+    try {
+        await applyCrArtwork(appId);
+    }
+    catch { /* */ }
     // Non-Steam shortcuts launch by their 64-bit gameID, not the 32-bit appid.
     const gameId = ((BigInt(appId) << 32n) | 0x02000000n).toString();
     SC.Apps.RunGame(gameId, "", -1, 100);
@@ -5427,9 +5854,12 @@ function CloudRedirectSection() {
     };
     const onOpen = async () => {
         setBusy(true);
-        setMsg("Checking / installing CloudRedirect… (first run can take a few minutes)");
+        setMsg("Checking CloudRedirect…");
         try {
-            const ins = await crEnsureInstalled();
+            // Opening the app is not a reinstall action. Auto-ensure returns immediately
+            // when the Flatpak is present; the Dependencies "Reinstall" button uses the
+            // manual endpoint, which now removes and reinstalls it first.
+            const ins = await crEnsureInstalledAuto();
             if (!ins.installed) {
                 setMsg("Install failed:\n" + (ins.log || "check network + flatpak"));
                 setBusy(false);
@@ -5964,7 +6394,14 @@ function SettingsSection() {
                                     toaster.toast({ title: "Hubcap", body: `Capture error: ${e}` });
                                 }
                                 setHubCapturing(false);
-                            }, children: hubCapturing ? "Waiting for key… (sign in with Discord)" : "Sign in to Hubcap & capture key" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => saveKey(f.placeholder), disabled: (drafts[f.placeholder] ?? "") === (f.value ?? ""), children: ["Save ", f.label] }) }), f.placeholder === "<moapikey>" && f.hasKey && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.85, padding: "2px 2px 6px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: "Hubcap quota" }), SP_JSX.jsx("span", { style: { textDecoration: "underline", cursor: "pointer", opacity: 0.7 }, onClick: loadHub, children: hubBusy ? "refreshing…" : "refresh" })] }), hub ? (SP_JSX.jsxs("div", { style: { opacity: 0.85, marginTop: 2 }, children: [["single", "bundle", "workshop"].map((k) => hub[k] ? (SP_JSX.jsxs("div", { children: [k, ": ", hub[k].remaining, "/", hub[k].limit, " left", SP_JSX.jsxs("span", { style: { opacity: 0.6 }, children: [" (", hub[k].usage, " used)"] })] }, k)) : null), SP_JSX.jsxs("div", { style: { opacity: 0.6, marginTop: 2 }, children: ["Steam service: ", hub.steam_service_ready ? "ready ✓" : "not ready"] })] })) : (SP_JSX.jsx("div", { style: { opacity: 0.6, marginTop: 2 }, children: hubBusy ? "Loading…" : "Quota unavailable (check the key)." }))] }) }))] }, f.placeholder))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: `Ryuu API key (for denuvo/gated fixes)${ryuuKey ? " ✓" : ""}`, value: ryuuDraft, onChange: (e) => setRyuuDraft(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "From generator.ryuu.lol/api \u2014 needed to download Denuvo/gated fixes. Free manifests don't need a key." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: saveRyuuKey, disabled: ryuuDraft.trim() === (ryuuKey ?? ""), children: "Save Ryuu API key" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: ryuuCapturing, onClick: async () => {
+                            }, children: hubCapturing ? "Waiting for key… (sign in with Discord)" : "Sign in to Hubcap & capture key" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => saveKey(f.placeholder), disabled: (drafts[f.placeholder] ?? "") === (f.value ?? ""), children: ["Save ", f.label] }) }), f.placeholder === "<moapikey>" && f.hasKey && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11, opacity: 0.9, padding: "2px 2px 6px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: "Hubcap quota" }), SP_JSX.jsx("span", { style: { textDecoration: "underline", cursor: "pointer", opacity: 0.7 }, onClick: loadHub, children: hubBusy ? "refreshing…" : "refresh" })] }), hub ? (SP_JSX.jsxs("div", { style: { marginTop: 4 }, children: [["single", "bundle", "workshop"].map((k) => {
+                                            const q = hub[k];
+                                            if (!q)
+                                                return null;
+                                            const usedPct = q.limit > 0 ? Math.max(0, Math.min(100, Math.round((q.usage / q.limit) * 100))) : 0;
+                                            const low = q.limit > 0 && q.remaining <= Math.max(1, Math.ceil(q.limit * 0.1));
+                                            return (SP_JSX.jsxs("div", { style: { marginBottom: 7 }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 2 }, children: [SP_JSX.jsx("span", { style: { textTransform: "capitalize" }, children: k }), SP_JSX.jsxs("span", { style: { fontWeight: 600 }, children: [q.remaining, "/", q.limit, " left \u00B7 ", usedPct, "% used"] })] }), SP_JSX.jsx("div", { style: { height: 5, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }, children: SP_JSX.jsx("div", { style: { height: "100%", width: `${usedPct}%`, background: low ? "#d99035" : "#4a90d9", transition: "width 0.25s" } }) }), low ? SP_JSX.jsxs("div", { style: { marginTop: 2, opacity: 0.8 }, children: ["Low quota \u2014 ", q.remaining, " request", q.remaining === 1 ? "" : "s", " remaining."] }) : null] }, k));
+                                        }), SP_JSX.jsxs("div", { style: { opacity: 0.65, marginTop: 2 }, children: ["Steam service: ", hub.steam_service_ready ? "ready ✓" : "not ready"] })] })) : (SP_JSX.jsx("div", { style: { opacity: 0.6, marginTop: 2 }, children: hubBusy ? "Loading…" : "Quota unavailable (check the key)." }))] }) }))] }, f.placeholder))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: `Ryuu API key (manifests + gated fixes)${ryuuKey ? " ✓" : ""}`, value: ryuuDraft, onChange: (e) => setRyuuDraft(e.target.value) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11, opacity: 0.75, padding: "2px 2px 6px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: "Ryuu quota" }), SP_JSX.jsx("span", { children: ryuuKey ? "API key ready ✓" : "API key not set" })] }), SP_JSX.jsx("div", { style: { marginTop: 3 }, children: "Free accounts: 50 manifest downloads per 24 hours." }), SP_JSX.jsx("div", { style: { marginTop: 2, opacity: 0.65 }, children: "Ryuu's documented API does not expose a live remaining-count endpoint, so SLSDeck shows the published limit rather than guessing your balance." })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "From generator.ryuu.lol/api. The same X-Auth-Key is used for Ryuu manifest downloads and gated fixes." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: saveRyuuKey, disabled: ryuuDraft.trim() === (ryuuKey ?? ""), children: "Save Ryuu API key" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: ryuuCapturing, onClick: async () => {
                         try {
                             DFL.Navigation.NavigateToExternalWeb("https://generator.ryuu.lol/api");
                         }
@@ -6778,6 +7215,8 @@ async function syncSlsCollection() {
     }
 }
 
+const ACTIONS_FIXES_QAM_KEY$1 = "slsdeck.actionsFixesQam";
+const ACTIONS_FIXES_QAM_EVENT$1 = "slsdeck-actions-fixes-qam";
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
     const [on, setOn] = SP_REACT.useState(false);
@@ -6855,6 +7294,7 @@ function OptionsPane() {
     const [pin, setPin] = SP_REACT.useState(true);
     const [noNet, setNoNet] = SP_REACT.useState(true);
     const [hideOwned, setHideOwned] = SP_REACT.useState(true);
+    const [actionsFixesQam, setActionsFixesQam] = SP_REACT.useState(true);
     const [gamesQam, setGamesQam] = SP_REACT.useState(false);
     const [reinstallQam, setReinstallQam] = SP_REACT.useState(true);
     const [badgeSls, setBadgeSls] = SP_REACT.useState(true);
@@ -6867,6 +7307,7 @@ function OptionsPane() {
     const [badgeNonSteam, setBadgeNonSteam] = SP_REACT.useState(true);
     const [badgeNonSteamName, setBadgeNonSteamName] = SP_REACT.useState(true);
     const [badgeLibrary, setBadgeLibrary] = SP_REACT.useState(true);
+    const [badgeEmoji, setBadgeEmoji] = SP_REACT.useState(false);
     const [autoFix, setAutoFixState] = SP_REACT.useState(false);
     const [libButtons, setLibButtons] = SP_REACT.useState(true);
     const [autoApply, setAutoApplyState] = SP_REACT.useState(false);
@@ -6889,6 +7330,14 @@ function OptionsPane() {
         getHideOnOwned().then((r) => setHideOwned(!!r.enabled)).catch(() => { });
         getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => { });
         getShowReinstallQam().then((r) => setReinstallQam(!!r.enabled)).catch(() => { });
+        try {
+            const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY$1);
+            setActionsFixesQam(raw == null ? true : raw === "1");
+        }
+        catch {
+            setActionsFixesQam(true);
+        }
+        setBadgeEmoji(getEmojiBadgesEnabled());
         getBadgeOptions()
             .then((r) => {
             if (!r.success)
@@ -6916,7 +7365,14 @@ function OptionsPane() {
                                 setDlcOwnedOnlyState(v);
                                 await setDlcOwnedOnly(v);
                                 toaster.toast({ title: "SLSDeck", body: v ? "DLC unlockers: owned games only" : "DLC unlockers: all games" });
-                            } }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Quick Access menu", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Hide tools & diagnostics in Quick Access", description: "Hide the Tools and Diagnostics sections from the Quick Access panel for a cleaner menu. They remain here in Advanced.", checked: hideToolsQam, onChange: async (v) => { setHideToolsQamState(v); await setHideToolsQam(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show added games in Quick Access", description: "Move the added-games list into the Quick Access panel, under Game controls (removes the Installed tab here). Applies when the panel is reopened.", checked: gamesQam, onChange: async (v) => { setGamesQam(v); await setGamesInQam(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Reinstall SLSsteam in Quick Access", description: "When SLSsteam is installed, show its Reinstall button in the Quick Access panel. Install still shows when it isn't installed yet.", checked: reinstallQam, onChange: async (v) => { setReinstallQam(v); await setShowReinstallQam(v); } }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Games & library", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Achievements (slsteam-moon)", description: achMoon
+                            } }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Quick Access menu", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Hide tools & diagnostics in Quick Access", description: "Hide the Tools and Diagnostics sections from the Quick Access panel for a cleaner menu. They remain here in Advanced.", checked: hideToolsQam, onChange: async (v) => { setHideToolsQamState(v); await setHideToolsQam(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Actions & fixes in Quick Access", description: "Show the per-game Actions & fixes section in Quick Access, above the installed-games list. Applies immediately and when the panel is reopened.", checked: actionsFixesQam, onChange: (v) => {
+                                setActionsFixesQam(v);
+                                try {
+                                    window.localStorage.setItem(ACTIONS_FIXES_QAM_KEY$1, v ? "1" : "0");
+                                    window.dispatchEvent(new CustomEvent(ACTIONS_FIXES_QAM_EVENT$1, { detail: v }));
+                                }
+                                catch { /* ignore */ }
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show added games in Quick Access", description: "Move the added-games list into the Quick Access panel, under Actions & fixes (removes the Installed tab here). Applies when the panel is reopened.", checked: gamesQam, onChange: async (v) => { setGamesQam(v); await setGamesInQam(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Reinstall SLSsteam in Quick Access", description: "When SLSsteam is installed, show its Reinstall button in the Quick Access panel. Install still shows when it isn't installed yet.", checked: reinstallQam, onChange: async (v) => { setReinstallQam(v); await setShowReinstallQam(v); } }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Games & library", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Achievements (slsteam-moon)", description: achMoon
                                 ? "Let added games unlock achievements — moon fetches the real schema live from Steam by impersonating an owner. Restart Steam after changing."
                                 : "Needs the slsteam-moon engine. Stock SLSsteam ignores this setting (use SLScheevo to pre-generate achievements instead).", checked: achievements, onChange: async (v) => { setAchievementsState(v); await setAchievements(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Group SLS games into a collection", description: "Keep a Steam collection named 'SLSDeck' auto-synced with every game you added through SLSsteam, so they're easy to find among your owned titles. Updates on boot and as you add/remove games. Off by default; turning it off leaves the collection as-is.", checked: groupCollection, onChange: async (v) => {
                                 setGroupCollectionState(v);
@@ -6928,7 +7384,11 @@ function OptionsPane() {
                                 else {
                                     toaster.toast({ title: "SLSDeck", body: "Collection sync off (existing collection kept)" });
                                 }
-                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Backup custom manifests and fixes", description: "Include imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. When restored, they reappear in the Fixes and Download tabs. Off by default.", checked: backupCustom, onChange: async (v) => { setBackupCustomState(v); await setBackupCustom(v); } }) })] }), SP_JSX.jsx(AddDownloadToggle, {}), SP_JSX.jsx(DlcCloudToggles, {}), SP_JSX.jsx(InjectionRecovery, {}), SP_JSX.jsxs(DFL.PanelSection, { title: "Library badges", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "SLS badge", description: "Marks games added through SLSsteam.", checked: badgeSls, onChange: async (v) => {
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Backup custom manifests and fixes", description: "Include imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. When restored, they reappear in the Fixes and Download tabs. Off by default.", checked: backupCustom, onChange: async (v) => { setBackupCustomState(v); await setBackupCustom(v); } }) })] }), SP_JSX.jsx(AddDownloadToggle, {}), SP_JSX.jsx(DlcCloudToggles, {}), SP_JSX.jsx(InjectionRecovery, {}), SP_JSX.jsxs(DFL.PanelSection, { title: "Library badges", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Emoji Badges", description: "Replace each enabled badge with its emoji analogue: SLS \uD83C\uDFF4\u200D\u2620\uFE0F, Legit \uD83D\uDCB5, Fix \uD83D\uDD27, Online Fix \uD83C\uDF10, Denuvo \uD83D\uDC7A, Non-Steam \u2753. Disabled badges stay hidden.", checked: badgeEmoji, onChange: (v) => {
+                                setBadgeEmoji(v);
+                                setEmojiBadgesEnabled(v);
+                                refreshBadges();
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "SLS badge", description: "Marks games added through SLSsteam.", checked: badgeSls, onChange: async (v) => {
                                 setBadgeSls(v);
                                 await setBadgeOption("sls", v);
                                 refreshBadges();
@@ -7162,15 +7622,16 @@ const STYLES = {
     onlinefix: { label: "ONLINE FIX", background: "linear-gradient(135deg, #1f5f9e 0%, #3d8fd8 100%)" },
     fixed: { label: "FIXED", background: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)" },
 };
-/**
- * The same SLS / LEGIT / DENUVO badges as the library capsules, shown on the
- * game details page. Independent of the library-button and hide-on-owned
- * toggles — this is purely informational.
- */
 function GameDetailsBadge() {
     const params = DFL.useParams();
     const appid = params?.appid && /^\d+$/.test(params.appid) ? parseInt(params.appid, 10) : null;
     const [kinds, setKinds] = SP_REACT.useState([]);
+    const [emojiVersion, setEmojiVersion] = SP_REACT.useState(0);
+    SP_REACT.useEffect(() => {
+        const onEmoji = () => setEmojiVersion((v) => v + 1);
+        window.addEventListener("slsdeck-emoji-badges", onEmoji);
+        return () => window.removeEventListener("slsdeck-emoji-badges", onEmoji);
+    }, []);
     SP_REACT.useEffect(() => {
         if (appid == null) {
             setKinds([]);
@@ -7216,7 +7677,6 @@ function GameDetailsBadge() {
                 ours = !!(await hasLua(appid)).exists;
             }
             catch {
-                // Unknown, not "not ours" — otherwise an SLS game gets badged LEGIT.
                 ours = false;
                 ownershipKnown = false;
             }
@@ -7245,7 +7705,6 @@ function GameDetailsBadge() {
                 if (!cancelled && isDenuvo)
                     out.push("denuvo");
             }
-            // Fixes we've actually installed for this game.
             if (opts.onlineFix || opts.fixed) {
                 try {
                     const r = await getInstalledFixes();
@@ -7266,9 +7725,6 @@ function GameDetailsBadge() {
                     /* ignore */
                 }
             }
-            // A fixed game is ours, not owned — never show Legit alongside a fix badge.
-            // No "bypassed" here: Kind has no such member, so that comparison was
-            // always false. Bypass/crack fixes are already classified as "fixed".
             const hasFix = out.some((k) => k === "onlinefix" || k === "fixed");
             const finalKinds = hasFix ? out.filter((k) => k !== "legit") : out;
             if (!cancelled)
@@ -7280,7 +7736,22 @@ function GameDetailsBadge() {
     }, [appid]);
     if (appid == null || !kinds.length)
         return null;
-    return (SP_JSX.jsx("div", { style: { display: "flex", gap: 8, margin: "12px 24px 0" }, children: kinds.map((k) => (SP_JSX.jsx("div", { style: {
+    const emojiMode = getEmojiBadgesEnabled();
+    return (SP_JSX.jsx("div", { style: { display: "flex", gap: emojiMode ? 10 : 8, margin: "12px 24px 0", alignItems: "center" }, children: kinds.map((k) => (SP_JSX.jsx("div", { style: emojiMode ? {
+                padding: 0,
+                margin: 0,
+                border: 0,
+                borderRadius: 0,
+                fontSize: 28,
+                lineHeight: "31px",
+                fontWeight: 400,
+                letterSpacing: 0,
+                color: "inherit",
+                background: "transparent",
+                boxShadow: "none",
+                textShadow: "0 1px 3px rgba(0,0,0,0.75)",
+                fontFamily: "'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif",
+            } : {
                 padding: "3px 10px",
                 borderRadius: 4,
                 fontSize: 12,
@@ -7289,7 +7760,7 @@ function GameDetailsBadge() {
                 color: "#fff",
                 background: STYLES[k].background,
                 boxShadow: "0 1px 4px rgba(0,0,0,0.35)",
-            }, children: STYLES[k].label }, k))) }));
+            }, children: badgeDisplayLabel(k, STYLES[k].label) }, k))) }));
 }
 
 /**
@@ -7809,6 +8280,8 @@ async function runAutoFixSweep() {
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
+const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
+const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
@@ -7858,19 +8331,35 @@ function RepairBanner() {
 function Content() {
     const [refreshToken, setRefreshToken] = SP_REACT.useState(0);
     const bump = () => setRefreshToken((t) => t + 1);
+    const [actionsFixesQam, setActionsFixesQam] = SP_REACT.useState(true);
     const [gamesInQam, setGamesInQam] = SP_REACT.useState(true);
     const [hideToolsQam, setHideToolsQam] = SP_REACT.useState(true);
     // Until SLSsteam is installed, the QAM shows only the setup block — no game
-    // controls, game list or tools (there's nothing for them to act on yet).
+    // actions, game list or tools (there's nothing for them to act on yet).
     const [installed, setInstalled] = SP_REACT.useState(false);
     SP_REACT.useEffect(() => {
+        const readActionsFixes = () => {
+            try {
+                const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
+                setActionsFixesQam(raw == null ? true : raw === "1");
+            }
+            catch {
+                setActionsFixesQam(true);
+            }
+        };
+        readActionsFixes();
+        const onActionsFixes = () => readActionsFixes();
+        window.addEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes);
         getGamesInQam().then((r) => setGamesInQam(!!r.enabled)).catch(() => { });
         getHideToolsQam().then((r) => setHideToolsQam(!!r.enabled)).catch(() => { });
         const checkInstalled = () => getSlssteamStatus().then((s) => setInstalled(!!s?.installed)).catch(() => { });
         checkInstalled();
         // Re-check so the sections appear right after a first-time install completes.
         const iv = setInterval(checkInstalled, 4000);
-        return () => clearInterval(iv);
+        return () => {
+            clearInterval(iv);
+            window.removeEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes);
+        };
     }, []);
     const anchor = SP_REACT.useRef(null);
     SP_REACT.useEffect(() => {
@@ -7901,7 +8390,7 @@ function Content() {
         scroller.addEventListener("scroll", onScroll, { passive: true });
         return () => scroller.removeEventListener("scroll", onScroll);
     }, []);
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: anchor, style: { height: 0 } }), SP_JSX.jsx(RepairBanner, {}), SP_JSX.jsx(SlsSteamCompact, {}), installed && SP_JSX.jsx(GameControlsSection, { onChanged: bump }), installed && gamesInQam && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: bump }), installed && SP_JSX.jsx(GameToolsSection, {}), installed && !hideToolsQam && SP_JSX.jsx(ToolsSection, {})] }));
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: anchor, style: { height: 0 } }), SP_JSX.jsx(RepairBanner, {}), SP_JSX.jsx(SlsSteamCompact, {}), installed && actionsFixesQam && SP_JSX.jsx(GameControlsSection, { onChanged: bump }), installed && gamesInQam && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: bump }), installed && SP_JSX.jsx(GameToolsSection, {}), installed && !hideToolsQam && SP_JSX.jsx(ToolsSection, {})] }));
 }
 var index = definePlugin(() => {
     console.log("SLSDeck (Decky) initializing");
@@ -7956,18 +8445,22 @@ var index = definePlugin(() => {
             (r.events || []).forEach((e) => {
                 const dl = e.autoDownload;
                 const isAssella = e.assella;
+                const liveReady = !!e.liveReady;
                 toaster.toast({
                     title: "SLSDeck",
                     body: e.status === "done" && e.success
                         ? (isAssella
                             ? `Installed ${e.name}${dl ? " — reloading Steam…" : " — restart Steam to see it"}`
-                            : (dl ? `Added ${e.name} — downloading in Steam…` : `Added ${e.name} — restart Steam to see it`))
+                            : liveReady
+                                ? (dl ? `Added ${e.name} — downloading in Steam…` : `Added ${e.name} — available in Steam`)
+                                : `Added ${e.name} — restart Steam to finish provisioning`)
                         : `${isAssella ? "Install" : "Add"} failed: ${e.name}${e.error ? " — " + e.error : ""}`,
                 });
                 if (e.status === "done" && e.success) {
-                    // Auto-download fired via the SLSsteam API in the live session; a soft
-                    // UI reload makes the library tile + download queue show immediately.
-                    if (dl) {
+                    // slsteam-moon's verified HotReload path updates package/license/appinfo
+                    // in the current Steam session, so normal SLS adds must NOT restart.
+                    // Keep ASSella's existing reload behavior separate from this live path.
+                    if (isAssella && dl) {
                         reloadSteam().catch(() => { });
                     }
                     getAutoFix()

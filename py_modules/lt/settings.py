@@ -563,6 +563,15 @@ def set_badge_library(value: bool) -> None:
     set_value("badgeLibrary", bool(value))
 
 
+def get_badge_emoji() -> bool:
+    """Replace enabled text badges with their compact emoji analogues."""
+    return bool(get_value("badgeEmoji", False))
+
+
+def set_badge_emoji(value: bool) -> None:
+    set_value("badgeEmoji", bool(value))
+
+
 # ── auto-apply fixes after a game is added ───────────────────────────────────
 # Off by default: it installs things without asking. Universal Unsteam and the
 # netsock patch are never auto-applied (see src/lib/autoFix.ts).

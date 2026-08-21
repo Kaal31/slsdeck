@@ -57,10 +57,11 @@ import {
   pinGame,
   unpinGame,
   triggerSteamInstall,
+  validateSteamApp,
   BuildEntry,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
-import { fetchSteamdbBuilds } from "../lib/steamdbBuilds";
+import { fetchSteamdbBuilds, cancelSteamdbBuildFetch } from "../lib/steamdbBuilds";
 import { scrapeDepotManifests } from "../lib/steamdbCapture";
 import { setLaunchRepoint, hasLaunchRepoint, ensureProtonSelected, applyFixRuntime } from "../lib/fixRuntime";
 import { launchGame } from "../lib/launchGame";
@@ -154,6 +155,14 @@ export function GameToolsSection() {
   const [histCount, setHistCount] = useState(0);
   // v2 (slsdeckdlc) only: DepotDownloader present → show download buttons.
   const [depotdl, setDepotdl] = useState(false);
+  const steamdbCancelled = useRef(false);
+  useEffect(() => {
+    steamdbCancelled.current = false;
+    return () => {
+      steamdbCancelled.current = true;
+      cancelSteamdbBuildFetch();
+    };
+  }, [appid]);
   useEffect(() => { depotdlStatus().then((r) => setDepotdl(!!r.available)).catch(() => {}); }, []);
 
   // DepotDownloader job progress for THIS game. The download runs in a backend
@@ -417,7 +426,8 @@ export function GameToolsSection() {
                 run("rollback", () => buildHistoryRollback(appid, e.id), (r) => {
                   if (!r.success) return r.unsupported ? "Rollback needs the slsteam-moon engine." : (r.error || "Rollback failed");
                   triggerSteamInstall(appid).catch(() => {});
-                  return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam is updating to it.`;
+                  validateSteamApp(appid).catch(() => {});
+                  return `Pinned${r.buildid ? ` build ${r.buildid}` : ""} — Steam validation started; changed files will be downloaded automatically.`;
                 })
               }
             />,
@@ -438,8 +448,9 @@ export function GameToolsSection() {
     try { const r = await bpListDepotManifests(appid); if (r.success) depots = r.depots.map((d) => String(d.depot)); } catch { /* */ }
     const target = new Date(buildDate).getTime();
     for (const depot of depots) {
+      if (steamdbCancelled.current) break;
       let rows: { gid: string; date: string }[] = [];
-      try { rows = await scrapeDepotManifests(depot, 25000, onStatus); } catch { /* */ }
+      try { rows = await scrapeDepotManifests(depot, 25000, onStatus, () => steamdbCancelled.current); } catch { /* */ }
       let best = ""; let bestDelta = Infinity;
       for (const r of rows) {
         if (r.date === buildDate) { best = r.gid; bestDelta = 0; break; }
@@ -535,7 +546,12 @@ export function GameToolsSection() {
                 // — and DepotDownloader's own resolver (which wrongly says "no older
                 // builds"). The worker pins the build in moon afterwards too.
                 if (depotdl && primary !== "{}") {
+                  setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
                   const dr = await depotdlDownloadBuildGids(appid, it.key, primary);
+                  if (dr.success) {
+                    await pollDdlOnce();
+                    startDdl();
+                  }
                   return { msg: dr.success
                     ? `Downloading build ${it.key} directly via DepotDownloader — progress shows below (needs a Hubcap key).`
                     : `DepotDownloader: ${dr.error || "failed"}` };
@@ -549,8 +565,13 @@ export function GameToolsSection() {
                 if (v.phantom || !v.ok) return { msg: v.text };
                 await noInternetFixBegin(appid).catch(() => ({}));
                 triggerSteamInstall(appid).catch(() => {});
-                const launched = launchGame(appid);
-                if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }
+                const validated = await validateSteamApp(appid).catch(() => ({ success: false }));
+                if (!validated.success) {
+                  // Compatibility fallback for unusual Steam setups where the
+                  // protocol handler cannot be invoked from the backend.
+                  const launched = launchGame(appid);
+                  if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }
+                }
                 return { msg: launched ? `Pinned build ${it.key} — launching to download it…` : v.text };
               }, (res) => {
                 // Toast the result too — the panel note isn't visible while you're
@@ -688,7 +709,7 @@ export function GameToolsSection() {
   const protonLabel = proton == null ? "checking…" : proton || "Steam default";
 
   return (
-    <PanelSection title="This game">
+    <PanelSection title="Actions & fixes">
       <PanelSectionRow>
         <div style={{ fontSize: 12, opacity: 0.85, padding: "2px 0" }}>
           Proton: <span style={{ fontWeight: 600 }}>{protonLabel}</span>
@@ -813,7 +834,10 @@ export function GameToolsSection() {
             layout="below"
             disabled={!!busy || ddlActive}
             onClick={async () => {
-              await run("ddl", () => depotdlDownloadDlc(appid), (r) =>
+              await run("ddl", async () => {
+                setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
+                return depotdlDownloadDlc(appid);
+              }, (r) =>
                 r.success ? "Started — downloading content DLC in the background." : (r.error || "Could not start"));
               await pollDdlOnce();
               startDdl();
@@ -840,7 +864,10 @@ export function GameToolsSection() {
                   subtitle="Fetches the build's depots via DepotDownloader into the game folder."
                   items={builds.map((b) => ({ key: b.buildid, label: `Build ${b.buildid}`, sublabel: b.date }))}
                   onPick={async (it) => {
-                    await run("ddl", () => depotdlDownloadBuild(appid, it.key), (r) =>
+                    await run("ddl", async () => {
+                      setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
+                      return depotdlDownloadBuild(appid, it.key);
+                    }, (r) =>
                       r.success ? `Started — downloading build ${it.key} in the background.` : (r.error || "Could not start"));
                     await pollDdlOnce();
                     startDdl();

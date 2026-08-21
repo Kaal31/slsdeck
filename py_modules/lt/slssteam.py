@@ -372,6 +372,35 @@ def trigger_steam_install(appid, library: int = 0) -> Dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
+def validate_steam_app(appid) -> Dict[str, Any]:
+    """Ask the running Steam client to validate an installed app.
+
+    Historical manifest pins on an already-installed game do not reliably react
+    to the SLSsteam `install|...` IPC because Steam may still consider the app
+    fully installed. `steam://validate/<appid>` is Steam's own Verify integrity
+    action, which forces it to reconcile the newly pinned manifests and download
+    the changed files.
+    """
+    try:
+        appid = int(appid)
+        if appid <= 0:
+            raise ValueError()
+    except Exception:
+        return {"success": False, "error": "invalid appid"}
+    try:
+        cmd = _wrap_as_user(["steam", f"steam://validate/{appid}"])
+        subprocess.Popen(
+            cmd, env=_rich_env(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.log(f"SLSsteam: Steam validation trigger -> {appid}")
+        return {"success": True}
+    except Exception as exc:
+        logger.warn(f"SLSsteam: Steam validation trigger failed: {exc}")
+        return {"success": False, "error": str(exc)}
+
+
 def injection_health() -> Dict[str, Any]:
     try:
         active = _injection_active()
