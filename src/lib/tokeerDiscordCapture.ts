@@ -251,7 +251,7 @@ const SNAPSHOT_EXPR = `(function(){try{
     var label=(e.innerText||e.textContent||'').trim();
     return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};
   });
-  return {found:true,steamStatus:sv(/Steam\s*:\s*([^\n]+)/i),gamesListed:n(/Games listed:\s*(\d+)/i),steamGames:n(/Games listed:[\s\S]*?Steam[^\d]*(\d+)/i),keysRemaining:n(/Keys remaining:\s*(\d+)/i),highDemand:n(/High demand:\s*(\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
+  return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
 }catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
 
 export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
@@ -330,7 +330,7 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
 
 const TICKET_CONTEXT_EXPR = `(function(){try{
   var text=(document.body.innerText||'').replace(/\u00a0/g,' ');
-  var m=text.match(/tokeer\s+verify\s+(\d{3,})/i)||text.match(/bash\s+-s\s+--\s+(\d{3,})/i)||text.match(/(?:steam\s*)?app\s*id\D{0,12}(\d{3,})/i)||location.href.match(/[?&]appid=(\d{3,})/i);
+  var m=text.match(/tokeer\\s+verify\\s+(\\d{3,})/i)||text.match(/bash\\s+-s\\s+--\\s+(\\d{3,})/i)||text.match(/(?:steam\\s*)?app\\s*id\\D{0,12}(\\d{3,})/i)||location.href.match(/[?&]appid=(\\d{3,})/i);
   return JSON.stringify(m?{found:true,appid:Number(m[1]),rawText:text.slice(0,16000)}:{found:false,error:'Ticket opened, waiting for the setup commands…'});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
