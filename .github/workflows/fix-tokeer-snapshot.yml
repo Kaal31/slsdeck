@@ -1,0 +1,39 @@
+name: Fix Tokeer snapshot
+on:
+  push:
+    branches: [tokeer-implement]
+    paths: ['.github/workflows/fix-tokeer-snapshot.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tokeer-implement
+      - name: Patch native CDP snapshot handling
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/lib/tokeerDiscordCapture.ts')
+          s=p.read_text()
+          old='''async function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {\n  const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);\n  return result?.result?.value ?? null;\n}\n'''
+          new='''async function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {\n  const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);\n  return result?.result?.value ?? null;\n}\n\nasync function evalDetailed(wsUrl: string, expression: string, timeoutMs = 5000): Promise<{ value?: any; error?: string }> {\n  const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);\n  const error = result?.exceptionDetails?.exception?.description || result?.exceptionDetails?.text;\n  if (error) return { error: String(error) };\n  return { value: result?.result?.value };\n}\n'''
+          assert old in s
+          s=s.replace(old,new,1)
+          old2='''const SNAPSHOT_EXPR = `(function(){try{\n  var id=${JSON.stringify(TARGET_MESSAGE)};\n  var article=document.querySelector('[data-list-item-id$="-'+id+'"]') || document.querySelector('#message-accessories-'+id)?.closest('[role="article"]') || document.querySelector('#message-reactions-'+id)?.closest('[role="article"]');\n  if(!article) return JSON.stringify({found:false,error:'Discord CEF is connected, but the target Tokeer message is not rendered yet. Open the linked message (or wait for Discord to finish loading).'});\n  var text=(article.innerText||'').replace(/\\u00a0/g,' ');\n  var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};\n  var s=function(re){var m=text.match(re);return m?m[1].trim():undefined};\n  var selects=[].slice.call(article.querySelectorAll('[aria-haspopup="listbox"]')).map(function(e,i){\n    var label=(e.innerText||e.textContent||'').trim();\n    return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};\n  });\n  return JSON.stringify({found:true,steamStatus:s(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)});\n}catch(e){return JSON.stringify({found:false,error:String(e),selectors:[]});}})()`;\n'''
+          new2='''const SNAPSHOT_EXPR = `(function(){try{\n  var id=${JSON.stringify(TARGET_MESSAGE)};\n  var article=document.querySelector('[data-list-item-id$="-'+id+'"]') || (document.querySelector('#message-accessories-'+id) && document.querySelector('#message-accessories-'+id).closest('[role="article"]')) || (document.querySelector('#message-reactions-'+id) && document.querySelector('#message-reactions-'+id).closest('[role="article"]'));\n  if(!article) return {found:false,selectors:[],error:'Discord CEF is connected, but the target Tokeer message is not rendered yet. Open the linked message (or wait for Discord to finish loading).'};\n  var text=(article.innerText||'').replace(/\\u00a0/g,' ');\n  var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};\n  var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};\n  var selects=[].slice.call(article.querySelectorAll('[aria-haspopup="listbox"]')).map(function(e,i){\n    var label=(e.innerText||e.textContent||'').trim();\n    return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};\n  });\n  return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};\n}catch(e){return {found:false,selectors:[],error:String(e)};}})()`;\n'''
+          assert old2 in s
+          s=s.replace(old2,new2,1)
+          old3='''  const raw = await evalJson(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);\n  try { return { ...JSON.parse(String(raw || "")), tabUrl: tab.url }; }\n  catch { return { found: false, selectors: [], tabUrl: tab.url, error: "Could not parse Discord DOM snapshot." }; }\n'''
+          new3='''  const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);\n  if (snap.error) return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };\n  if (!snap.value || typeof snap.value !== "object") return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object." };\n  return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };\n'''
+          assert old3 in s
+          s=s.replace(old3,new3,1)
+          p.write_text(s)
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/lib/tokeerDiscordCapture.ts
+          git commit -m 'Fix Tokeer Discord DOM snapshot handling [skip ci]' || exit 0
+          git push
