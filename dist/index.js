@@ -2589,10 +2589,13 @@ function badgeCapsule(capsule, win) {
         target = img ? capsule.querySelector("div") : capsule;
     }
     else if (role === "listitem") {
-        // Home/recent-game cards contain small Steam status/action images too. Using
-        // img.closest('div') can therefore attach our emoji inside Steam's black
-        // native control overlay. Anchor directly to the whole capsule instead.
-        target = capsule;
+        // Steam Home uses a dedicated artwork wrapper. decky-nonsteam-badges uses
+        // this same partial class match because the generic nearest div can be
+        // Steam's native status/action overlay, while the whole listitem can clip
+        // overlays outside the artwork box.
+        target = img
+            ? (img.closest('div[class*="_1pwP4"]') ?? capsule)
+            : capsule;
     }
     if (!target)
         target = capsule;
