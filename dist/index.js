@@ -2581,15 +2581,20 @@ function badgeCapsule(capsule, win) {
     box?.remove();
     existing.forEach((b) => b.remove());
     const img = capsule.querySelector("img");
-    let target = capsule;
-    if (img) {
-        // The image's immediate artwork wrapper is stable across square/grid and wide
-        // recent-game capsules. Avoid capsule.querySelector("div"), which can pick
-        // Steam's native bottom-right status/action overlay on wide cards.
-        const art = img.parentElement;
-        if (art && capsule.contains(art))
-            target = art;
+    const role = capsule.getAttribute("role");
+    let target = null;
+    if (role === "gridcell") {
+        // Keep badges out of Steam's overflow-clipped image layer. This was the
+        // working anchor before emoji mode changed the attachment point.
+        target = img ? capsule.querySelector("div") : capsule;
     }
+    else if (role === "listitem") {
+        // Wide/recent-game capsules use the nearest artwork div as their stable
+        // overlay anchor.
+        target = img ? (img.closest("div") ?? capsule) : capsule;
+    }
+    if (!target)
+        target = capsule;
     if (!target.hasAttribute(POSITIONED_ATTR)) {
         try {
             if (win.getComputedStyle(target).position === "static")
