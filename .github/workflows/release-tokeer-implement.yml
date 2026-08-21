@@ -13,7 +13,9 @@ permissions:
 
 concurrency:
   group: release-tokeer-implement
-  cancel-in-progress: true
+  # Other maintenance workflows also commit to this branch. Let an in-flight
+  # release finish so those commits cannot leave the rolling tag stale.
+  cancel-in-progress: false
 
 jobs:
   build-release:
@@ -36,6 +38,13 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      - name: Verify Tokeer snapshot fix is compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'Could not parse Discord DOM snapshot' dist/index.js
+          grep -q 'Discord DOM snapshot returned no object' dist/index.js
 
       - name: Check Python syntax
         run: python3 -m compileall -q main.py py_modules
