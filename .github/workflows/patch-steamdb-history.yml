@@ -1,0 +1,209 @@
+name: Patch SteamDB build history
+
+on:
+  push:
+    branches: [test]
+    paths:
+      - '.github/workflows/patch-steamdb-history.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test
+          fetch-depth: 0
+
+      - name: Patch SteamDB history flow
+        shell: bash
+        run: |
+          cat > src/lib/steamdbBuilds.ts <<'EOF'
+          import { fetchNoCors } from "@decky/api";
+          import { Navigation } from "@decky/ui";
+
+          export interface BuildRow { buildid: string; date: string }
+          interface CdpTab { url?: string; title?: string; type?: string; webSocketDebuggerUrl?: string; _port?: number }
+
+          const _cache = new Map<number, BuildRow[]>();
+
+          // Kept for API compatibility. Do NOT cancel merely because the game-tools
+          // component unmounted: opening SteamDB itself navigates away from that
+          // component, which used to cancel the very request we had just started.
+          export function cancelSteamdbBuildFetch(): void { /* intentionally no-op */ }
+
+          async function listTargets(): Promise<CdpTab[]> {
+            const out: CdpTab[] = [];
+            for (const port of [8080, 8081]) {
+              try {
+                const res = await fetchNoCors(`http://localhost:${port}/json`);
+                const tabs: CdpTab[] = await res.json();
+                for (const t of tabs || []) if (t?.webSocketDebuggerUrl) out.push({ ...t, _port: port });
+              } catch { /* try next port */ }
+            }
+            return out;
+          }
+
+          function evalInTab(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
+            return new Promise((resolve) => {
+              let done = false;
+              let sock: WebSocket;
+              const finish = (v: any) => { if (done) return; done = true; try { sock.close(); } catch { /* */ } resolve(v); };
+              try { sock = new WebSocket(wsUrl); } catch { resolve(undefined); return; }
+              sock.onopen = () => {
+                try {
+                  sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true, awaitPromise: true } }));
+                } catch { finish(undefined); }
+              };
+              sock.onmessage = (ev) => {
+                try {
+                  const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+                  if (m?.id === 1) finish(m?.result?.result?.value);
+                } catch { /* */ }
+              };
+              sock.onerror = () => finish(undefined);
+              setTimeout(() => finish(undefined), timeoutMs);
+            });
+          }
+
+          async function findSteamdbTab(): Promise<CdpTab | null> {
+            const tabs = await listTargets();
+            // Fast path: metadata URL is correct.
+            const direct = tabs.find((t) => (t.url || "").includes("steamdb.info"));
+            if (direct) return direct;
+            // Steam BrowserViews can expose wrapper/blank metadata URLs. Ask each
+            // live target what page it is actually rendering.
+            for (const t of tabs) {
+              if (!t.webSocketDebuggerUrl) continue;
+              const href = await evalInTab(t.webSocketDebuggerUrl, "location.href", 1800);
+              if (typeof href === "string" && href.includes("steamdb.info")) return { ...t, url: href };
+            }
+            return null;
+          }
+
+          interface RssResult { status: number; text: string; error?: string }
+
+          function fetchRssInTab(wsUrl: string, appid: number, timeoutMs = 10000): Promise<RssResult> {
+            const expr = `(async()=>{try{const r=await fetch('/api/PatchnotesRSS/?appid=${appid}',{credentials:'include'});return {status:r.status,text:await r.text()};}catch(e){return {status:0,text:'',error:String(e)}}})()`;
+            return new Promise((resolve) => {
+              let done = false;
+              let sock: WebSocket;
+              const finish = (v: RssResult) => { if (done) return; done = true; try { sock.close(); } catch { /* */ } resolve(v); };
+              try { sock = new WebSocket(wsUrl); } catch { resolve({ status: 0, text: "", error: "Could not attach to SteamDB tab" }); return; }
+              sock.onopen = () => {
+                try { sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true, awaitPromise: true } })); }
+                catch { finish({ status: 0, text: "", error: "Could not query SteamDB tab" }); }
+              };
+              sock.onmessage = (ev) => {
+                try {
+                  const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+                  if (m?.id === 1) {
+                    const v = m?.result?.result?.value;
+                    if (v && typeof v === "object") finish({ status: Number(v.status || 0), text: String(v.text || ""), error: v.error ? String(v.error) : undefined });
+                    else finish({ status: 0, text: "", error: "SteamDB returned no RSS result" });
+                  }
+                } catch { /* */ }
+              };
+              sock.onerror = () => finish({ status: 0, text: "", error: "SteamDB CDP connection failed" });
+              setTimeout(() => finish({ status: 0, text: "", error: "SteamDB RSS request timed out" }), timeoutMs);
+            });
+          }
+
+          function parseRss(xml: string): BuildRow[] {
+            const out: BuildRow[] = [];
+            const seen = new Set<string>();
+            const items = xml.split(/<item>/i).slice(1);
+            for (const it of items) {
+              const link = (it.match(/<link>([^<]*)<\/link>/i) || [])[1] || "";
+              const title = (it.match(/<title>([^<]*)<\/title>/i) || [])[1] || "";
+              const pub = (it.match(/<pubDate>([^<]*)<\/pubDate>/i) || [])[1] || "";
+              let bid = (link.match(/\/patchnotes\/(\d+)/) || [])[1] || "";
+              if (!bid) bid = (title.match(/Build\s+(\d+)/i) || [])[1] || "";
+              if (!bid || seen.has(bid)) continue;
+              seen.add(bid);
+              let date = "";
+              try { const d = new Date(pub); if (!isNaN(d.getTime())) date = d.toISOString().slice(0, 10); } catch { /* */ }
+              out.push({ buildid: bid, date });
+            }
+            return out;
+          }
+
+          export async function fetchSteamdbBuilds(
+            appid: number, onStatus?: (s: string) => void,
+          ): Promise<BuildRow[]> {
+            if (_cache.has(appid)) return _cache.get(appid)!;
+            let tab = await findSteamdbTab();
+            if (!tab) {
+              onStatus?.("Opening SteamDB for build history… leave it open, then return to SLSDeck.");
+              try { Navigation.NavigateToExternalWeb(`https://steamdb.info/app/${appid}/patchnotes/`); } catch { /* */ }
+            }
+            const deadline = Date.now() + 30000;
+            let lastError = "";
+            while (Date.now() < deadline) {
+              tab = await findSteamdbTab();
+              if (tab?.webSocketDebuggerUrl) {
+                onStatus?.("Reading SteamDB build history…");
+                const rss = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
+                if (rss.status === 200 && rss.text) {
+                  const rows = parseRss(rss.text);
+                  if (rows.length) { _cache.set(appid, rows); return rows; }
+                  lastError = "SteamDB responded, but no historical build rows were parsed.";
+                } else if (rss.status) {
+                  lastError = `SteamDB history request returned HTTP ${rss.status}.`;
+                } else if (rss.error) {
+                  lastError = rss.error;
+                }
+                onStatus?.(lastError || "SteamDB is open, but build history is not available yet.");
+              } else {
+                onStatus?.("Waiting for SteamDB to become visible to Steam CEF…");
+              }
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+            onStatus?.(lastError || "Could not retrieve SteamDB build history. Leave SteamDB open and retry.");
+            return [];
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/sections/GameTools.tsx')
+          s = p.read_text()
+
+          # Opening SteamDB navigates away from this component. Do not cancel the
+          # build-history request just because the component unmounted.
+          s = s.replace(
+              'import { fetchSteamdbBuilds, cancelSteamdbBuildFetch } from "../lib/steamdbBuilds";',
+              'import { fetchSteamdbBuilds } from "../lib/steamdbBuilds";'
+          )
+          s = s.replace(
+              '    return () => {\n      steamdbCancelled.current = true;\n      cancelSteamdbBuildFetch();\n    };',
+              '    return () => {\n      steamdbCancelled.current = true;\n    };'
+          )
+
+          needle = '''    // Which builds a crack actually targets — exact buildids from the HV / CrakFiles\n    // catalogs, so we can highlight the builds that are known-good with a fix.\n'''
+          guard = '''    // Never present a misleading picker containing only the local "Latest"\n    // pseudo-entry. That means SteamDB retrieval failed, not that the game has\n    // no historical builds. Keep the user on the page and make retry explicit.\n    const fetchedHistorical = builds.filter((b) => !b.isCurrent && b.buildid && b.buildid !== "latest");\n    if (!fetchedHistorical.length) {\n      setBusy("");\n      setNote("Could not retrieve SteamDB build history. Leave the SteamDB page open, return here, and try Install a specific build again.");\n      return;\n    }\n\n'''
+          if guard not in s:
+              if needle not in s:
+                  raise SystemExit('Could not find build-picker insertion point')
+              s = s.replace(needle, guard + needle, 1)
+
+          p.write_text(s)
+          PY
+
+      - name: Build and syntax check
+        run: |
+          npm ci
+          npm run build
+          python3 -m compileall -q main.py py_modules
+
+      - name: Commit patched source and build
+        run: |
+          rm -f .github/workflows/patch-steamdb-history.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Fix SteamDB historical build retrieval race" || exit 0
+          git push origin test
