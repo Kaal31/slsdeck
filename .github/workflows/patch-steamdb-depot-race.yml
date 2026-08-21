@@ -1,0 +1,67 @@
+name: Patch SteamDB depot capture race
+
+on:
+  push:
+    branches: [test]
+    paths:
+      - '.github/workflows/patch-steamdb-depot-race.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test
+          fetch-depth: 0
+
+      - name: Remove false SteamDB cancellation on navigation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/sections/GameTools.tsx')
+          s = p.read_text()
+          old = '''  const steamdbCancelled = useRef(false);
+          useEffect(() => {
+            steamdbCancelled.current = false;
+            return () => {
+              steamdbCancelled.current = true;
+            };
+          }, [appid]);
+          '''
+          if old not in s:
+              raise SystemExit('steamdbCancelled lifecycle block not found')
+          s = s.replace(old, '''  // SteamDB navigation can unmount this surface on SteamOS/Steam Machine.
+          // Do not treat that expected navigation as cancellation of manifest capture.
+          ''', 1)
+          s = s.replace('''      if (steamdbCancelled.current) break;
+          ''', '', 1)
+          old_call = '''      try { rows = await scrapeDepotManifests(depot, 25000, onStatus, () => steamdbCancelled.current); } catch { /* */ }
+          '''
+          if old_call not in s:
+              raise SystemExit('scrapeDepotManifests cancellation call not found')
+          s = s.replace(old_call, '''      try { rows = await scrapeDepotManifests(depot, 30000, onStatus); } catch { /* */ }
+          ''', 1)
+          p.write_text(s)
+          PY
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+          python3 -m compileall -q main.py py_modules
+
+      - name: Commit source and compiled bundle, remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/patch-steamdb-depot-race.yml
+          git add src/sections/GameTools.tsx dist/index.js
+          git commit -m "Fix SteamDB depot manifest navigation race"
+          git push origin HEAD:test
