@@ -1,0 +1,148 @@
+name: Merge non-Tokeer changes into main
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/merge-non-tokeer-main.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Merge approved non-Tokeer files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin tokeer-implement
+
+          # Persistent workflows and all files whose branch diff is unrelated to Tokeer.
+          git checkout origin/tokeer-implement -- \
+            .github/workflows/build-lumainject.yml \
+            .github/workflows/build-test.yml \
+            defaults/api.json \
+            py_modules/lt/__init__.py \
+            py_modules/lt/cloudredirect_reinstall.py \
+            py_modules/lt/depot_cleanup.py \
+            py_modules/lt/depotdl.py \
+            py_modules/lt/httpc.py \
+            py_modules/lt/live_refresh.py \
+            py_modules/lt/settings.py \
+            py_modules/lt/slssteam.py \
+            py_modules/lt/survival_backup.py \
+            src/components/FixPicker.tsx \
+            src/components/GameDetailsBadge.tsx \
+            src/index.tsx \
+            src/lib/badges.ts \
+            src/lib/catalogFixBuild.ts \
+            src/lib/cloudRedirectShortcut.ts \
+            src/lib/emojiBadges.ts \
+            src/lib/steamdbBuilds.ts \
+            src/lib/steamdbCapture.ts \
+            src/sections/AddGame.tsx \
+            src/sections/CloudRedirect.tsx \
+            src/sections/Dependencies.tsx \
+            src/sections/GameControls.tsx \
+            src/sections/GameTools.tsx \
+            src/sections/HelpHub.tsx \
+            src/sections/Settings.tsx \
+            src/sections/SlsSteamCompact.tsx \
+            src/pages/AdvancedPage.tsx
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # main.py: keep main's backend and add only the non-Tokeer Steam validation RPC.
+          p = Path('main.py')
+          s = p.read_text()
+          anchor = '''    async def trigger_steam_install(self, appid: int, library: int = 0) -> Dict[str, Any]:\n        return await self._run(slssteam.trigger_steam_install, appid, library)\n'''
+          repl = anchor + '''\n    async def validate_steam_app(self, appid: int) -> Dict[str, Any]:\n        return await self._run(slssteam.validate_steam_app, appid)\n'''
+          if 'async def validate_steam_app(' not in s:
+              if anchor not in s: raise SystemExit('main.py validation anchor missing')
+              s = s.replace(anchor, repl, 1)
+          p.write_text(s)
+
+          # api.ts: same selective callable; do not bring Tokeer callables/types across.
+          p = Path('src/api.ts')
+          s = p.read_text()
+          anchor = 'export const triggerSteamInstall = callable<[appid: number, library?: number], { success: boolean; error?: string }>("trigger_steam_install");\n'
+          repl = anchor + 'export const validateSteamApp = callable<[appid: number], { success: boolean; error?: string }>("validate_steam_app");\n'
+          if 'export const validateSteamApp' not in s:
+              if anchor not in s: raise SystemExit('api.ts validation anchor missing')
+              s = s.replace(anchor, repl, 1)
+          p.write_text(s)
+
+          # AdvancedPage: retain the branch's non-Tokeer QAM/emoji changes, but restore
+          # main's original Anti-Denuvo -> Hypervisor page and remove all Tokeer/HV-gating UI.
+          p = Path('src/pages/AdvancedPage.tsx')
+          s = p.read_text()
+          s = s.replace('import { TokeerSection } from "../sections/Tokeer";\n', '')
+          s = re.sub(r'const DECKY_HV_VISIBLE_KEY = "slsdeck\.showDeckyHv";\n\nfunction readDeckyHvVisible\(\): boolean \{.*?\n\}\n\n', '', s, flags=re.S)
+          s = re.sub(
+              r'function OptionsPane\(\{\n\s*showDeckyHv,\n\s*onShowDeckyHvChange,\n\}: \{\n\s*showDeckyHv: boolean;\n\s*onShowDeckyHvChange: \(enabled: boolean\) => void;\n\}\) \{',
+              'function OptionsPane() {', s, count=1)
+          s = re.sub(r'\n\s*<PanelSection title="Advanced tools">.*?</PanelSection>\n\n\s*<PanelSection title="Library badges">',
+                     '\n\n      <PanelSection title="Library badges">', s, count=1, flags=re.S)
+          s = s.replace('  const [showDeckyHv, setShowDeckyHv] = useState(readDeckyHvVisible);\n', '')
+          s = re.sub(r'\n  const setDeckyHvVisible = \(enabled: boolean\) => \{.*?\n  \};\n', '\n', s, count=1, flags=re.S)
+          s = s.replace('<OptionsPane showDeckyHv={showDeckyHv} onShowDeckyHvChange={setDeckyHvVisible} />', '<OptionsPane />')
+          old = '''        {\n          title: "Anti-Denuvo",\n          icon: <FaShieldAlt />,\n          content: <Body><TokeerSection /></Body>,\n        },\n        ...(showDeckyHv ? [{\n          title: "Hypervisor Bypass Module",\n          icon: <FaShieldAlt />,\n          content: <Body><HypervisorSection /></Body>,\n        }] : []),\n'''
+          new = '''        {\n          title: "Anti-Denuvo",\n          icon: <FaShieldAlt />,\n          content: <Body><HypervisorSection /></Body>,\n        },\n'''
+          if old not in s: raise SystemExit('AdvancedPage Tokeer navigation anchor missing')
+          s = s.replace(old, new, 1)
+          if re.search(r'(?i)tokeer|slsdeck\.showDeckyHv|showDeckyHv', s):
+              raise SystemExit('Tokeer/HV-gating reference remains in AdvancedPage')
+          p.write_text(s)
+          PY
+
+          # Hard boundary: the integration itself must not enter main.
+          rm -f docs/TOKEER_IMPLEMENTATION.md py_modules/lt/tokeer.py \
+            src/lib/tokeerDiscordCapture.ts src/sections/Tokeer.tsx
+          if grep -RniE '(^|[^A-Za-z])Tokeer([^A-Za-z]|$)|tokeer_' main.py src py_modules/lt 2>/dev/null; then
+            echo 'Unexpected Tokeer reference found in merge result' >&2
+            exit 1
+          fi
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+
+      - name: Verify compiled bundle excludes Tokeer
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -qiE 'Tokeer|tokeerDiscord|tokeer_' dist/index.js; then
+            echo 'Compiled bundle still contains Tokeer integration' >&2
+            exit 1
+          fi
+
+      - name: Commit merged source and compiled frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Do not leave the one-shot workflow in main.
+          git rm -f .github/workflows/merge-non-tokeer-main.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Merge non-Tokeer changes from tokeer-implement [skip ci]'
+          git push origin HEAD:main
