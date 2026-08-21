@@ -140,14 +140,13 @@ async function findSharedJsContext(): Promise<CdpTab | null> {
     || null;
 }
 
-async function revealTokeerBrowserView(): Promise<void> {
+async function hideTokeerBrowserView(): Promise<void> {
   const shared = await findSharedJsContext();
   if (!shared?.webSocketDebuggerUrl) return;
   await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
     var v=window.SLSDECK_TOKEER_VIEW;
     if(!v||!v.m_browserView)return false;
-    try{v.m_browserView.SetBounds(0,0,860,495);}catch(e){}
-    v.m_browserView.SetVisible(true);return true;
+    v.m_browserView.SetVisible(false);return true;
   }catch(e){return false;}})()`, 2000);
 }
 
@@ -184,9 +183,9 @@ async function createTokeerDiscordBrowserView(): Promise<CdpTab | null> {
     var view=main.CreateBrowserView(${JSON.stringify(TOKEER_VIEW_NAME)});
     window.SLSDECK_TOKEER_VIEW=view;
     try{view.WIDTH=860;view.HEIGHT=495;view.m_browserView.SetBounds(0,0,860,495);}catch(e){}
-    // This must be visible: a first-time user has to sign in to Discord and
-    // Discord throttles/virtualizes hidden BrowserViews aggressively.
-    try{view.m_browserView.SetVisible(true);}catch(e){}
+    // Automation fallback only. User-facing Discord is opened through Steam's
+    // normal external-web navigation so the B button can always leave it.
+    try{view.m_browserView.SetVisible(false);}catch(e){}
     view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
     return JSON.stringify({ok:true});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
@@ -222,15 +221,9 @@ async function createTokeerDiscordBrowserView(): Promise<CdpTab | null> {
 async function cdpDiagnostic(): Promise<string> {
   const tabs = await listCdpTabs();
   if (!tabs.length) return "CDP 8080/8081 returned no targets.";
-  const parts: string[] = [];
-  for (const t of tabs.slice(0, 10)) {
-    let live = "";
-    if (t.webSocketDebuggerUrl) {
-      try { live = await resolveTabUrl(t); } catch {}
-    }
-    parts.push(`${t.cdpPort || "?"}/${t.type || "target"}: ${String(t.title || "").slice(0, 40)} | ${String(t.url || "").slice(0, 90)}${live && live !== t.url ? ` => ${live.slice(0, 90)}` : ""}`);
-  }
-  return parts.join(" ; ");
+  const ports = Array.from(new Set(tabs.map((t) => t.cdpPort).filter(Boolean))).join("/");
+  const shared = tabs.some((t) => /SharedJSContext/i.test(String(t.title || "")));
+  return `Steam CDP is active on ${ports || "an unknown port"} (${tabs.length} targets; SharedJSContext ${shared ? "found" : "missing"}).`;
 }
 
 async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
@@ -373,11 +366,33 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
 }
 
 export async function openTokeerDiscord(): Promise<boolean> {
+  // Hide a raw fallback view left by an older SLSDeck build. A visible raw
+  // BrowserView has no Steam navigation chrome and traps the B button.
+  try { await hideTokeerBrowserView(); } catch {}
+
+  // Preferred path: Steam owns this page and supplies its normal Back action.
+  // Give the target a moment to appear in CDP before considering a hidden
+  // automation fallback.
+  try {
+    const nav: any = Navigation as any;
+    if (typeof nav?.NavigateToExternalWeb === "function") {
+      nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        const tab = await findDiscordTab();
+        if (tab?.webSocketDebuggerUrl) return true;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      // The page is still useful for login/manual interaction even on Steam
+      // builds that do not expose external BrowserViews through CDP.
+      return true;
+    }
+  } catch {}
+
   try {
     const existing = await findDiscordTab();
     if (existing?.webSocketDebuggerUrl) {
       if (await navigateDiscordTabToTokeer(existing)) {
-        try { await revealTokeerBrowserView(); } catch {}
         try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.bringToFront", {}, 2000); } catch {}
         return true;
       }
@@ -387,16 +402,6 @@ export async function openTokeerDiscord(): Promise<boolean> {
   try {
     const created = await createTokeerDiscordBrowserView();
     if (created?.webSocketDebuggerUrl) return true;
-  } catch {}
-
-  // Fallback only: useful for login/manual inspection if Steam's internal
-  // CreateBrowserView API changes, but this external BrowserView may not be CDP-visible.
-  try {
-    const nav: any = Navigation as any;
-    if (typeof nav?.NavigateToExternalWeb === "function") {
-      nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
-      return true;
-    }
   } catch {}
 
   try {
