@@ -1,0 +1,48 @@
+name: Fix home emoji badge anchor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [tokeer-implement]
+    paths:
+      - '.github/workflows/fix-home-emoji-anchor.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tokeer-implement
+          fetch-depth: 0
+      - name: Fix home/recent-game badge anchor
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/lib/badges.ts')
+          s = p.read_text()
+          old = '''  } else if (role === "listitem") {
+    // Wide/recent-game capsules use the nearest artwork div as their stable
+    // overlay anchor.
+    target = img ? ((img.closest("div") as HTMLElement | null) ?? (capsule as HTMLElement)) : (capsule as HTMLElement);
+  }'''
+          new = '''  } else if (role === "listitem") {
+    // Steam Home/recent-game cards contain several small native icon images.
+    // querySelector("img") can therefore resolve to a bottom-right status/action
+    // icon instead of the game artwork, which made our emoji badges inherit that
+    // native control's rounded background and position. Anchor to the entire
+    // capsule instead: it is stable, unclipped, and keeps badges at top-left.
+    target = capsule as HTMLElement;
+  }'''
+          assert old in s, 'listitem anchor block not found'
+          p.write_text(s.replace(old, new, 1))
+      - name: Commit source fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/lib/badges.ts
+          git commit -m 'Anchor home emoji badges to game capsules' || exit 0
+          git push origin HEAD:tokeer-implement
