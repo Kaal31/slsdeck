@@ -161,17 +161,12 @@ export interface InstalledFix {
 
 
 // ── Tokeer / Anti-Denuvo ──────────────────────────────────────────────────
-export interface TokeerQuotaProbe {
-  success: boolean;
-  status: number;
-  url?: string;
-  json: any;
-  raw: string;
-  contentType?: string;
-  parseError?: string;
-  error?: string;
-}
-export const tokeerQuotaProbe = callable<[], TokeerQuotaProbe>("tokeer_quota_probe");
+export type TokeerChecks = { installed: boolean; prefix: boolean; hook: boolean; launchOpt: boolean; proton?: string | null };
+export type TokeerVerifyResult = { success: boolean; code?: string; checks?: TokeerChecks; report?: any; output?: string; needsPrepare?: boolean; error?: string };
+export const tokeerRuntimeStatus = callable<[], { success: boolean; installed: boolean; home?: string; missing?: string[]; defaultCooldownHours?: number }>("tokeer_runtime_status");
+export const tokeerPrepare = callable<[appid: number], { success: boolean; output?: string; steamMayRestart?: boolean; error?: string }>("tokeer_prepare");
+export const tokeerVerify = callable<[appid: number], TokeerVerifyResult>("tokeer_verify");
+export const tokeerRedeem = callable<[code: string], { success: boolean; output?: string; needsPrepare?: boolean; error?: string }>("tokeer_redeem");
 
 // ── Callables ──────────────────────────────────────────────────────────────
 export const getSteamStatus = callable<[], SteamStatus>("get_steam_status");

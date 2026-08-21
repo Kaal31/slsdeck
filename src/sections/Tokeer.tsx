@@ -1,111 +1,64 @@
 import { ButtonItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
 import { useEffect, useState } from "react";
-import {
-  chooseSelectorOption,
-  openSelectorAndReadOptions,
-  openTokeerDiscord,
-  readTokeerDiscord,
-  TokeerDiscordState,
-} from "../lib/tokeerDiscordCapture";
+import { tokeerPrepare, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
+import { chooseSelectorOption, openSelectorAndReadOptions, openTokeerDiscord, readTokeerDiscord, TokeerDiscordState } from "../lib/tokeerDiscordCapture";
 
-/** Tokeer Anti-Denuvo page backed by the user's authenticated Discord CEF tab. */
+const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
+const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
+
 export function TokeerSection() {
-  const [busy, setBusy] = useState(false);
-  const [state, setState] = useState<TokeerDiscordState | null>(null);
-  const [openIndex, setOpenIndex] = useState<number | null>(null);
-  const [options, setOptions] = useState<string[]>([]);
-  const [action, setAction] = useState("");
+  const [discord,setDiscord]=useState<TokeerDiscordState|null>(null);
+  const [appid,setAppid]=useState("");
+  const [runtime,setRuntime]=useState<any>(null);
+  const [verify,setVerify]=useState<TokeerVerifyResult|null>(null);
+  const [activation,setActivation]=useState("");
+  const [busy,setBusy]=useState("");
+  const [message,setMessage]=useState("");
+  const [menu,setMenu]=useState<number|null>(null);
+  const [options,setOptions]=useState<string[]>([]);
 
-  const refresh = async () => {
-    setBusy(true);
-    try { setState(await readTokeerDiscord()); }
-    finally { setBusy(false); }
-  };
+  const refreshDiscord=async()=>{ try{setDiscord(await readTokeerDiscord());}catch{} };
+  useEffect(()=>{ tokeerRuntimeStatus().then(setRuntime).catch(()=>{}); refreshDiscord(); const t=setInterval(refreshDiscord,15000); return()=>clearInterval(t); },[]);
+  const id=Number(appid);
 
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 15000);
-    return () => clearInterval(t);
-  }, []);
+  const prepare=async()=>{ if(!id)return setMessage("Enter a Steam AppID first."); setBusy("Preparing Tokeer…"); setMessage("Steam may restart while Tokeer writes the per-game launch configuration."); try{const r=await tokeerPrepare(id);setMessage(r.success?"Prepare complete. If Steam restarted, reopen SLSDeck and press Verify.":(r.error||r.output||"Prepare failed."));setRuntime(await tokeerRuntimeStatus());}catch(e){setMessage(String(e));}finally{setBusy("");} };
+  const runVerify=async()=>{ if(!id)return setMessage("Enter a Steam AppID first."); setBusy("Verifying setup…"); try{const r=await tokeerVerify(id);setVerify(r);setMessage(r.success?"Setup verified. TLX1 is ready for the Discord ticket.":(r.error||"Verification failed."));}catch(e){setMessage(String(e));}finally{setBusy("");} };
+  const copyTlx=async()=>{ if(!verify?.code)return; try{await navigator.clipboard.writeText(verify.code);setMessage("TLX1 copied. Paste it into the Tokeer ticket when requested.");}catch{setMessage("Could not copy automatically; use the TLX1 shown below.");} };
+  const openMenu=async(i:number)=>{setBusy("Reading live game list…");setMenu(i);try{setOptions(await openSelectorAndReadOptions(i));}finally{setBusy("");}};
+  const choose=async(label:string)=>{if(menu==null)return;setBusy(`Requesting ${label}…`);const ok=await chooseSelectorOption(menu,label);setMessage(ok?`Requested ${label} through the real Discord activation panel. Complete the ticket prompt with your TLX1 code.`:"Discord selection failed. Keep the Tokeer message open and retry.");setOptions([]);setMenu(null);setBusy("");};
+  const redeem=async()=>{if(!activation.trim())return setMessage("Paste the activation code from Discord first.");setBusy("Writing activation ticket…");try{const r=await tokeerRedeem(activation.trim());setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));}catch(e){setMessage(String(e));}finally{setBusy("");}};
+  const c=checks(verify||undefined);
 
-  const openMenu = async (index: number) => {
-    setAction("Opening Discord selector…");
-    setOpenIndex(index);
-    const items = await openSelectorAndReadOptions(index);
-    setOptions(items);
-    setAction(items.length ? "" : "No options found. Keep the Discord message open and try again.");
-  };
+  return <>
+    <PanelSection title="Tokeer activation">
+      <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>Guided Linux/Proton activation using the official Tokeer runtime and your own logged-in Discord CEF session. Discord credentials are not copied or stored.</div></PanelSectionRow>
+      <PanelSectionRow><input style={inputStyle} inputMode="numeric" placeholder="Steam AppID" value={appid} onChange={(e:any)=>{setAppid(e.target.value.replace(/\D/g,""));setVerify(null);}} /></PanelSectionRow>
+      <PanelSectionRow><div style={{fontSize:11}}>Runtime: <b>{runtime?.installed?"Installed":"Not prepared"}</b> · Default/free cooldown: <b>48 hours</b></div></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={prepare} disabled={!!busy}>1. Prepare game</ButtonItem></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={runVerify} disabled={!!busy}>2. Verify setup</ButtonItem></PanelSectionRow>
+      {busy&&<PanelSectionRow><div style={{fontSize:11}}><Spinner style={{width:14,height:14,marginRight:8}}/>{busy}</div></PanelSectionRow>}
+      {message&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>{message}</div></PanelSectionRow>}
+    </PanelSection>
 
-  const choose = async (index: number, label: string) => {
-    setAction(`Selecting ${label} in Discord…`);
-    const ok = await chooseSelectorOption(index, label);
-    setAction(ok ? `Selected ${label}. Continue in the Discord flow if it opens a prompt.` : "Discord option click failed.");
-    setOptions([]);
-    setOpenIndex(null);
-    setTimeout(refresh, 800);
-  };
+    {verify&&<PanelSection title="Verify result">
+      <PanelSectionRow><div style={{fontSize:12,lineHeight:1.7,width:"100%"}}>
+        <div>{c.installed?"✓":"✗"} Game installed</div><div>{c.prefix?"✓":"✗"} Proton prefix</div><div>{c.hook?"✓":"✗"} Native hook</div><div>{c.launchOpt?"✓":"✗"} Launch option</div><div>Proton: <b>{c.proton||"unknown"}</b></div>
+      </div></PanelSectionRow>
+      {verify.code&&<><PanelSectionRow><ButtonItem layout="below" onClick={copyTlx}>Copy TLX1 verification code</ButtonItem></PanelSectionRow><PanelSectionRow><div style={{fontSize:9,wordBreak:"break-all",maxHeight:90,overflowY:"auto",opacity:.7}}>{verify.code}</div></PanelSectionRow></>}
+    </PanelSection>}
 
-  return (
-    <>
-      <PanelSection title="Tokeer live panel">
-        <PanelSectionRow>
-          <div style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.45 }}>
-            Mirrors the Linux activation panel from your own logged-in Discord tab. SLSDeck reads the rendered message through Steam CEF/CDP; it does not store your Discord cookie or token.
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => { openTokeerDiscord(); setTimeout(refresh, 1800); }}>
-            Open Tokeer Discord
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={refresh} disabled={busy}>
-            {busy ? "Reading Discord…" : "Refresh live info"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {busy && <PanelSectionRow><div style={{ fontSize: 12 }}><Spinner style={{ width: 14, height: 14, marginRight: 8 }} />Reading the Tokeer message…</div></PanelSectionRow>}
-        {state && !state.found && (
-          <PanelSectionRow>
-            <div style={{ fontSize: 11, color: "#f5a623", lineHeight: 1.45 }}>{state.error || "Tokeer Discord message not found."}</div>
-          </PanelSectionRow>
-        )}
-      </PanelSection>
+    <PanelSection title="3. Request activation">
+      <PanelSectionRow><ButtonItem layout="below" onClick={()=>{openTokeerDiscord();setTimeout(refreshDiscord,1600);}}>Open Tokeer Discord</ButtonItem></PanelSectionRow>
+      {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><ButtonItem layout="below" disabled={s.disabled||!verify?.success} onClick={()=>openMenu(s.index)}>{s.label||`Game menu ${s.index+1}`}</ButtonItem></PanelSectionRow>)}
+      {!discord?.found&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>Open the activation message once and leave the Discord tab alive; SLSDeck will mirror its live selectors here.</div></PanelSectionRow>}
+    </PanelSection>
+    {menu!=null&&options.length>0&&<PanelSection title="Live Discord games">{options.map(x=><PanelSectionRow key={x}><ButtonItem layout="below" onClick={()=>choose(x)}>{x}</ButtonItem></PanelSectionRow>)}</PanelSection>}
 
-      {state?.found && (
-        <>
-          <PanelSection title="Live status">
-            <PanelSectionRow><div style={{ fontSize: 13 }}>Steam: <b>{state.steamStatus || "Unknown"}</b></div></PanelSectionRow>
-            <PanelSectionRow>
-              <div style={{ width: "100%", fontSize: 12, lineHeight: 1.7 }}>
-                <div>Games listed: <b>{state.gamesListed ?? "?"}</b></div>
-                <div>Keys remaining: <b>{state.keysRemaining ?? "?"}</b></div>
-                <div>High demand: <b>{state.highDemand ?? "?"}</b></div>
-              </div>
-            </PanelSectionRow>
-          </PanelSection>
-
-          <PanelSection title="Request activation">
-            {(state.selectors || []).map((s) => (
-              <PanelSectionRow key={s.index}>
-                <ButtonItem layout="below" disabled={s.disabled} onClick={() => openMenu(s.index)}>
-                  {s.label || `Game menu ${s.index + 1}`}
-                </ButtonItem>
-              </PanelSectionRow>
-            ))}
-            {action && <PanelSectionRow><div style={{ fontSize: 11, opacity: 0.8 }}>{action}</div></PanelSectionRow>}
-          </PanelSection>
-        </>
-      )}
-
-      {openIndex != null && options.length > 0 && (
-        <PanelSection title="Games">
-          {options.map((label) => (
-            <PanelSectionRow key={label}>
-              <ButtonItem layout="below" onClick={() => choose(openIndex, label)}>{label}</ButtonItem>
-            </PanelSectionRow>
-          ))}
-        </PanelSection>
-      )}
-    </>
-  );
+    <PanelSection title="4. Redeem activation">
+      <PanelSectionRow><input style={inputStyle} placeholder="Activation code from Discord" value={activation} onChange={(e:any)=>setActivation(e.target.value.trim())}/></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!activation} onClick={redeem}>Activate / write ticket</ButtonItem></PanelSectionRow>
+      <PanelSectionRow><div style={{fontSize:10,opacity:.7,lineHeight:1.45}}>Codes are single-use and the Discord panel says they expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h · Donator 24h · Lua Basic 12h · Lua Pro 6h · Elite/no-cooldown role: no standard cooldown.</div></PanelSectionRow>
+    </PanelSection>
+  </>;
 }

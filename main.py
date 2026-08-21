@@ -53,7 +53,20 @@ def _hv_norm(r: Dict[str, Any]) -> Dict[str, Any]:
 class Plugin:
     # ── Tokeer / Anti-Denuvo ────────────────────────────────────────────────
     async def tokeer_quota_probe(self) -> Dict[str, Any]:
-        return await self._run(tokeer.quota_probe)
+        # Kept for compatibility with older frontends.
+        return await self._run(tokeer.runtime_status)
+
+    async def tokeer_runtime_status(self) -> Dict[str, Any]:
+        return await self._run(tokeer.runtime_status)
+
+    async def tokeer_prepare(self, appid: int) -> Dict[str, Any]:
+        return await self._run(tokeer.prepare, appid)
+
+    async def tokeer_verify(self, appid: int) -> Dict[str, Any]:
+        return await self._run(tokeer.verify, appid)
+
+    async def tokeer_redeem(self, code: str) -> Dict[str, Any]:
+        return await self._run(tokeer.redeem, code)
 
     # ── Grid Artwork Sync ──────────────────────────────────────────────────
     async def sync_game_art(self, appid: int, overwrite: bool = False) -> Dict[str, Any]:
