@@ -982,12 +982,9 @@ function evalInTab(wsUrl, expression, timeoutMs = 5000) {
 }
 async function findSteamdbTab() {
     const tabs = await listTargets();
-    // Fast path: metadata URL is correct.
     const direct = tabs.find((t) => (t.url || "").includes("steamdb.info"));
     if (direct)
         return direct;
-    // Steam BrowserViews can expose wrapper/blank metadata URLs. Ask each
-    // live target what page it is actually rendering.
     for (const t of tabs) {
         if (!t.webSocketDebuggerUrl)
             continue;
@@ -1014,14 +1011,12 @@ function fetchRssInTab(wsUrl, appid, timeoutMs = 10000) {
             resolve({ status: 0, text: "", error: "Could not attach to SteamDB tab" });
             return;
         }
-        sock.onopen = () => {
-            try {
-                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true, awaitPromise: true } }));
-            }
-            catch {
-                finish({ status: 0, text: "", error: "Could not query SteamDB tab" });
-            }
-        };
+        sock.onopen = () => { try {
+            sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true, awaitPromise: true } }));
+        }
+        catch {
+            finish({ status: 0, text: "", error: "Could not query SteamDB tab" });
+        } };
         sock.onmessage = (ev) => {
             try {
                 const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
@@ -1064,6 +1059,27 @@ function parseRss(xml) {
     }
     return out;
 }
+// Fallback for Steam Machine/desktop-width SteamDB layouts and for cases where
+// the RSS endpoint fails or changes. Read the rendered Builds table itself.
+async function parseBuildsFromDom(wsUrl) {
+    const expr = `(()=>{try{
+    const seen=new Set(), out=[];
+    const add=(bid,date)=>{bid=String(bid||'').trim();if(!/^\\d{6,}$/.test(bid)||seen.has(bid))return;seen.add(bid);out.push({buildid:bid,date:String(date||'').trim()});};
+    for(const tr of Array.from(document.querySelectorAll('table tr'))){
+      const text=(tr.textContent||'').replace(/\\s+/g,' ').trim();
+      let bid='';
+      for(const a of Array.from(tr.querySelectorAll('a[href]'))){const h=a.getAttribute('href')||'';const m=h.match(/\\/patchnotes\\/(\\d+)/);if(m){bid=m[1];break;}}
+      if(!bid){const cells=Array.from(tr.querySelectorAll('td')).map(x=>(x.textContent||'').trim());for(let i=cells.length-1;i>=0;i--){if(/^\\d{6,}$/.test(cells[i])){bid=cells[i];break;}}}
+      if(!bid){const m=text.match(/(?:^|\\s)(\\d{6,})(?:\\s|$)/g);if(m){const n=m[m.length-1].match(/\\d+/);if(n)bid=n[0];}}
+      let date='';const first=tr.querySelector('td');if(first)date=(first.textContent||'').trim();add(bid,date);
+    }
+    return out;
+  }catch(e){return []}})()`;
+    const v = await evalInTab(wsUrl, expr, 5000);
+    if (!Array.isArray(v))
+        return [];
+    return v.filter((r) => r && /^\d{6,}$/.test(String(r.buildid || ""))).map((r) => ({ buildid: String(r.buildid), date: String(r.date || "") }));
+}
 async function fetchSteamdbBuilds(appid, onStatus) {
     if (_cache.has(appid))
         return _cache.get(appid);
@@ -1088,19 +1104,22 @@ async function fetchSteamdbBuilds(appid, onStatus) {
                     _cache.set(appid, rows);
                     return rows;
                 }
-                lastError = "SteamDB responded, but no historical build rows were parsed.";
+                lastError = "SteamDB RSS returned no build rows; trying the visible Builds table…";
             }
-            else if (rss.status) {
-                lastError = `SteamDB history request returned HTTP ${rss.status}.`;
+            else if (rss.status)
+                lastError = `SteamDB history request returned HTTP ${rss.status}; trying the visible Builds table…`;
+            else if (rss.error)
+                lastError = `${rss.error}; trying the visible Builds table…`;
+            onStatus?.(lastError || "Trying SteamDB's visible Builds table…");
+            const domRows = await parseBuildsFromDom(tab.webSocketDebuggerUrl);
+            if (domRows.length) {
+                _cache.set(appid, domRows);
+                return domRows;
             }
-            else if (rss.error) {
-                lastError = rss.error;
-            }
-            onStatus?.(lastError || "SteamDB is open, but build history is not available yet.");
+            onStatus?.("SteamDB is open, but neither RSS nor the visible Builds table returned history yet.");
         }
-        else {
+        else
             onStatus?.("Waiting for SteamDB to become visible to Steam CEF…");
-        }
         await new Promise((r) => setTimeout(r, 1000));
     }
     onStatus?.(lastError || "Could not retrieve SteamDB build history. Leave SteamDB open and retry.");
