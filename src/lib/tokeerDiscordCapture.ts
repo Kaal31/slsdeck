@@ -1,9 +1,11 @@
 import { fetchNoCors } from "@decky/api";
+import { Navigation } from "@decky/ui";
 
 export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
+const TOKEER_CHANNEL = "/channels/1464130182364270696/1534460498446127175";
 const TARGET_MESSAGE = "1535685399265935422";
 
-interface CdpTab { url: string; webSocketDebuggerUrl?: string }
+interface CdpTab { url: string; title?: string; webSocketDebuggerUrl?: string }
 export type TokeerDiscordState = {
   found: boolean;
   steamStatus?: string;
@@ -16,14 +18,31 @@ export type TokeerDiscordState = {
   selectors: Array<{ index: number; label: string; disabled: boolean }>;
   rawText?: string;
   error?: string;
+  tabUrl?: string;
 };
 
-async function findDiscordTab(): Promise<CdpTab | null> {
+async function listCdpTabs(): Promise<CdpTab[]> {
   try {
     const r = await fetchNoCors("http://localhost:8080/json");
     const tabs: CdpTab[] = await r.json();
-    return tabs.find((t) => !!t.webSocketDebuggerUrl && t.url?.includes("discord.com/channels/1464130182364270696/1534460498446127175")) || null;
-  } catch { return null; }
+    return Array.isArray(tabs) ? tabs : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Discord is a SPA: during OAuth/login it may be /login or /channels/@me and
+ * only later navigate to the Tokeer channel.  Match any debuggable Discord CEF
+ * target instead of requiring the final channel URL up front.
+ */
+async function findDiscordTab(): Promise<CdpTab | null> {
+  const tabs = await listCdpTabs();
+  const discord = tabs.filter((t) =>
+    !!t.webSocketDebuggerUrl && /(^|\.)discord\.com(?:\/|$)/i.test(String(t.url || "").replace(/^https?:\/\//i, "")),
+  );
+  if (!discord.length) return null;
+  return discord.find((t) => t.url?.includes(TOKEER_CHANNEL)) || discord[0];
 }
 
 function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
@@ -41,10 +60,17 @@ function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<
   });
 }
 
+async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
+  if (!tab.webSocketDebuggerUrl) return false;
+  if (tab.url?.includes(TOKEER_CHANNEL)) return true;
+  const expr = `(function(){try{location.href=${JSON.stringify(TOKEER_DISCORD_URL)};return true;}catch(e){return false;}})()`;
+  return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+}
+
 const SNAPSHOT_EXPR = `(function(){try{
   var id=${JSON.stringify(TARGET_MESSAGE)};
   var article=document.querySelector('[data-list-item-id$="-'+id+'"]') || document.querySelector('#message-accessories-'+id)?.closest('[role="article"]') || document.querySelector('#message-reactions-'+id)?.closest('[role="article"]');
-  if(!article) return JSON.stringify({found:false,error:'Target Tokeer message is not currently rendered. Open the linked message and keep the Discord tab alive.'});
+  if(!article) return JSON.stringify({found:false,error:'Discord CEF is connected, but the target Tokeer message is not rendered yet. Open the linked message (or wait for Discord to finish loading).'});
   var text=(article.innerText||'').replace(/\u00a0/g,' ');
   var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
   var s=function(re){var m=text.match(re);return m?m[1].trim():undefined};
@@ -57,18 +83,24 @@ const SNAPSHOT_EXPR = `(function(){try{
 
 export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
   const tab = await findDiscordTab();
-  if (!tab?.webSocketDebuggerUrl) return { found: false, selectors: [], error: "Discord tab not found in Steam CEF. Open the Tokeer Discord message first." };
+  if (!tab?.webSocketDebuggerUrl) {
+    return { found: false, selectors: [], error: "No Discord page is visible to Steam CEF/CDP. Use ‘Open Tokeer Discord’ from this page (not the desktop/system browser)." };
+  }
+  if (!tab.url?.includes(TOKEER_CHANNEL)) {
+    return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to navigate this CEF tab to the activation panel." };
+  }
   const raw = await evalJson(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
-  try { return JSON.parse(String(raw || "")); } catch { return { found: false, selectors: [], error: "Could not parse Discord DOM snapshot." }; }
+  try { return { ...JSON.parse(String(raw || "")), tabUrl: tab.url }; }
+  catch { return { found: false, selectors: [], tabUrl: tab.url, error: "Could not parse Discord DOM snapshot." }; }
 }
 
 export async function openSelectorAndReadOptions(index: number): Promise<string[]> {
   const tab = await findDiscordTab();
-  if (!tab?.webSocketDebuggerUrl) return [];
+  if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return [];
   const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]');var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"]')):[];var e=xs[${Number(index)}];if(!e)return false;e.click();return true;}catch(e){return false;}})()`;
   const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr);
   if (!ok) return [];
-  await new Promise((r) => setTimeout(r, 350));
+  await new Promise((r) => setTimeout(r, 450));
   const optionsExpr = `(function(){try{return JSON.stringify([].slice.call(document.querySelectorAll('[role="option"]')).map(function(e){return (e.innerText||e.textContent||'').trim();}).filter(Boolean));}catch(e){return '[]';}})()`;
   const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
   try { return JSON.parse(String(raw || "[]")); } catch { return []; }
@@ -76,16 +108,48 @@ export async function openSelectorAndReadOptions(index: number): Promise<string[
 
 export async function chooseSelectorOption(index: number, label: string): Promise<boolean> {
   const tab = await findDiscordTab();
-  if (!tab?.webSocketDebuggerUrl) return false;
+  if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return false;
   await openSelectorAndReadOptions(index);
   const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"]')).find(function(e){return (e.innerText||e.textContent||'').trim()===want;});if(!o)return false;o.click();return true;}catch(e){return false;}})()`;
   return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
 
-export function openTokeerDiscord(): boolean {
+/**
+ * Open Discord in Steam's own web surface. NavigateToExternalWeb is the Decky /
+ * game-mode route and keeps the page inside Steam CEF, where localhost:8080 CDP
+ * can see it. If a Discord CEF target already exists, re-use and navigate it.
+ */
+export async function openTokeerDiscord(): Promise<boolean> {
+  try {
+    const existing = await findDiscordTab();
+    if (existing?.webSocketDebuggerUrl) {
+      if (await navigateDiscordTabToTokeer(existing)) return true;
+    }
+  } catch {}
+
+  try {
+    const nav: any = Navigation as any;
+    if (typeof nav?.NavigateToExternalWeb === "function") {
+      nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
+      return true;
+    }
+  } catch {}
+
+  // window.open is still preferable to OpenInSystemBrowser: in game mode it can
+  // create a Steam/CEF web target, while OpenInSystemBrowser escapes to desktop.
+  try {
+    const w = window.open(TOKEER_DISCORD_URL, "_blank");
+    if (w) return true;
+  } catch {}
+
+  // Last-resort fallback. This is intentionally last because CDP cannot inspect
+  // an external desktop browser; the UI will clearly report that condition.
   try {
     const SC: any = (window as any).SteamClient;
-    if (SC?.System?.OpenInSystemBrowser) { SC.System.OpenInSystemBrowser(TOKEER_DISCORD_URL); return true; }
+    if (SC?.System?.OpenInSystemBrowser) {
+      SC.System.OpenInSystemBrowser(TOKEER_DISCORD_URL);
+      return true;
+    }
   } catch {}
-  try { window.open(TOKEER_DISCORD_URL, "_blank"); return true; } catch { return false; }
+  return false;
 }
