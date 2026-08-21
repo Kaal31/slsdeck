@@ -58,12 +58,25 @@ def purge_all(cloudredirect: Any) -> dict:
         except Exception as exc:
             log.append(f"Flatpak cleanup {app_id}: {exc}")
 
+    # Selectively11's UI adds this update remote. Removing the app does not
+    # remove the remote, so clean it explicitly on uninstall/reinstall.
+    try:
+        cmd = ["flatpak", "remote-delete", "--user", "--force", "cloudredirect"]
+        r = subprocess.run(cloudredirect._wrap_cr(cmd), env=env,
+                           capture_output=True, timeout=120)
+        if r.returncode == 0:
+            log.append("removed Flatpak remote cloudredirect")
+    except Exception as exc:
+        log.append(f"Flatpak remote cleanup: {exc}")
+
     targets = {
         # Current and old native runtime/config layouts.
         os.path.join(home, ".local", "share", "CloudRedirect"),
         os.path.join(home, ".local", "share", "cloudredirect"),
+        os.path.join(home, ".local", "share", "cloud_redirect"),
         os.path.join(home, ".config", "CloudRedirect"),
         os.path.join(home, ".config", "cloudredirect"),
+        os.path.join(home, ".config", "cloud_redirect"),
         os.path.join(home, ".cache", "CloudRedirect"),
         os.path.join(home, ".cache", "cloudredirect"),
         os.path.join(home, ".local", "state", "CloudRedirect"),
@@ -72,6 +85,20 @@ def purge_all(cloudredirect: Any) -> dict:
         os.path.join(home, ".local", "bin", "cloudredirect"),
         os.path.join(home, "Applications", "CloudRedirect.AppImage"),
         os.path.join(home, "Applications", "cloudredirect.AppImage"),
+        # Selectively11 releases have also deployed the hook/CLI beside SLSsteam.
+        # Remove only their exact files; never remove the SLSsteam directory.
+        os.path.join(home, ".local", "share", "SLSsteam", "cloud_redirect.so"),
+        os.path.join(home, ".local", "share", "SLSsteam", "cloud_redirect_cli"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                     ".local", "share", "SLSsteam", "cloud_redirect.so"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                     ".local", "share", "SLSsteam", "cloud_redirect_cli"),
+        # Upstream uses these Steam-root stores as legacy/intercept storage.
+        os.path.join(home, ".steam", "steam", "cloud_redirect"),
+        os.path.join(home, ".steam", "root", "cloud_redirect"),
+        os.path.join(home, ".local", "share", "Steam", "cloud_redirect"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                     ".local", "share", "Steam", "cloud_redirect"),
         # Flatpak application data and any residual per-app installation.
         os.path.join(home, ".var", "app", "org.cloudredirect.CloudRedirect"),
         os.path.join(home, ".var", "app", "io.github.Selectively11.CloudRedirect"),
