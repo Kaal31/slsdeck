@@ -930,7 +930,7 @@ async function runBuildAccurateApply(h) {
 }
 
 const _cache = new Map();
-async function listTargets() {
+async function listTargets$1() {
     const out = [];
     for (const port of [8080, 8081]) {
         try {
@@ -981,7 +981,7 @@ function evalInTab(wsUrl, expression, timeoutMs = 5000) {
     });
 }
 async function findSteamdbTab() {
-    const tabs = await listTargets();
+    const tabs = await listTargets$1();
     const direct = tabs.find((t) => (t.url || "").includes("steamdb.info"));
     if (direct)
         return direct;
@@ -1126,48 +1126,30 @@ async function fetchSteamdbBuilds(appid, onStatus) {
     return [];
 }
 
-/** Close a CEF tab by its target id (so we don't leave a SteamDB page open per
- *  depot). Best-effort over the same debugger endpoint we list tabs from. */
-async function closeTab(id) {
-    if (!id)
-        return;
-    try {
-        await fetchNoCors("http://localhost:8080/json/close/" + id);
+async function listTargets() {
+    const out = [];
+    for (const port of [8080, 8081]) {
+        try {
+            const res = await fetchNoCors(`http://localhost:${port}/json`);
+            const tabs = await res.json();
+            for (const t of tabs || [])
+                if (t?.webSocketDebuggerUrl)
+                    out.push({ ...t, _port: port });
+        }
+        catch { /* try next port */ }
     }
-    catch { /* */ }
+    return out;
 }
-// Table has headers Seen Date / Relative Date / ManifestID. Pull gid (19-ish
-// digits) + normalise the date to YYYY-MM-DD so the backend can build-label it.
-const SCRAPE_EXPR$1 = `(function(){try{
-  var tables=[].slice.call(document.querySelectorAll('table'));
-  var mt=null;
-  for(var i=0;i<tables.length;i++){
-    var hs=[].slice.call(tables[i].querySelectorAll('th')).map(function(x){return (x.textContent||'').trim().toLowerCase();});
-    if(hs.indexOf('manifestid')>=0 || hs.some(function(h){return /manifest\\s*id/.test(h);})){ mt=tables[i]; break; }
-  }
-  if(!mt) return '';
-  var out=[];
-  [].slice.call(mt.querySelectorAll('tbody tr')).forEach(function(tr){
-    var tds=[].slice.call(tr.querySelectorAll('td')).map(function(td){return (td.textContent||'').trim();});
-    var gid=''; var date='';
-    tds.forEach(function(c){
-      if(/^\\d{15,}$/.test(c)) gid=c;
-      else if(!date && /\\d{4}/.test(c) && /UTC|[A-Za-z]{3,}/.test(c)){
-        try{ var dd=new Date(c.replace(/[\\u2013\\u2014-].*$/,'').trim()); if(!isNaN(dd.getTime())) date=dd.toISOString().slice(0,10); }catch(e){}
-      }
-    });
-    if(gid) out.push({gid:gid,date:date});
-  });
-  return JSON.stringify(out);
-}catch(e){return '';}})()`;
-async function findTab$1(urlPart) {
-    try {
-        const res = await fetchNoCors("http://localhost:8080/json");
-        const tabs = await res.json();
-        return tabs.find((t) => t.url && t.url.includes(urlPart) && t.webSocketDebuggerUrl) || null;
-    }
-    catch {
-        return null;
+async function closeTab(tab) {
+    if (!tab?.id)
+        return;
+    const ports = tab._port ? [tab._port] : [8080, 8081];
+    for (const port of ports) {
+        try {
+            await fetchNoCors(`http://localhost:${port}/json/close/${tab.id}`);
+            return;
+        }
+        catch { /* try next */ }
     }
 }
 function evalOnTab$2(wsUrl, expr, timeoutMs = 6000) {
@@ -1183,81 +1165,110 @@ function evalOnTab$2(wsUrl, expr, timeoutMs = 6000) {
             sock = new WebSocket(wsUrl);
         }
         catch {
-            resolve("");
+            resolve(undefined);
             return;
         }
         sock.onopen = () => {
             try {
-                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true } }));
+                sock.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true, awaitPromise: true } }));
             }
             catch {
-                finish("");
+                finish(undefined);
             }
         };
         sock.onmessage = (ev) => {
             try {
                 const m = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-                if (m && m.id === 1) {
-                    const v = m?.result?.result?.value;
-                    finish(typeof v === "string" ? v : "");
-                }
+                if (m?.id === 1)
+                    finish(m?.result?.result?.value);
             }
             catch { /* */ }
         };
-        sock.onerror = () => finish("");
-        setTimeout(() => finish(""), timeoutMs);
+        sock.onerror = () => finish(undefined);
+        setTimeout(() => finish(undefined), timeoutMs);
     });
 }
-/** Open a depot's SteamDB manifests page and scrape its gid history. Returns []
- *  if the page never yields a table in time (e.g. not signed in / blocked).
- *  `isCancelled` lets the caller stop the work immediately when its UI closes. */
-async function scrapeDepotManifests(depot, maxMs = 25000, onStatus, isCancelled) {
+async function findTab$1(depot) {
+    const needle = `/depot/${depot}`;
+    const tabs = await listTargets();
+    const direct = tabs.find((t) => (t.url || "").includes("steamdb.info") && (t.url || "").includes(needle));
+    if (direct)
+        return direct;
+    for (const t of tabs) {
+        if (!t.webSocketDebuggerUrl)
+            continue;
+        const href = await evalOnTab$2(t.webSocketDebuggerUrl, "location.href", 1800);
+        if (typeof href === "string" && href.includes("steamdb.info") && href.includes(needle))
+            return { ...t, url: href };
+    }
+    return null;
+}
+// Layout-tolerant parser. It does not depend on SteamDB responsive CSS classes.
+// It first finds any table that looks like a ManifestID/manifest-history table,
+// then falls back to rows containing a long numeric manifest id. Dates may be in
+// <time datetime>, title/data-sort attributes, or visible desktop text.
+const SCRAPE_EXPR$1 = `(()=>{try{
+  const out=[], seen=new Set();
+  const normDate=(raw)=>{raw=String(raw||'').trim();if(!raw)return '';let m=raw.match(/(20\\d{2})[-\\/.](\\d{1,2})[-\\/.](\\d{1,2})/);if(m)return m[1]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[3]).padStart(2,'0');try{const d=new Date(raw);if(!isNaN(d.getTime()))return d.toISOString().slice(0,10)}catch(e){}return ''};
+  const add=(gid,date)=>{gid=String(gid||'').trim();if(!/^\\d{12,}$/.test(gid)||seen.has(gid))return;seen.add(gid);out.push({gid,date:normDate(date)})};
+  const tables=Array.from(document.querySelectorAll('table'));
+  let chosen=[];
+  for(const table of tables){
+    const heads=Array.from(table.querySelectorAll('th')).map(x=>(x.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase());
+    if(heads.some(h=>/manifest\\s*id|manifestid/.test(h)) || heads.some(h=>/seen\\s*date|first\\s*seen|last\\s*seen/.test(h))) chosen.push(table);
+  }
+  if(!chosen.length) chosen=tables;
+  for(const table of chosen){
+    for(const tr of Array.from(table.querySelectorAll('tr'))){
+      let gid=''; let date='';
+      const cells=Array.from(tr.querySelectorAll('td'));
+      for(const td of cells){
+        const txt=(td.textContent||'').replace(/\\s+/g,' ').trim();
+        if(!gid){const exact=txt.match(/^\\d{12,}$/);if(exact)gid=exact[0];else{const a=td.querySelector('a[href]');const h=a&&a.getAttribute('href')||'';const hm=h.match(/(?:manifest|manifests)[^0-9]*(\\d{12,})/i);if(hm)gid=hm[1];}}
+        if(!date){const tm=td.querySelector('time');const cand=(tm&&((tm.getAttribute('datetime')||tm.getAttribute('title')||tm.textContent)))||td.getAttribute('data-sort')||td.getAttribute('title')||txt;const nd=normDate(cand);if(nd)date=nd;}
+      }
+      if(!gid){const text=(tr.textContent||'').replace(/\\s+/g,' ').trim();const nums=text.match(/\\b\\d{12,}\\b/g);if(nums&&nums.length)gid=nums[nums.length-1];}
+      add(gid,date);
+    }
+  }
+  return out;
+}catch(e){return []}})()`;
+async function scrapeDepotManifests(depot, maxMs = 30000, onStatus, isCancelled) {
+    // Only honour cancellation before navigation. Opening SteamDB intentionally
+    // unmounts the game-tools surface on some SteamOS layouts; treating that as a
+    // cancellation was the same race that previously broke the build list.
     if (isCancelled?.())
         return [];
-    const urlPart = `steamdb.info/depot/${depot}`;
     try {
-        DFL.Navigation.NavigateToExternalWeb(`https://${urlPart}/manifests/`);
+        DFL.Navigation.NavigateToExternalWeb(`https://steamdb.info/depot/${depot}/manifests/`);
     }
     catch { /* */ }
     const deadline = Date.now() + maxMs;
-    let lastId;
+    let tab = null;
     try {
         while (Date.now() < deadline) {
-            if (isCancelled?.())
-                return [];
-            const tab = await findTab$1(urlPart);
-            if (isCancelled?.())
-                return [];
+            tab = await findTab$1(depot);
             if (tab?.webSocketDebuggerUrl) {
-                lastId = tab.id;
-                const raw = await evalOnTab$2(tab.webSocketDebuggerUrl, SCRAPE_EXPR$1);
-                if (isCancelled?.())
-                    return [];
-                if (raw) {
-                    try {
-                        const arr = JSON.parse(raw);
-                        if (Array.isArray(arr) && arr.length)
-                            return arr;
-                    }
-                    catch { /* */ }
+                onStatus?.(`Reading SteamDB manifest history for depot ${depot}…`);
+                const value = await evalOnTab$2(tab.webSocketDebuggerUrl, SCRAPE_EXPR$1, 7000);
+                if (Array.isArray(value)) {
+                    const rows = value
+                        .filter((r) => r && /^\d{12,}$/.test(String(r.gid || "")))
+                        .map((r) => ({ gid: String(r.gid), date: String(r.date || "") }));
+                    if (rows.length)
+                        return rows;
                 }
-                onStatus?.("Reading SteamDB — sign in there for full history…");
+                onStatus?.(`SteamDB depot ${depot} is open, but no manifest rows were parsed yet…`);
             }
             else {
                 onStatus?.(`Opening SteamDB depot ${depot}…`);
             }
-            for (let waited = 0; waited < 1500; waited += 100) {
-                if (isCancelled?.())
-                    return [];
-                await new Promise((r) => setTimeout(r, 100));
-            }
+            await new Promise((r) => setTimeout(r, 1200));
         }
         return [];
     }
     finally {
-        // Always close the depot page we opened — success, timeout, or cancellation —
-        // so a multi-depot game doesn't leave a stack of SteamDB tabs behind.
-        await closeTab(lastId);
+        await closeTab(tab);
     }
 }
 
