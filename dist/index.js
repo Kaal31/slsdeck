@@ -6658,15 +6658,6 @@ async function listCdpTabs() {
         return [];
     }
 }
-function isDiscordTab(t) {
-    return !!t.webSocketDebuggerUrl && /(^|\.)discord\.com(?:\/|$)/i.test(String(t.url || "").replace(/^https?:\/\//i, ""));
-}
-async function findDiscordTab() {
-    const discord = (await listCdpTabs()).filter(isDiscordTab);
-    if (!discord.length)
-        return null;
-    return discord.find((t) => t.url?.includes(TOKEER_CHANNEL)) || discord[0];
-}
 function evalJson(wsUrl, expression, timeoutMs = 5000) {
     return new Promise((resolve) => {
         let done = false;
@@ -6697,6 +6688,66 @@ function evalJson(wsUrl, expression, timeoutMs = 5000) {
         setTimeout(() => finish(null), timeoutMs);
     });
 }
+function looksLikeDiscordUrl(url) {
+    return /(^|\.)discord\.com(?:\/|$)/i.test(String(url || "").replace(/^https?:\/\//i, ""));
+}
+/** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
+ * actual JS execution context what it is rendering instead of trusting metadata. */
+async function resolveTabUrl(t) {
+    if (!t.webSocketDebuggerUrl)
+        return String(t.url || "");
+    if (looksLikeDiscordUrl(t.url || ""))
+        return String(t.url || "");
+    const expr = `(function(){try{
+    var here=String(location.href||document.URL||'');
+    var frames=[].slice.call(document.querySelectorAll('iframe')).map(function(f){return String(f.src||'');});
+    return JSON.stringify({here:here,frames:frames});
+  }catch(e){return JSON.stringify({here:'',frames:[]});}})()`;
+    const raw = await evalJson(t.webSocketDebuggerUrl, expr, 1800);
+    try {
+        const parsed = JSON.parse(String(raw || ""));
+        const urls = [parsed?.here, ...(Array.isArray(parsed?.frames) ? parsed.frames : [])].filter(Boolean);
+        return urls.find((u) => looksLikeDiscordUrl(u)) || String(parsed?.here || t.url || "");
+    }
+    catch {
+        return String(t.url || "");
+    }
+}
+async function findDiscordTab() {
+    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
+    const direct = tabs.filter((t) => looksLikeDiscordUrl(t.url || ""));
+    if (direct.length)
+        return direct.find((t) => t.url?.includes(TOKEER_CHANNEL)) || direct[0];
+    let fallback = null;
+    for (const tab of tabs) {
+        const resolvedUrl = await resolveTabUrl(tab);
+        if (!looksLikeDiscordUrl(resolvedUrl))
+            continue;
+        const resolved = { ...tab, resolvedUrl, url: resolvedUrl };
+        if (resolvedUrl.includes(TOKEER_CHANNEL))
+            return resolved;
+        if (!fallback)
+            fallback = resolved;
+    }
+    return fallback;
+}
+async function cdpDiagnostic() {
+    const tabs = await listCdpTabs();
+    if (!tabs.length)
+        return "CDP /json returned no targets.";
+    const parts = [];
+    for (const t of tabs.slice(0, 8)) {
+        let live = "";
+        if (t.webSocketDebuggerUrl) {
+            try {
+                live = await resolveTabUrl(t);
+            }
+            catch { }
+        }
+        parts.push(`${t.type || "target"}: ${String(t.title || "").slice(0, 40)} | ${String(t.url || "").slice(0, 90)}${live && live !== t.url ? ` => ${live.slice(0, 90)}` : ""}`);
+    }
+    return parts.join(" ; ");
+}
 async function navigateDiscordTabToTokeer(tab) {
     if (!tab.webSocketDebuggerUrl)
         return false;
@@ -6721,7 +6772,8 @@ const SNAPSHOT_EXPR = `(function(){try{
 async function readTokeerDiscord() {
     const tab = await findDiscordTab();
     if (!tab?.webSocketDebuggerUrl) {
-        return { found: false, selectors: [], error: "No Discord page is visible to Steam CEF/CDP. Use ‘Open Tokeer Discord’ from this page (not the desktop/system browser)." };
+        const diag = await cdpDiagnostic();
+        return { found: false, selectors: [], error: `No Discord page found in Steam CDP. ${diag}` };
     }
     if (!tab.url?.includes(TOKEER_CHANNEL)) {
         return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
@@ -6760,10 +6812,6 @@ async function chooseSelectorOption(index, label) {
     const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"]')).find(function(e){return (e.innerText||e.textContent||'').trim()===want;});if(!o)return false;o.click();return true;}catch(e){return false;}})()`;
     return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
-// After a game is selected Tokeer posts a new, ephemeral bot message in the same
-// channel. Its green acknowledgement button is the gate that creates/opens the
-// private activation ticket. Search newest messages first instead of depending
-// on Discord's generated class names or a fixed message id.
 const TICKET_GATE_EXPR = `(function(){try{
   var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
   for(var i=0;i<arts.length;i++){
@@ -6812,17 +6860,21 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   var m=text.match(/tokeer\s+verify\s+(\d{4,})/i)||text.match(/bash\s+-s\s+--\s+(\d{4,})/i);
   return JSON.stringify(m?{found:true,appid:Number(m[1]),rawText:text.slice(0,16000)}:{found:false,error:'Ticket opened, waiting for the setup commands…'});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
-/** Wait for the green acknowledgement to navigate into the new ticket/thread,
- * then extract the AppID from the commands Tokeer itself posted there. */
 async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
     const deadline = Date.now() + timeoutMs;
     let lastError = "Waiting for Tokeer ticket…";
     while (Date.now() < deadline) {
-        const tabs = (await listCdpTabs()).filter(isDiscordTab);
-        const candidates = tabs.filter((t) => {
-            const u = String(t.url || "");
-            return u.includes(`/channels/${GUILD_ID}/`) && !u.includes(TOKEER_CHANNEL) && (!fromUrl || u !== fromUrl);
-        });
+        const tabs = await listCdpTabs();
+        const candidates = [];
+        for (const rawTab of tabs.filter((t) => !!t.webSocketDebuggerUrl)) {
+            const resolvedUrl = await resolveTabUrl(rawTab);
+            if (!looksLikeDiscordUrl(resolvedUrl))
+                continue;
+            const tab = { ...rawTab, resolvedUrl, url: resolvedUrl };
+            const u = String(tab.url || "");
+            if (u.includes(`/channels/${GUILD_ID}/`) && !u.includes(TOKEER_CHANNEL) && (!fromUrl || u !== fromUrl))
+                candidates.push(tab);
+        }
         for (const tab of candidates) {
             if (!tab.webSocketDebuggerUrl)
                 continue;
