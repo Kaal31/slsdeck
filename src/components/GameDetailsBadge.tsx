@@ -5,7 +5,7 @@ import {
 } from "../api";
 import { isInLibrary, isNonSteamShortcut } from "../lib/ownership";
 import { ONLINE_RE } from "../lib/badges";
-import { badgeDisplayLabel } from "../lib/emojiBadges";
+import { badgeDisplayLabel, getEmojiBadgesEnabled } from "../lib/emojiBadges";
 
 type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed";
 
@@ -23,7 +23,7 @@ export function GameDetailsBadge() {
     params?.appid && /^\d+$/.test(params.appid) ? parseInt(params.appid, 10) : null;
 
   const [kinds, setKinds] = useState<Kind[]>([]);
-  const [, setEmojiVersion] = useState(0);
+  const [emojiVersion, setEmojiVersion] = useState(0);
 
   useEffect(() => {
     const onEmoji = () => setEmojiVersion((v) => v + 1);
@@ -130,12 +130,29 @@ export function GameDetailsBadge() {
 
   if (appid == null || !kinds.length) return null;
 
+  const emojiMode = getEmojiBadgesEnabled();
+  void emojiVersion;
+
   return (
-    <div style={{ display: "flex", gap: 8, margin: "12px 24px 0" }}>
+    <div style={{ display: "flex", gap: emojiMode ? 10 : 8, margin: "12px 24px 0", alignItems: "center" }}>
       {kinds.map((k) => (
         <div
           key={k}
-          style={{
+          style={emojiMode ? {
+            padding: 0,
+            margin: 0,
+            border: 0,
+            borderRadius: 0,
+            fontSize: 28,
+            lineHeight: "31px",
+            fontWeight: 400,
+            letterSpacing: 0,
+            color: "inherit",
+            background: "transparent",
+            boxShadow: "none",
+            textShadow: "0 1px 3px rgba(0,0,0,0.75)",
+            fontFamily: "'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif",
+          } : {
             padding: "3px 10px",
             borderRadius: 4,
             fontSize: 12,

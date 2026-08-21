@@ -268,15 +268,15 @@ function badgeCapsule(capsule: Element, win: Window) {
   box?.remove();
   existing.forEach((b) => b.remove());
 
-  const img = capsule.querySelector("img");
-  const role = capsule.getAttribute("role");
-  let target: HTMLElement | null = null;
-  if (role === "gridcell") {
-    target = img ? (capsule.querySelector("div") as HTMLElement) : (capsule as HTMLElement);
-  } else if (role === "listitem") {
-    target = img ? ((img.closest("div") as HTMLElement) ?? (capsule as HTMLElement)) : (capsule as HTMLElement);
+  const img = capsule.querySelector("img") as HTMLImageElement | null;
+  let target: HTMLElement = capsule as HTMLElement;
+  if (img) {
+    // The image's immediate artwork wrapper is stable across square/grid and wide
+    // recent-game capsules. Avoid capsule.querySelector("div"), which can pick
+    // Steam's native bottom-right status/action overlay on wide cards.
+    const art = img.parentElement as HTMLElement | null;
+    if (art && capsule.contains(art)) target = art;
   }
-  if (!target) target = capsule as HTMLElement;
 
   if (!target.hasAttribute(POSITIONED_ATTR)) {
     try {
@@ -288,8 +288,10 @@ function badgeCapsule(capsule: Element, win: Window) {
   const container = win.document.createElement("div");
   container.className = `${BADGE_CLASS}-box`;
   container.style.cssText =
-    "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;" +
-    `display:flex;flex-wrap:wrap;gap:${emojiMode ? 6 : 3}px;align-items:center;`;
+    (emojiMode
+      ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);"
+      : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +
+    `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;
   for (const kind of wanted) {
     const badge = win.document.createElement("div");
     badge.className = BADGE_CLASS;
