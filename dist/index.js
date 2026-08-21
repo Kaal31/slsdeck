@@ -145,6 +145,7 @@ const crSetEnabled = callable("cr_set_enabled");
 const crOpenApp = callable("cr_open_app");
 const crEnsureInstalledAuto = callable("cr_ensure_installed_auto");
 const crEnsureInstalled = callable("cr_ensure_installed");
+callable("cr_uninstall");
 const crIconPath = callable("cr_icon_path");
 const crArtwork = callable("cr_artwork");
 const crGetShortcut = callable("cr_get_shortcut");
