@@ -63,12 +63,24 @@ jobs:
           set -euo pipefail
           rm -rf artifact SLSDeckUniversal-tokeer-implement.zip
           mkdir -p artifact/SLSDeckUniversal
-          cp -a dist main.py plugin.json py_modules artifact/SLSDeckUniversal/
+
+          # Decky's current loader defaults to LEGACY_EVAL_IIFE when package.json
+          # is absent. Our @decky/rollup bundle is ESM and ends in a normal export,
+          # so package.json (with "type": "module") MUST ship with the plugin.
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
           for p in defaults assets LICENSE README.md; do
             if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
           done
+
+          # Fail the release rather than publish a ZIP Decky would misclassify as
+          # a legacy eval/IIFE plugin and then choke on `export` during startup.
+          test -f artifact/SLSDeckUniversal/package.json
+          node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") { console.error("Packaged plugin is not marked as an ES module"); process.exit(1); }'
+
           cd artifact
           zip -qr ../SLSDeckUniversal-tokeer-implement.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-tokeer-implement.zip | grep -q 'SLSDeckUniversal/package.json'
 
       - name: Update rolling prerelease
         env:
@@ -100,4 +112,4 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-# Trigger: guided Tokeer prepare/verify/redeem UI.
+# Trigger: package modern Decky ESM metadata with the rolling Tokeer build.
