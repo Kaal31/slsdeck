@@ -56,18 +56,43 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-test.zip
           mkdir -p artifact/SLSDeckUniversal
           cp -a dist main.py plugin.json py_modules artifact/SLSDeckUniversal/
+          if [ -f package.json ]; then cp package.json artifact/SLSDeckUniversal/; fi
           for p in defaults assets LICENSE README.md; do
             if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
           done
           cd artifact
           zip -qr ../SLSDeckUniversal-test.zip SLSDeckUniversal
 
-      - name: Upload compiled plugin
+      - name: Upload compiled plugin artifact
         uses: actions/upload-artifact@v4
         with:
           name: SLSDeckUniversal-test
           path: SLSDeckUniversal-test.zip
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish rolling test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="test-latest"
+          ZIP="SLSDeckUniversal-test.zip"
+          git fetch --tags --force
+          git tag -f "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+            gh release edit "$TAG" \
+              --title "SLSDeckUniversal test (rolling)" \
+              --notes "Rolling test build from the test branch. This release is replaced on every successful test build."
+          else
+            gh release create "$TAG" "$ZIP" \
+              --title "SLSDeckUniversal test (rolling)" \
+              --notes "Rolling test build from the test branch. This release is replaced on every successful test build." \
+              --prerelease
+          fi
