@@ -6648,15 +6648,29 @@ const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/153
 const GUILD_ID = "1464130182364270696";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
+const CDP_PORTS = [8080, 8081];
 async function listCdpTabs() {
-    try {
-        const r = await fetchNoCors("http://localhost:8080/json");
-        const tabs = await r.json();
-        return Array.isArray(tabs) ? tabs : [];
+    const merged = [];
+    const seen = new Set();
+    for (const port of CDP_PORTS) {
+        try {
+            const r = await fetchNoCors(`http://localhost:${port}/json`);
+            const tabs = await r.json();
+            if (!Array.isArray(tabs))
+                continue;
+            for (const tab of tabs) {
+                const key = String(tab.webSocketDebuggerUrl || `${tab.type || ""}|${tab.title || ""}|${tab.url || ""}`);
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                merged.push({ ...tab, cdpPort: port });
+            }
+        }
+        catch {
+            /* this debugger port is not active */
+        }
     }
-    catch {
-        return [];
-    }
+    return merged;
 }
 function evalJson(wsUrl, expression, timeoutMs = 5000) {
     return new Promise((resolve) => {
@@ -6734,9 +6748,9 @@ async function findDiscordTab() {
 async function cdpDiagnostic() {
     const tabs = await listCdpTabs();
     if (!tabs.length)
-        return "CDP /json returned no targets.";
+        return "CDP 8080/8081 returned no targets.";
     const parts = [];
-    for (const t of tabs.slice(0, 8)) {
+    for (const t of tabs.slice(0, 10)) {
         let live = "";
         if (t.webSocketDebuggerUrl) {
             try {
@@ -6744,7 +6758,7 @@ async function cdpDiagnostic() {
             }
             catch { }
         }
-        parts.push(`${t.type || "target"}: ${String(t.title || "").slice(0, 40)} | ${String(t.url || "").slice(0, 90)}${live && live !== t.url ? ` => ${live.slice(0, 90)}` : ""}`);
+        parts.push(`${t.cdpPort || "?"}/${t.type || "target"}: ${String(t.title || "").slice(0, 40)} | ${String(t.url || "").slice(0, 90)}${live && live !== t.url ? ` => ${live.slice(0, 90)}` : ""}`);
     }
     return parts.join(" ; ");
 }
@@ -6892,6 +6906,16 @@ async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
     }
     return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
+async function waitForDiscordCdp(timeoutMs = 4500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const tab = await findDiscordTab();
+        if (tab?.webSocketDebuggerUrl)
+            return tab;
+        await new Promise((r) => setTimeout(r, 250));
+    }
+    return null;
+}
 async function openTokeerDiscord() {
     try {
         const existing = await findDiscordTab();
@@ -6901,18 +6925,37 @@ async function openTokeerDiscord() {
         }
     }
     catch { }
+    // Important: create a normal popup from the plugin's own CEF context first.
+    // Steam's NavigateToExternalWeb surface is a BrowserView on some Deck builds
+    // and does not appear in the remote-debug target list at all.
+    try {
+        const popup = window.open("about:blank", "slsdeck_tokeer_discord");
+        if (popup) {
+            try {
+                popup.location.href = TOKEER_DISCORD_URL;
+            }
+            catch { }
+            const tab = await waitForDiscordCdp();
+            if (tab?.webSocketDebuggerUrl) {
+                if (!tab.url?.includes(TOKEER_CHANNEL))
+                    await navigateDiscordTabToTokeer(tab);
+                return true;
+            }
+            try {
+                popup.close();
+            }
+            catch { }
+        }
+    }
+    catch { }
+    // Fallback for builds where popups are blocked. This still lets the user open
+    // Discord manually, but the diagnostic will clearly show if it is not CDP-visible.
     try {
         const nav = DFL.Navigation;
         if (typeof nav?.NavigateToExternalWeb === "function") {
             nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
             return true;
         }
-    }
-    catch { }
-    try {
-        const w = window.open(TOKEER_DISCORD_URL, "_blank");
-        if (w)
-            return true;
     }
     catch { }
     try {
