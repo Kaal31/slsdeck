@@ -2,7 +2,8 @@ import { fetchNoCors } from "@decky/api";
 import { Navigation } from "@decky/ui";
 
 export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
-const TOKEER_CHANNEL = "/channels/1464130182364270696/1534460498446127175";
+const GUILD_ID = "1464130182364270696";
+const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
 
 interface CdpTab { url: string; title?: string; webSocketDebuggerUrl?: string }
@@ -21,6 +22,22 @@ export type TokeerDiscordState = {
   tabUrl?: string;
 };
 
+export type TokeerTicketGate = {
+  found: boolean;
+  label?: string;
+  disabled?: boolean;
+  messageText?: string;
+  error?: string;
+};
+
+export type TokeerTicketContext = {
+  found: boolean;
+  appid?: number;
+  url?: string;
+  rawText?: string;
+  error?: string;
+};
+
 async function listCdpTabs(): Promise<CdpTab[]> {
   try {
     const r = await fetchNoCors("http://localhost:8080/json");
@@ -31,16 +48,12 @@ async function listCdpTabs(): Promise<CdpTab[]> {
   }
 }
 
-/**
- * Discord is a SPA: during OAuth/login it may be /login or /channels/@me and
- * only later navigate to the Tokeer channel.  Match any debuggable Discord CEF
- * target instead of requiring the final channel URL up front.
- */
+function isDiscordTab(t: CdpTab): boolean {
+  return !!t.webSocketDebuggerUrl && /(^|\.)discord\.com(?:\/|$)/i.test(String(t.url || "").replace(/^https?:\/\//i, ""));
+}
+
 async function findDiscordTab(): Promise<CdpTab | null> {
-  const tabs = await listCdpTabs();
-  const discord = tabs.filter((t) =>
-    !!t.webSocketDebuggerUrl && /(^|\.)discord\.com(?:\/|$)/i.test(String(t.url || "").replace(/^https?:\/\//i, "")),
-  );
+  const discord = (await listCdpTabs()).filter(isDiscordTab);
   if (!discord.length) return null;
   return discord.find((t) => t.url?.includes(TOKEER_CHANNEL)) || discord[0];
 }
@@ -87,7 +100,7 @@ export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
     return { found: false, selectors: [], error: "No Discord page is visible to Steam CEF/CDP. Use ‘Open Tokeer Discord’ from this page (not the desktop/system browser)." };
   }
   if (!tab.url?.includes(TOKEER_CHANNEL)) {
-    return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to navigate this CEF tab to the activation panel." };
+    return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
   }
   const raw = await evalJson(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
   try { return { ...JSON.parse(String(raw || "")), tabUrl: tab.url }; }
@@ -114,11 +127,80 @@ export async function chooseSelectorOption(index: number, label: string): Promis
   return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
 
-/**
- * Open Discord in Steam's own web surface. NavigateToExternalWeb is the Decky /
- * game-mode route and keeps the page inside Steam CEF, where localhost:8080 CDP
- * can see it. If a Discord CEF target already exists, re-use and navigate it.
- */
+// After a game is selected Tokeer posts a new, ephemeral bot message in the same
+// channel. Its green acknowledgement button is the gate that creates/opens the
+// private activation ticket. Search newest messages first instead of depending
+// on Discord's generated class names or a fixed message id.
+const TICKET_GATE_EXPR = `(function(){try{
+  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+  for(var i=0;i<arts.length;i++){
+    var a=arts[i], bs=[].slice.call(a.querySelectorAll('button'));
+    for(var j=0;j<bs.length;j++){
+      var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
+      if(/i.?ve read this[\s\S]*watched the tutorial/i.test(label)){
+        return JSON.stringify({found:true,label:label,disabled:b.disabled||b.getAttribute('aria-disabled')==='true',messageText:(a.innerText||'').slice(0,5000)});
+      }
+    }
+  }
+  return JSON.stringify({found:false,error:'Waiting for the newest Tokeer confirmation message…'});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+
+export async function readLatestTicketGate(): Promise<TokeerTicketGate> {
+  const tab = await findDiscordTab();
+  if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return { found: false, error: "Tokeer activation channel is not open." };
+  const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_GATE_EXPR);
+  try { return JSON.parse(String(raw || "")); } catch { return { found: false, error: "Could not read the ticket confirmation button." }; }
+}
+
+export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; error?: string }> {
+  const tab = await findDiscordTab();
+  if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return { success: false, error: "Tokeer activation channel is not open." };
+  const expr = `(function(){try{
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+    for(var i=0;i<arts.length;i++){
+      var bs=[].slice.call(arts[i].querySelectorAll('button'));
+      for(var j=0;j<bs.length;j++){
+        var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
+        if(/i.?ve read this[\\s\\S]*watched the tutorial/i.test(label) && !b.disabled && b.getAttribute('aria-disabled')!=='true'){b.click();return true;}
+      }
+    }
+    return false;
+  }catch(e){return false;}})()`;
+  const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+  return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
+}
+
+const TICKET_CONTEXT_EXPR = `(function(){try{
+  var text=(document.body.innerText||'').replace(/\u00a0/g,' ');
+  var m=text.match(/tokeer\s+verify\s+(\d{4,})/i)||text.match(/bash\s+-s\s+--\s+(\d{4,})/i);
+  return JSON.stringify(m?{found:true,appid:Number(m[1]),rawText:text.slice(0,16000)}:{found:false,error:'Ticket opened, waiting for the setup commands…'});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+
+/** Wait for the green acknowledgement to navigate into the new ticket/thread,
+ * then extract the AppID from the commands Tokeer itself posted there. */
+export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Promise<TokeerTicketContext> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "Waiting for Tokeer ticket…";
+  while (Date.now() < deadline) {
+    const tabs = (await listCdpTabs()).filter(isDiscordTab);
+    const candidates = tabs.filter((t) => {
+      const u = String(t.url || "");
+      return u.includes(`/channels/${GUILD_ID}/`) && !u.includes(TOKEER_CHANNEL) && (!fromUrl || u !== fromUrl);
+    });
+    for (const tab of candidates) {
+      if (!tab.webSocketDebuggerUrl) continue;
+      const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
+      try {
+        const parsed = JSON.parse(String(raw || ""));
+        if (parsed?.found && parsed?.appid) return { ...parsed, url: tab.url };
+        if (parsed?.error) lastError = parsed.error;
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 600));
+  }
+  return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
+}
+
 export async function openTokeerDiscord(): Promise<boolean> {
   try {
     const existing = await findDiscordTab();
@@ -135,15 +217,11 @@ export async function openTokeerDiscord(): Promise<boolean> {
     }
   } catch {}
 
-  // window.open is still preferable to OpenInSystemBrowser: in game mode it can
-  // create a Steam/CEF web target, while OpenInSystemBrowser escapes to desktop.
   try {
     const w = window.open(TOKEER_DISCORD_URL, "_blank");
     if (w) return true;
   } catch {}
 
-  // Last-resort fallback. This is intentionally last because CDP cannot inspect
-  // an external desktop browser; the UI will clearly report that condition.
   try {
     const SC: any = (window as any).SteamClient;
     if (SC?.System?.OpenInSystemBrowser) {
