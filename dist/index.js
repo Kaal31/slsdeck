@@ -3609,7 +3609,7 @@ function GameControlsSection({ onChanged }) {
     };
     const noGame = appid == null;
     const working = busy !== "";
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Actions & fixes", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 0" }, children: [noGame
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "This game", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.75, padding: "2px 0" }, children: [noGame
                             ? "Open a game's library or store page to enable these."
                             : `${name || `AppID ${appid}`} (AppID ${appid})`, status ? ` · ${status}` : ""] }) }), ownedElsewhere && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.65, padding: "0 2px 4px" }, children: appid != null && isNonSteamShortcut(appid)
                         ? "Non-Steam shortcut — SLSsteam can't add this. Fixes can still be applied manually from Advanced ▸ Game fixes."
@@ -4419,7 +4419,7 @@ function GameToolsSection() {
             } }));
     };
     const protonLabel = proton == null ? "checking…" : proton || "Steam default";
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "This game", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: ["Proton: ", SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: protonLabel })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: pickProton, children: busy === "proton" ? "Working…" : "Change Proton version" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("backup", () => backupGameSaves(appid, ""), (r) => r.success
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Actions & fixes", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "2px 0" }, children: ["Proton: ", SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: protonLabel })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: pickProton, children: busy === "proton" ? "Working…" : "Change Proton version" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("backup", () => backupGameSaves(appid, ""), (r) => r.success
                         ? `Backed up ${r.fileCount} save file(s) to ${r.zipPath}`
                         : r.error || "Backup failed"), children: busy === "backup" ? "Backing up…" : "Back up this game's saves" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: restoreSaves, children: busy === "listsaves" || busy === "restore" ? "Working…" : "Restore saves from a backup" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("repair", () => repairGame(appid), (r) => r.success
                         ? `Repaired: ${(r.steps || []).join(", ") || "nothing needed"}`
