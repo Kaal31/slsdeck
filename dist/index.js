@@ -112,7 +112,10 @@ function FaWrench (props) {
   return GenIcon({"attr":{"viewBox":"0 0 448 512"},"child":[{"tag":"path","attr":{"d":"M257.5 445.1l-22.2 22.2c-9.4 9.4-24.6 9.4-33.9 0L7 273c-9.4-9.4-9.4-24.6 0-33.9L201.4 44.7c9.4-9.4 24.6-9.4 33.9 0l22.2 22.2c9.5 9.5 9.3 25-.4 34.3L136.6 216H424c13.3 0 24 10.7 24 24v32c0 13.3-10.7 24-24 24H136.6l120.5 114.8c9.8 9.3 10 24.8.4 34.3z"},"child":[]}]})(props);
 }
 
-callable("tokeer_quota_probe");
+const tokeerRuntimeStatus = callable("tokeer_runtime_status");
+const tokeerPrepare = callable("tokeer_prepare");
+const tokeerVerify = callable("tokeer_verify");
+const tokeerRedeem = callable("tokeer_redeem");
 // ── Callables ──────────────────────────────────────────────────────────────
 callable("get_steam_status");
 const hasLua = callable("has_lua");
@@ -6739,43 +6742,77 @@ function openTokeerDiscord() {
     }
 }
 
-/** Tokeer Anti-Denuvo page backed by the user's authenticated Discord CEF tab. */
+const inputStyle = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 4, border: "1px solid rgba(255,255,255,.25)", background: "rgba(0,0,0,.22)", color: "inherit" };
+const checks = (v) => v?.checks || { installed: false, prefix: false, hook: false, launchOpt: false, proton: null };
 function TokeerSection() {
-    const [busy, setBusy] = SP_REACT.useState(false);
-    const [state, setState] = SP_REACT.useState(null);
-    const [openIndex, setOpenIndex] = SP_REACT.useState(null);
+    const [discord, setDiscord] = SP_REACT.useState(null);
+    const [appid, setAppid] = SP_REACT.useState("");
+    const [runtime, setRuntime] = SP_REACT.useState(null);
+    const [verify, setVerify] = SP_REACT.useState(null);
+    const [activation, setActivation] = SP_REACT.useState("");
+    const [busy, setBusy] = SP_REACT.useState("");
+    const [message, setMessage] = SP_REACT.useState("");
+    const [menu, setMenu] = SP_REACT.useState(null);
     const [options, setOptions] = SP_REACT.useState([]);
-    const [action, setAction] = SP_REACT.useState("");
-    const refresh = async () => {
-        setBusy(true);
-        try {
-            setState(await readTokeerDiscord());
-        }
-        finally {
-            setBusy(false);
-        }
-    };
-    SP_REACT.useEffect(() => {
-        refresh();
-        const t = setInterval(refresh, 15000);
-        return () => clearInterval(t);
-    }, []);
-    const openMenu = async (index) => {
-        setAction("Opening Discord selector…");
-        setOpenIndex(index);
-        const items = await openSelectorAndReadOptions(index);
-        setOptions(items);
-        setAction(items.length ? "" : "No options found. Keep the Discord message open and try again.");
-    };
-    const choose = async (index, label) => {
-        setAction(`Selecting ${label} in Discord…`);
-        const ok = await chooseSelectorOption(index, label);
-        setAction(ok ? `Selected ${label}. Continue in the Discord flow if it opens a prompt.` : "Discord option click failed.");
-        setOptions([]);
-        setOpenIndex(null);
-        setTimeout(refresh, 800);
-    };
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer live panel", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.72, lineHeight: 1.45 }, children: "Mirrors the Linux activation panel from your own logged-in Discord tab. SLSDeck reads the rendered message through Steam CEF/CDP; it does not store your Discord cookie or token." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => { openTokeerDiscord(); setTimeout(refresh, 1800); }, children: "Open Tokeer Discord" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: refresh, disabled: busy, children: busy ? "Reading Discord…" : "Refresh live info" }) }), busy && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Reading the Tokeer message\u2026"] }) }), state && !state.found && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", lineHeight: 1.45 }, children: state.error || "Tokeer Discord message not found." }) }))] }), state?.found && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Live status", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 13 }, children: ["Steam: ", SP_JSX.jsx("b", { children: state.steamStatus || "Unknown" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 12, lineHeight: 1.7 }, children: [SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: state.gamesListed ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Keys remaining: ", SP_JSX.jsx("b", { children: state.keysRemaining ?? "?" })] }), SP_JSX.jsxs("div", { children: ["High demand: ", SP_JSX.jsx("b", { children: state.highDemand ?? "?" })] })] }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Request activation", children: [(state.selectors || []).map((s) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: s.disabled, onClick: () => openMenu(s.index), children: s.label || `Game menu ${s.index + 1}` }) }, s.index))), action && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8 }, children: action }) })] })] })), openIndex != null && options.length > 0 && (SP_JSX.jsx(DFL.PanelSection, { title: "Games", children: options.map((label) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => choose(openIndex, label), children: label }) }, label))) }))] }));
+    const refreshDiscord = async () => { try {
+        setDiscord(await readTokeerDiscord());
+    }
+    catch { } };
+    SP_REACT.useEffect(() => { tokeerRuntimeStatus().then(setRuntime).catch(() => { }); refreshDiscord(); const t = setInterval(refreshDiscord, 15000); return () => clearInterval(t); }, []);
+    const id = Number(appid);
+    const prepare = async () => { if (!id)
+        return setMessage("Enter a Steam AppID first."); setBusy("Preparing Tokeer…"); setMessage("Steam may restart while Tokeer writes the per-game launch configuration."); try {
+        const r = await tokeerPrepare(id);
+        setMessage(r.success ? "Prepare complete. If Steam restarted, reopen SLSDeck and press Verify." : (r.error || r.output || "Prepare failed."));
+        setRuntime(await tokeerRuntimeStatus());
+    }
+    catch (e) {
+        setMessage(String(e));
+    }
+    finally {
+        setBusy("");
+    } };
+    const runVerify = async () => { if (!id)
+        return setMessage("Enter a Steam AppID first."); setBusy("Verifying setup…"); try {
+        const r = await tokeerVerify(id);
+        setVerify(r);
+        setMessage(r.success ? "Setup verified. TLX1 is ready for the Discord ticket." : (r.error || "Verification failed."));
+    }
+    catch (e) {
+        setMessage(String(e));
+    }
+    finally {
+        setBusy("");
+    } };
+    const copyTlx = async () => { if (!verify?.code)
+        return; try {
+        await navigator.clipboard.writeText(verify.code);
+        setMessage("TLX1 copied. Paste it into the Tokeer ticket when requested.");
+    }
+    catch {
+        setMessage("Could not copy automatically; use the TLX1 shown below.");
+    } };
+    const openMenu = async (i) => { setBusy("Reading live game list…"); setMenu(i); try {
+        setOptions(await openSelectorAndReadOptions(i));
+    }
+    finally {
+        setBusy("");
+    } };
+    const choose = async (label) => { if (menu == null)
+        return; setBusy(`Requesting ${label}…`); const ok = await chooseSelectorOption(menu, label); setMessage(ok ? `Requested ${label} through the real Discord activation panel. Complete the ticket prompt with your TLX1 code.` : "Discord selection failed. Keep the Tokeer message open and retry."); setOptions([]); setMenu(null); setBusy(""); };
+    const redeem = async () => { if (!activation.trim())
+        return setMessage("Paste the activation code from Discord first."); setBusy("Writing activation ticket…"); try {
+        const r = await tokeerRedeem(activation.trim());
+        setMessage(r.success ? "Activation written successfully. Launch the game from Steam." : (r.error || r.output || "Activation failed."));
+    }
+    catch (e) {
+        setMessage(String(e));
+    }
+    finally {
+        setBusy("");
+    } };
+    const c = checks(verify || undefined);
+    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "Guided Linux/Proton activation using the official Tokeer runtime and your own logged-in Discord CEF session. Discord credentials are not copied or stored." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, inputMode: "numeric", placeholder: "Steam AppID", value: appid, onChange: (e) => { setAppid(e.target.value.replace(/\D/g, "")); setVerify(null); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "1. Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "2. Verify setup" }) }), busy && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }), message && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) })] }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "3. Request activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => { openTokeerDiscord(); setTimeout(refreshDiscord, 1600); }, children: "Open Tokeer Discord" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: s.disabled || !verify?.success, onClick: () => openMenu(s.index), children: s.label || `Game menu ${s.index + 1}` }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: "Open the activation message once and leave the Discord tab alive; SLSDeck will mirror its live selectors here." }) })] }), menu != null && options.length > 0 && SP_JSX.jsx(DFL.PanelSection, { title: "Live Discord games", children: options.map(x => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => choose(x), children: x }) }, x)) }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => setActivation(e.target.value.trim()) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and the Discord panel says they expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
 }
 
 function fmtSize$1(bytes) {
