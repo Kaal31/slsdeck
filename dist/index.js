@@ -2581,16 +2581,15 @@ function badgeCapsule(capsule, win) {
     box?.remove();
     existing.forEach((b) => b.remove());
     const img = capsule.querySelector("img");
-    const role = capsule.getAttribute("role");
-    let target = null;
-    if (role === "gridcell") {
-        target = img ? capsule.querySelector("div") : capsule;
+    let target = capsule;
+    if (img) {
+        // The image's immediate artwork wrapper is stable across square/grid and wide
+        // recent-game capsules. Avoid capsule.querySelector("div"), which can pick
+        // Steam's native bottom-right status/action overlay on wide cards.
+        const art = img.parentElement;
+        if (art && capsule.contains(art))
+            target = art;
     }
-    else if (role === "listitem") {
-        target = img ? (img.closest("div") ?? capsule) : capsule;
-    }
-    if (!target)
-        target = capsule;
     if (!target.hasAttribute(POSITIONED_ATTR)) {
         try {
             if (win.getComputedStyle(target).position === "static")
@@ -2602,8 +2601,10 @@ function badgeCapsule(capsule, win) {
     const container = win.document.createElement("div");
     container.className = `${BADGE_CLASS}-box`;
     container.style.cssText =
-        "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;" +
-            `display:flex;flex-wrap:wrap;gap:${emojiMode ? 6 : 3}px;align-items:center;`;
+        (emojiMode
+            ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);"
+            : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +
+            `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;
     for (const kind of wanted) {
         const badge = win.document.createElement("div");
         badge.className = BADGE_CLASS;
@@ -6639,7 +6640,8 @@ function HypervisorSection() {
 }
 
 const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
-const TOKEER_CHANNEL = "/channels/1464130182364270696/1534460498446127175";
+const GUILD_ID = "1464130182364270696";
+const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
 async function listCdpTabs() {
     try {
@@ -6651,14 +6653,11 @@ async function listCdpTabs() {
         return [];
     }
 }
-/**
- * Discord is a SPA: during OAuth/login it may be /login or /channels/@me and
- * only later navigate to the Tokeer channel.  Match any debuggable Discord CEF
- * target instead of requiring the final channel URL up front.
- */
+function isDiscordTab(t) {
+    return !!t.webSocketDebuggerUrl && /(^|\.)discord\.com(?:\/|$)/i.test(String(t.url || "").replace(/^https?:\/\//i, ""));
+}
 async function findDiscordTab() {
-    const tabs = await listCdpTabs();
-    const discord = tabs.filter((t) => !!t.webSocketDebuggerUrl && /(^|\.)discord\.com(?:\/|$)/i.test(String(t.url || "").replace(/^https?:\/\//i, "")));
+    const discord = (await listCdpTabs()).filter(isDiscordTab);
     if (!discord.length)
         return null;
     return discord.find((t) => t.url?.includes(TOKEER_CHANNEL)) || discord[0];
@@ -6720,7 +6719,7 @@ async function readTokeerDiscord() {
         return { found: false, selectors: [], error: "No Discord page is visible to Steam CEF/CDP. Use ‘Open Tokeer Discord’ from this page (not the desktop/system browser)." };
     }
     if (!tab.url?.includes(TOKEER_CHANNEL)) {
-        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to navigate this CEF tab to the activation panel." };
+        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
     }
     const raw = await evalJson(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
     try {
@@ -6756,11 +6755,6 @@ async function chooseSelectorOption(index, label) {
     const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"]')).find(function(e){return (e.innerText||e.textContent||'').trim()===want;});if(!o)return false;o.click();return true;}catch(e){return false;}})()`;
     return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
-/**
- * Open Discord in Steam's own web surface. NavigateToExternalWeb is the Decky /
- * game-mode route and keeps the page inside Steam CEF, where localhost:8080 CDP
- * can see it. If a Discord CEF target already exists, re-use and navigate it.
- */
 async function openTokeerDiscord() {
     try {
         const existing = await findDiscordTab();
@@ -6778,16 +6772,12 @@ async function openTokeerDiscord() {
         }
     }
     catch { }
-    // window.open is still preferable to OpenInSystemBrowser: in game mode it can
-    // create a Steam/CEF web target, while OpenInSystemBrowser escapes to desktop.
     try {
         const w = window.open(TOKEER_DISCORD_URL, "_blank");
         if (w)
             return true;
     }
     catch { }
-    // Last-resort fallback. This is intentionally last because CDP cannot inspect
-    // an external desktop browser; the UI will clearly report that condition.
     try {
         const SC = window.SteamClient;
         if (SC?.System?.OpenInSystemBrowser) {
@@ -7878,7 +7868,7 @@ function GameDetailsBadge() {
     const params = DFL.useParams();
     const appid = params?.appid && /^\d+$/.test(params.appid) ? parseInt(params.appid, 10) : null;
     const [kinds, setKinds] = SP_REACT.useState([]);
-    const [, setEmojiVersion] = SP_REACT.useState(0);
+    const [emojiVersion, setEmojiVersion] = SP_REACT.useState(0);
     SP_REACT.useEffect(() => {
         const onEmoji = () => setEmojiVersion((v) => v + 1);
         window.addEventListener("slsdeck-emoji-badges", onEmoji);
@@ -7988,7 +7978,22 @@ function GameDetailsBadge() {
     }, [appid]);
     if (appid == null || !kinds.length)
         return null;
-    return (SP_JSX.jsx("div", { style: { display: "flex", gap: 8, margin: "12px 24px 0" }, children: kinds.map((k) => (SP_JSX.jsx("div", { style: {
+    const emojiMode = getEmojiBadgesEnabled();
+    return (SP_JSX.jsx("div", { style: { display: "flex", gap: emojiMode ? 10 : 8, margin: "12px 24px 0", alignItems: "center" }, children: kinds.map((k) => (SP_JSX.jsx("div", { style: emojiMode ? {
+                padding: 0,
+                margin: 0,
+                border: 0,
+                borderRadius: 0,
+                fontSize: 28,
+                lineHeight: "31px",
+                fontWeight: 400,
+                letterSpacing: 0,
+                color: "inherit",
+                background: "transparent",
+                boxShadow: "none",
+                textShadow: "0 1px 3px rgba(0,0,0,0.75)",
+                fontFamily: "'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif",
+            } : {
                 padding: "3px 10px",
                 borderRadius: 4,
                 fontSize: 12,
