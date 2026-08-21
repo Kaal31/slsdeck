@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from typing import Any
 
 from .logger import logger
@@ -26,6 +27,87 @@ def _remove_path(path: str, log: list[str]) -> None:
         pass
     except Exception as exc:
         log.append(f"could not remove {path}: {exc}")
+
+
+_LEGACY_APP_IDS = (
+    "org.cloudredirect.CloudRedirect",
+    "io.github.Selectively11.CloudRedirect",
+    "com.github.Selectively11.CloudRedirect",
+)
+
+
+def purge_all(cloudredirect: Any) -> dict:
+    """Remove every known CloudRedirect runtime, UI, config and legacy artifact.
+
+    This intentionally includes provider tokens: callers use it for an actual
+    uninstall or a clean reinstall, where retaining data from an unknown older
+    CloudRedirect build can reproduce the same broken state.
+    """
+    log: list[str] = []
+    home = cloudredirect.slssteam._home()
+    env = cloudredirect.slssteam._rich_env()
+
+    # Ask Flatpak to remove every historical app-id spelling and its data first.
+    for app_id in _LEGACY_APP_IDS:
+        try:
+            cmd = ["flatpak", "uninstall", "--user", "-y", "--delete-data", app_id]
+            r = subprocess.run(cloudredirect._wrap_cr(cmd), env=env,
+                               capture_output=True, timeout=300)
+            if r.returncode == 0:
+                log.append(f"uninstalled Flatpak {app_id}")
+        except Exception as exc:
+            log.append(f"Flatpak cleanup {app_id}: {exc}")
+
+    targets = {
+        # Current and old native runtime/config layouts.
+        os.path.join(home, ".local", "share", "CloudRedirect"),
+        os.path.join(home, ".local", "share", "cloudredirect"),
+        os.path.join(home, ".config", "CloudRedirect"),
+        os.path.join(home, ".config", "cloudredirect"),
+        os.path.join(home, ".cache", "CloudRedirect"),
+        os.path.join(home, ".cache", "cloudredirect"),
+        os.path.join(home, ".local", "state", "CloudRedirect"),
+        os.path.join(home, ".local", "state", "cloudredirect"),
+        os.path.join(home, ".local", "bin", "CloudRedirect"),
+        os.path.join(home, ".local", "bin", "cloudredirect"),
+        os.path.join(home, "Applications", "CloudRedirect.AppImage"),
+        os.path.join(home, "Applications", "cloudredirect.AppImage"),
+        # Flatpak application data and any residual per-app installation.
+        os.path.join(home, ".var", "app", "org.cloudredirect.CloudRedirect"),
+        os.path.join(home, ".var", "app", "io.github.Selectively11.CloudRedirect"),
+        os.path.join(home, ".var", "app", "com.github.Selectively11.CloudRedirect"),
+        os.path.join(home, ".local", "share", "flatpak", "app",
+                     "org.cloudredirect.CloudRedirect"),
+        os.path.join(home, ".local", "share", "flatpak", "app",
+                     "io.github.Selectively11.CloudRedirect"),
+        os.path.join(home, ".local", "share", "flatpak", "app",
+                     "com.github.Selectively11.CloudRedirect"),
+        # Desktop launchers left by native/AppImage releases.
+        os.path.join(home, ".local", "share", "applications",
+                     "org.cloudredirect.CloudRedirect.desktop"),
+        os.path.join(home, ".local", "share", "applications",
+                     "io.github.Selectively11.CloudRedirect.desktop"),
+        os.path.join(home, ".local", "share", "applications",
+                     "com.github.Selectively11.CloudRedirect.desktop"),
+        os.path.join(home, ".local", "share", "applications",
+                     "CloudRedirect.desktop"),
+        os.path.join(home, ".local", "share", "applications",
+                     "cloudredirect.desktop"),
+    }
+    # _cr_dirs also adds the Flatpak-Steam runtime location when applicable.
+    try:
+        targets.update(cloudredirect._cr_dirs())
+    except Exception:
+        pass
+    # Always include it even if Steam variant detection changed between versions.
+    targets.add(os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                             ".local", "share", "CloudRedirect"))
+
+    for path in sorted(targets):
+        _remove_path(path, log)
+
+    logger.log(f"CloudRedirect purge: {len(log)} action(s)")
+    return {"success": True, "removed": log, "log": "\n".join(log)[-3200:]}
 
 
 def _hook_present(cloudredirect: Any) -> bool:
@@ -135,11 +217,20 @@ def patch(cloudredirect: Any) -> None:
             return base
         return _ensure_ui_if_needed(cloudredirect, base)
 
+    def uninstall() -> dict:
+        result = purge_all(cloudredirect)
+        result.update({"installed": False, "hasLib": False, "uiInstalled": False})
+        return result
+
     def reinstall() -> dict:
-        log: list[str] = []
-        _remove_legacy_native(cloudredirect, log)
+        # A reinstall is deliberately clean: purge current and every known old
+        # layout first, including Flatpak data, then install only the moon hook
+        # and the current companion UI.
+        purged = purge_all(cloudredirect)
+        log = list(purged.get("removed") or [])
         result = _install_moon_hook(cloudredirect, log)
         result["replacedLegacy"] = True
+        result["cleanReinstall"] = True
         if not result.get("success"):
             return result
         return _ensure_ui_if_needed(cloudredirect, result)
@@ -156,6 +247,7 @@ def patch(cloudredirect: Any) -> None:
 
     cloudredirect.ensure_installed_auto = ensure_native
     cloudredirect.ensure_installed = reinstall
+    cloudredirect.uninstall = uninstall
     cloudredirect.ensure_ui = ensure_ui
     cloudredirect._slsdeck_force_reinstall_patched = True
     logger.log("SLSDeck: CloudRedirect moon runtime is primary; login UI is setup-only")
