@@ -200,6 +200,7 @@ export const crSetEnabled = callable<[enabled: boolean], { success: boolean; ena
 export const crOpenApp = callable<[], { success: boolean; error?: string }>("cr_open_app");
 export const crEnsureInstalledAuto = callable<[], { success: boolean; installed: boolean; capped?: boolean; log?: string }>("cr_ensure_installed_auto");
 export const crEnsureInstalled = callable<[], { success: boolean; installed: boolean; log?: string }>("cr_ensure_installed");
+export const crUninstall = callable<[], { success: boolean; installed: boolean; log?: string; removed?: string[] }>("cr_uninstall");
 export const crIconPath = callable<[], { success: boolean; path: string }>("cr_icon_path");
 export const crArtwork = callable<[], { success: boolean; cover: string; capsule: string; hero: string; logo: string }>("cr_artwork");
 export const crGetShortcut = callable<[], { success: boolean; appId: number }>("cr_get_shortcut");
