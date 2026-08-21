@@ -1,0 +1,51 @@
+name: Fix emoji badge surfaces
+on:
+  push:
+    branches: [tokeer-implement]
+    paths: ['.github/workflows/fix-emoji-surfaces.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tokeer-implement
+      - name: Patch badge rendering
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Game-details page: emoji mode must be standalone icons, not colored pills.
+          p = Path('src/components/GameDetailsBadge.tsx')
+          s = p.read_text()
+          s = s.replace('import { badgeDisplayLabel } from "../lib/emojiBadges";', 'import { badgeDisplayLabel, getEmojiBadgesEnabled } from "../lib/emojiBadges";')
+          s = s.replace('  const [, setEmojiVersion] = useState(0);', '  const [emojiVersion, setEmojiVersion] = useState(0);')
+          old = '''  return (\n    <div style={{ display: "flex", gap: 8, margin: "12px 24px 0" }}>\n      {kinds.map((k) => (\n        <div\n          key={k}\n          style={{\n            padding: "3px 10px",\n            borderRadius: 4,\n            fontSize: 12,\n            fontWeight: 700,\n            letterSpacing: 0.5,\n            color: "#fff",\n            background: STYLES[k].background,\n            boxShadow: "0 1px 4px rgba(0,0,0,0.35)",\n          }}\n        >\n          {badgeDisplayLabel(k, STYLES[k].label)}\n        </div>\n      ))}\n    </div>\n  );'''
+          new = '''  const emojiMode = getEmojiBadgesEnabled();\n  void emojiVersion;\n\n  return (\n    <div style={{ display: "flex", gap: emojiMode ? 10 : 8, margin: "12px 24px 0", alignItems: "center" }}>\n      {kinds.map((k) => (\n        <div\n          key={k}\n          style={emojiMode ? {\n            padding: 0,\n            margin: 0,\n            border: 0,\n            borderRadius: 0,\n            fontSize: 28,\n            lineHeight: "31px",\n            fontWeight: 400,\n            letterSpacing: 0,\n            color: "inherit",\n            background: "transparent",\n            boxShadow: "none",\n            textShadow: "0 1px 3px rgba(0,0,0,0.75)",\n            fontFamily: "'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif",\n          } : {\n            padding: "3px 10px",\n            borderRadius: 4,\n            fontSize: 12,\n            fontWeight: 700,\n            letterSpacing: 0.5,\n            color: "#fff",\n            background: STYLES[k].background,\n            boxShadow: "0 1px 4px rgba(0,0,0,0.35)",\n          }}\n        >\n          {badgeDisplayLabel(k, STYLES[k].label)}\n        </div>\n      ))}\n    </div>\n  );'''
+          if old not in s:
+              raise SystemExit('GameDetailsBadge render anchor not found')
+          p.write_text(s.replace(old, new, 1))
+
+          # Library overview: always anchor badge overlay to the artwork wrapper itself.
+          # Wide capsules contain native lower-right action/status controls; targeting a
+          # generic first div can place our container into that control layer.
+          p = Path('src/lib/badges.ts')
+          s = p.read_text()
+          old = '''  const img = capsule.querySelector("img");\n  const role = capsule.getAttribute("role");\n  let target: HTMLElement | null = null;\n  if (role === "gridcell") {\n    target = img ? (capsule.querySelector("div") as HTMLElement) : (capsule as HTMLElement);\n  } else if (role === "listitem") {\n    target = img ? ((img.closest("div") as HTMLElement) ?? (capsule as HTMLElement)) : (capsule as HTMLElement);\n  }\n  if (!target) target = capsule as HTMLElement;'''
+          new = '''  const img = capsule.querySelector("img") as HTMLImageElement | null;\n  let target: HTMLElement = capsule as HTMLElement;\n  if (img) {\n    // The image's immediate artwork wrapper is stable across square/grid and wide\n    // recent-game capsules. Avoid capsule.querySelector(\"div\"), which can pick\n    // Steam's native bottom-right status/action overlay on wide cards.\n    const art = img.parentElement as HTMLElement | null;\n    if (art && capsule.contains(art)) target = art;\n  }'''
+          if old not in s:
+              raise SystemExit('badges target anchor not found')
+          s = s.replace(old, new, 1)
+          # Make emoji container size to content instead of spanning right:4px across artwork.
+          s = s.replace('''    "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;" +\n    `display:flex;flex-wrap:wrap;gap:${emojiMode ? 6 : 3}px;align-items:center;`;''', '''    (emojiMode\n      ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);"\n      : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +\n    `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;''', 1)
+          p.write_text(s)
+          PY
+          git rm .github/workflows/fix-emoji-surfaces.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/components/GameDetailsBadge.tsx src/lib/badges.ts
+          git commit -m "Render emoji badges cleanly across library surfaces [skip ci]"
+          git push origin HEAD:tokeer-implement
