@@ -272,13 +272,14 @@ function badgeCapsule(capsule: Element, win: Window) {
   const role = capsule.getAttribute("role");
   let target: HTMLElement | null = null;
   if (role === "gridcell") {
-    // Keep badges out of Steam's overflow-clipped image layer. This was the
-    // working anchor before emoji mode changed the attachment point.
+    // Keep badges out of Steam's overflow-clipped image layer. This is the
+    // working anchor for the normal Library grid.
     target = img ? (capsule.querySelector("div") as HTMLElement | null) : (capsule as HTMLElement);
   } else if (role === "listitem") {
-    // Wide/recent-game capsules use the nearest artwork div as their stable
-    // overlay anchor.
-    target = img ? ((img.closest("div") as HTMLElement | null) ?? (capsule as HTMLElement)) : (capsule as HTMLElement);
+    // Home/recent-game cards contain small Steam status/action images too. Using
+    // img.closest('div') can therefore attach our emoji inside Steam's black
+    // native control overlay. Anchor directly to the whole capsule instead.
+    target = capsule as HTMLElement;
   }
   if (!target) target = capsule as HTMLElement;
 
@@ -293,7 +294,7 @@ function badgeCapsule(capsule: Element, win: Window) {
   container.className = `${BADGE_CLASS}-box`;
   container.style.cssText =
     (emojiMode
-      ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);"
+      ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;"
       : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +
     `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;
   for (const kind of wanted) {
@@ -311,7 +312,7 @@ function badgeCapsule(capsule: Element, win: Window) {
         "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
         "padding:0;margin:0;border:0;border-radius:0;font-size:24px;line-height:27px;" +
         "font-family:'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif;font-weight:400;letter-spacing:0;" +
-        "color:inherit;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;" +
+        "color:inherit;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;" +
         "text-shadow:0 1px 3px rgba(0,0,0,0.75);overflow:visible;"
       : "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
         "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
