@@ -1183,7 +1183,7 @@ async function scrapeDepotManifests(depot, maxMs = 25000, onStatus, isCancelled)
     }
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function cleanGids(gids) {
     const out = {};
     for (const [depot, gid] of Object.entries(gids || {})) {
@@ -1343,7 +1343,7 @@ async function prepareCatalogFixBuild(appid, buildid, gidsInput, onProgress) {
                 if (job.status === "failed")
                     throw new Error(job.error || "Build download failed.");
             }
-            await sleep(1000);
+            await sleep$1(1000);
         }
         throw new Error("Build download timed out after 30 minutes.");
     }
@@ -6755,6 +6755,86 @@ async function chooseSelectorOption(index, label) {
     const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"]')).find(function(e){return (e.innerText||e.textContent||'').trim()===want;});if(!o)return false;o.click();return true;}catch(e){return false;}})()`;
     return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
+// After a game is selected Tokeer posts a new, ephemeral bot message in the same
+// channel. Its green acknowledgement button is the gate that creates/opens the
+// private activation ticket. Search newest messages first instead of depending
+// on Discord's generated class names or a fixed message id.
+const TICKET_GATE_EXPR = `(function(){try{
+  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+  for(var i=0;i<arts.length;i++){
+    var a=arts[i], bs=[].slice.call(a.querySelectorAll('button'));
+    for(var j=0;j<bs.length;j++){
+      var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
+      if(/i.?ve read this[\s\S]*watched the tutorial/i.test(label)){
+        return JSON.stringify({found:true,label:label,disabled:b.disabled||b.getAttribute('aria-disabled')==='true',messageText:(a.innerText||'').slice(0,5000)});
+      }
+    }
+  }
+  return JSON.stringify({found:false,error:'Waiting for the newest Tokeer confirmation message…'});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+async function readLatestTicketGate() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
+        return { found: false, error: "Tokeer activation channel is not open." };
+    const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_GATE_EXPR);
+    try {
+        return JSON.parse(String(raw || ""));
+    }
+    catch {
+        return { found: false, error: "Could not read the ticket confirmation button." };
+    }
+}
+async function clickLatestTicketGate() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
+        return { success: false, error: "Tokeer activation channel is not open." };
+    const expr = `(function(){try{
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+    for(var i=0;i<arts.length;i++){
+      var bs=[].slice.call(arts[i].querySelectorAll('button'));
+      for(var j=0;j<bs.length;j++){
+        var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
+        if(/i.?ve read this[\\s\\S]*watched the tutorial/i.test(label) && !b.disabled && b.getAttribute('aria-disabled')!=='true'){b.click();return true;}
+      }
+    }
+    return false;
+  }catch(e){return false;}})()`;
+    const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+    return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
+}
+const TICKET_CONTEXT_EXPR = `(function(){try{
+  var text=(document.body.innerText||'').replace(/\u00a0/g,' ');
+  var m=text.match(/tokeer\s+verify\s+(\d{4,})/i)||text.match(/bash\s+-s\s+--\s+(\d{4,})/i);
+  return JSON.stringify(m?{found:true,appid:Number(m[1]),rawText:text.slice(0,16000)}:{found:false,error:'Ticket opened, waiting for the setup commands…'});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+/** Wait for the green acknowledgement to navigate into the new ticket/thread,
+ * then extract the AppID from the commands Tokeer itself posted there. */
+async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastError = "Waiting for Tokeer ticket…";
+    while (Date.now() < deadline) {
+        const tabs = (await listCdpTabs()).filter(isDiscordTab);
+        const candidates = tabs.filter((t) => {
+            const u = String(t.url || "");
+            return u.includes(`/channels/${GUILD_ID}/`) && !u.includes(TOKEER_CHANNEL) && (!fromUrl || u !== fromUrl);
+        });
+        for (const tab of candidates) {
+            if (!tab.webSocketDebuggerUrl)
+                continue;
+            const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
+            try {
+                const parsed = JSON.parse(String(raw || ""));
+                if (parsed?.found && parsed?.appid)
+                    return { ...parsed, url: tab.url };
+                if (parsed?.error)
+                    lastError = parsed.error;
+            }
+            catch { }
+        }
+        await new Promise((r) => setTimeout(r, 600));
+    }
+    return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
+}
 async function openTokeerDiscord() {
     try {
         const existing = await findDiscordTab();
@@ -6791,9 +6871,9 @@ async function openTokeerDiscord() {
 
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 4, border: "1px solid rgba(255,255,255,.25)", background: "rgba(0,0,0,.22)", color: "inherit" };
 const checks = (v) => v?.checks || { installed: false, prefix: false, hook: false, launchOpt: false, proton: null };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function TokeerSection() {
     const [discord, setDiscord] = SP_REACT.useState(null);
-    const [appid, setAppid] = SP_REACT.useState("");
     const [runtime, setRuntime] = SP_REACT.useState(null);
     const [verify, setVerify] = SP_REACT.useState(null);
     const [activation, setActivation] = SP_REACT.useState("");
@@ -6801,65 +6881,145 @@ function TokeerSection() {
     const [message, setMessage] = SP_REACT.useState("");
     const [menu, setMenu] = SP_REACT.useState(null);
     const [options, setOptions] = SP_REACT.useState([]);
+    const [selectedGame, setSelectedGame] = SP_REACT.useState("");
+    const [gate, setGate] = SP_REACT.useState(null);
+    const [ticket, setTicket] = SP_REACT.useState(null);
     const refreshDiscord = async () => { try {
         setDiscord(await readTokeerDiscord());
     }
     catch { } };
     SP_REACT.useEffect(() => { tokeerRuntimeStatus().then(setRuntime).catch(() => { }); refreshDiscord(); const t = setInterval(refreshDiscord, 15000); return () => clearInterval(t); }, []);
-    const id = Number(appid);
-    const prepare = async () => { if (!id)
-        return setMessage("Enter a Steam AppID first."); setBusy("Preparing Tokeer…"); setMessage("Steam may restart while Tokeer writes the per-game launch configuration."); try {
-        const r = await tokeerPrepare(id);
-        setMessage(r.success ? "Prepare complete. If Steam restarted, reopen SLSDeck and press Verify." : (r.error || r.output || "Prepare failed."));
-        setRuntime(await tokeerRuntimeStatus());
-    }
-    catch (e) {
-        setMessage(String(e));
-    }
-    finally {
+    const appid = Number(ticket?.appid || 0);
+    const openMenu = async (i) => {
+        setBusy("Reading live game list…");
+        setMenu(i);
+        try {
+            setOptions(await openSelectorAndReadOptions(i));
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const waitForGate = async () => {
+        setGate(null);
+        for (let i = 0; i < 20; i++) {
+            const g = await readLatestTicketGate();
+            if (g.found) {
+                setGate(g);
+                setMessage("Tokeer is ready to open your private activation ticket.");
+                return;
+            }
+            await sleep(500);
+        }
+        setMessage("The game was selected, but the green Tokeer confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
+    };
+    const choose = async (label) => {
+        if (menu == null)
+            return;
+        setBusy(`Selecting ${label} in Discord…`);
+        setSelectedGame(label);
+        setGate(null);
+        setTicket(null);
+        setVerify(null);
+        const ok = await chooseSelectorOption(menu, label);
+        setOptions([]);
+        setMenu(null);
+        if (!ok) {
+            setMessage("Discord selection failed. Keep the Tokeer message open and retry.");
+            setBusy("");
+            return;
+        }
+        setBusy("Waiting for Tokeer confirmation…");
+        setMessage(`Selected ${label}. Waiting for the newest bot message…`);
+        await waitForGate();
         setBusy("");
-    } };
-    const runVerify = async () => { if (!id)
-        return setMessage("Enter a Steam AppID first."); setBusy("Verifying setup…"); try {
-        const r = await tokeerVerify(id);
-        setVerify(r);
-        setMessage(r.success ? "Setup verified. TLX1 is ready for the Discord ticket." : (r.error || "Verification failed."));
-    }
-    catch (e) {
-        setMessage(String(e));
-    }
-    finally {
-        setBusy("");
-    } };
-    const copyTlx = async () => { if (!verify?.code)
-        return; try {
-        await navigator.clipboard.writeText(verify.code);
-        setMessage("TLX1 copied. Paste it into the Tokeer ticket when requested.");
-    }
-    catch {
-        setMessage("Could not copy automatically; use the TLX1 shown below.");
-    } };
-    const openMenu = async (i) => { setBusy("Reading live game list…"); setMenu(i); try {
-        setOptions(await openSelectorAndReadOptions(i));
-    }
-    finally {
-        setBusy("");
-    } };
-    const choose = async (label) => { if (menu == null)
-        return; setBusy(`Requesting ${label}…`); const ok = await chooseSelectorOption(menu, label); setMessage(ok ? `Requested ${label} through the real Discord activation panel. Complete the ticket prompt with your TLX1 code.` : "Discord selection failed. Keep the Tokeer message open and retry."); setOptions([]); setMenu(null); setBusy(""); };
-    const redeem = async () => { if (!activation.trim())
-        return setMessage("Paste the activation code from Discord first."); setBusy("Writing activation ticket…"); try {
-        const r = await tokeerRedeem(activation.trim());
-        setMessage(r.success ? "Activation written successfully. Launch the game from Steam." : (r.error || r.output || "Activation failed."));
-    }
-    catch (e) {
-        setMessage(String(e));
-    }
-    finally {
-        setBusy("");
-    } };
+    };
+    const openTicket = async () => {
+        setBusy("Opening Tokeer ticket…");
+        setMessage("Pressing the real green Discord confirmation and waiting for the ticket/thread…");
+        try {
+            const r = await clickLatestTicketGate();
+            if (!r.success) {
+                setMessage(r.error || "Could not press the Tokeer confirmation button.");
+                return;
+            }
+            const ctx = await waitForTicketContext(r.fromUrl || "", 25000);
+            setTicket(ctx);
+            if (ctx.found && ctx.appid) {
+                setMessage(`Ticket opened for ${selectedGame || "selected game"}. Tokeer reported Steam AppID ${ctx.appid}. No manual AppID entry is needed.`);
+            }
+            else {
+                setMessage(ctx.error || "Ticket opened, but the AppID commands were not found yet.");
+            }
+        }
+        catch (e) {
+            setMessage(String(e));
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const prepare = async () => {
+        if (!appid)
+            return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
+        setBusy("Preparing Tokeer…");
+        setMessage(`Preparing ${selectedGame || `AppID ${appid}`} using the AppID supplied by the Tokeer ticket. Steam may restart.`);
+        try {
+            const r = await tokeerPrepare(appid);
+            setMessage(r.success ? "Prepare complete. If Steam restarted, reopen SLSDeck/Discord and press Verify." : (r.error || r.output || "Prepare failed."));
+            setRuntime(await tokeerRuntimeStatus());
+        }
+        catch (e) {
+            setMessage(String(e));
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const runVerify = async () => {
+        if (!appid)
+            return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
+        setBusy("Verifying setup…");
+        try {
+            const r = await tokeerVerify(appid);
+            setVerify(r);
+            setMessage(r.success ? "Setup verified. Copy the TLX1 and paste it into the open Discord ticket." : (r.error || "Verification failed."));
+        }
+        catch (e) {
+            setMessage(String(e));
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const copyTlx = async () => {
+        if (!verify?.code)
+            return;
+        try {
+            await navigator.clipboard.writeText(verify.code);
+            setMessage("TLX1 copied. Paste it into the open Tokeer ticket.");
+        }
+        catch {
+            setMessage("Could not copy automatically; use the TLX1 shown below.");
+        }
+    };
+    const redeem = async () => {
+        if (!activation.trim())
+            return setMessage("Paste the activation code from Discord first.");
+        setBusy("Writing activation ticket…");
+        try {
+            const r = await tokeerRedeem(activation.trim());
+            setMessage(r.success ? "Activation written successfully. Launch the game from Steam." : (r.error || r.output || "Activation failed."));
+        }
+        catch (e) {
+            setMessage(String(e));
+        }
+        finally {
+            setBusy("");
+        }
+    };
     const c = checks(verify || undefined);
-    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "Guided Linux/Proton activation using the official Tokeer runtime and your own logged-in Discord CEF session. Discord credentials are not copied or stored." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, inputMode: "numeric", placeholder: "Steam AppID", value: appid, onChange: (e) => { setAppid(e.target.value.replace(/\D/g, "")); setVerify(null); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "1. Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "2. Verify setup" }) }), busy && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }), message && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) })] }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "3. Request activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => { openTokeerDiscord(); setTimeout(refreshDiscord, 1600); }, children: "Open Tokeer Discord" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: s.disabled || !verify?.success, onClick: () => openMenu(s.index), children: s.label || `Game menu ${s.index + 1}` }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: "Open the activation message once and leave the Discord tab alive; SLSDeck will mirror its live selectors here." }) })] }), menu != null && options.length > 0 && SP_JSX.jsx(DFL.PanelSection, { title: "Live Discord games", children: options.map(x => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => choose(x), children: x }) }, x)) }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => setActivation(e.target.value.trim()) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and the Discord panel says they expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
+    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => { openTokeerDiscord(); setTimeout(refreshDiscord, 1600); }, children: "Open Tokeer Discord" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: s.disabled || !!busy, onClick: () => openMenu(s.index), children: s.label || `Game menu ${s.index + 1}` }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), menu != null && options.length > 0 && SP_JSX.jsx(DFL.PanelSection, { title: "Live Discord games", children: options.map(x => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => choose(x), children: x }) }, x)) }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), gate?.found ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: gate.label || "✅ I've read this & watched the tutorial" }) }) : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) })] }), ticket?.found && ticket.appid && SP_JSX.jsxs(DFL.PanelSection, { title: "3. Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => setActivation(e.target.value.trim()) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
 }
 
 function fmtSize$1(bytes) {
