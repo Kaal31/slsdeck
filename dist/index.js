@@ -112,7 +112,7 @@ function FaWrench (props) {
   return GenIcon({"attr":{"viewBox":"0 0 448 512"},"child":[{"tag":"path","attr":{"d":"M257.5 445.1l-22.2 22.2c-9.4 9.4-24.6 9.4-33.9 0L7 273c-9.4-9.4-9.4-24.6 0-33.9L201.4 44.7c9.4-9.4 24.6-9.4 33.9 0l22.2 22.2c9.5 9.5 9.3 25-.4 34.3L136.6 216H424c13.3 0 24 10.7 24 24v32c0 13.3-10.7 24-24 24H136.6l120.5 114.8c9.8 9.3 10 24.8.4 34.3z"},"child":[]}]})(props);
 }
 
-const tokeerQuotaProbe = callable("tokeer_quota_probe");
+callable("tokeer_quota_probe");
 // ── Callables ──────────────────────────────────────────────────────────────
 callable("get_steam_status");
 const hasLua = callable("has_lua");
@@ -6628,35 +6628,154 @@ function HypervisorSection() {
                                         : protonDl.status === "extracting" ? "Extracting…" : protonDl.status })] }) }))] })), games.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 4 }, children: "Marked games" }) }), games.map((aid) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => unmark(aid), children: SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: appDisplayName(Number(aid)) || `AppID ${aid}` }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.6 }, children: "tap to unmark" })] }) }) }, aid)))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("reboot", hvReboot, "Rebooting…"), disabled: working, children: "Reboot Deck now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: loadLog, children: showLog ? "Hide build log ▾" : "Show build log ▸" }) }), showLog && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: log, maxHeight: 240, mono: true, fontSize: 10 }) })), st?.kernel_release && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: 0.5 }, children: ["kernel ", st.kernel_release, st?.compiler_name ? ` · ${st.compiler_name}` : ""] }) }))] }));
 }
 
-function pretty(value) {
+const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
+const TARGET_MESSAGE = "1535685399265935422";
+async function findDiscordTab() {
     try {
-        return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+        const r = await fetchNoCors("http://localhost:8080/json");
+        const tabs = await r.json();
+        return tabs.find((t) => !!t.webSocketDebuggerUrl && t.url?.includes("discord.com/channels/1464130182364270696/1534460498446127175")) || null;
     }
     catch {
-        return String(value ?? "");
+        return null;
     }
 }
-/** Tokeer-backed Anti-Denuvo page; intentionally diagnostic until inventory is identified. */
+function evalJson(wsUrl, expression, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+        let done = false;
+        let sock;
+        const finish = (v) => { if (done)
+            return; done = true; try {
+            sock.close();
+        }
+        catch { } resolve(v); };
+        try {
+            sock = new WebSocket(wsUrl);
+        }
+        catch {
+            resolve(null);
+            return;
+        }
+        const id = 1;
+        sock.onopen = () => sock.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
+        sock.onmessage = (ev) => {
+            try {
+                const m = JSON.parse(String(ev.data));
+                if (m?.id === id)
+                    finish(m?.result?.result?.value ?? null);
+            }
+            catch { }
+        };
+        sock.onerror = () => finish(null);
+        setTimeout(() => finish(null), timeoutMs);
+    });
+}
+const SNAPSHOT_EXPR = `(function(){try{
+  var id=${JSON.stringify(TARGET_MESSAGE)};
+  var article=document.querySelector('[data-list-item-id$="-'+id+'"]') || document.querySelector('#message-accessories-'+id)?.closest('[role="article"]') || document.querySelector('#message-reactions-'+id)?.closest('[role="article"]');
+  if(!article) return JSON.stringify({found:false,error:'Target Tokeer message is not currently rendered. Open the linked message and keep the Discord tab alive.'});
+  var text=(article.innerText||'').replace(/\u00a0/g,' ');
+  var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
+  var s=function(re){var m=text.match(re);return m?m[1].trim():undefined};
+  var selects=[].slice.call(article.querySelectorAll('[aria-haspopup="listbox"]')).map(function(e,i){
+    var label=(e.innerText||e.textContent||'').trim();
+    return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};
+  });
+  return JSON.stringify({found:true,steamStatus:s(/Steam\s*:\s*([^\n]+)/i),gamesListed:n(/Games listed:\s*(\d+)/i),steamGames:n(/Games listed:[\s\S]*?Steam[^\d]*(\d+)/i),keysRemaining:n(/Keys remaining:\s*(\d+)/i),highDemand:n(/High demand:\s*(\d+)/i),selectors:selects,rawText:text.slice(0,12000)});
+}catch(e){return JSON.stringify({found:false,error:String(e),selectors:[]});}})()`;
+async function readTokeerDiscord() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl)
+        return { found: false, selectors: [], error: "Discord tab not found in Steam CEF. Open the Tokeer Discord message first." };
+    const raw = await evalJson(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
+    try {
+        return JSON.parse(String(raw || ""));
+    }
+    catch {
+        return { found: false, selectors: [], error: "Could not parse Discord DOM snapshot." };
+    }
+}
+async function openSelectorAndReadOptions(index) {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl)
+        return [];
+    const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]');var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"]')):[];var e=xs[${Number(index)}];if(!e)return false;e.click();return true;}catch(e){return false;}})()`;
+    const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr);
+    if (!ok)
+        return [];
+    await new Promise((r) => setTimeout(r, 350));
+    const optionsExpr = `(function(){try{return JSON.stringify([].slice.call(document.querySelectorAll('[role="option"]')).map(function(e){return (e.innerText||e.textContent||'').trim();}).filter(Boolean));}catch(e){return '[]';}})()`;
+    const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
+    try {
+        return JSON.parse(String(raw || "[]"));
+    }
+    catch {
+        return [];
+    }
+}
+async function chooseSelectorOption(index, label) {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl)
+        return false;
+    await openSelectorAndReadOptions(index);
+    const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"]')).find(function(e){return (e.innerText||e.textContent||'').trim()===want;});if(!o)return false;o.click();return true;}catch(e){return false;}})()`;
+    return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+}
+function openTokeerDiscord() {
+    try {
+        const SC = window.SteamClient;
+        if (SC?.System?.OpenInSystemBrowser) {
+            SC.System.OpenInSystemBrowser(TOKEER_DISCORD_URL);
+            return true;
+        }
+    }
+    catch { }
+    try {
+        window.open(TOKEER_DISCORD_URL, "_blank");
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+
+/** Tokeer Anti-Denuvo page backed by the user's authenticated Discord CEF tab. */
 function TokeerSection() {
     const [busy, setBusy] = SP_REACT.useState(false);
-    const [probe, setProbe] = SP_REACT.useState(null);
+    const [state, setState] = SP_REACT.useState(null);
+    const [openIndex, setOpenIndex] = SP_REACT.useState(null);
+    const [options, setOptions] = SP_REACT.useState([]);
+    const [action, setAction] = SP_REACT.useState("");
     const refresh = async () => {
         setBusy(true);
         try {
-            setProbe((await tokeerQuotaProbe()));
-        }
-        catch (e) {
-            setProbe({ success: false, results: [], error: String(e) });
+            setState(await readTokeerDiscord());
         }
         finally {
             setBusy(false);
         }
     };
-    SP_REACT.useEffect(() => { refresh(); }, []);
-    return (SP_JSX.jsx(SP_JSX.Fragment, { children: SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer availability probe", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.72, lineHeight: 1.45 }, children: "Read-only diagnostic probe of Tokeer's public quota routes. No activation code is redeemed or generated. Responses stay raw until we identify the live inventory schema." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: refresh, disabled: busy, children: busy ? "Checking routes…" : "Refresh quota routes" }) }), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Probing luastools.xyz\u2026"] }) })), probe?.error && !busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623" }, children: probe.error }) })), !busy && (probe?.results || []).map((r, idx) => {
-                    const body = r.json != null ? pretty(r.json) : (r.raw || "");
-                    return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11 }, children: [SP_JSX.jsxs("div", { style: { marginBottom: 5, fontWeight: 600 }, children: [r.method, " ", r.path] }), SP_JSX.jsxs("div", { style: { marginBottom: 6 }, children: ["HTTP: ", SP_JSX.jsx("b", { children: r.status || "network error" }), r.contentType ? ` · ${r.contentType}` : ""] }), r.error && SP_JSX.jsx("div", { style: { marginBottom: 8, color: "#f5a623" }, children: r.error }), SP_JSX.jsx("pre", { style: { whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 220, overflowY: "auto", margin: 0 }, children: body || "(empty response)" })] }) }, `${r.method}-${r.path}-${idx}`));
-                })] }) }));
+    SP_REACT.useEffect(() => {
+        refresh();
+        const t = setInterval(refresh, 15000);
+        return () => clearInterval(t);
+    }, []);
+    const openMenu = async (index) => {
+        setAction("Opening Discord selector…");
+        setOpenIndex(index);
+        const items = await openSelectorAndReadOptions(index);
+        setOptions(items);
+        setAction(items.length ? "" : "No options found. Keep the Discord message open and try again.");
+    };
+    const choose = async (index, label) => {
+        setAction(`Selecting ${label} in Discord…`);
+        const ok = await chooseSelectorOption(index, label);
+        setAction(ok ? `Selected ${label}. Continue in the Discord flow if it opens a prompt.` : "Discord option click failed.");
+        setOptions([]);
+        setOpenIndex(null);
+        setTimeout(refresh, 800);
+    };
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Tokeer live panel", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.72, lineHeight: 1.45 }, children: "Mirrors the Linux activation panel from your own logged-in Discord tab. SLSDeck reads the rendered message through Steam CEF/CDP; it does not store your Discord cookie or token." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => { openTokeerDiscord(); setTimeout(refresh, 1800); }, children: "Open Tokeer Discord" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: refresh, disabled: busy, children: busy ? "Reading Discord…" : "Refresh live info" }) }), busy && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Reading the Tokeer message\u2026"] }) }), state && !state.found && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", lineHeight: 1.45 }, children: state.error || "Tokeer Discord message not found." }) }))] }), state?.found && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Live status", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 13 }, children: ["Steam: ", SP_JSX.jsx("b", { children: state.steamStatus || "Unknown" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 12, lineHeight: 1.7 }, children: [SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: state.gamesListed ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Keys remaining: ", SP_JSX.jsx("b", { children: state.keysRemaining ?? "?" })] }), SP_JSX.jsxs("div", { children: ["High demand: ", SP_JSX.jsx("b", { children: state.highDemand ?? "?" })] })] }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Request activation", children: [(state.selectors || []).map((s) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: s.disabled, onClick: () => openMenu(s.index), children: s.label || `Game menu ${s.index + 1}` }) }, s.index))), action && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8 }, children: action }) })] })] })), openIndex != null && options.length > 0 && (SP_JSX.jsx(DFL.PanelSection, { title: "Games", children: options.map((label) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => choose(openIndex, label), children: label }) }, label))) }))] }));
 }
 
 function fmtSize$1(bytes) {
