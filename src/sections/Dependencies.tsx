@@ -76,7 +76,6 @@ export function DependenciesSection() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [note, setNote] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const postRestartAuto = useRef(false);
   const preRestartInstall = useRef(false);
 
   const setB = (id: string, v: boolean) => setBusy((b) => ({ ...b, [id]: v }));
@@ -102,43 +101,9 @@ export function DependenciesSection() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
-  // Once Steam returns from the normal SLSsteam restart, install the two large
-  // optional payloads in the background. Both backend installers are idempotent:
-  // a healthy exact install is skipped, while partial/leftover managed files are
-  // cleaned before retrying. Run them sequentially to avoid competing for disk
-  // and network bandwidth on the Deck.
-  useEffect(() => {
-    if (!sls?.installed || preRestartInstall.current || postRestartAuto.current) return;
-    postRestartAuto.current = true;
-    (async () => {
-      setB("tokeerProton", true);
-      setN("tokeerProton", "installing GE-Proton10-34 in background…");
-      try {
-        const proton = await tokeerEnsureProton();
-        setN("tokeerProton", proton.success ? "GE-Proton10-34 installed" : `install failed: ${proton.error || "unknown error"}`);
-      } catch (e) {
-        setN("tokeerProton", `install failed: ${e}`);
-      }
-      setB("tokeerProton", false);
+  // The post-restart GE-Proton + CloudRedirect jobs are started by the
+  // plugin root, so they run even when this Dependencies page is never opened.
 
-      setB("cr", true);
-      setN("cr", "installing CloudRedirect Moon in background… (first run is slow)");
-      try {
-        const r = await crEnsureInstalledAuto();
-        setN(
-          "cr",
-          r.installed
-            ? "installed · Moon hook verified"
-            : r.capped
-            ? (r.log || "auto-install off — use Reinstall")
-            : "will retry — " + (r.log || "check network")
-        );
-      } catch (e) {
-        setN("cr", `install failed: ${e}`);
-      }
-      setB("cr", false);
-    })();
-  }, [sls?.installed]);
 
   const watch = (id: string, doneMsg: string, restart: boolean) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -155,6 +120,7 @@ export function DependenciesSection() {
             toaster.toast({ title: "SLSDeck", body: doneMsg });
             if (restart && state.installed) {
               preRestartInstall.current = true;
+              try { window.localStorage.setItem("slsdeck.heavyDepsAfterRestart", String(Date.now())); } catch { /* */ }
               setB("tokeer", true);
               // Tokeer's shared runtime is small and belongs in the normal
               // dependency order before the SLSsteam restart. GE-Proton and
