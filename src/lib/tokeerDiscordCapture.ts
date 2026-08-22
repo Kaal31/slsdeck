@@ -523,7 +523,7 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     var label=function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();};
     var click=function(e){var r=e.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,p));});};
     var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible);
-    var exact=buttons.filter(function(b){return /^(?:cancel|close)\\s+(?:this\\s+)?ticket$/i.test(label(b));});
+    var exact=buttons.filter(function(b){return /(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(label(b));});
     var danger=exact.find(function(b){return /danger|red|negative|critical/i.test(String(b.className||'')+' '+String(b.getAttribute('data-look')||'')+' '+String(b.getAttribute('aria-label')||''));});
     var target=danger||exact[exact.length-1];
     if(!target)return JSON.stringify({ok:false,error:'The red Cancel Ticket button was not found in the open ticket.'});
@@ -541,7 +541,7 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     var d=[].slice.call(document.querySelectorAll('[role="dialog"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
     if(!d)return false;
     var bs=[].slice.call(d.querySelectorAll('button,[role="button"]'));
-    var b=bs.find(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return /^(?:confirm|yes|(?:cancel|close)\\s+(?:this\\s+)?ticket)$/i.test(t);});
+    var b=bs.find(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return /^(?:confirm|yes)$/i.test(t)||/(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(t);});
     if(!b)return false;
     var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};
     ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});
