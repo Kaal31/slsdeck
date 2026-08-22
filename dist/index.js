@@ -1669,7 +1669,7 @@ async function resolveTabUrl(t) {
         return String(t.url || "");
     }
 }
-async function findDiscordTab() {
+async function findDiscordTabUncached() {
     const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
     let fallback = null;
     for (const tab of tabs) {
@@ -1684,19 +1684,90 @@ async function findDiscordTab() {
     }
     return fallback;
 }
-/** Whether Steam CEF currently holds an authenticated Discord web session. */
+// Resolving the Discord target is the single most expensive thing in this file:
+// it opens a CDP socket to EVERY Steam target and runs a Runtime.evaluate on each
+// (resolveTabUrl, ~1.8s worst case apiece) because Steam's /json metadata lies
+// about wrapper URLs. Every exported helper below used to pay that in full, and
+// the availability refresh calls them in a loop — which is how "checking" could
+// run for minutes. The target does not move between those calls, so memoize it
+// briefly and coalesce concurrent lookups onto one resolution.
+const TAB_CACHE_MS = 5000;
+let tabCache = null;
+let tabInFlight = null;
+/** Drop the memoized target. Call after anything that can move or replace it
+ * (navigation, BrowserView create/park) so we never act on a dead socket. */
+function invalidateDiscordTabCache() {
+    tabCache = null;
+}
+async function findDiscordTab() {
+    if (tabCache && Date.now() - tabCache.at < TAB_CACHE_MS)
+        return tabCache.tab;
+    if (tabInFlight)
+        return tabInFlight;
+    tabInFlight = (async () => {
+        try {
+            const tab = await findDiscordTabUncached();
+            tabCache = { at: Date.now(), tab };
+            return tab;
+        }
+        finally {
+            tabInFlight = null;
+        }
+    })();
+    return tabInFlight;
+}
+/** Whether Steam CEF currently holds an authenticated Discord web session.
+ *
+ * Coalesced like the snapshot: the sign-in button polls this, and without
+ * de-duplication each poll paid a full target resolution. Transitions are
+ * broadcast so UI showing a "sign in" affordance can drop it the moment the
+ * session actually becomes authenticated, rather than waiting for whatever
+ * long-running check happens to finish next. */
+let signInInFlight = null;
+let lastSignedIn = null;
 async function getDiscordSignInState() {
-    const tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl)
-        return { signedIn: false, found: false };
-    const expression = `(async function(){try{
-    var u=String(location.href||document.URL||'');
-    if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
-    if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
-    var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
-    return response.status===200;
-  }catch(e){return false;}})()`;
-    return { signedIn: !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500)), found: true };
+    if (signInInFlight)
+        return signInInFlight;
+    signInInFlight = (async () => {
+        try {
+            const tab = await findDiscordTab();
+            if (!tab?.webSocketDebuggerUrl)
+                return { signedIn: false, found: false };
+            const expression = `(async function(){try{
+        var u=String(location.href||document.URL||'');
+        if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
+        if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
+        var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
+        return response.status===200;
+      }catch(e){return false;}})()`;
+            const signedIn = !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500));
+            if (signedIn !== lastSignedIn) {
+                lastSignedIn = signedIn;
+                try {
+                    window.dispatchEvent(new CustomEvent("slsdeck-tokeer-signin", { detail: signedIn }));
+                }
+                catch { /* ignore */ }
+            }
+            return { signedIn, found: true };
+        }
+        finally {
+            signInInFlight = null;
+        }
+    })();
+    return signInInFlight;
+}
+/** Poll sign-in state until it flips to signed-in (or the budget runs out).
+ * Used right after opening the Discord login so the button reacts immediately
+ * instead of on the next unrelated refresh. */
+async function waitForDiscordSignIn(budgetMs = 120000) {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+        const { signedIn } = await getDiscordSignInState();
+        if (signedIn)
+            return true;
+        await new Promise((r) => setTimeout(r, 1500));
+    }
+    return false;
 }
 async function findSharedJsContext() {
     const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
@@ -1854,7 +1925,39 @@ const SNAPSHOT_EXPR = `(function(){try{
   });
   return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
 }catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
-async function readTokeerDiscord() {
+// Several surfaces (the Tokeer page, the availability cache, Fixes) can each
+// independently ask for the same expensive scrape, and they stack. Coalesce
+// concurrent reads onto one in-flight scrape and let a just-finished result be
+// reused for a moment, so N callers cost one Discord round trip instead of N.
+const SNAPSHOT_TTL_MS = 2500;
+let snapshotCache = null;
+let snapshotInFlight = null;
+/** Coalesced/short-cached snapshot. `force` bypasses the reuse window but still
+ * shares any scrape already running. */
+async function readTokeerDiscord(force = false) {
+    if (!force && snapshotCache && Date.now() - snapshotCache.at < SNAPSHOT_TTL_MS) {
+        return snapshotCache.state;
+    }
+    if (snapshotInFlight)
+        return snapshotInFlight;
+    snapshotInFlight = (async () => {
+        try {
+            const state = await readTokeerDiscordUncached();
+            // Only cache a decisive answer; caching "not found" would make a genuine
+            // retry loop spin on a stale negative.
+            if (state.found)
+                snapshotCache = { at: Date.now(), state };
+            else
+                snapshotCache = null;
+            return state;
+        }
+        finally {
+            snapshotInFlight = null;
+        }
+    })();
+    return snapshotInFlight;
+}
+async function readTokeerDiscordUncached() {
     const tab = await findDiscordTab();
     if (!tab?.webSocketDebuggerUrl) {
         const diag = await cdpDiagnostic();
@@ -1864,10 +1967,17 @@ async function readTokeerDiscord() {
         return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
     }
     const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
-    if (snap.error)
+    if (snap.error) {
+        // The memoized target may be a socket that died under us (Steam replaced the
+        // view, or the page navigated). Drop it so the next attempt re-resolves
+        // instead of failing forever against a dead handle.
+        invalidateDiscordTabCache();
         return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };
-    if (!snap.value || typeof snap.value !== "object")
-        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object." };
+    }
+    if (!snap.value || typeof snap.value !== "object") {
+        invalidateDiscordTabCache();
+        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object — the page was not ready or the target went away." };
+    }
     return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
 }
 async function openSelectorAndReadOptions(index) {
@@ -2352,6 +2462,10 @@ function writeCache(state, games) {
     return cache;
 }
 let refreshPromise = null;
+// Upper bound on one availability refresh. Generous enough for a slow Discord
+// render, short enough that a stuck panel degrades to cached/unknown quickly
+// instead of pinning the UI.
+const REFRESH_BUDGET_MS = 25000;
 function hasActiveTicketSession() {
     try {
         const session = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
@@ -2373,18 +2487,27 @@ async function refreshTokeerAvailabilityCache(force = false) {
     if (refreshPromise)
         return refreshPromise;
     refreshPromise = (async () => {
+        // Hard wall-clock budget for the WHOLE refresh. The old loop bounded only the
+        // number of retries (20 x 500ms), but each readTokeerDiscord can itself take
+        // seconds (target resolution + a 5s Runtime.evaluate), so a Discord page that
+        // never renders the panel could hold this for minutes — which is what left
+        // Fixes stuck on "checking" and starved every later call behind it.
+        const deadline = Date.now() + REFRESH_BUDGET_MS;
+        const outOfTime = () => Date.now() > deadline;
         try {
             if (!(await connectTokeerDiscordHidden()))
                 return force ? null : current;
-            let state = await readTokeerDiscord();
-            for (let i = 0; i < 20 && !state.found; i++) {
+            let state = await readTokeerDiscord(true);
+            while (!state.found && !outOfTime()) {
                 await new Promise((resolve) => setTimeout(resolve, 500));
-                state = await readTokeerDiscord();
+                state = await readTokeerDiscord(true);
             }
             if (!state.found)
                 return force ? null : current;
             const parsed = [];
             for (const selector of state.selectors || []) {
+                if (outOfTime())
+                    break;
                 const labels = await openSelectorAndReadOptions(selector.index);
                 for (const label of labels) {
                     const game = parseTokeerGameLabel(label);
@@ -8011,6 +8134,13 @@ function TokeerSection() {
             setAvailability(value);
         return value;
     };
+    // Any sign-in transition detected anywhere (this panel, a background poll)
+    // updates the button state, so it can never be left stale.
+    SP_REACT.useEffect(() => {
+        const onSignIn = (e) => setDiscordSignedIn(!!e?.detail);
+        window.addEventListener("slsdeck-tokeer-signin", onSignIn);
+        return () => window.removeEventListener("slsdeck-tokeer-signin", onSignIn);
+    }, []);
     SP_REACT.useEffect(() => {
         tokeerRuntimeStatus().then(setRuntime).catch(() => { });
         const openInBackground = async () => {
@@ -8084,10 +8214,14 @@ function TokeerSection() {
                 setMessage("Hidden Discord connection failed. Open Discord login once, sign in, press B, then retry.");
                 return;
             }
-            let state = await readTokeerDiscord();
-            for (let i = 0; i < 30 && !state.found; i++) {
+            // Bound by wall clock, not iteration count: each scrape can itself take
+            // seconds, so "30 tries" was really "up to several minutes of blocking",
+            // and the panel had no way out of it.
+            const deadline = Date.now() + 25000;
+            let state = await readTokeerDiscord(true);
+            while (!state.found && Date.now() < deadline) {
                 await sleep(500);
-                state = await readTokeerDiscord();
+                state = await readTokeerDiscord(true);
             }
             setDiscord(state);
             if (state.found) {
@@ -8459,6 +8593,13 @@ function TokeerSection() {
     return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [!discordSignedIn && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: async () => {
                                 setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
                                 await openDedevisionDiscordLogin();
+                                // Previously the button just sat there after login: nothing re-checked
+                                // the session, so it only vanished on some later unrelated refresh.
+                                // Watch for the transition and drop it as soon as it actually happens.
+                                if (await waitForDiscordSignIn()) {
+                                    setDiscordSignedIn(true);
+                                    setMessage("Discord signed in. You can connect Tokeer silently now.");
+                                }
                             }, children: "Sign in to DeDevision Discord" }) }), (!discordSignedIn || !autoConnect) && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Live \u00B7 Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: 8, borderRadius: 6, background: "rgba(255,255,255,.055)", fontSize: 11, lineHeight: 1.55 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 700, marginBottom: 3 }, children: "Cached vault stats" }), SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: availability.vault.gamesListed ?? "?" }), " \u00B7 Keys remaining: ", SP_JSX.jsx("b", { children: availability.vault.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: availability.vault.highDemand ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Available games cached: ", SP_JSX.jsx("b", { children: availability.games.length }), " \u00B7 Updated: ", SP_JSX.jsx("b", { children: new Date(availability.updatedAt).toLocaleString() })] }), SP_JSX.jsx("div", { style: { marginTop: 6, maxHeight: 150, overflowY: "auto", opacity: .85 }, children: availability.games.map(game => SP_JSX.jsxs("div", { children: [game.name, game.remaining !== undefined ? ` — ${game.remaining}/${game.total ?? "?"} keys` : ""] }, game.appid || game.name)) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => refreshAvailability(true), children: "Refresh vault & available games" }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), ticket?.opened && !ticket.appid
                         ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !ticket.url, onClick: resumeTicket, children: "Resume existing ticket / detect commands" }) })
                         : gate?.found

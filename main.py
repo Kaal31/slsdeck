@@ -17,6 +17,7 @@ frontend via the ``*_status`` methods.
 import asyncio
 import functools
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 import decky
@@ -60,28 +61,28 @@ class Plugin:
         return await self._run(tokeer.runtime_status)
 
     async def tokeer_preflight(self, appid: int = 0, game_name: str = "") -> Dict[str, Any]:
-        return await self._run(tokeer.preflight, appid, game_name)
+        return await self._run_slow(tokeer.preflight, appid, game_name)
 
     async def tokeer_ensure_runtime(self) -> Dict[str, Any]:
-        return await self._run(tokeer.ensure_runtime_latest)
+        return await self._run_slow(tokeer.ensure_runtime_latest)
 
     async def tokeer_proton_status(self) -> Dict[str, Any]:
         return await self._run(tokeer.required_proton_status)
 
     async def tokeer_ensure_proton(self, force: bool = False) -> Dict[str, Any]:
-        return await self._run(tokeer.ensure_required_proton, bool(force))
+        return await self._run_slow(tokeer.ensure_required_proton, bool(force))
 
     async def tokeer_prepare(self, appid: int) -> Dict[str, Any]:
-        return await self._run(tokeer.prepare, appid)
+        return await self._run_slow(tokeer.prepare, appid)
 
     async def tokeer_prepare_verify(self, appid: int) -> Dict[str, Any]:
-        return await self._run(tokeer.prepare_and_verify, appid)
+        return await self._run_slow(tokeer.prepare_and_verify, appid)
 
     async def tokeer_verify(self, appid: int) -> Dict[str, Any]:
-        return await self._run(tokeer.verify, appid)
+        return await self._run_slow(tokeer.verify, appid)
 
     async def tokeer_redeem(self, code: str) -> Dict[str, Any]:
-        return await self._run(tokeer.redeem, code)
+        return await self._run_slow(tokeer.redeem, code)
 
     # ── Grid Artwork Sync ──────────────────────────────────────────────────
     async def sync_game_art(self, appid: int, overwrite: bool = False) -> Dict[str, Any]:
@@ -169,6 +170,9 @@ class Plugin:
     # ── lifecycle ─────────────────────────────────────────────────────────
     async def _main(self):
         self.loop = asyncio.get_event_loop()
+        # Dedicated pool for long blocking work (see _run_slow). Deliberately
+        # small: its job is to CONTAIN slow calls, not to run many at once.
+        self._slow_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slsdeck-slow")
         decky.logger.info("SLSDeck: bootstrapping")
         try:
             path = steam.detect_steam_install_path()
@@ -342,6 +346,14 @@ class Plugin:
         except Exception:
             pass
         try:
+            # Same reasoning as _warmup_pool: without this the slow pool (and any
+            # 420s Tokeer call parked in it) survives an in-place reload.
+            pool = getattr(self, "_slow_pool", None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        try:
             close_http_client("unload")
         except Exception:
             pass
@@ -432,6 +444,30 @@ class Plugin:
             return await self.loop.run_in_executor(None, functools.partial(fn, *args))
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: RPC {getattr(fn, '__name__', str(fn))} failed: {exc}")
+            return {"success": False, "error": str(exc)}
+
+    async def _run_slow(self, fn, *args):
+        """Run a LONG blocking backend callable off the shared executor.
+
+        ``run_in_executor(None, ...)`` uses one process-wide default pool that
+        every RPC shares. Tokeer's work is not like the rest: its helpers shell
+        out with timeouts of 120-420s (runtime build, Proton install, verify) and
+        occupy a worker for that whole time. With several of those in flight --
+        boot fires ensure-runtime and ensure-proton, Fixes fires a preflight per
+        game, Dependencies polls status -- the shared pool saturates and every
+        UNRELATED call queues behind them, which is what made the whole plugin
+        feel stalled and left Fixes spinning on "checking".
+
+        Giving the slow work its own small pool bounds the damage: Tokeer can be
+        busy without the rest of the plugin losing its threads.
+        """
+        try:
+            # Falls back to the shared pool if bootstrap hasn't created ours yet
+            # (an RPC can arrive before _main finishes) — degraded, never broken.
+            return await self.loop.run_in_executor(
+                getattr(self, "_slow_pool", None), functools.partial(fn, *args))
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: slow RPC {getattr(fn, '__name__', str(fn))} failed: {exc}")
             return {"success": False, "error": str(exc)}
 
     # ── environment / status ──────────────────────────────────────────────

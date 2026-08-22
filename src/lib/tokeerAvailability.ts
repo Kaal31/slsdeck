@@ -104,6 +104,11 @@ function writeCache(state: TokeerDiscordState, games: TokeerAvailableGame[]): To
 
 let refreshPromise: Promise<TokeerAvailabilityCache | null> | null = null;
 
+// Upper bound on one availability refresh. Generous enough for a slow Discord
+// render, short enough that a stuck panel degrades to cached/unknown quickly
+// instead of pinning the UI.
+const REFRESH_BUDGET_MS = 25000;
+
 function hasActiveTicketSession(): boolean {
   try {
     const session = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
@@ -120,16 +125,24 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
   if (hasActiveTicketSession()) return force ? null : current;
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
+    // Hard wall-clock budget for the WHOLE refresh. The old loop bounded only the
+    // number of retries (20 x 500ms), but each readTokeerDiscord can itself take
+    // seconds (target resolution + a 5s Runtime.evaluate), so a Discord page that
+    // never renders the panel could hold this for minutes — which is what left
+    // Fixes stuck on "checking" and starved every later call behind it.
+    const deadline = Date.now() + REFRESH_BUDGET_MS;
+    const outOfTime = () => Date.now() > deadline;
     try {
       if (!(await connectTokeerDiscordHidden())) return force ? null : current;
-      let state = await readTokeerDiscord();
-      for (let i = 0; i < 20 && !state.found; i++) {
+      let state = await readTokeerDiscord(true);
+      while (!state.found && !outOfTime()) {
         await new Promise((resolve) => setTimeout(resolve, 500));
-        state = await readTokeerDiscord();
+        state = await readTokeerDiscord(true);
       }
       if (!state.found) return force ? null : current;
       const parsed: TokeerAvailableGame[] = [];
       for (const selector of state.selectors || []) {
+        if (outOfTime()) break;
         const labels = await openSelectorAndReadOptions(selector.index);
         for (const label of labels) {
           const game = parseTokeerGameLabel(label);

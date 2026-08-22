@@ -9,6 +9,7 @@ import {
   cancelTokeerTicket,
   connectTokeerDiscordHidden,
   getDiscordSignInState,
+  waitForDiscordSignIn,
   openDedevisionDiscordLogin,
   openSelectorAndReadOptions,
   openTokeerDiscord,
@@ -136,6 +137,13 @@ export function TokeerSection() {
     if(value)setAvailability(value);
     return value;
   };
+  // Any sign-in transition detected anywhere (this panel, a background poll)
+  // updates the button state, so it can never be left stale.
+  useEffect(()=>{
+    const onSignIn=(e:any)=>setDiscordSignedIn(!!e?.detail);
+    window.addEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
+    return ()=>window.removeEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
+  },[]);
   useEffect(()=>{
     tokeerRuntimeStatus().then(setRuntime).catch(()=>{});
     const openInBackground=async()=>{
@@ -203,10 +211,14 @@ export function TokeerSection() {
     try{
       const ok=await connectTokeerDiscordHidden();
       if(!ok){setMessage("Hidden Discord connection failed. Open Discord login once, sign in, press B, then retry.");return;}
-      let state=await readTokeerDiscord();
-      for(let i=0;i<30&&!state.found;i++){
+      // Bound by wall clock, not iteration count: each scrape can itself take
+      // seconds, so "30 tries" was really "up to several minutes of blocking",
+      // and the panel had no way out of it.
+      const deadline=Date.now()+25000;
+      let state=await readTokeerDiscord(true);
+      while(!state.found&&Date.now()<deadline){
         await sleep(500);
-        state=await readTokeerDiscord();
+        state=await readTokeerDiscord(true);
       }
       setDiscord(state);
       if(state.found){
@@ -446,6 +458,13 @@ export function TokeerSection() {
       {!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
         setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
         await openDedevisionDiscordLogin();
+        // Previously the button just sat there after login: nothing re-checked
+        // the session, so it only vanished on some later unrelated refresh.
+        // Watch for the transition and drop it as soon as it actually happens.
+        if(await waitForDiscordSignIn()){
+          setDiscordSignedIn(true);
+          setMessage("Discord signed in. You can connect Tokeer silently now.");
+        }
       }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
       {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>

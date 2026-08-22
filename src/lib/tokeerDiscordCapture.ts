@@ -124,7 +124,7 @@ async function resolveTabUrl(t: CdpTab): Promise<string> {
   }
 }
 
-async function findDiscordTab(): Promise<CdpTab | null> {
+async function findDiscordTabUncached(): Promise<CdpTab | null> {
   const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
   let fallback: CdpTab | null = null;
   for (const tab of tabs) {
@@ -137,18 +137,87 @@ async function findDiscordTab(): Promise<CdpTab | null> {
   return fallback;
 }
 
-/** Whether Steam CEF currently holds an authenticated Discord web session. */
+// Resolving the Discord target is the single most expensive thing in this file:
+// it opens a CDP socket to EVERY Steam target and runs a Runtime.evaluate on each
+// (resolveTabUrl, ~1.8s worst case apiece) because Steam's /json metadata lies
+// about wrapper URLs. Every exported helper below used to pay that in full, and
+// the availability refresh calls them in a loop — which is how "checking" could
+// run for minutes. The target does not move between those calls, so memoize it
+// briefly and coalesce concurrent lookups onto one resolution.
+const TAB_CACHE_MS = 5000;
+let tabCache: { at: number; tab: CdpTab | null } | null = null;
+let tabInFlight: Promise<CdpTab | null> | null = null;
+
+/** Drop the memoized target. Call after anything that can move or replace it
+ * (navigation, BrowserView create/park) so we never act on a dead socket. */
+export function invalidateDiscordTabCache(): void {
+  tabCache = null;
+}
+
+async function findDiscordTab(): Promise<CdpTab | null> {
+  if (tabCache && Date.now() - tabCache.at < TAB_CACHE_MS) return tabCache.tab;
+  if (tabInFlight) return tabInFlight;
+  tabInFlight = (async () => {
+    try {
+      const tab = await findDiscordTabUncached();
+      tabCache = { at: Date.now(), tab };
+      return tab;
+    } finally {
+      tabInFlight = null;
+    }
+  })();
+  return tabInFlight;
+}
+
+/** Whether Steam CEF currently holds an authenticated Discord web session.
+ *
+ * Coalesced like the snapshot: the sign-in button polls this, and without
+ * de-duplication each poll paid a full target resolution. Transitions are
+ * broadcast so UI showing a "sign in" affordance can drop it the moment the
+ * session actually becomes authenticated, rather than waiting for whatever
+ * long-running check happens to finish next. */
+let signInInFlight: Promise<{ signedIn: boolean; found: boolean }> | null = null;
+let lastSignedIn: boolean | null = null;
+
 export async function getDiscordSignInState(): Promise<{ signedIn: boolean; found: boolean }> {
-  const tab = await findDiscordTab();
-  if (!tab?.webSocketDebuggerUrl) return { signedIn: false, found: false };
-  const expression = `(async function(){try{
-    var u=String(location.href||document.URL||'');
-    if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
-    if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
-    var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
-    return response.status===200;
-  }catch(e){return false;}})()`;
-  return { signedIn: !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500)), found: true };
+  if (signInInFlight) return signInInFlight;
+  signInInFlight = (async () => {
+    try {
+      const tab = await findDiscordTab();
+      if (!tab?.webSocketDebuggerUrl) return { signedIn: false, found: false };
+      const expression = `(async function(){try{
+        var u=String(location.href||document.URL||'');
+        if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
+        if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
+        var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
+        return response.status===200;
+      }catch(e){return false;}})()`;
+      const signedIn = !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500));
+      if (signedIn !== lastSignedIn) {
+        lastSignedIn = signedIn;
+        try {
+          window.dispatchEvent(new CustomEvent("slsdeck-tokeer-signin", { detail: signedIn }));
+        } catch { /* ignore */ }
+      }
+      return { signedIn, found: true };
+    } finally {
+      signInInFlight = null;
+    }
+  })();
+  return signInInFlight;
+}
+
+/** Poll sign-in state until it flips to signed-in (or the budget runs out).
+ * Used right after opening the Discord login so the button reacts immediately
+ * instead of on the next unrelated refresh. */
+export async function waitForDiscordSignIn(budgetMs = 120000): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    const { signedIn } = await getDiscordSignInState();
+    if (signedIn) return true;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return false;
 }
 
 async function findSharedJsContext(): Promise<CdpTab | null> {
@@ -352,7 +421,37 @@ const SNAPSHOT_EXPR = `(function(){try{
   return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
 }catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
 
-export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
+// Several surfaces (the Tokeer page, the availability cache, Fixes) can each
+// independently ask for the same expensive scrape, and they stack. Coalesce
+// concurrent reads onto one in-flight scrape and let a just-finished result be
+// reused for a moment, so N callers cost one Discord round trip instead of N.
+const SNAPSHOT_TTL_MS = 2500;
+let snapshotCache: { at: number; state: TokeerDiscordState } | null = null;
+let snapshotInFlight: Promise<TokeerDiscordState> | null = null;
+
+/** Coalesced/short-cached snapshot. `force` bypasses the reuse window but still
+ * shares any scrape already running. */
+export async function readTokeerDiscord(force = false): Promise<TokeerDiscordState> {
+  if (!force && snapshotCache && Date.now() - snapshotCache.at < SNAPSHOT_TTL_MS) {
+    return snapshotCache.state;
+  }
+  if (snapshotInFlight) return snapshotInFlight;
+  snapshotInFlight = (async () => {
+    try {
+      const state = await readTokeerDiscordUncached();
+      // Only cache a decisive answer; caching "not found" would make a genuine
+      // retry loop spin on a stale negative.
+      if (state.found) snapshotCache = { at: Date.now(), state };
+      else snapshotCache = null;
+      return state;
+    } finally {
+      snapshotInFlight = null;
+    }
+  })();
+  return snapshotInFlight;
+}
+
+async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
   const tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl) {
     const diag = await cdpDiagnostic();
@@ -362,8 +461,17 @@ export async function readTokeerDiscord(): Promise<TokeerDiscordState> {
     return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
   }
   const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
-  if (snap.error) return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };
-  if (!snap.value || typeof snap.value !== "object") return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object." };
+  if (snap.error) {
+    // The memoized target may be a socket that died under us (Steam replaced the
+    // view, or the page navigated). Drop it so the next attempt re-resolves
+    // instead of failing forever against a dead handle.
+    invalidateDiscordTabCache();
+    return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };
+  }
+  if (!snap.value || typeof snap.value !== "object") {
+    invalidateDiscordTabCache();
+    return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object — the page was not ready or the target went away." };
+  }
   return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
 }
 
