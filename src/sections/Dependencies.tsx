@@ -19,6 +19,8 @@ import {
   crEnsureInstalledAuto,
   systemStatus,
   disableForeignEngines,
+  tokeerEnsureRuntime,
+  tokeerEnsureProton,
 } from "../api";
 
 type Health = "ok" | "warn" | "off" | "unknown";
@@ -74,7 +76,7 @@ export function DependenciesSection() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [note, setNote] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const crAuto = useRef(false);
+  const postRestartAuto = useRef(false);
 
   const setB = (id: string, v: boolean) => setBusy((b) => ({ ...b, [id]: v }));
   const setN = (id: string, v: string) => setNote((n) => ({ ...n, [id]: v }));
@@ -99,20 +101,33 @@ export function DependenciesSection() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
-  // CloudRedirect installs itself automatically once SLSsteam is set up. Runs
-  // at most once (the flatpak + KDE runtime are heavy).
+  // Once Steam returns from the normal SLSsteam restart, install the two large
+  // optional payloads in the background. Both backend installers are idempotent:
+  // a healthy exact install is skipped, while partial/leftover managed files are
+  // cleaned before retrying. Run them sequentially to avoid competing for disk
+  // and network bandwidth on the Deck.
   useEffect(() => {
-    if (!sls?.installed || crAuto.current) return;
-    crAuto.current = true;
+    if (!sls?.installed || postRestartAuto.current) return;
+    postRestartAuto.current = true;
     (async () => {
+      setB("tokeerProton", true);
+      setN("tokeerProton", "installing GE-Proton10-34 in background…");
+      try {
+        const proton = await tokeerEnsureProton();
+        setN("tokeerProton", proton.success ? "GE-Proton10-34 installed" : `install failed: ${proton.error || "unknown error"}`);
+      } catch (e) {
+        setN("tokeerProton", `install failed: ${e}`);
+      }
+      setB("tokeerProton", false);
+
       setB("cr", true);
-      setN("cr", "installing in background… (first run is slow)");
+      setN("cr", "installing CloudRedirect Moon in background… (first run is slow)");
       try {
         const r = await crEnsureInstalledAuto();
         setN(
           "cr",
           r.installed
-            ? "installed"
+            ? "installed · Moon hook verified"
             : r.capped
             ? (r.log || "auto-install off — use Reinstall")
             : "will retry — " + (r.log || "check network")
@@ -137,7 +152,19 @@ export function DependenciesSection() {
           if (s === "done") {
             setN(id, "done");
             toaster.toast({ title: "SLSDeck", body: doneMsg });
-            if (restart && state.installed) setTimeout(() => reloadSteam(), 3000);
+            if (restart && state.installed) {
+              // Tokeer's shared runtime is small and belongs in the normal
+              // dependency order before the SLSsteam restart. GE-Proton and
+              // CloudRedirect are intentionally deferred until Steam returns.
+              setN("tokeer", "installing/updating Tokeer runtime before restart…");
+              try {
+                const runtime = await tokeerEnsureRuntime();
+                setN("tokeer", runtime.success ? `runtime ready (${runtime.version || "latest"})` : `runtime failed: ${runtime.error || "unknown error"}`);
+              } catch (e) {
+                setN("tokeer", `runtime failed: ${e}`);
+              }
+              setTimeout(() => reloadSteam(), 1200);
+            }
           } else {
             setN(id, state.error || "failed");
             toaster.toast({ title: "SLSDeck", body: state.error || "Failed" });
@@ -299,6 +326,20 @@ export function DependenciesSection() {
           busy={!!busy.fix}
           actionLabel="Run client fix"
           onAction={runFix}
+        />
+        <DepRow
+          label="Tokeer runtime"
+          hint="Small shared verifier/hook runtime; updated before the normal SLSsteam restart."
+          health={note.tokeer?.startsWith("runtime ready") ? "ok" : "unknown"}
+          statusText={note.tokeer || "checked during SLSsteam installation"}
+          busy={!!busy.tokeer}
+        />
+        <DepRow
+          label="GE-Proton10-34"
+          hint="Exact compatibility layer required by Tokeer; installed after restart in the background."
+          health={note.tokeerProton === "GE-Proton10-34 installed" ? "ok" : "unknown"}
+          statusText={note.tokeerProton || "installs automatically after SLSsteam setup"}
+          busy={!!busy.tokeerProton}
         />
         <DepRow
           label="CloudRedirect"
