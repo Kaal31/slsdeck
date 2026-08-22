@@ -9776,6 +9776,49 @@ const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
 const PLUGIN_SESSION_STARTED = Date.now();
+async function repairMissingDependenciesFromPluginLifecycle() {
+    const sls = await getSlssteamStatus().catch(() => null);
+    if (!sls?.installed)
+        return;
+    try {
+        const status = await tokeerRuntimeStatus();
+        if (!status.installed)
+            await tokeerEnsureRuntime();
+    }
+    catch (e) {
+        console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
+    }
+    let deferredAt = 0;
+    try {
+        deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0");
+    }
+    catch { /* */ }
+    if (deferredAt >= PLUGIN_SESSION_STARTED) {
+        window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+        return;
+    }
+    try {
+        window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart");
+    }
+    catch { /* */ }
+    try {
+        const status = await tokeerProtonStatus();
+        if (!status.installed)
+            await tokeerEnsureProton();
+    }
+    catch (e) {
+        console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
+    }
+    try {
+        const status = await crInstallStatus();
+        if (!status.installed)
+            await crEnsureInstalled();
+    }
+    catch (e) {
+        console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
+    }
+    window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+}
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
 // isn't in SLSsteam's list (SafeMode aborts the load). We detect that and offer a
 // one-tap client-fix (Headcrab re-pin), instead of leaving the user with a
@@ -9839,58 +9882,6 @@ function Content() {
         const first = setTimeout(refresh, 12000);
         const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
         return () => { clearTimeout(first); clearInterval(interval); };
-    }, [installed]);
-    SP_REACT.useEffect(() => {
-        if (!installed)
-            return;
-        let stopped = false;
-        const repairMissingDependencies = async () => {
-            try {
-                const status = await tokeerRuntimeStatus();
-                if (!status.installed)
-                    await tokeerEnsureRuntime();
-            }
-            catch (e) {
-                console.warn("SLSDeck: background Tokeer runtime repair failed", e);
-            }
-            let deferredAt = 0;
-            try {
-                deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0");
-            }
-            catch { /* */ }
-            // During the original SLSsteam installation, install only the tiny runtime
-            // and leave large payloads until Steam reloads. On updates/reloads the new
-            // plugin session has a later start timestamp and proceeds.
-            if (deferredAt >= PLUGIN_SESSION_STARTED) {
-                window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
-                return;
-            }
-            try {
-                window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart");
-            }
-            catch { /* */ }
-            try {
-                const status = await tokeerProtonStatus();
-                if (!status.installed)
-                    await tokeerEnsureProton();
-            }
-            catch (e) {
-                console.warn("SLSDeck: background GE-Proton repair failed", e);
-            }
-            try {
-                const status = await crInstallStatus();
-                if (!status.installed)
-                    await crEnsureInstalledAuto();
-            }
-            catch (e) {
-                console.warn("SLSDeck: background CloudRedirect repair failed", e);
-            }
-            if (!stopped)
-                window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
-        };
-        const first = setTimeout(repairMissingDependencies, 1200);
-        const retry = setInterval(repairMissingDependencies, 30 * 60 * 1000);
-        return () => { stopped = true; clearTimeout(first); clearInterval(retry); };
     }, [installed]);
     SP_REACT.useEffect(() => {
         const readActionsFixes = () => {
@@ -9992,6 +9983,14 @@ var index = definePlugin(() => {
     catch (e) {
         console.error("SLSDeck: failed to register Advanced route", e);
     }
+    // Dependency repair belongs to plugin initialization, not a page component:
+    // it therefore runs after installs/updates even if QAM/Advanced is never opened.
+    const dependencyRepairFirst = setTimeout(() => {
+        repairMissingDependenciesFromPluginLifecycle().catch(() => { });
+    }, 1500);
+    const dependencyRepairRetry = setInterval(() => {
+        repairMissingDependenciesFromPluginLifecycle().catch(() => { });
+    }, 30 * 60 * 1000);
     // Persistent background notifier: adds run in the backend even if the UI that
     // started them is closed, so this always-running poller fires the toast.
     const addNotifier = setInterval(async () => {
@@ -10072,6 +10071,14 @@ var index = definePlugin(() => {
         icon: SP_JSX.jsx(FaPuzzlePiece, {}),
         onDismount() {
             console.log("SLSDeck unloading");
+            try {
+                clearTimeout(dependencyRepairFirst);
+            }
+            catch { /* ignore */ }
+            try {
+                clearInterval(dependencyRepairRetry);
+            }
+            catch { /* ignore */ }
             try {
                 clearInterval(addNotifier);
             }
