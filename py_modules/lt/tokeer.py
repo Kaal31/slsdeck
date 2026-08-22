@@ -208,6 +208,38 @@ def ensure_runtime_latest() -> Dict[str, Any]:
                 "home": td, "requiredProton": REQUIRED_PROTON}
 
 
+def required_proton_status() -> Dict[str, Any]:
+    """Read-only health check for the exact compatibility tool Tokeer requires."""
+    candidates = []
+    try:
+        cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
+        if os.path.isfile(cfg_path):
+            spec = importlib.util.spec_from_file_location("slsdeck_tokeer_status_config", cfg_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                for root in module.steam_roots() or []:
+                    candidates.extend([
+                        os.path.join(root, "compatibilitytools.d", REQUIRED_PROTON),
+                        os.path.join(root, "steamapps", "compatibilitytools.d", REQUIRED_PROTON),
+                    ])
+    except Exception:
+        pass
+    candidates.append(os.path.join(_home(), ".steam", "root", "compatibilitytools.d", REQUIRED_PROTON))
+    seen = set()
+    for path in candidates:
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        if os.path.isdir(os.path.join(real, "files")) or os.path.isdir(os.path.join(real, "dist")):
+            return {"success": True, "installed": True, "healthy": True,
+                    "name": REQUIRED_PROTON, "path": real}
+    partial = next((os.path.realpath(p) for p in candidates if os.path.isdir(p)), "")
+    return {"success": True, "installed": False, "healthy": False,
+            "partial": bool(partial), "name": REQUIRED_PROTON, "path": partial}
+
+
 def ensure_required_proton() -> Dict[str, Any]:
     """Install upstream's exact GE-Proton requirement, without editing VDF."""
     cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
