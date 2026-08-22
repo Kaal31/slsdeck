@@ -163,6 +163,45 @@ def _config_path() -> str:
     return slssteam.config_path()
 
 
+def _valid_cr_lib(path: str) -> bool:
+    """A usable Moon hook is a nontrivial 32-bit ELF, not merely a leftover file."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(5)
+        return head[:4] == b"\x7fELF" and len(head) == 5 and head[4] == 1 and os.path.getsize(path) > 4096
+    except OSError:
+        return False
+
+
+def _install_healthy() -> bool:
+    return _installed() and all(
+        _valid_cr_lib(os.path.join(d, "cloud_redirect.so")) for d in _cr_dirs()
+    )
+
+
+def _clean_managed_leftovers() -> list:
+    """Remove only SLSDeck/CloudRedirect hook payloads and partial artifacts.
+
+    Provider tokens and app configuration are deliberately outside these data
+    directories and are never touched, so reinstalling cannot sign the user out.
+    """
+    removed = []
+    managed = (
+        "cloud_redirect.so", "cloud_redirect.so.tmp", "cloud_redirect.so.part",
+        "cloud_redirect.so.new", "cloud_redirect.so.old",
+    )
+    for directory in _cr_dirs():
+        for name in managed:
+            path = os.path.join(directory, name)
+            try:
+                if os.path.lexists(path):
+                    os.remove(path)
+                    removed.append(path)
+            except OSError as exc:
+                logger.warn(f"CloudRedirect: could not remove leftover {path}: {exc}")
+    return removed
+
+
 # ── install the CloudRedirect flatpak directly (same steps as headcrab's
 #    crinstall, but not gated on DisableCloud and with errors surfaced) ────────
 def install_app() -> dict:
@@ -173,6 +212,9 @@ def install_app() -> dict:
     a real session env (runtime dir + DBUS) so flatpak behaves like it does under
     headcrab."""
     log = []
+    removed = _clean_managed_leftovers()
+    if removed:
+        log.append(f"cleaned {len(removed)} stale/partial managed CloudRedirect file(s)")
     # 0) ensure the CloudRedirect data dir(s) exist (headcrab mkdir -p step)
     for d in _cr_dirs():
         try:
@@ -199,7 +241,7 @@ def install_app() -> dict:
             log.append(f"{' '.join(cmd[:4])}: {exc}")
     # download cloud_redirect.so (headcrab's `wget -O cloud_redirect.so`)
     log.append(_download_cr_lib())
-    have_lib = any(os.path.isfile(os.path.join(d, "cloud_redirect.so")) for d in _cr_dirs())
+    have_lib = all(_valid_cr_lib(os.path.join(d, "cloud_redirect.so")) for d in _cr_dirs())
     ok = _installed() and have_lib
     logger.log(f"CloudRedirect install: app={_installed()} lib={have_lib} -> {'ok' if ok else 'incomplete'}")
     if ok:
@@ -210,20 +252,16 @@ def install_app() -> dict:
 
 
 def ensure_installed() -> dict:
-    """Manual install: always attempts, ignores the auto-retry cap."""
-    if _installed():
-        settings.reset_dep_fail("cloudredirect")
-        return {"success": True, "installed": True, "log": ""}
+    """Manual reinstall: replace managed files even when the Flatpak exists."""
+    settings.reset_dep_fail("cloudredirect")
     return install_app()
 
 
 def ensure_installed_auto() -> dict:
-    """Auto install: gives up once it has failed DEP_FAIL_CAP times in a row so
-    a permanently-broken CloudRedirect doesn't re-run the heavy flatpak install
-    every time the Dependencies tab is opened. A manual reinstall clears this."""
-    if _installed():
+    """Skip a verified complete install; repair partial app/library leftovers."""
+    if _install_healthy():
         settings.reset_dep_fail("cloudredirect")
-        return {"success": True, "installed": True, "log": ""}
+        return {"success": True, "installed": True, "log": "existing app + Moon hook verified"}
     if settings.dep_fail_capped("cloudredirect"):
         return {"success": False, "installed": False, "capped": True,
                 "log": f"auto-install disabled after {settings.get_dep_fail('cloudredirect')} failed attempts — use Reinstall CloudRedirect"}
