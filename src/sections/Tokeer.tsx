@@ -26,7 +26,8 @@ const TOKEER_SESSION_MS = 30 * 60 * 1000;
 
 type SavedTokeerSession = {
   startedAt: number;
-  expiresAt: number;
+  codeReceivedAt?: number;
+  expiresAt?: number;
   selectedGame?: string;
   selectedMenus?: Record<number,string>;
   ticket?: TokeerTicketContext|null;
@@ -39,7 +40,7 @@ type SavedTokeerSession = {
 function readSavedSession(): SavedTokeerSession|null {
   try {
     const parsed=JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY)||"null");
-    if(!parsed||Number(parsed.expiresAt)<=Date.now()){
+    if(!parsed||(parsed.expiresAt&&Number(parsed.expiresAt)<=Date.now())){
       window.localStorage.removeItem(TOKEER_SESSION_KEY);
       return null;
     }
@@ -50,6 +51,7 @@ function readSavedSession(): SavedTokeerSession|null {
 export function TokeerSection() {
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
+  const codeReceivedAtRef=useRef<number|undefined>(savedRef.current?.codeReceivedAt);
   const [discord,setDiscord]=useState<TokeerDiscordState|null>(null);
   const [runtime,setRuntime]=useState<any>(null);
   const [verify,setVerify]=useState<TokeerVerifyResult|null>(savedRef.current?.verify||null);
@@ -67,9 +69,15 @@ export function TokeerSection() {
   useEffect(()=>{
     if(!selectedGame&&!ticket&&!gate)return;
     const startedAt=sessionStartedRef.current;
+    // Tokeer's 30-minute validity begins only after Discord returns the final
+    // activation code. Selecting a game, opening a ticket and generating TLX1
+    // must not consume that window.
+    if(activation&&!codeReceivedAtRef.current)codeReceivedAtRef.current=Date.now();
+    const codeReceivedAt=codeReceivedAtRef.current;
     const data:SavedTokeerSession={
-      startedAt,expiresAt:startedAt+TOKEER_SESSION_MS,selectedGame,selectedMenus,
-      ticket,gate,activation,verify,message,
+      startedAt,codeReceivedAt,
+      expiresAt:codeReceivedAt?codeReceivedAt+TOKEER_SESSION_MS:undefined,
+      selectedGame,selectedMenus,ticket,gate,activation,verify,message,
     };
     try{window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
   },[selectedGame,selectedMenus,ticket,gate,activation,verify,message]);
@@ -208,7 +216,15 @@ export function TokeerSection() {
   const redeem=async()=>{
     if(!activation.trim())return setMessage("Paste the activation code from Discord first.");
     setBusy("Writing activation ticket…");
-    try{const r=await tokeerRedeem(activation.trim());setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));}
+    try{
+      const r=await tokeerRedeem(activation.trim());
+      setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
+      if(r.success){
+        try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+        sessionStartedRef.current=Date.now();
+        codeReceivedAtRef.current=undefined;
+      }
+    }
     catch(e){setMessage(String(e));}
     finally{setBusy("");}
   };
@@ -242,7 +258,7 @@ export function TokeerSection() {
         :gate?.found
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
-      {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved for this 30-minute session.</div></PanelSectionRow>}
+      {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. The 30-minute code timer has not started yet.</div></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
     </PanelSection>}
 
