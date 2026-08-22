@@ -26,7 +26,8 @@ const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
 const PLUGIN_SESSION_STARTED = Date.now();
-// Decky counts three rapid Steam webhelper disconnects as a crash loop.\nconst DEPENDENCY_INITIAL_DELAY_MS = 2 * 60 * 1000;
+// Decky counts three rapid Steam webhelper disconnects as a crash loop.
+const DEPENDENCY_INITIAL_DELAY_MS = 2 * 60 * 1000;
 const DEPENDENCY_STABLE_WINDOW_MS = 45 * 1000;
 const DEPENDENCY_STEP_GAP_MS = 20 * 1000;
 const DEPENDENCY_RETRY_MS = 30 * 60 * 1000;
