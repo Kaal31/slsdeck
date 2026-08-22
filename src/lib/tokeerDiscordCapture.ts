@@ -34,6 +34,7 @@ export type TokeerTicketGate = {
 
 export type TokeerTicketContext = {
   found: boolean;
+  opened?: boolean;
   appid?: number;
   url?: string;
   rawText?: string;
@@ -407,9 +408,26 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
 }
 
 const TICKET_CONTEXT_EXPR = `(function(){try{
-  var text=(document.body.innerText||'').replace(/\u00a0/g,' ');
-  var m=text.match(/tokeer\\s+verify\\s+(\\d{3,})/i)||text.match(/bash\\s+-s\\s+--\\s+(\\d{3,})/i)||text.match(/(?:steam\\s*)?app\\s*id\\D{0,12}(\\d{3,})/i)||location.href.match(/[?&]appid=(\\d{3,})/i);
-  return JSON.stringify(m?{found:true,appid:Number(m[1]),rawText:text.slice(0,16000)}:{found:false,error:'Ticket opened, waiting for the setup commands…'});
+  var text=(document.body.innerText||'').replace(/\\u00a0/g,' ');
+  var code=[].slice.call(document.querySelectorAll('pre,code,[class*="codeBlock"],[class*="markup"]')).map(function(e){return e.innerText||e.textContent||'';}).join('\\n');
+  var hay=(code+'\\n'+text).slice(0,50000);
+  var patterns=[
+    /tokeer\\s+verify(?:\\s+--?appid(?:=|\\s+)|\\s+)(\\d{3,10})/i,
+    /(?:--?appid|app[_ -]?id)(?:=|:|\\s+|["']+)(\\d{3,10})/i,
+    /(?:store\\.steampowered\\.com\\/app|steam:\\/\\/(?:run|install)|steamdb\\.info\\/app)\\/(\\d{3,10})/i,
+    /\\/app\\/(\\d{3,10})(?:\\/|\\b)/i,
+    /bash\\s+-s\\s+--(?:[^\\n\\r\\d]{0,40})(\\d{3,10})/i,
+    /(?:tokeer|activate|prepare|verify)[^\\n\\r]{0,80}\\b(\\d{3,10})\\b/i
+  ];
+  var m=null;
+  for(var i=0;i<patterns.length&&!m;i++)m=hay.match(patterns[i]);
+  if(!m){
+    var nums=code.match(/\\b\\d{3,10}\\b/g)||[];
+    var unique=nums.filter(function(v,p,a){return a.indexOf(v)===p;});
+    if(unique.length===1)m=[unique[0],unique[0]];
+  }
+  var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
+  return JSON.stringify(m?{found:true,opened:true,appid:Number(m[1]),rawText:text.slice(0,20000)}:{found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 const TICKET_LINK_EXPR = `(function(){try{
@@ -429,9 +447,20 @@ const TICKET_LINK_EXPR = `(function(){try{
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Promise<TokeerTicketContext> {
-  void fromUrl; // retained for callers from older builds; same-tab tickets are now inspected
   const deadline = Date.now() + timeoutMs;
   let lastError = "Waiting for Tokeer ticket…";
+  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? fromUrl : "";
+
+  if (lastTicketUrl) {
+    try {
+      const managed = await findManagedTokeerTab();
+      if (managed?.webSocketDebuggerUrl && String(managed.url || "") !== lastTicketUrl) {
+        await cdpCommand(managed.webSocketDebuggerUrl, "Page.navigate", {
+          url: lastTicketUrl, transitionType: "address_bar",
+        }, 4000);
+      }
+    } catch {}
+  }
   while (Date.now() < deadline) {
     const tabs = await listCdpTabs();
     const candidates: CdpTab[] = [];
@@ -450,7 +479,8 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
       const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
       try {
         const parsed = JSON.parse(String(raw || ""));
-        if (parsed?.found && parsed?.appid) return { ...parsed, url: tab.url };
+        if (parsed?.found && parsed?.appid) return { ...parsed, opened: true, url: tab.url };
+        if (parsed?.opened && !String(tab.url || "").includes(TOKEER_CHANNEL)) lastTicketUrl = String(tab.url || "");
         if (parsed?.error) lastError = parsed.error;
       } catch {}
 
@@ -461,16 +491,19 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
         const linkRaw = await evalJson(tab.webSocketDebuggerUrl, TICKET_LINK_EXPR);
         const link = JSON.parse(String(linkRaw || ""));
         if (link?.found && looksLikeDiscordUrl(link.url || "")) {
-          await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
-            url: String(link.url), transitionType: "link",
-          }, 4000);
+          lastTicketUrl = String(link.url);
+          if (String(tab.url || "") !== lastTicketUrl) {
+            await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+              url: lastTicketUrl, transitionType: "link",
+            }, 4000);
+          }
           lastError = "Ticket found; waiting for its setup commands…";
         }
       } catch {}
     }
     await new Promise((r) => setTimeout(r, 600));
   }
-  return { found: false, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
+  return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
 /** Connect the automation surface without putting Discord on screen. The
