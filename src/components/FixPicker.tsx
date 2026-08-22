@@ -44,7 +44,6 @@ import {
   CustomItem,
   getDlcOwnedOnly,
   triggerSteamInstall,
-  tokeerPrepareVerify,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
@@ -53,6 +52,7 @@ import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
 import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
+import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
 
 interface RowDef {
   key: string;
@@ -821,7 +821,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("tokeer");
     setMsg("Running official Tokeer setup, then local verification… Steam may restart.");
     try {
-      const r = await tokeerPrepareVerify(appid);
+      const r = await setupAndVerifyTokeer(appid, setMsg);
       if (!r.success) {
         const phase = (r as any).phase === "prepare" ? "Setup" : "Verification";
         setMsg(`${phase} failed: ${r.error || r.output || "Unknown error"}`);
@@ -986,7 +986,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Tokeer</div>
         <div style={{ fontSize: 11, opacity: 0.68, marginBottom: 6 }}>
-          Runs the official Linux setup for AppID {appid}, then validates the game and generates TLX1. Steam may restart during setup.
+          Checks/updates the shared runtime, configures GE-Proton10-34 and merges Tokeer into this game's live launch options, then validates AppID {appid}. Steam is not restarted.
         </div>
         <DialogButton style={bs} disabled={working || !!awaiting} onClick={doTokeer}>
           {busy === "tokeer" ? "Setting up and validating…" : "Tokeer"}
