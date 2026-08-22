@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -63,8 +63,31 @@ async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLif
   }
 
   const run = (async () => {
+    const enabled = await getCheckDependenciesOnBoot().catch(() => ({ enabled: true }));
+    if (!enabled.enabled || !token.active || !cefLooksStable(token)) return;
+
     const sls = await getSlssteamStatus().catch(() => null);
-    if (!token.active || !sls?.installed || !cefLooksStable(token)) return;
+    if (!token.active || !cefLooksStable(token)) return;
+    if (!sls?.installed) {
+      await installSlssteam().catch((e) => {
+        console.warn("SLSDeck: lifecycle SLSsteam install failed", e);
+      });
+      // Installation is asynchronous and may lead into the normal Steam/client
+      // recovery flow. Re-check the remaining chain on the next lifecycle pass.
+      return;
+    }
+
+    try {
+      const fix = await clientFixNeeded();
+      if (token.active && fix.success && fix.needed) {
+        await runClientFix(false);
+        // The client fix can restart Steam. Do not begin another heavy install
+        // in the same CEF session; the next boot resumes the chain.
+        return;
+      }
+    } catch (e) {
+      console.warn("SLSDeck: lifecycle client-fix check failed", e);
+    }
 
     try {
       // Always ask the version-aware installer to reconcile the runtime. It

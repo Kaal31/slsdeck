@@ -248,7 +248,7 @@ def set_skip_wrapper(value: bool) -> None:
 def get_auto_reinject() -> bool:
     """Auto re-activate injection on boot if it isn't live (light: re-patch
     steam.sh + restart Steam)."""
-    return bool(get_value("autoReinject", False))
+    return bool(get_value("autoReinject", True))
 
 
 def set_auto_reinject(value: bool) -> None:
@@ -258,11 +258,20 @@ def set_auto_reinject(value: bool) -> None:
 def get_auto_client_repin() -> bool:
     """Auto re-run the h3adcr-b client fix on boot if injection broke (heavy:
     pins/downgrades the Steam client, reboots)."""
-    return bool(get_value("autoClientRepin", False))
+    return bool(get_value("autoClientRepin", True))
 
 
 def set_auto_client_repin(value: bool) -> None:
     set_value("autoClientRepin", bool(value))
+
+
+def get_check_dependencies_on_boot() -> bool:
+    """Verify and repair the complete managed dependency chain at boot."""
+    return bool(get_value("checkDependenciesOnBoot", True))
+
+
+def set_check_dependencies_on_boot(value: bool) -> None:
+    set_value("checkDependenciesOnBoot", bool(value))
 
 
 # ── hypervisor per-game flags (appid -> True) ────────────────────────────────

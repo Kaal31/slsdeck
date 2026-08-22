@@ -560,6 +560,8 @@ export const getAutoReinject = callable<[], { success: boolean; enabled: boolean
 export const setAutoReinject = callable<[enabled: boolean], { success: boolean }>("set_auto_reinject");
 export const getAutoClientRepin = callable<[], { success: boolean; enabled: boolean }>("get_auto_client_repin");
 export const setAutoClientRepin = callable<[enabled: boolean], { success: boolean }>("set_auto_client_repin");
+export const getCheckDependenciesOnBoot = callable<[], { success: boolean; enabled: boolean }>("get_check_dependencies_on_boot");
+export const setCheckDependenciesOnBoot = callable<[enabled: boolean], { success: boolean }>("set_check_dependencies_on_boot");
 
 export const checkFixes = callable<[appid: number, gameName?: string], FixCheck>("check_fixes");
 export const setOnlyUpdateOnLaunch = callable<[appid: number], { success: boolean; changed?: boolean; error?: string }>("set_only_update_on_launch");

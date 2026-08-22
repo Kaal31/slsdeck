@@ -378,15 +378,20 @@ class Plugin:
                 decky.logger.warning(f"SLSDeck: CloudRedirect uninstall issues: {result.get('errors')}")
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: CloudRedirect uninstall failed: {exc}")
-        # Tokeer is also an SLSDeck-managed dependency. Remove its runtime and
-        # command link on a true plugin uninstall, but deliberately preserve the
-        # separately installed GE-Proton10-34 compatibility tool.
+        # Tokeer and its exact managed compatibility tool are SLSDeck
+        # dependencies, so a true plugin uninstall removes both.
         try:
             result = await self._run(tokeer.uninstall_runtime)
             if not result.get("success"):
                 decky.logger.warning(f"SLSDeck: Tokeer uninstall issues: {result.get('errors')}")
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: Tokeer uninstall failed: {exc}")
+        try:
+            result = await self._run(tokeer.uninstall_required_proton)
+            if not result.get("success"):
+                decky.logger.warning(f"SLSDeck: GE-Proton uninstall issues: {result.get('errors')}")
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: GE-Proton uninstall failed: {exc}")
         # Stop background daemons/pools so nothing survives the removal.
         try:
             watchdog.stop_watchdog()
@@ -408,13 +413,14 @@ class Plugin:
             pass
 
     async def full_uninstall_cleanup(self) -> Dict[str, Any]:
-        """Manual full removal includes CloudRedirect and Tokeer runtime."""
+        """Manual full removal includes CloudRedirect, Tokeer and its Proton."""
         sls = await self._run(slssteam.full_uninstall_cleanup)
         cloud = await self._run(cloudredirect.uninstall_app, True)
         tk = await self._run(tokeer.uninstall_runtime)
-        return {"success": bool(sls.get("success") and cloud.get("success") and tk.get("success")),
+        ge = await self._run(tokeer.uninstall_required_proton)
+        return {"success": bool(sls.get("success") and cloud.get("success") and tk.get("success") and ge.get("success")),
                 "slssteam": sls, "cloudredirect": cloud, "tokeer": tk,
-                "geProtonPreserved": True}
+                "geProton": ge, "geProtonPreserved": False}
 
     # ── helper ────────────────────────────────────────────────────────────
     async def _run(self, fn, *args):
@@ -513,6 +519,13 @@ class Plugin:
 
     async def set_auto_client_repin(self, enabled: bool) -> Dict[str, Any]:
         settings.set_auto_client_repin(bool(enabled))
+        return {"success": True}
+
+    async def get_check_dependencies_on_boot(self) -> Dict[str, Any]:
+        return {"success": True, "enabled": settings.get_check_dependencies_on_boot()}
+
+    async def set_check_dependencies_on_boot(self, enabled: bool) -> Dict[str, Any]:
+        settings.set_check_dependencies_on_boot(bool(enabled))
         return {"success": True}
 
     async def run_client_fix(self, force: bool = False) -> Dict[str, Any]:

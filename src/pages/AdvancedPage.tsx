@@ -38,6 +38,7 @@ import {
   getShowReinstallQam, setShowReinstallQam,
   getAutoReinject, setAutoReinject,
   getAutoClientRepin, setAutoClientRepin,
+  getCheckDependenciesOnBoot, setCheckDependenciesOnBoot,
   getAutoDownload, setAutoDownload,
   getAutoAddDlc, setAutoAddDlc,
   getDisableCloud, setDisableCloud,
@@ -138,14 +139,24 @@ function DlcCloudToggles() {
 }
 
 function InjectionRecovery() {
-  const [reinject, setReinject] = useState(false);
-  const [repin, setRepin] = useState(false);
+  const [reinject, setReinject] = useState(true);
+  const [repin, setRepin] = useState(true);
+  const [deps, setDeps] = useState(true);
   useEffect(() => {
     getAutoReinject().then((r) => setReinject(!!r.enabled)).catch(() => {});
     getAutoClientRepin().then((r) => setRepin(!!r.enabled)).catch(() => {});
+    getCheckDependenciesOnBoot().then((r) => setDeps(!!r.enabled)).catch(() => {});
   }, []);
   return (
     <PanelSection title="Injection recovery">
+      <PanelSectionRow>
+        <ToggleField
+          label="Check dependency status on boot"
+          description="After Steam CEF is stable, verify SLSsteam, the client fix, Tokeer, GE-Proton10-34 and CloudRedirect; install or repair anything missing. Heavy work is serialized and delayed to protect Decky."
+          checked={deps}
+          onChange={async (v) => { setDeps(v); await setCheckDependenciesOnBoot(v); }}
+        />
+      </PanelSectionRow>
       <PanelSectionRow>
         <ToggleField
           label="Auto re-activate injection on boot"
@@ -157,7 +168,7 @@ function InjectionRecovery() {
       <PanelSectionRow>
         <ToggleField
           label="Auto re-pin Steam client on boot"
-          description="If injection broke after a client update, automatically run the client fix (h3adcr-b) — this pins/downgrades the client and REBOOTS. Heavy; capped. Leave off unless you want it fully hands-off."
+          description="If injection broke after a client update, automatically run the client fix (h3adcr-b) — this pins/downgrades the client and REBOOTS. Heavy, failure-capped, and on by default."
           checked={repin}
           onChange={async (v) => { setRepin(v); await setAutoClientRepin(v); }}
         />

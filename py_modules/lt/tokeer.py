@@ -150,6 +150,51 @@ def uninstall_runtime() -> Dict[str, Any]:
     }
 
 
+def uninstall_required_proton() -> Dict[str, Any]:
+    """Remove only the exact GE-Proton version managed for Tokeer."""
+    compat_dirs = []
+    for root in _steam_roots():
+        compat_dirs.extend([
+            os.path.join(root, "compatibilitytools.d"),
+            os.path.join(root, "steamapps", "compatibilitytools.d"),
+        ])
+    home = _home()
+    compat_dirs.extend([
+        os.path.join(home, ".steam", "root", "compatibilitytools.d"),
+        os.path.join(home, ".steam", "steam", "compatibilitytools.d"),
+        os.path.join(home, ".local", "share", "Steam", "compatibilitytools.d"),
+    ])
+    removed = []
+    errors = []
+    seen = set()
+    for compat in compat_dirs:
+        try:
+            real = os.path.realpath(compat)
+            if real in seen:
+                continue
+            seen.add(real)
+            target = os.path.join(real, REQUIRED_PROTON)
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+                removed.append(target)
+            elif os.path.lexists(target):
+                os.remove(target)
+                removed.append(target)
+            for archive_name in (
+                f".{REQUIRED_PROTON}.tar.gz",
+                f"{REQUIRED_PROTON}.tar.gz.part",
+                f".{REQUIRED_PROTON}.tmp",
+            ):
+                stale = os.path.join(real, archive_name)
+                if os.path.lexists(stale):
+                    os.remove(stale)
+                    removed.append(stale)
+        except Exception as exc:
+            errors.append(f"{compat}: {exc}")
+    return {"success": not errors, "removed": removed, "errors": errors,
+            "name": REQUIRED_PROTON}
+
+
 def _shared_fetch(url: str, dest: str | None = None, label: str = ""):
     """Fetch through the same pooled HTTPX transport used by CloudRedirect Moon.
 
