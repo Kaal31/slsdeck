@@ -538,6 +538,82 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
   return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
+async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
+  let tab = await findManagedTokeerTab();
+  if (!tab?.webSocketDebuggerUrl) tab = await findDiscordTab();
+  if (!tab?.webSocketDebuggerUrl) return null;
+  if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
+    await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return tab;
+}
+
+export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; error?: string }> {
+  const text = String(message || "").trim();
+  if (!/^TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
+    return { success: false, error: "The generated verification value is not a valid TLX1 code; nothing was sent to Discord." };
+  }
+  const tab = await ticketTab(ticketUrl);
+  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view is not connected." };
+
+  const focusExpr = `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
+    var box=boxes[boxes.length-1];
+    if(!box)return JSON.stringify({ok:false,error:'Discord message box was not found in the ticket.'});
+    box.focus();return JSON.stringify({ok:true});
+  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
+  const focusedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 4000);
+  let focused: any;
+  try { focused = JSON.parse(String(focusedRaw || "")); } catch { focused = null; }
+  if (!focused?.ok) return { success: false, error: focused?.error || "Could not focus the Discord ticket message box." };
+
+  await cdpCommand(tab.webSocketDebuggerUrl, "Input.insertText", { text }, 3000);
+  await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
+  await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
+  await new Promise((r) => setTimeout(r, 700));
+  const verifyExpr = `(function(){try{
+    var expected=${JSON.stringify(text)};
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12);
+    return arts.some(function(a){return String(a.innerText||'').indexOf(expected)>=0;});
+  }catch(e){return false;}})()`;
+  const appeared = await evalJson(tab.webSocketDebuggerUrl, verifyExpr, 3000);
+  return appeared ? { success: true } : { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
+}
+
+export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000): Promise<{ success: boolean; code?: string; error?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected while waiting for the activation code." };
+    const expr = `(function(){try{
+      var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
+      var common=/^(?:verify|setup|ticket|cancel|close|valid|code|redeem|tokeer|linux|steam|proton)$/i;
+      for(var i=0;i<arts.length;i++){
+        var a=arts[i], text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
+        if(/TLX1\./i.test(text))continue;
+        var nodes=[].slice.call(a.querySelectorAll('code,pre')).map(function(n){return String(n.textContent||'').trim();});
+        var contextual=/(?:activation|redeem|single[- ]use|expires|30\s*minutes?|verification\s+(?:succeeded|complete))/i.test(text);
+        var matches=nodes.filter(function(v){return /^[A-Za-z0-9_-]{6}$/.test(v)&&!common.test(v);});
+        if(!matches.length&&contextual){
+          matches=(text.match(/(?:^|\s|[:#])([A-Za-z0-9_-]{6})(?=$|\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
+        }
+        if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0]});
+      }
+      return JSON.stringify({found:false});
+    }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+    const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 4000);
+    try {
+      const found = JSON.parse(String(raw || ""));
+      if (found?.found && /^[A-Za-z0-9_-]{6}$/.test(String(found.code || ""))) return { success: true, code: String(found.code) };
+      if (found?.error) return { success: false, error: found.error };
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return { success: false, error: "Timed out waiting for the six-character activation code. The ticket is still saved and can be resumed." };
+}
+
 export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boolean; error?: string }> {
   let tab = await findManagedTokeerTab();
   if (!tab?.webSocketDebuggerUrl) tab = await findDiscordTab();
