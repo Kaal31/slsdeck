@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, tokeerRuntimeStatus, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -67,8 +67,10 @@ async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLif
     if (!token.active || !sls?.installed || !cefLooksStable(token)) return;
 
     try {
-      const status = await tokeerRuntimeStatus();
-      if (token.active && !status.installed) {
+      // Always ask the version-aware installer to reconcile the runtime. It
+      // skips an already-current bundle, updates an older one and repairs an
+      // incomplete one, so an existing dependency is not mistaken for current.
+      if (token.active) {
         await tokeerEnsureRuntime();
         await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
       }
