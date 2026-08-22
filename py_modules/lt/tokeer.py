@@ -242,6 +242,13 @@ def required_proton_status() -> Dict[str, Any]:
 
 def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
     """Install upstream's exact GE-Proton requirement, without editing VDF."""
+    before = required_proton_status()
+    if before.get("installed") and before.get("healthy") and not force:
+        return {
+            "success": True, "installed": True, "healthy": True,
+            "updated": False, "skipped": True, "name": REQUIRED_PROTON,
+            "path": before.get("path", ""), "requiredProton": REQUIRED_PROTON,
+        }
     cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
     if not os.path.isfile(cfg_path):
         return {"success": False, "error": "Tokeer Steam configurator is missing.",
@@ -292,7 +299,8 @@ def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
         path = module.ensure_proton_installed(roots[0], REQUIRED_PROTON)
         if not path:
             raise RuntimeError(f"Could not install {REQUIRED_PROTON}.")
-        return {"success": True, "installed": True, "name": REQUIRED_PROTON,
+        return {"success": True, "installed": True, "healthy": True,
+                "updated": True, "skipped": False, "name": REQUIRED_PROTON,
                 "path": path, "requiredProton": REQUIRED_PROTON}
     except Exception as exc:
         return {"success": False, "error": str(exc), "requiredProton": REQUIRED_PROTON}
