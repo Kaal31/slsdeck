@@ -59,6 +59,12 @@ class Plugin:
     async def tokeer_runtime_status(self) -> Dict[str, Any]:
         return await self._run(tokeer.runtime_status)
 
+    async def tokeer_ensure_runtime(self) -> Dict[str, Any]:
+        return await self._run(tokeer.ensure_runtime_latest)
+
+    async def tokeer_ensure_proton(self) -> Dict[str, Any]:
+        return await self._run(tokeer.ensure_required_proton)
+
     async def tokeer_prepare(self, appid: int) -> Dict[str, Any]:
         return await self._run(tokeer.prepare, appid)
 
