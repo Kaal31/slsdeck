@@ -19,6 +19,7 @@ import {
   systemStatus,
   disableForeignEngines,
   tokeerEnsureRuntime,
+  tokeerRuntimeStatus,
 } from "../api";
 
 type Health = "ok" | "warn" | "off" | "unknown";
@@ -70,6 +71,7 @@ function DepRow({
 export function DependenciesSection() {
   const [sls, setSls] = useState<SlsStatus | null>(null);
   const [sysSt, setSysSt] = useState<{ foreignEngine: boolean; foreignName: string; engine: string } | null>(null);
+  const [tokeerInstalled, setTokeerInstalled] = useState(false);
   const [diag, setDiag] = useState("");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [note, setNote] = useState<Record<string, string>>({});
@@ -81,6 +83,11 @@ export function DependenciesSection() {
 
   const refresh = async () => {
     try { setSls(await getSlssteamStatus()); } catch { /* */ }
+    try {
+      const runtime = await tokeerRuntimeStatus();
+      setTokeerInstalled(!!runtime.installed);
+      if (runtime.installed) setN("tokeer", "runtime installed");
+    } catch { /* */ }
     try { const s = await systemStatus(); if (s.success) setSysSt(s); } catch { /* */ }
   };
 
@@ -126,6 +133,7 @@ export function DependenciesSection() {
               setN("tokeer", "installing/updating Tokeer runtime before restart…");
               try {
                 const runtime = await tokeerEnsureRuntime();
+                setTokeerInstalled(!!runtime.success);
                 setN("tokeer", runtime.success ? `runtime ready (${runtime.version || "latest"})` : `runtime failed: ${runtime.error || "unknown error"}`);
               } catch (e) {
                 setN("tokeer", `runtime failed: ${e}`);
@@ -298,8 +306,8 @@ export function DependenciesSection() {
         <DepRow
           label="Tokeer runtime"
           hint="Small shared verifier/hook runtime; updated before the normal SLSsteam restart."
-          health={note.tokeer?.startsWith("runtime ready") ? "ok" : "unknown"}
-          statusText={note.tokeer || "checked during SLSsteam installation"}
+          health={tokeerInstalled ? "ok" : "off"}
+          statusText={note.tokeer || (tokeerInstalled ? "runtime installed" : "not installed yet")}
           busy={!!busy.tokeer}
         />
         <DepRow
