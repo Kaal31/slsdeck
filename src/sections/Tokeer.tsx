@@ -21,21 +21,58 @@ import {
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
 const sleep = (ms:number)=>new Promise((r)=>setTimeout(r,ms));
+const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
+const TOKEER_SESSION_MS = 30 * 60 * 1000;
+
+type SavedTokeerSession = {
+  startedAt: number;
+  expiresAt: number;
+  selectedGame?: string;
+  selectedMenus?: Record<number,string>;
+  ticket?: TokeerTicketContext|null;
+  gate?: TokeerTicketGate|null;
+  activation?: string;
+  verify?: TokeerVerifyResult|null;
+  message?: string;
+};
+
+function readSavedSession(): SavedTokeerSession|null {
+  try {
+    const parsed=JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY)||"null");
+    if(!parsed||Number(parsed.expiresAt)<=Date.now()){
+      window.localStorage.removeItem(TOKEER_SESSION_KEY);
+      return null;
+    }
+    return parsed;
+  } catch { return null; }
+}
 
 export function TokeerSection() {
+  const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
+  const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
   const [discord,setDiscord]=useState<TokeerDiscordState|null>(null);
   const [runtime,setRuntime]=useState<any>(null);
-  const [verify,setVerify]=useState<TokeerVerifyResult|null>(null);
-  const [activation,setActivation]=useState("");
+  const [verify,setVerify]=useState<TokeerVerifyResult|null>(savedRef.current?.verify||null);
+  const [activation,setActivation]=useState(savedRef.current?.activation||"");
   const [busy,setBusy]=useState("");
-  const [message,setMessage]=useState("");
+  const [message,setMessage]=useState(savedRef.current?.message||"");
   const [options,setOptions]=useState<Record<number,string[]>>({});
-  const [selectedMenus,setSelectedMenus]=useState<Record<number,string>>({});
-  const [selectedGame,setSelectedGame]=useState("");
-  const [gate,setGate]=useState<TokeerTicketGate|null>(null);
-  const [ticket,setTicket]=useState<TokeerTicketContext|null>(null);
+  const [selectedMenus,setSelectedMenus]=useState<Record<number,string>>(savedRef.current?.selectedMenus||{});
+  const [selectedGame,setSelectedGame]=useState(savedRef.current?.selectedGame||"");
+  const [gate,setGate]=useState<TokeerTicketGate|null>(savedRef.current?.gate||null);
+  const [ticket,setTicket]=useState<TokeerTicketContext|null>(savedRef.current?.ticket||null);
   const [embedded,setEmbedded]=useState(false);
   const embeddedRef=useRef<HTMLDivElement|null>(null);
+
+  useEffect(()=>{
+    if(!selectedGame&&!ticket&&!gate)return;
+    const startedAt=sessionStartedRef.current;
+    const data:SavedTokeerSession={
+      startedAt,expiresAt:startedAt+TOKEER_SESSION_MS,selectedGame,selectedMenus,
+      ticket,gate,activation,verify,message,
+    };
+    try{window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
+  },[selectedGame,selectedMenus,ticket,gate,activation,verify,message]);
 
   const refreshDiscord=async()=>{ try{setDiscord(await readTokeerDiscord());}catch{} };
   useEffect(()=>{ tokeerRuntimeStatus().then(setRuntime).catch(()=>{}); refreshDiscord(); const t=setInterval(refreshDiscord,15000); return()=>clearInterval(t); },[]);
@@ -127,6 +164,19 @@ export function TokeerSection() {
     finally{setBusy("");}
   };
 
+  const resumeTicket=async()=>{
+    if(!ticket?.url)return setMessage("The saved ticket URL is missing; show embedded Discord and reopen the ticket.");
+    setBusy("Resuming Tokeer ticket…");
+    setMessage("Reopening the existing private ticket and scanning its generated commands…");
+    try{
+      const ctx=await waitForTicketContext(ticket.url,35000);
+      setTicket((old)=>({...old,...ctx,url:ctx.url||old?.url,opened:true}));
+      if(ctx.found&&ctx.appid)setMessage(`Commands detected. Tokeer reported Steam AppID ${ctx.appid}.`);
+      else setMessage(ctx.error||"Ticket is open, but its AppID still was not found.");
+    }catch(e){setMessage(String(e));}
+    finally{setBusy("");}
+  };
+
   const prepare=async()=>{
     if(!appid)return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
     setBusy("Preparing Tokeer…");
@@ -187,7 +237,12 @@ export function TokeerSection() {
 
     {(selectedGame||gate)&&<PanelSection title="2. Open activation ticket">
       {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{selectedGame}</b></div></PanelSectionRow>}
-      {gate?.found?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>:<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
+      {ticket?.opened&&!ticket.appid
+        ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
+        :gate?.found
+          ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
+          :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
+      {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved for this 30-minute session.</div></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
     </PanelSection>}
 
