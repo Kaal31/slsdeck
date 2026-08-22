@@ -13,7 +13,6 @@ import os
 import pwd
 import re
 import shutil
-import ssl
 import subprocess
 import tempfile
 import urllib.request
@@ -22,6 +21,7 @@ import importlib.util
 from typing import Any, Dict
 
 from .paths import get_user_home
+from .httpc import ensure_http_client
 
 RUNTIME_ZIP = "https://github.com/Tesla697/TokeerDRM-App/releases/latest/download/tokeer-linux.zip"
 INSTALL_SCRIPT = "https://raw.githubusercontent.com/Tesla697/TokeerDRM-App/main/install_linux.sh"
@@ -29,25 +29,6 @@ DEFAULT_COOLDOWN_HOURS = 48
 RELEASE_API = "https://api.github.com/repos/Tesla697/TokeerDRM-App/releases/latest"
 VERSION_FILE = ".slsdeck_runtime_version"
 REQUIRED_PROTON = "GE-Proton10-34"
-SYSTEM_CA_BUNDLES = (
-    "/etc/ssl/certs/ca-certificates.crt",
-    "/etc/pki/tls/certs/ca-bundle.crt",
-    "/etc/ssl/ca-bundle.pem",
-)
-
-
-def _system_ca_bundle() -> str:
-    configured = os.environ.get("SSL_CERT_FILE", "")
-    if configured and os.path.isfile(configured):
-        return configured
-    return next((path for path in SYSTEM_CA_BUNDLES if os.path.isfile(path)), "")
-
-
-def _ssl_context() -> ssl.SSLContext:
-    bundle = _system_ca_bundle()
-    return ssl.create_default_context(cafile=bundle or None)
-
-
 def _home() -> str:
     return get_user_home()
 
@@ -88,55 +69,57 @@ def runtime_status() -> Dict[str, Any]:
             "defaultCooldownHours": DEFAULT_COOLDOWN_HOURS}
 
 
-def _download(url: str, dest: str) -> None:
-    """Download with verified TLS using SteamOS's CA store.
+def _shared_fetch(url: str, dest: str | None = None, label: str = ""):
+    """Fetch through the same pooled HTTPX transport used by CloudRedirect Moon.
 
-    Decky's embedded Python can have an empty/stale default CA path even though
-    the host OS and curl trust GitHub correctly. Never disable verification.
+    When dest is None return bytes (matching Tokeer's bundled _fetch contract);
+    otherwise stream to disk so the ~400 MiB Proton archive is never held in RAM.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": "SLSDeck-Tokeer/1.0"})
+    client = ensure_http_client(f"tokeer: {label or os.path.basename(url)}")
     try:
-        with urllib.request.urlopen(req, timeout=60, context=_ssl_context()) as response:
+        if dest is None:
+            response = client.get(url, follow_redirects=True, timeout=120)
+            response.raise_for_status()
+            return response.content
+        with client.stream("GET", url, follow_redirects=True, timeout=None) as response:
+            response.raise_for_status()
             with open(dest, "wb") as target:
-                shutil.copyfileobj(response, target)
-        return
-    except Exception as urllib_error:
-        curl = shutil.which("curl")
-        if not curl:
-            raise urllib_error
-        result = subprocess.run(
-            [
-                curl, "--fail", "--location", "--silent", "--show-error",
-                "--retry", "3", "--retry-all-errors",
-                "--connect-timeout", "20", "--max-time", "180",
-                "--output", dest, url,
-            ],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=210,
-        )
-        if result.returncode != 0 or not os.path.isfile(dest) or os.path.getsize(dest) == 0:
-            try:
-                if os.path.exists(dest):
-                    os.remove(dest)
-            except OSError:
-                pass
-            detail = (result.stdout or str(urllib_error))[-3000:]
-            raise RuntimeError(f"Secure download failed: {detail}")
+                for chunk in response.iter_bytes(1 << 20):
+                    if chunk:
+                        target.write(chunk)
+        return bool(os.path.isfile(dest) and os.path.getsize(dest) > 0)
+    except Exception:
+        try:
+            if dest and os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+        return None
+
+
+def _download(url: str, dest: str) -> None:
+    if not _shared_fetch(url, dest, os.path.basename(dest)):
+        raise RuntimeError(f"Secure GitHub download failed: {url}")
 
 
 def _latest_bundle() -> tuple[str, str]:
     """Return (release tag, Linux bundle URL), with the stable asset fallback."""
     try:
-        req = urllib.request.Request(RELEASE_API, headers={
-            "User-Agent": "SLSDeck-Tokeer/1.0",
-            "Accept": "application/vnd.github+json",
-        })
-        with urllib.request.urlopen(req, timeout=20, context=_ssl_context()) as response:
-            release = json.loads(response.read().decode("utf-8"))
+        client = ensure_http_client("tokeer: latest release")
+        response = client.get(
+            RELEASE_API,
+            headers={
+                "User-Agent": "SLSDeck-Tokeer/1.0",
+                "Accept": "application/vnd.github+json",
+            },
+            follow_redirects=True,
+            timeout=60,
+        )
+        response.raise_for_status()
+        release = response.json()
         tag = str(release.get("tag_name") or "")
         for asset in release.get("assets") or []:
-            name = str(asset.get("name") or "").lower()
-            if name == "tokeer-linux.zip":
+            if str(asset.get("name") or "").lower() == "tokeer-linux.zip":
                 return tag, str(asset.get("browser_download_url") or RUNTIME_ZIP)
         return tag, RUNTIME_ZIP
     except Exception:
@@ -290,12 +273,6 @@ def required_proton_status() -> Dict[str, Any]:
 
 def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
     """Install upstream's exact GE-Proton requirement, without editing VDF."""
-    # Tokeer's bundled configurator uses Python HTTPS internally. Point it at
-    # the SteamOS CA store before importing it so GE-Proton does not hit the
-    # same Decky embedded-Python certificate failure as the runtime download.
-    ca_bundle = _system_ca_bundle()
-    if ca_bundle:
-        os.environ["SSL_CERT_FILE"] = ca_bundle
     before = required_proton_status()
     if before.get("installed") and before.get("healthy") and not force:
         return {
@@ -313,6 +290,10 @@ def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
             raise RuntimeError("Could not load Tokeer's Proton installer.")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        # The upstream configurator's _fetch uses urllib and Decky's embedded
+        # Python CA store. Reuse SLSDeck's proven CloudRedirect HTTPX transport
+        # while preserving upstream URLs, extraction and SHA-512 verification.
+        module._fetch = _shared_fetch
         roots = module.steam_roots()
         if not roots:
             raise RuntimeError("Steam installation was not found.")
