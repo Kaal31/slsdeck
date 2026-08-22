@@ -53,6 +53,7 @@ import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
+import { isTokeerGameAvailable } from "../lib/tokeerAvailability";
 
 interface RowDef {
   key: string;
@@ -98,6 +99,7 @@ function BadgeChip({ badge, inline }: { badge?: string; inline?: boolean }) {
 
 export function FixPicker({ appid, onReload, onClose }: { appid: number; onReload?: () => void; onClose?: () => void }) {
   const [check, setCheck] = useState<FixCheck | null>(null);
+  const [tokeerAvailable, setTokeerAvailable] = useState(false);
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
   const [pinned, setPinned] = useState(false);
@@ -150,9 +152,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   const refresh = async () => {
     try {
-      setCheck(await checkFixesFull(appid));
+      const fullCheck = await checkFixesFull(appid);
+      setCheck(fullCheck);
+      setTokeerAvailable(isTokeerGameAvailable(appid, fullCheck?.gameName));
     } catch {
       setCheck(null);
+      setTokeerAvailable(false);
     }
     try {
       const r = await getInstalledFixes();
@@ -251,6 +256,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("");
     setMsg("");
     setCheck(null);
+    setTokeerAvailable(false);
     setApplied([]);
     setAwaiting(null);
     setActiveFixKey("");
@@ -983,15 +989,15 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           ? "Pinning…"
           : "Pin this version"}
       </DialogButton>
-      <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Tokeer</div>
+      {tokeerAvailable && <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Tokeer · Available</div>
         <div style={{ fontSize: 11, opacity: 0.68, marginBottom: 6 }}>
-          Checks/updates the shared runtime, configures GE-Proton10-34 and merges Tokeer into this game's live launch options, then validates AppID {appid}. Steam is not restarted.
+          This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID {appid}.
         </div>
         <DialogButton style={bs} disabled={working || !!awaiting} onClick={doTokeer}>
           {busy === "tokeer" ? "Setting up and validating…" : "Tokeer"}
         </DialogButton>
-      </div>
+      </div>}
       {rows.length === 0 && (
         <div style={{ fontSize: 12, opacity: 0.6 }}>No ryuu fixes indexed for this game.</div>
       )}
