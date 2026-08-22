@@ -144,11 +144,30 @@ def ensure_runtime_latest() -> Dict[str, Any]:
                     break
             if not source_dir:
                 raise RuntimeError("The latest Tokeer Linux bundle is incomplete.")
-            for name in os.listdir(source_dir):
+            # Validate the replacement before removing anything. Then clear only
+            # files managed by the upstream bundle plus interrupted-write
+            # siblings; logs and any user state in ~/.tokeer remain intact.
+            source_files = [
+                name for name in os.listdir(source_dir)
+                if os.path.isfile(os.path.join(source_dir, name))
+            ]
+            managed = set(source_files) | set(required) | {
+                "build.sh", "ost_native_hook.c", "server_config.py", VERSION_FILE,
+            }
+            for name in managed:
+                for suffix in ("", ".tmp", ".part", ".new", ".old"):
+                    stale = os.path.join(td, name + suffix)
+                    try:
+                        if os.path.lexists(stale):
+                            os.remove(stale)
+                    except OSError:
+                        pass
+            for name in source_files:
                 src = os.path.join(source_dir, name)
                 dst = os.path.join(td, name)
-                if os.path.isfile(src):
-                    shutil.copy2(src, dst)
+                staged = dst + ".tmp"
+                shutil.copy2(src, staged)
+                os.replace(staged, dst)
 
         with open(os.path.join(td, "server_config.py"), "w", encoding="utf-8") as fh:
             fh.write('SERVER_URL = "https://luastools.xyz"\n')
@@ -204,6 +223,38 @@ def ensure_required_proton() -> Dict[str, Any]:
         roots = module.steam_roots()
         if not roots:
             raise RuntimeError("Steam installation was not found.")
+
+        # The upstream installer skips an exact valid directory. Remove only an
+        # exact-name partial extraction and its interrupted archive first; never
+        # touch any other compatibility tool/version.
+        compat_dirs = []
+        for root in roots:
+            compat_dirs.extend([
+                os.path.join(root, "compatibilitytools.d"),
+                os.path.join(root, "steamapps", "compatibilitytools.d"),
+            ])
+        compat_dirs.append(os.path.join(_home(), ".steam", "root", "compatibilitytools.d"))
+        seen = set()
+        for compat in compat_dirs:
+            compat = os.path.realpath(compat)
+            if compat in seen:
+                continue
+            seen.add(compat)
+            target = os.path.join(compat, REQUIRED_PROTON)
+            valid = os.path.isdir(os.path.join(target, "files")) or os.path.isdir(os.path.join(target, "dist"))
+            if os.path.isdir(target) and not valid:
+                shutil.rmtree(target)
+            for archive_name in (
+                f".{REQUIRED_PROTON}.tar.gz", f"{REQUIRED_PROTON}.tar.gz.part",
+                f".{REQUIRED_PROTON}.tmp",
+            ):
+                stale = os.path.join(compat, archive_name)
+                try:
+                    if os.path.lexists(stale):
+                        os.remove(stale)
+                except OSError:
+                    pass
+
         path = module.ensure_proton_installed(roots[0], REQUIRED_PROTON)
         if not path:
             raise RuntimeError(f"Could not install {REQUIRED_PROTON}.")
