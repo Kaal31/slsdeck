@@ -53,7 +53,7 @@ import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
-import { isTokeerGameAvailable } from "../lib/tokeerAvailability";
+import { getTokeerAvailabilityForGame, refreshTokeerAvailabilityCache, TokeerAvailableGame } from "../lib/tokeerAvailability";
 
 interface RowDef {
   key: string;
@@ -99,7 +99,8 @@ function BadgeChip({ badge, inline }: { badge?: string; inline?: boolean }) {
 
 export function FixPicker({ appid, onReload, onClose }: { appid: number; onReload?: () => void; onClose?: () => void }) {
   const [check, setCheck] = useState<FixCheck | null>(null);
-  const [tokeerAvailable, setTokeerAvailable] = useState(false);
+  const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
+  const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
   const [pinned, setPinned] = useState(false);
@@ -154,10 +155,18 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const fullCheck = await checkFixesFull(appid);
       setCheck(fullCheck);
-      setTokeerAvailable(isTokeerGameAvailable(appid, fullCheck?.gameName));
+      // Show the last good cache immediately, then force a live Discord scrape
+      // for this Fixes opening and update/hide the card in place.
+      setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName));
+      setTokeerRefreshing(true);
+      refreshTokeerAvailabilityCache(true)
+        .then(() => setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName)))
+        .catch(() => {})
+        .finally(() => setTokeerRefreshing(false));
     } catch {
       setCheck(null);
-      setTokeerAvailable(false);
+      setTokeerGame(null);
+      setTokeerRefreshing(false);
     }
     try {
       const r = await getInstalledFixes();
@@ -256,7 +265,8 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("");
     setMsg("");
     setCheck(null);
-    setTokeerAvailable(false);
+    setTokeerGame(null);
+    setTokeerRefreshing(false);
     setApplied([]);
     setAwaiting(null);
     setActiveFixKey("");
@@ -989,13 +999,16 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           ? "Pinning…"
           : "Pin this version"}
       </DialogButton>
-      {tokeerAvailable && <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Tokeer · Available</div>
+      {tokeerGame && <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+          Tokeer · {tokeerGame.remaining ?? "?"}{tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : ""} keys available
+          {tokeerRefreshing ? " · refreshing…" : ""}
+        </div>
         <div style={{ fontSize: 11, opacity: 0.68, marginBottom: 6 }}>
           This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID {appid}.
         </div>
         <DialogButton style={bs} disabled={working || !!awaiting} onClick={doTokeer}>
-          {busy === "tokeer" ? "Setting up and validating…" : "Tokeer"}
+          {busy === "tokeer" ? "Setting up and validating…" : `Tokeer · ${tokeerGame.remaining ?? "?"} keys`}
         </DialogButton>
       </div>}
       {rows.length === 0 && (
