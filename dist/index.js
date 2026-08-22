@@ -113,6 +113,8 @@ function FaWrench (props) {
 }
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
+callable("tokeer_ensure_runtime");
+callable("tokeer_ensure_proton");
 const tokeerPrepare = callable("tokeer_prepare");
 const tokeerPrepareVerify = callable("tokeer_prepare_verify");
 const tokeerVerify = callable("tokeer_verify");
