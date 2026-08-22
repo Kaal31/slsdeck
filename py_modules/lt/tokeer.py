@@ -240,7 +240,7 @@ def required_proton_status() -> Dict[str, Any]:
             "partial": bool(partial), "name": REQUIRED_PROTON, "path": partial}
 
 
-def ensure_required_proton() -> Dict[str, Any]:
+def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
     """Install upstream's exact GE-Proton requirement, without editing VDF."""
     cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
     if not os.path.isfile(cfg_path):
@@ -274,7 +274,9 @@ def ensure_required_proton() -> Dict[str, Any]:
             seen.add(compat)
             target = os.path.join(compat, REQUIRED_PROTON)
             valid = os.path.isdir(os.path.join(target, "files")) or os.path.isdir(os.path.join(target, "dist"))
-            if os.path.isdir(target) and not valid:
+            if os.path.isdir(target) and (force or not valid):
+                # Exact-version manual reinstall or partial extraction repair.
+                # Other GE-Proton versions and compatibility tools are untouched.
                 shutil.rmtree(target)
             for archive_name in (
                 f".{REQUIRED_PROTON}.tar.gz", f"{REQUIRED_PROTON}.tar.gz.part",
