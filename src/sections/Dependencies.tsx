@@ -16,11 +16,9 @@ import {
   getDiagnostics,
   refreshPatterns,
   crEnsureInstalled,
-  crEnsureInstalledAuto,
   systemStatus,
   disableForeignEngines,
   tokeerEnsureRuntime,
-  tokeerEnsureProton,
 } from "../api";
 
 type Health = "ok" | "warn" | "off" | "unknown";
