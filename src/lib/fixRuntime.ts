@@ -175,6 +175,58 @@ export async function applyFixRuntime(appid: number, overrides?: string): Promis
   }
 }
 
+export function configureTokeerLaunch(
+  appid: number,
+  tokeerHome: string,
+  requiredProton = "GE-Proton10-34"
+): { success: boolean; options?: string; proton?: string; error?: string } {
+  const SC: any = (window as any).SteamClient;
+  if (!SC?.Apps?.SetAppLaunchOptions || !SC?.Apps?.SpecifyCompatTool) {
+    return { success: false, error: "Steam's live app-configuration API is unavailable." };
+  }
+  try {
+    let rest = currentLaunchOptions(appid) || "%command%";
+    const overrides: string[] = [];
+    rest = rest.replace(
+      /WINEDLLOVERRIDES=(?:"([^"]*)"|'([^']*)'|([^\s]+))\s*/gi,
+      (_all, dq, sq, bare) => {
+        const value = String(dq ?? sq ?? bare ?? "");
+        value.split(";").map((x) => x.trim()).filter(Boolean).forEach((x) => overrides.push(x));
+        return "";
+      }
+    );
+
+    // Remove only an existing Tokeer wrapper. Other wrappers (SLSDECKREPOINT,
+    // LD_AUDIT/netsock, user commands) remain in the command.
+    const wrapper = `${tokeerHome.replace(/\/$/, "")}/ost-run.sh`;
+    const escaped = wrapper.replace(/[.*+?^${}()|[\]\\]/g, "\\/** Allow re-running when the user applies a fix to the same game again. */");
+    rest = rest
+      .replace(new RegExp(`(?:'${escaped}'|"${escaped}"|${escaped})\\s*`, "g"), "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!rest) rest = "%command%";
+    if (!rest.includes("%command%")) rest = `${rest} %command%`;
+
+    const merged = overrides
+      .filter((entry) => !/^dinput8\s*=/i.test(entry))
+      .concat("dinput8=n,b");
+    const deduped = merged.filter((entry, i, all) => {
+      const key = entry.split("=")[0].trim().toLowerCase();
+      return all.findIndex((x) => x.split("=")[0].trim().toLowerCase() === key) === i;
+    });
+    const quotedWrapper = `'${wrapper.replace(/'/g, "'\\''")}'`;
+    const next = `WINEDLLOVERRIDES="${deduped.join(";")}" ${quotedWrapper} ${rest}`
+      .replace(/\s+/g, " ")
+      .trim();
+
+    SC.Apps.SpecifyCompatTool(appid, requiredProton);
+    SC.Apps.SetAppLaunchOptions(appid, next);
+    return { success: true, options: next, proton: requiredProton };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
+
 /** Allow re-running when the user applies a fix to the same game again. */
 export function resetFixRuntime(appid: number): void {
   configured.delete(appid);
