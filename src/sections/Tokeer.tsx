@@ -1,7 +1,8 @@
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
+import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
-import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
+import { tokeerPreflight, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
+import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 import {
   chooseSelectorOption,
   clickLatestTicketGate,
@@ -218,6 +219,15 @@ export function TokeerSection() {
   };
 
   const choose=async(index:number,label:string)=>{
+    setBusy(`Checking whether ${label} is installed…`);
+    const installed=await tokeerPreflight(0,label).catch(()=>null);
+    if(!installed?.success||!installed.installed){
+      const failure=installed?.error||"Could not verify that this game is installed.";
+      setMessage(failure);
+      toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
+      setBusy("");
+      return;
+    }
     setBusy(`Selecting ${label} in Discord…`);
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
     setSelectedMenus((old)=>({...old,[index]:label}));
@@ -284,7 +294,10 @@ export function TokeerSection() {
         setVerify(r);
         setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
       }else{
-        setMessage(r.error||r.output||"Prepare/verify failed.");
+        const failure=describeTokeerFailure(r);
+        setVerify(null);
+        setMessage(failure);
+        toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
       }
       setRuntime(await tokeerRuntimeStatus());
     }catch(e){setMessage(String(e));}
@@ -295,8 +308,22 @@ export function TokeerSection() {
     if(!appid)return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
     setBusy("Verifying setup…");
     try{
-      const r=await tokeerVerify(appid); setVerify(r);
-      setMessage(r.success?"Setup verified. Copy the TLX1 and paste it into the open Discord ticket.":(r.error||"Verification failed."));
+      const preflight=await tokeerPreflight(appid,"");
+      if(!preflight.success||!preflight.installed){
+        const failure=preflight.error||"Game is not installed.";
+        setVerify(null);setMessage(failure);
+        toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
+        return;
+      }
+      const r=await tokeerVerify(appid);
+      if(r.success){
+        setVerify(r);
+        setMessage("Setup verified. Copy the TLX1 and paste it into the open Discord ticket.");
+      }else{
+        const failure=describeTokeerFailure(r);
+        setVerify(null);setMessage(failure);
+        toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
+      }
     }catch(e){setMessage(String(e));}
     finally{setBusy("");}
   };

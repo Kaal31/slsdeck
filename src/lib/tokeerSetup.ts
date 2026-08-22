@@ -1,4 +1,4 @@
-import { tokeerEnsureProton, tokeerEnsureRuntime, tokeerVerify, TokeerVerifyResult } from "../api";
+import { tokeerEnsureProton, tokeerEnsureRuntime, tokeerPreflight, tokeerVerify, TokeerVerifyResult } from "../api";
 import { configureTokeerLaunch } from "./fixRuntime";
 import { launchGame } from "./launchGame";
 
@@ -13,6 +13,18 @@ export type TokeerSetupResult = TokeerVerifyResult & {
   error?: string;
 };
 
+export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupResult): string {
+  if (result.error) return result.error;
+  const checks = result.checks;
+  if (!checks) return "Tokeer validation failed.";
+  const failed: string[] = [];
+  if (!checks.installed) failed.push("game installation");
+  if (!checks.prefix) failed.push("Proton prefix");
+  if (!checks.hook) failed.push("native hook");
+  if (!checks.launchOpt) failed.push("launch option");
+  return failed.length ? `Tokeer validation failed: ${failed.join(", ")}.` : "Tokeer validation failed.";
+}
+
 /**
  * Restart-free Tokeer setup:
  *  1. update shared runtime only when its GitHub release changed;
@@ -25,6 +37,16 @@ export async function setupAndVerifyTokeer(
   appid: number,
   onStatus?: (message: string) => void
 ): Promise<TokeerSetupResult> {
+  onStatus?.("Confirming that the game is installed…");
+  const preflight = await tokeerPreflight(appid, "");
+  if (!preflight.success || !preflight.installed) {
+    return {
+      success: false,
+      checks: { installed: false, prefix: false, hook: false, launchOpt: false, proton: null },
+      error: preflight.error || "Game is not installed. Install it completely before using Tokeer.",
+    };
+  }
+
   onStatus?.("Checking Tokeer runtime version…");
   const runtime = await tokeerEnsureRuntime();
   if (!runtime.success || !runtime.home) {
@@ -75,7 +97,7 @@ export async function setupAndVerifyTokeer(
     }
   }
 
-  return {
+  const result: TokeerSetupResult = {
     ...verified,
     runtimeUpdated: !!runtime.updated,
     runtimeVersion: runtime.version,
@@ -83,4 +105,6 @@ export async function setupAndVerifyTokeer(
     protonSkipped: !!proton.skipped,
     launchOptions: configured.options,
   };
+  if (!result.success && !result.error) result.error = describeTokeerFailure(result);
+  return result;
 }

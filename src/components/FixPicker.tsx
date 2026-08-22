@@ -44,6 +44,7 @@ import {
   CustomItem,
   getDlcOwnedOnly,
   triggerSteamInstall,
+  tokeerPreflight,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
@@ -52,7 +53,7 @@ import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
 import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
-import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
+import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 import { getTokeerAvailabilityForGame, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 
 interface RowDef {
@@ -868,13 +869,20 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   const doTokeer = async () => {
     setBusy("tokeer");
-    setMsg("Installing/checking Tokeer runtime and GE-Proton10-34…");
-    toaster.toast({ title: "SLSDeck · Tokeer", body: "Dependency setup started. This may take several minutes on first use." });
     try {
+      setMsg("Confirming that the game is installed…");
+      const preflight = await tokeerPreflight(appid, "");
+      if (!preflight.success || !preflight.installed) {
+        const failure = preflight.error || "Game is not installed. Install it completely before using Tokeer.";
+        setMsg(failure);
+        toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
+        return;
+      }
+      setMsg("Installing/checking Tokeer runtime and GE-Proton10-34…");
+      toaster.toast({ title: "SLSDeck · Tokeer", body: "Installation confirmed. Dependency setup started." });
       const r = await setupAndVerifyTokeer(appid, setMsg);
       if (!r.success) {
-        const phase = (r as any).phase === "prepare" ? "Setup" : "Verification";
-        const failure = `${phase} failed: ${r.error || r.output || "Unknown error"}`;
+        const failure = describeTokeerFailure(r);
         setMsg(failure);
         toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
         return;

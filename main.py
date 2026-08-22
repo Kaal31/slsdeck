@@ -59,6 +59,9 @@ class Plugin:
     async def tokeer_runtime_status(self) -> Dict[str, Any]:
         return await self._run(tokeer.runtime_status)
 
+    async def tokeer_preflight(self, appid: int = 0, game_name: str = "") -> Dict[str, Any]:
+        return await self._run(tokeer.preflight, appid, game_name)
+
     async def tokeer_ensure_runtime(self) -> Dict[str, Any]:
         return await self._run(tokeer.ensure_runtime_latest)
 

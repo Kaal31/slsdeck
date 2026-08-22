@@ -164,6 +164,8 @@ export interface InstalledFix {
 export type TokeerChecks = { installed: boolean; prefix: boolean; hook: boolean; launchOpt: boolean; proton?: string | null };
 export type TokeerVerifyResult = { success: boolean; code?: string; checks?: TokeerChecks; report?: any; output?: string; needsPrepare?: boolean; error?: string };
 export const tokeerRuntimeStatus = callable<[], { success: boolean; installed: boolean; home?: string; missing?: string[]; defaultCooldownHours?: number }>("tokeer_runtime_status");
+export type TokeerPreflightResult = { success: boolean; installed: boolean; appid?: number; gameName?: string; installPath?: string; failedCheck?: string; ambiguous?: boolean; candidates?: Array<{ appid: number; name: string }>; error?: string };
+export const tokeerPreflight = callable<[appid?: number, gameName?: string], TokeerPreflightResult>("tokeer_preflight");
 export const tokeerEnsureRuntime = callable<[], { success: boolean; installed?: boolean; updated?: boolean; skipped?: boolean; version?: string; latest?: string; home?: string; requiredProton?: string; error?: string }>("tokeer_ensure_runtime");
 export const tokeerProtonStatus = callable<[], { success: boolean; installed: boolean; healthy?: boolean; partial?: boolean; name?: string; path?: string }>("tokeer_proton_status");
 export const tokeerEnsureProton = callable<[force?: boolean], { success: boolean; installed?: boolean; healthy?: boolean; updated?: boolean; skipped?: boolean; name?: string; path?: string; requiredProton?: string; error?: string }>("tokeer_ensure_proton");

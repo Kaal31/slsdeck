@@ -18,11 +18,13 @@ import tempfile
 import urllib.request
 import zipfile
 import importlib.util
+import unicodedata
 from typing import Any, Dict
 
 from .paths import get_user_home
 from .httpc import ensure_http_client
 from .steam import detect_steam_install_path
+from . import steam
 
 RUNTIME_ZIP = "https://github.com/Tesla697/TokeerDRM-App/releases/latest/download/tokeer-linux.zip"
 INSTALL_SCRIPT = "https://raw.githubusercontent.com/Tesla697/TokeerDRM-App/main/install_linux.sh"
@@ -110,6 +112,60 @@ def runtime_status() -> Dict[str, Any]:
     missing = [x for x in need if not os.path.isfile(os.path.join(td, x))]
     return {"success": True, "installed": not missing, "home": td, "missing": missing,
             "defaultCooldownHours": DEFAULT_COOLDOWN_HOURS}
+
+
+def _normal_game_name(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = re.sub(r"\b\d+\s+of\s+\d+\s+remaining(?:\s*\(\d+%\))?.*$", "", text,
+                  flags=re.IGNORECASE)
+    text = text.replace("®", "").replace("™", "").replace("©", "")
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def preflight(appid: int = 0, game_name: str = "") -> Dict[str, Any]:
+    """Require the same installed-game condition as upstream TLX validation.
+
+    For an AppID, Steam's appmanifest and the referenced common/ directory must
+    both exist. Discord selections initially provide only a title, so match it
+    conservatively against Steam's installed manifests and refuse ambiguity.
+    """
+    try:
+        wanted_appid = int(appid or 0)
+    except Exception:
+        wanted_appid = 0
+    if wanted_appid > 0:
+        found = steam.get_game_install_path_response(wanted_appid)
+        if found.get("success") and os.path.isdir(str(found.get("installPath") or "")):
+            return {"success": True, "installed": True, "appid": wanted_appid,
+                    "gameName": found.get("name", ""),
+                    "installPath": found.get("installPath", "")}
+        return {"success": False, "installed": False, "appid": wanted_appid,
+                "failedCheck": "installed",
+                "error": "Game is not installed: Steam appmanifest or installation directory is missing."}
+
+    wanted = _normal_game_name(game_name)
+    if not wanted:
+        return {"success": False, "installed": False, "failedCheck": "installed",
+                "error": "Could not identify the selected game before opening Tokeer."}
+    matches = []
+    for item in steam.list_installed_games():
+        path = str(item.get("installPath") or "")
+        if not os.path.isdir(path):
+            continue
+        if _normal_game_name(item.get("name", "")) == wanted:
+            matches.append(item)
+    if len(matches) == 1:
+        item = matches[0]
+        return {"success": True, "installed": True, "appid": int(item["appid"]),
+                "gameName": item.get("name", ""), "installPath": item.get("installPath", "")}
+    if len(matches) > 1:
+        return {"success": False, "installed": False, "ambiguous": True,
+                "failedCheck": "installed",
+                "candidates": [{"appid": int(x["appid"]), "name": x.get("name", "")}
+                               for x in matches],
+                "error": "More than one installed Steam game matches this Discord title; open Tokeer from the game's Fixes menu."}
+    return {"success": False, "installed": False, "failedCheck": "installed",
+            "error": "Game is not installed. Install it completely in Steam before using Tokeer."}
 
 
 def uninstall_runtime() -> Dict[str, Any]:
