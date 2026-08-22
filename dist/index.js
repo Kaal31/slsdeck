@@ -113,10 +113,10 @@ function FaWrench (props) {
 }
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
-callable("tokeer_ensure_runtime");
-callable("tokeer_ensure_proton");
-const tokeerPrepare = callable("tokeer_prepare");
-const tokeerPrepareVerify = callable("tokeer_prepare_verify");
+const tokeerEnsureRuntime = callable("tokeer_ensure_runtime");
+const tokeerEnsureProton = callable("tokeer_ensure_proton");
+callable("tokeer_prepare");
+callable("tokeer_prepare_verify");
 const tokeerVerify = callable("tokeer_verify");
 const tokeerRedeem = callable("tokeer_redeem");
 // ── Callables ──────────────────────────────────────────────────────────────
@@ -746,6 +746,50 @@ async function applyFixRuntime(appid, overrides) {
         /* ignore */
     }
 }
+function configureTokeerLaunch(appid, tokeerHome, requiredProton = "GE-Proton10-34") {
+    const SC = window.SteamClient;
+    if (!SC?.Apps?.SetAppLaunchOptions || !SC?.Apps?.SpecifyCompatTool) {
+        return { success: false, error: "Steam's live app-configuration API is unavailable." };
+    }
+    try {
+        let rest = currentLaunchOptions(appid) || "%command%";
+        const overrides = [];
+        rest = rest.replace(/WINEDLLOVERRIDES=(?:"([^"]*)"|'([^']*)'|([^\s]+))\s*/gi, (_all, dq, sq, bare) => {
+            const value = String(dq ?? sq ?? bare ?? "");
+            value.split(";").map((x) => x.trim()).filter(Boolean).forEach((x) => overrides.push(x));
+            return "";
+        });
+        // Remove only an existing Tokeer wrapper. Other wrappers (SLSDECKREPOINT,
+        // LD_AUDIT/netsock, user commands) remain in the command.
+        const wrapper = `${tokeerHome.replace(/\/$/, "")}/ost-run.sh`;
+        const escaped = wrapper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        rest = rest
+            .replace(new RegExp(`(?:'${escaped}'|"${escaped}"|${escaped})\\s*`, "g"), "")
+            .replace(/\s+/g, " ")
+            .trim();
+        if (!rest)
+            rest = "%command%";
+        if (!rest.includes("%command%"))
+            rest = `${rest} %command%`;
+        const merged = overrides
+            .filter((entry) => !/^dinput8\s*=/i.test(entry))
+            .concat("dinput8=n,b");
+        const deduped = merged.filter((entry, i, all) => {
+            const key = entry.split("=")[0].trim().toLowerCase();
+            return all.findIndex((x) => x.split("=")[0].trim().toLowerCase() === key) === i;
+        });
+        const quotedWrapper = `'${wrapper.replace(/'/g, "'\\''")}'`;
+        const next = `WINEDLLOVERRIDES="${deduped.join(";")}" ${quotedWrapper} ${rest}`
+            .replace(/\s+/g, " ")
+            .trim();
+        SC.Apps.SpecifyCompatTool(appid, requiredProton);
+        SC.Apps.SetAppLaunchOptions(appid, next);
+        return { success: true, options: next, proton: requiredProton };
+    }
+    catch (e) {
+        return { success: false, error: String(e) };
+    }
+}
 /** Allow re-running when the user applies a fix to the same game again. */
 function resetFixRuntime(appid) {
     configured.delete(appid);
@@ -1186,7 +1230,7 @@ async function scrapeDepotManifests(depot, maxMs = 25000, onStatus, isCancelled)
     }
 }
 
-const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep$2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function cleanGids(gids) {
     const out = {};
     for (const [depot, gid] of Object.entries(gids || {})) {
@@ -1346,7 +1390,7 @@ async function prepareCatalogFixBuild(appid, buildid, gidsInput, onProgress) {
                 if (job.status === "failed")
                     throw new Error(job.error || "Build download failed.");
             }
-            await sleep$1(1000);
+            await sleep$2(1000);
         }
         throw new Error("Build download timed out after 30 minutes.");
     }
@@ -1387,6 +1431,66 @@ function launchGame(appid) {
     catch {
         return false;
     }
+}
+
+const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Restart-free Tokeer setup:
+ *  1. update shared runtime only when its GitHub release changed;
+ *  2. install upstream's exact GE-Proton requirement without editing VDF;
+ *  3. select Proton and merge launch options through SteamClient live;
+ *  4. launch only when the per-game prefix is still missing;
+ *  5. run the official local verifier.
+ */
+async function setupAndVerifyTokeer(appid, onStatus) {
+    onStatus?.("Checking Tokeer runtime version…");
+    const runtime = await tokeerEnsureRuntime();
+    if (!runtime.success || !runtime.home) {
+        return { success: false, error: runtime.error || "Could not install the Tokeer runtime." };
+    }
+    onStatus?.(runtime.updated
+        ? `Tokeer ${runtime.version || "latest"} installed. Checking required Proton…`
+        : `Tokeer ${runtime.version || "runtime"} is current; skipping download. Checking required Proton…`);
+    const proton = await tokeerEnsureProton();
+    if (!proton.success) {
+        return {
+            success: false,
+            runtimeUpdated: !!runtime.updated,
+            runtimeVersion: runtime.version,
+            error: proton.error || `Could not install ${runtime.requiredProton || "GE-Proton10-34"}.`,
+        };
+    }
+    const requiredProton = proton.name || runtime.requiredProton || "GE-Proton10-34";
+    onStatus?.(`Configuring ${requiredProton} and merging Steam launch options live…`);
+    const configured = configureTokeerLaunch(appid, runtime.home, requiredProton);
+    if (!configured.success) {
+        return {
+            success: false,
+            runtimeUpdated: !!runtime.updated,
+            runtimeVersion: runtime.version,
+            proton: requiredProton,
+            error: configured.error || "Could not configure Tokeer launch options.",
+        };
+    }
+    onStatus?.("Checking the game setup…");
+    let verified = await tokeerVerify(appid);
+    if (!verified.success && !verified.checks?.prefix) {
+        onStatus?.("Creating the Proton prefix with one game launch—Steam will stay open…");
+        launchGame(appid);
+        for (let attempt = 0; attempt < 30; attempt++) {
+            await sleep$1(2000);
+            verified = await tokeerVerify(appid);
+            if (verified.success || verified.checks?.prefix)
+                break;
+        }
+    }
+    return {
+        ...verified,
+        runtimeUpdated: !!runtime.updated,
+        runtimeVersion: runtime.version,
+        proton: requiredProton,
+        launchOptions: configured.options,
+    };
 }
 
 // Colour a source badge (Ryuu / luatools ship Online / Bypass / Crack / Tested /
@@ -2129,7 +2233,7 @@ function FixPicker({ appid, onReload, onClose }) {
         setBusy("tokeer");
         setMsg("Running official Tokeer setup, then local verification… Steam may restart.");
         try {
-            const r = await tokeerPrepareVerify(appid);
+            const r = await setupAndVerifyTokeer(appid, setMsg);
             if (!r.success) {
                 const phase = r.phase === "prepare" ? "Setup" : "Verification";
                 setMsg(`${phase} failed: ${r.error || r.output || "Unknown error"}`);
@@ -2222,7 +2326,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: "Tokeer" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["Runs the official Linux setup for AppID ", appid, ", then validates the game and generates TLX1. Steam may restart during setup."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : "Tokeer" })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
+                            : "Pin this version" }), SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: "Tokeer" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["Checks/updates the shared runtime, configures GE-Proton10-34 and merges Tokeer into this game's live launch options, then validates AppID ", appid, ". Steam is not restarted."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : "Tokeer" })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
                     padding: 8,
@@ -7552,10 +7656,16 @@ function TokeerSection() {
         if (!appid)
             return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
         setBusy("Preparing Tokeer…");
-        setMessage(`Preparing ${selectedGame || `AppID ${appid}`} using the AppID supplied by the Tokeer ticket. Steam may restart.`);
+        setMessage(`Preparing ${selectedGame || `AppID ${appid}`} using the AppID supplied by the Tokeer ticket. Steam will stay open.`);
         try {
-            const r = await tokeerPrepare(appid);
-            setMessage(r.success ? "Prepare complete. If Steam restarted, reopen SLSDeck/Discord and press Verify." : (r.error || r.output || "Prepare failed."));
+            const r = await setupAndVerifyTokeer(appid, setMessage);
+            if (r.success) {
+                setVerify(r);
+                setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated ? "Runtime updated; " : "Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
+            }
+            else {
+                setMessage(r.error || r.output || "Prepare/verify failed.");
+            }
             setRuntime(await tokeerRuntimeStatus());
         }
         catch (e) {
