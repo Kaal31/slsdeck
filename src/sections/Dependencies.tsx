@@ -20,6 +20,9 @@ import {
   disableForeignEngines,
   tokeerEnsureRuntime,
   tokeerRuntimeStatus,
+  tokeerProtonStatus,
+  tokeerEnsureProton,
+  crInstallStatus,
 } from "../api";
 
 type Health = "ok" | "warn" | "off" | "unknown";
@@ -72,6 +75,8 @@ export function DependenciesSection() {
   const [sls, setSls] = useState<SlsStatus | null>(null);
   const [sysSt, setSysSt] = useState<{ foreignEngine: boolean; foreignName: string; engine: string } | null>(null);
   const [tokeerInstalled, setTokeerInstalled] = useState(false);
+  const [protonStatus, setProtonStatus] = useState<{ installed: boolean; partial?: boolean } | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<{ installed: boolean; partial?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean } | null>(null);
   const [diag, setDiag] = useState("");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [note, setNote] = useState<Record<string, string>>({});
@@ -87,6 +92,18 @@ export function DependenciesSection() {
       const runtime = await tokeerRuntimeStatus();
       setTokeerInstalled(!!runtime.installed);
       if (runtime.installed) setN("tokeer", "runtime installed");
+    } catch { /* */ }
+    try {
+      const proton = await tokeerProtonStatus();
+      setProtonStatus(proton);
+      if (proton.installed) setN("tokeerProton", "GE-Proton10-34 installed");
+      else if (proton.partial) setN("tokeerProton", "partial installation detected — repair required");
+    } catch { /* */ }
+    try {
+      const cloud = await crInstallStatus();
+      setCloudStatus(cloud);
+      if (cloud.installed) setN("cr", "installed · Moon hook verified");
+      else if (cloud.partial) setN("cr", "partial installation detected — repair required");
     } catch { /* */ }
     try { const s = await systemStatus(); if (s.success) setSysSt(s); } catch { /* */ }
   };
@@ -177,6 +194,20 @@ export function DependenciesSection() {
       if (!r.success) { setN("fix", r.error || "failed"); setB("fix", false); return; }
       watch("fix", "Client fix done — reboot the Deck", false);
     } catch (e) { setN("fix", `error: ${e}`); setB("fix", false); }
+  };
+
+  const installProton = async () => {
+    setB("tokeerProton", true);
+    setN("tokeerProton", protonStatus?.installed ? "reinstalling GE-Proton10-34…" : "installing GE-Proton10-34…");
+    try {
+      const r = await tokeerEnsureProton();
+      setN("tokeerProton", r.success ? "GE-Proton10-34 installed" : `failed: ${r.error || "unknown error"}`);
+      toaster.toast({ title: "SLSDeck", body: r.success ? "GE-Proton10-34 ready" : "GE-Proton installation failed" });
+    } catch (e) {
+      setN("tokeerProton", `error: ${e}`);
+    }
+    setB("tokeerProton", false);
+    refresh();
   };
 
   const installCloud = async () => {
@@ -313,17 +344,19 @@ export function DependenciesSection() {
         <DepRow
           label="GE-Proton10-34"
           hint="Exact compatibility layer required by Tokeer; installed after restart in the background."
-          health={note.tokeerProton === "GE-Proton10-34 installed" ? "ok" : "unknown"}
-          statusText={note.tokeerProton || "installs automatically after SLSsteam setup"}
+          health={protonStatus?.installed ? "ok" : protonStatus?.partial ? "warn" : "off"}
+          statusText={note.tokeerProton || (protonStatus?.installed ? "installed · verified" : protonStatus?.partial ? "partial installation · repair required" : "not installed")}
           busy={!!busy.tokeerProton}
+          actionLabel={protonStatus?.installed ? "Reinstall GE-Proton10-34" : protonStatus?.partial ? "Repair GE-Proton10-34" : "Install GE-Proton10-34"}
+          onAction={installProton}
         />
         <DepRow
           label="CloudRedirect"
           hint="Cloud saves for added games — installs automatically after setup. Off by default; enable in Advanced ▸ Cloud saves."
-          health={busy.cr ? "unknown" : note.cr === "installed" || note.cr === "installed · shortcut rebound" ? "ok" : "unknown"}
-          statusText={note.cr || "installs automatically after SLSsteam setup"}
+          health={busy.cr ? "unknown" : cloudStatus?.installed ? "ok" : cloudStatus?.partial ? "warn" : "off"}
+          statusText={note.cr || (cloudStatus?.installed ? "installed · Moon hook verified" : cloudStatus?.partial ? "partial installation · repair required" : "not installed")}
           busy={!!busy.cr}
-          actionLabel="Reinstall CloudRedirect"
+          actionLabel={cloudStatus?.installed ? "Reinstall CloudRedirect" : cloudStatus?.partial ? "Repair CloudRedirect" : "Install CloudRedirect"}
           onAction={installCloud}
         />
 
