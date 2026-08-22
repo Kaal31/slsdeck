@@ -1,5 +1,5 @@
 import { DialogButton, Focusable, Navigation } from "@decky/ui";
-import { openFilePicker, FileSelectionType } from "@decky/api";
+import { openFilePicker, FileSelectionType, toaster } from "@decky/api";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import {
   AddState,
@@ -860,12 +860,15 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   const doTokeer = async () => {
     setBusy("tokeer");
-    setMsg("Running official Tokeer setup, then local verification… Steam may restart.");
+    setMsg("Installing/checking Tokeer runtime and GE-Proton10-34…");
+    toaster.toast({ title: "SLSDeck · Tokeer", body: "Dependency setup started. This may take several minutes on first use." });
     try {
       const r = await setupAndVerifyTokeer(appid, setMsg);
       if (!r.success) {
         const phase = (r as any).phase === "prepare" ? "Setup" : "Verification";
-        setMsg(`${phase} failed: ${r.error || r.output || "Unknown error"}`);
+        const failure = `${phase} failed: ${r.error || r.output || "Unknown error"}`;
+        setMsg(failure);
+        toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
         return;
       }
       const c = r.checks;
@@ -875,9 +878,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       if (r.code) {
         try { await navigator.clipboard.writeText(r.code); } catch {}
       }
-      setMsg(`Tokeer ready — ${summary}.${r.code ? " TLX1 copied to clipboard." : ""}`);
+      const ready = `Tokeer ready — ${summary}.${r.code ? " TLX1 copied to clipboard." : ""}`;
+      setMsg(ready);
+      toaster.toast({ title: "SLSDeck · Tokeer", body: "Setup and local validation completed." });
     } catch (e) {
-      setMsg(`Tokeer failed: ${e}`);
+      const failure = `Tokeer failed: ${e}`;
+      setMsg(failure);
+      toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
     } finally {
       setBusy("");
     }
