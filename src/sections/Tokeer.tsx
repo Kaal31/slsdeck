@@ -473,13 +473,23 @@ export function TokeerSection() {
       {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
-      {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Live · Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
-      {availability&&<PanelSectionRow><div style={{width:"100%",padding:8,borderRadius:6,background:"rgba(255,255,255,.055)",fontSize:11,lineHeight:1.55}}>
-        <div style={{fontWeight:700,marginBottom:3}}>Cached vault stats</div>
-        <div>Games listed: <b>{availability.vault.gamesListed??"?"}</b> · Keys remaining: <b>{availability.vault.keysRemaining??"?"}</b> · High demand: <b>{availability.vault.highDemand??"?"}</b></div>
-        <div>Available games cached: <b>{availability.games.length}</b> · Updated: <b>{new Date(availability.updatedAt).toLocaleString()}</b></div>
-        <div style={{marginTop:6,maxHeight:150,overflowY:"auto",opacity:.85}}>
-          {availability.games.map(game=><div key={game.appid||game.name}>{game.name}{game.remaining!==undefined?` — ${game.remaining}/${game.total??"?"} keys`:""}</div>)}
+      {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:"#65e69b",fontWeight:800}}>● LIVE</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
+      {availability&&<PanelSectionRow><div style={{width:"100%",padding:10,borderRadius:9,background:"linear-gradient(145deg,rgba(28,43,66,.96),rgba(38,25,58,.92))",border:"1px solid rgba(157,198,255,.28)",boxShadow:"0 5px 18px rgba(0,0,0,.22)",fontSize:11,lineHeight:1.55,color:"#f7f9ff"}}>
+        <div style={{fontSize:14,fontWeight:800,letterSpacing:.4,marginBottom:8,color:"#fff"}}>Tokeer Vault</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7}}>
+          {[
+            ["Games listed",availability.vault.gamesListed??"?","#72c7ff"],
+            ["Keys remaining",availability.vault.keysRemaining??"?","#74e6a2"],
+            ["High demand",availability.vault.highDemand??"?","#ff9b8f"],
+            ["Available now",availability.games.length,"#d2a6ff"],
+          ].map(([label,value,color])=><div key={String(label)} style={{padding:"8px 9px",borderRadius:7,background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.09)"}}>
+            <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:.7,opacity:.72}}>{label}</div>
+            <div style={{fontSize:19,fontWeight:900,lineHeight:1.2,color:String(color),textShadow:`0 0 12px ${String(color)}55`,fontVariantNumeric:"tabular-nums"}}>{value}</div>
+          </div>)}
+        </div>
+        <div style={{marginTop:8,fontSize:10,opacity:.7}}>Updated {new Date(availability.updatedAt).toLocaleString()}</div>
+        <div style={{marginTop:7,maxHeight:150,overflowY:"auto",padding:"6px 7px",borderRadius:6,background:"rgba(0,0,0,.18)"}}>
+          {availability.games.map(game=><div key={game.appid||game.name} style={{padding:"2px 0",color:"#f2f5ff"}}>{game.name}{game.remaining!==undefined?<span style={{color:"#74e6a2",fontWeight:700}}>{` — ${game.remaining}/${game.total??"?"} keys`}</span>:""}</div>)}
         </div>
       </div></PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>refreshAvailability(true)}>Refresh vault & available games</ButtonItem></PanelSectionRow>
@@ -537,6 +547,9 @@ export function TokeerSection() {
       </div></PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!activation} onClick={redeem}>Activate / write ticket</ButtonItem></PanelSectionRow>
       <PanelSectionRow><div style={{fontSize:10,opacity:.7,lineHeight:1.45}}>Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h · Donator 24h · Lua Basic 12h · Lua Pro 6h · Elite/no-cooldown role: no standard cooldown.</div></PanelSectionRow>
+    </PanelSection>
+    <PanelSection title="Account safety">
+      <PanelSectionRow><div style={{width:"100%",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>
     </PanelSection>
   </>;
 }
