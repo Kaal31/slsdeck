@@ -7572,6 +7572,7 @@ function TokeerSection() {
     const sessionStartedRef = SP_REACT.useRef(savedRef.current?.startedAt || Date.now());
     const codeReceivedAtRef = SP_REACT.useRef(savedRef.current?.codeReceivedAt);
     const [discord, setDiscord] = SP_REACT.useState(null);
+    const [availability, setAvailability] = SP_REACT.useState(readTokeerAvailabilityCache());
     const [runtime, setRuntime] = SP_REACT.useState(null);
     const [verify, setVerify] = SP_REACT.useState(savedRef.current?.verify || null);
     const [activation, setActivation] = SP_REACT.useState(savedRef.current?.activation || "");
@@ -7616,7 +7617,20 @@ function TokeerSection() {
         setDiscord(await readTokeerDiscord());
     }
     catch { } };
-    SP_REACT.useEffect(() => { tokeerRuntimeStatus().then(setRuntime).catch(() => { }); refreshDiscord(); const t = setInterval(refreshDiscord, 15000); return () => clearInterval(t); }, []);
+    const refreshAvailability = async (force = false) => {
+        const value = await refreshTokeerAvailabilityCache(force);
+        if (value)
+            setAvailability(value);
+    };
+    SP_REACT.useEffect(() => {
+        tokeerRuntimeStatus().then(setRuntime).catch(() => { });
+        refreshDiscord();
+        refreshAvailability(false).catch(() => { });
+        const onCache = (event) => setAvailability(event?.detail || readTokeerAvailabilityCache());
+        window.addEventListener("slsdeck-tokeer-cache", onCache);
+        const t = setInterval(refreshDiscord, 15000);
+        return () => { clearInterval(t); window.removeEventListener("slsdeck-tokeer-cache", onCache); };
+    }, []);
     SP_REACT.useEffect(() => {
         if (!embedded) {
             hideTokeerDiscordEmbedded().catch(() => { });
@@ -7692,7 +7706,16 @@ function TokeerSection() {
                 state = await readTokeerDiscord();
             }
             setDiscord(state);
-            setMessage(state.found ? "Hidden Tokeer panel connected." : (state.error || "Discord connected, but the activation panel is still loading."));
+            if (state.found) {
+                setMessage("Hidden Tokeer panel connected. Refreshing vault and availability cache…");
+                const cached = await refreshTokeerAvailabilityCache(true);
+                if (cached)
+                    setAvailability(cached);
+                setMessage(cached ? `Vault cache updated: ${cached.games.length} available games.` : "Panel connected, but the game menus were not ready; the previous cache was preserved.");
+            }
+            else {
+                setMessage(state.error || "Discord connected, but the activation panel is still loading.");
+            }
         }
         catch (e) {
             setMessage(String(e));
@@ -7890,7 +7913,7 @@ function TokeerSection() {
         }
     };
     const c = checks(verify || undefined);
-    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => setEmbedded(v => !v), children: embedded ? "Hide embedded Discord" : "Show embedded Discord" }) }), embedded && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: embeddedRef, style: { width: "100%", height: 420, border: "1px solid rgba(255,255,255,.22)", borderRadius: 6, background: "rgba(0,0,0,.35)", boxSizing: "border-box" } }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), ticket?.opened && !ticket.appid
+    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => setEmbedded(v => !v), children: embedded ? "Hide embedded Discord" : "Show embedded Discord" }) }), embedded && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { ref: embeddedRef, style: { width: "100%", height: 420, border: "1px solid rgba(255,255,255,.22)", borderRadius: 6, background: "rgba(0,0,0,.35)", boxSizing: "border-box" } }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Live \u00B7 Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: 8, borderRadius: 6, background: "rgba(255,255,255,.055)", fontSize: 11, lineHeight: 1.55 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 700, marginBottom: 3 }, children: "Cached vault stats" }), SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: availability.vault.gamesListed ?? "?" }), " \u00B7 Keys remaining: ", SP_JSX.jsx("b", { children: availability.vault.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: availability.vault.highDemand ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Available games cached: ", SP_JSX.jsx("b", { children: availability.games.length }), " \u00B7 Updated: ", SP_JSX.jsx("b", { children: new Date(availability.updatedAt).toLocaleString() })] }), SP_JSX.jsx("div", { style: { marginTop: 6, maxHeight: 150, overflowY: "auto", opacity: .85 }, children: availability.games.map(game => SP_JSX.jsxs("div", { children: [game.name, game.remaining !== undefined ? ` — ${game.remaining}/${game.total ?? "?"} keys` : ""] }, game.appid || game.name)) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => refreshAvailability(true), children: "Refresh vault & available games" }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), ticket?.opened && !ticket.appid
                         ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !ticket.url, onClick: resumeTicket, children: "Resume existing ticket / detect commands" }) })
                         : gate?.found
                             ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: gate.label || "✅ I've read this & watched the tutorial" }) })
