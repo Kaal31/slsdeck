@@ -100,9 +100,10 @@ export interface FixInfo {
   nearMatches?: string[];
   file?: string;
   badge?: string;
+  description?: string;
 }
 
-export interface LuatoolsFix { file: string; badge: string; type: string; source: string; url: string }
+export interface LuatoolsFix { file: string; badge: string; type: string; source: string; url: string; description?: string }
 
 // A record from the account-gated lua.tools fix catalog (/api/denuvo/fixes).
 export interface LuatoolsCatalogFix {
@@ -132,7 +133,7 @@ export interface FixCheck {
   onlineFix: FixInfo;
   unsteamFix?: FixInfo;
   hypervisorFix?: FixInfo;
-  ryuuFixes?: Array<{ file: string; badge: string; url: string }>;
+  ryuuFixes?: Array<{ file: string; badge: string; url: string; description?: string }>;
   luatoolsFixes?: LuatoolsFix[];
   luatoolsCatalog?: LuatoolsCatalogFix[];
   luatoolsAuthed?: boolean;

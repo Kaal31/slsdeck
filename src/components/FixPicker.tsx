@@ -54,13 +54,14 @@ import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
-import { getTokeerAvailabilityForGame, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
+import { getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 
 interface RowDef {
   key: string;
   label: string;
   fixType: string;
   info?: FixInfo;
+  description?: string;
 }
 
 // Colour a source badge (Ryuu / luatools ship Online / Bypass / Crack / Tested /
@@ -163,12 +164,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
       const cached = readTokeerAvailabilityCache();
       setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
-      setTokeerGame(null);
+      const recent = hasFreshTokeerFixCache(cached);
+      setTokeerGame(recent ? getTokeerAvailabilityForGame(appid, lookupName) : null);
       if (tokeerRefreshApp.current !== appid) {
         tokeerRefreshApp.current = appid;
         const requestedAppid = appid;
-        setTokeerRefreshing(true);
-        refreshTokeerAvailabilityCache(true)
+        setTokeerRefreshing(!recent);
+        (recent ? Promise.resolve(cached) : refreshTokeerAvailabilityCache(true))
           .then((live) => {
             if (tokeerRefreshApp.current === requestedAppid) {
               if (!live) {
@@ -799,7 +801,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   // Show EVERY ryuu fix/variant/version for this game (not one best pick), so a
   // version-specific fix can be matched to the installed build.
-  const ryuuList = ((check as any).ryuuFixes || []) as Array<{ file: string; badge: string; url: string }>;
+  const ryuuList = ((check as any).ryuuFixes || []) as Array<{ file: string; badge: string; url: string; description?: string }>;
   const rows: RowDef[] = ryuuList.map((e, i) => {
     const online = (e.badge || "").toLowerCase() === "online";
     return {
@@ -811,6 +813,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         ? "Denuvo/HV Fix"
         : "Generic Fix",
       info: { status: 200, available: true, url: e.url, file: e.file, badge: e.badge } as any,
+      description: e.description,
     };
   });
   const peroUrl = (check.onlineFix as any).perondepot as string | undefined;
@@ -825,7 +828,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   // luatools.work fallback fixes (probed directly, index-free). Shown with their
   // source + classification so it's clear where the fix comes from and its type.
   const luatoolsList = ((check as any).luatoolsFixes || []) as Array<{
-    file: string; badge: string; type: string; source: string; url: string;
+    file: string; badge: string; type: string; source: string; url: string; description?: string;
   }>;
   luatoolsList.forEach((e, i) => {
     const online = (e.type || "").toLowerCase() === "online";
@@ -834,6 +837,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       label: `${online ? "Online Fix" : "Crack / Bypass Fix"} (luatools)`,
       fixType: online ? "Online Fix" : "Generic Fix",
       info: { status: 200, available: true, url: e.url, file: e.file, badge: e.badge } as any,
+      description: e.description,
     });
   });
   rows.push({
@@ -1135,6 +1139,11 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
                 {row.info.file}
               </div>
             )}
+            {(row.description || row.info?.description) && (
+              <div style={{ fontSize: 11, opacity: 0.78, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word", marginBottom: 6 }}>
+                {row.description || row.info?.description}
+              </div>
+            )}
             {(row.info?.url || "").includes("generator.ryuu.lol") && !hasRyuuKey && (
               <div style={{ fontSize: 11, color: "#ffcc66", marginBottom: 4 }}>
                 🔑 Needs a Ryuu API key — add it in Settings to download this fix.
@@ -1236,6 +1245,11 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
                   )}
                   {meta && (
                     <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>{meta}</div>
+                  )}
+                  {fix.description && (
+                    <div style={{ fontSize: 11, opacity: 0.78, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 160, overflowY: "auto", marginBottom: 7 }}>
+                      {fix.description}
+                    </div>
                   )}
                   <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
                     <DialogButton style={bs} disabled={working || !!awaiting} onClick={() => doLtFix(fix)}>

@@ -144,7 +144,11 @@ def entries(appid: int) -> List[Dict[str, str]]:
         if isinstance(e, dict) and e.get("file"):
             # HV build: keep hypervisor-badged fixes — the Denuvo toggle routes
             # them through the anti-Denuvo hypervisor + custom Proton.
-            out.append({"file": e["file"], "badge": (e.get("badge") or ""), "url": _url_for(e["file"])})
+            out.append({
+                "file": e["file"], "badge": (e.get("badge") or ""),
+                "url": _url_for(e["file"]),
+                "description": str(e.get("description") or e.get("desc") or e.get("notes") or ""),
+            })
     return out
 
 

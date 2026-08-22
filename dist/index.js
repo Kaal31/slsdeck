@@ -2393,6 +2393,10 @@ async function openDedevisionDiscordLogin() {
 const CACHE_KEY = "slsdeck.tokeerAvailability.v1";
 const SESSION_KEY = "slsdeck.tokeerSession.v1";
 const TOKEER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const TOKEER_FIX_FRESH_MS = 2 * 60 * 1000;
+function hasFreshTokeerFixCache(cache = readTokeerAvailabilityCache()) {
+    return !!cache && Date.now() - cache.updatedAt < TOKEER_FIX_FRESH_MS;
+}
 function finite(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : undefined;
@@ -2704,12 +2708,13 @@ function FixPicker({ appid, onReload, onClose }) {
             const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
             const cached = readTokeerAvailabilityCache();
             setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
-            setTokeerGame(null);
+            const recent = hasFreshTokeerFixCache(cached);
+            setTokeerGame(recent ? getTokeerAvailabilityForGame(appid, lookupName) : null);
             if (tokeerRefreshApp.current !== appid) {
                 tokeerRefreshApp.current = appid;
                 const requestedAppid = appid;
-                setTokeerRefreshing(true);
-                refreshTokeerAvailabilityCache(true)
+                setTokeerRefreshing(!recent);
+                (recent ? Promise.resolve(cached) : refreshTokeerAvailabilityCache(true))
                     .then((live) => {
                     if (tokeerRefreshApp.current === requestedAppid) {
                         if (!live) {
@@ -3338,6 +3343,7 @@ function FixPicker({ appid, onReload, onClose }) {
                     ? "Denuvo/HV Fix"
                     : "Generic Fix",
             info: { status: 200, available: true, url: e.url, file: e.file, badge: e.badge },
+            description: e.description,
         };
     });
     const peroUrl = check.onlineFix.perondepot;
@@ -3359,6 +3365,7 @@ function FixPicker({ appid, onReload, onClose }) {
             label: `${online ? "Online Fix" : "Crack / Bypass Fix"} (luatools)`,
             fixType: online ? "Online Fix" : "Generic Fix",
             info: { status: 200, available: true, url: e.url, file: e.file, badge: e.badge },
+            description: e.description,
         });
     });
     rows.push({
@@ -3524,7 +3531,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         borderRadius: 8,
                         padding: 8,
                         opacity: avail || done ? 1 : 0.55,
-                    }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: [row.label, SP_JSX.jsx(BadgeChip, { badge: row.info?.badge, inline: true }), done ? " · ✓ Applied" : avail ? " · Available" : " · Not available"] }), row.info?.file && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: row.info.file })), (row.info?.url || "").includes("generator.ryuu.lol") && !hasRyuuKey && (SP_JSX.jsx("div", { style: { fontSize: 11, color: "#ffcc66", marginBottom: 4 }, children: "\uD83D\uDD11 Needs a Ryuu API key \u2014 add it in Settings to download this fix." })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting || !avail, onClick: () => doFix(row), children: busy.startsWith(flowKey) ? "Working…" : avail ? "Apply this fix" : "No fix" }) }), renderFixFlow(flowKey)] }, row.key));
+                    }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: [row.label, SP_JSX.jsx(BadgeChip, { badge: row.info?.badge, inline: true }), done ? " · ✓ Applied" : avail ? " · Available" : " · Not available"] }), row.info?.file && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: row.info.file })), (row.description || row.info?.description) && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.78, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word", marginBottom: 6 }, children: row.description || row.info?.description })), (row.info?.url || "").includes("generator.ryuu.lol") && !hasRyuuKey && (SP_JSX.jsx("div", { style: { fontSize: 11, color: "#ffcc66", marginBottom: 4 }, children: "\uD83D\uDD11 Needs a Ryuu API key \u2014 add it in Settings to download this fix." })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting || !avail, onClick: () => doFix(row), children: busy.startsWith(flowKey) ? "Working…" : avail ? "Apply this fix" : "No fix" }) }), renderFixFlow(flowKey)] }, row.key));
             }), (() => {
                 const cat = (check.luatoolsCatalog || []);
                 const authed = check.luatoolsAuthed;
@@ -3566,7 +3573,7 @@ function FixPicker({ appid, onReload, onClose }) {
                                 .filter(Boolean)
                                 .join(" · ");
                             const flowKey = `lt:${fix.id}`;
-                            return (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: title }), tags.length > 0 && (SP_JSX.jsx("div", { style: { marginBottom: 4 }, children: tags.map((t, ti) => SP_JSX.jsx(BadgeChip, { badge: t }, ti)) })), meta && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: meta })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: () => doLtFix(fix), children: busy.startsWith(flowKey) ? "Working…" : "Apply & pin to build" }) }), renderFixFlow(flowKey)] }, `lt-${fix.id || i}`));
+                            return (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: title }), tags.length > 0 && (SP_JSX.jsx("div", { style: { marginBottom: 4 }, children: tags.map((t, ti) => SP_JSX.jsx(BadgeChip, { badge: t }, ti)) })), meta && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: meta })), fix.description && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.78, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 160, overflowY: "auto", marginBottom: 7 }, children: fix.description })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: () => doLtFix(fix), children: busy.startsWith(flowKey) ? "Working…" : "Apply & pin to build" }) }), renderFixFlow(flowKey)] }, `lt-${fix.id || i}`));
                         })] }));
             })(), (!dlcOwnedOnly || (!added && isInLibrary(appid))) && smoke?.supported && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => doSmoke(!smoke.installed), children: busy === "smoke"
                     ? "Working…"
@@ -4225,7 +4232,7 @@ function buildBar(appid, installed, fixAvailable) {
 // Mirrors the desktop SLSDeck "Fixes" modal: one row per fix (Online /
 // Generic) with a Manifest button (add the game) and a Fix button (apply that
 // fix), plus Un-Fix and Close.
-function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryuuJson) {
+function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryuuJson, catalogJson, tokeerJson) {
     return `(function(){
     var APPID=${appid};
     var old=document.getElementById('lt-fix-modal'); if(old) old.remove();
@@ -4258,10 +4265,28 @@ function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryu
       box.style.cssText='border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:10px;margin-bottom:8px;';
       var t=document.createElement('div'); t.textContent=lbl; t.style.cssText='font-size:14px;font-weight:600;'; box.appendChild(t);
       var sub=document.createElement('div'); sub.textContent=e.file+(e.badge?(' · '+e.badge):''); sub.style.cssText='font-size:11px;opacity:0.6;margin:2px 0 6px;'; box.appendChild(sub);
+      if(e.description){var d=document.createElement('div');d.textContent=e.description;d.style.cssText='font-size:11px;opacity:.78;white-space:pre-wrap;line-height:1.4;margin:0 0 7px;max-height:120px;overflow:auto;';box.appendChild(d);}
       var b=document.createElement('button'); b.textContent='Apply this fix';
       b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';
       b.onclick=function(){ inv({action:'fixApplyUrl',appid:APPID,url:e.url,fixType:(online?'Online Fix':'Generic Fix'),file:e.file}); };
       box.appendChild(b); card.appendChild(box);
+    });
+    var TOKEER=${tokeerJson};
+    if(TOKEER&&TOKEER.name){
+      var tb=document.createElement('div');tb.style.cssText='border:1px solid rgba(202,168,255,.35);background:rgba(202,168,255,.07);border-radius:8px;padding:10px;margin-bottom:8px;';
+      var tt=document.createElement('div');tt.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+(TOKEER.total==null?'':(' / '+TOKEER.total))+' keys available';tt.style.cssText='font-size:14px;font-weight:600;margin-bottom:4px;';tb.appendChild(tt);
+      var td=document.createElement('div');td.textContent='Live Discord availability matched for this game. Uses the same Tokeer setup and validation as the library Fixes menu.';td.style.cssText='font-size:11px;opacity:.75;line-height:1.4;margin-bottom:7px;';tb.appendChild(td);
+      var tx=document.createElement('button');tx.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+' keys';tx.style.cssText='width:100%;background:#7655a8;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';tx.onclick=function(){inv({action:'tokeer',appid:APPID});};tb.appendChild(tx);card.appendChild(tb);
+    }
+    var CATALOG=${catalogJson};
+    CATALOG.forEach(function(e,i){
+      var box=document.createElement('div');box.style.cssText='border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin-bottom:8px;';
+      var tags=(e.tags||[]).map(function(t){return typeof t==='string'?t:(t&&(t.name||t.label||t.text||t.title||t.tag))||'';}).filter(Boolean);
+      var title=document.createElement('div');title.textContent=(e.name&&e.name!==String(APPID)?e.name:(e.build?('Build '+e.build):('lua.tools fix '+(i+1))));title.style.cssText='font-size:14px;font-weight:600;margin-bottom:3px;';box.appendChild(title);
+      if(tags.length){var tg=document.createElement('div');tg.textContent=tags.join(' · ');tg.style.cssText='font-size:11px;color:#caa8ff;margin-bottom:4px;';box.appendChild(tg);}
+      var meta=[e.release_date?('Released '+String(e.release_date).slice(0,10)):'',e.build?('build '+e.build):''].filter(Boolean).join(' · ');if(meta){var m=document.createElement('div');m.textContent=meta;m.style.cssText='font-size:11px;opacity:.6;margin-bottom:4px;';box.appendChild(m);}
+      if(e.description){var d=document.createElement('div');d.textContent=e.description;d.style.cssText='font-size:11px;opacity:.78;white-space:pre-wrap;line-height:1.4;margin-bottom:7px;max-height:150px;overflow:auto;';box.appendChild(d);}
+      var b=document.createElement('button');b.textContent='Apply lua.tools fix';b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';b.onclick=function(){inv({action:'ltApply',appid:APPID,fix:e});};box.appendChild(b);card.appendChild(box);
     });
     if(${onlineAvail ? "true" : "false"}) card.appendChild(row('Online Fix (perondepot)', true, 'online'));
     // The generic/crack fix had no row at all: genericAvail was accepted as a
@@ -4473,11 +4498,79 @@ async function onAction$1(payloadStr) {
         setStatus$1("Checking fixes…");
         try {
             const f = await checkFixesFull(appid);
-            evaluate$1(buildFixModal(appid, f?.gameName || "", !!f?.onlineFix?.available, !!f?.genericFix?.available, f?.unsteamFix?.available !== false, JSON.stringify(f?.ryuuFixes || [])));
+            const cached = readTokeerAvailabilityCache();
+            let tokeer = null;
+            try {
+                const live = hasFreshTokeerFixCache(cached) ? cached : await refreshTokeerAvailabilityCache(true);
+                if (live)
+                    tokeer = await resolveTokeerAvailabilityForGame(appid, f?.gameName || "");
+            }
+            catch {
+                tokeer = null;
+            }
+            evaluate$1(buildFixModal(appid, f?.gameName || "", !!f?.onlineFix?.available, !!f?.genericFix?.available, f?.unsteamFix?.available !== false, JSON.stringify(f?.ryuuFixes || []), JSON.stringify(f?.luatoolsCatalog || []), JSON.stringify(tokeer)));
             setStatus$1("");
         }
         catch {
             setStatus$1("Could not check fixes");
+        }
+        return;
+    }
+    if (action === "tokeer") {
+        setStatus$1("Checking Tokeer prerequisites…");
+        try {
+            const preflight = await tokeerPreflight(appid, "");
+            if (!preflight.success || !preflight.installed) {
+                setStatus$1(preflight.error || "Game is not installed");
+                return;
+            }
+            const r = await setupAndVerifyTokeer(appid, setStatus$1);
+            if (!r.success) {
+                setStatus$1(describeTokeerFailure(r));
+                return;
+            }
+            if (r.code) {
+                try {
+                    await navigator.clipboard.writeText(r.code);
+                }
+                catch { }
+            }
+            setStatus$1(`Tokeer ready${r.code ? " — TLX1 copied" : ""}`);
+        }
+        catch (e) {
+            setStatus$1(`Tokeer failed: ${e}`);
+        }
+        return;
+    }
+    if (action === "ltApply") {
+        setStatus$1("Locating game…");
+        try {
+            const p = await getGameInstallPath(appid);
+            if (!p.success || !p.installPath) {
+                setStatus$1("Game not installed — add it first, then install");
+                return;
+            }
+            const f = msg.fix || {};
+            const started = await applyLuatoolsFix(appid, String(f.id || ""), p.installPath, String(f.manifest_id || f.build || ""), String(f.depot_id || ""), "lua.tools fix", "");
+            if (!started.success) {
+                setStatus$1(started.error || "Could not start lua.tools fix");
+                return;
+            }
+            clearPoll();
+            poll = setInterval(async () => {
+                const r = await getFixStatus(appid);
+                const st = r.state || {};
+                setStatus$1("Fix: " + (st.status || ""));
+                if (["done", "failed", "cancelled"].includes(st.status || "")) {
+                    clearPoll();
+                    if (st.status === "done")
+                        applyFixRuntime(appid, st.overrides);
+                    setStatus$1(st.status === "done" ? "lua.tools fix applied — restart Steam" : st.error || "Fix failed");
+                }
+            }, 800);
+        }
+        catch (e) {
+            setStatus$1(`lua.tools fix failed: ${e}`);
         }
         return;
     }
@@ -8081,6 +8174,7 @@ function TokeerSection() {
     const [submittedTlx, setSubmittedTlx] = SP_REACT.useState(savedRef.current?.submittedTlx || "");
     const [automationError, setAutomationError] = SP_REACT.useState(savedRef.current?.automationError || "");
     const automationRunningRef = SP_REACT.useRef(false);
+    const loginPendingRef = SP_REACT.useRef(false);
     const checkpoint = (patch) => {
         try {
             const current = readSavedSession() || { startedAt: sessionStartedRef.current };
@@ -8591,14 +8685,23 @@ function TokeerSection() {
     };
     const c = checks(verify || undefined);
     return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [!discordSignedIn && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: async () => {
+                                if (loginPendingRef.current)
+                                    return;
+                                loginPendingRef.current = true;
+                                setBusy("Waiting for Discord sign-in…");
                                 setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
-                                await openDedevisionDiscordLogin();
-                                // Previously the button just sat there after login: nothing re-checked
-                                // the session, so it only vanished on some later unrelated refresh.
-                                // Watch for the transition and drop it as soon as it actually happens.
-                                if (await waitForDiscordSignIn()) {
-                                    setDiscordSignedIn(true);
-                                    setMessage("Discord signed in. You can connect Tokeer silently now.");
+                                try {
+                                    await openDedevisionDiscordLogin();
+                                    if (await waitForDiscordSignIn()) {
+                                        setDiscordSignedIn(true);
+                                        setMessage("Discord signed in. You can connect Tokeer silently now.");
+                                    }
+                                    else
+                                        setMessage("Discord sign-in was not detected. You can retry without opening duplicate login pages.");
+                                }
+                                finally {
+                                    loginPendingRef.current = false;
+                                    setBusy("");
                                 }
                             }, children: "Sign in to DeDevision Discord" }) }), (!discordSignedIn || !autoConnect) && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Live \u00B7 Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: 8, borderRadius: 6, background: "rgba(255,255,255,.055)", fontSize: 11, lineHeight: 1.55 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 700, marginBottom: 3 }, children: "Cached vault stats" }), SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: availability.vault.gamesListed ?? "?" }), " \u00B7 Keys remaining: ", SP_JSX.jsx("b", { children: availability.vault.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: availability.vault.highDemand ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Available games cached: ", SP_JSX.jsx("b", { children: availability.games.length }), " \u00B7 Updated: ", SP_JSX.jsx("b", { children: new Date(availability.updatedAt).toLocaleString() })] }), SP_JSX.jsx("div", { style: { marginTop: 6, maxHeight: 150, overflowY: "auto", opacity: .85 }, children: availability.games.map(game => SP_JSX.jsxs("div", { children: [game.name, game.remaining !== undefined ? ` — ${game.remaining}/${game.total ?? "?"} keys` : ""] }, game.appid || game.name)) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => refreshAvailability(true), children: "Refresh vault & available games" }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), ticket?.opened && !ticket.appid
                         ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !ticket.url, onClick: resumeTicket, children: "Resume existing ticket / detect commands" }) })

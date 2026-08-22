@@ -9,6 +9,11 @@ import {
 const CACHE_KEY = "slsdeck.tokeerAvailability.v1";
 const SESSION_KEY = "slsdeck.tokeerSession.v1";
 export const TOKEER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+export const TOKEER_FIX_FRESH_MS = 2 * 60 * 1000;
+
+export function hasFreshTokeerFixCache(cache = readTokeerAvailabilityCache()): boolean {
+  return !!cache && Date.now() - cache.updatedAt < TOKEER_FIX_FRESH_MS;
+}
 
 export type TokeerAvailableGame = {
   label: string;

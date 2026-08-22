@@ -16,10 +16,14 @@ import {
   getInstalledFixes,
   denuvoKnown,
   denuvoResolve,
+  applyLuatoolsFix,
+  tokeerPreflight,
 } from "../api";
 import { applyFixRuntime } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { BADGE_LABELS, BADGE_COLORS, ONLINE_RE } from "../lib/badges";
+import { hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame } from "../lib/tokeerAvailability";
+import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 
 /**
  * Steam Store page injection.
@@ -159,7 +163,9 @@ function buildFixModal(
   onlineAvail: boolean,
   genericAvail: boolean,
   unsteamAvail: boolean,
-  ryuuJson: string
+  ryuuJson: string,
+  catalogJson: string,
+  tokeerJson: string
 ): string {
   return `(function(){
     var APPID=${appid};
@@ -193,10 +199,28 @@ function buildFixModal(
       box.style.cssText='border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:10px;margin-bottom:8px;';
       var t=document.createElement('div'); t.textContent=lbl; t.style.cssText='font-size:14px;font-weight:600;'; box.appendChild(t);
       var sub=document.createElement('div'); sub.textContent=e.file+(e.badge?(' · '+e.badge):''); sub.style.cssText='font-size:11px;opacity:0.6;margin:2px 0 6px;'; box.appendChild(sub);
+      if(e.description){var d=document.createElement('div');d.textContent=e.description;d.style.cssText='font-size:11px;opacity:.78;white-space:pre-wrap;line-height:1.4;margin:0 0 7px;max-height:120px;overflow:auto;';box.appendChild(d);}
       var b=document.createElement('button'); b.textContent='Apply this fix';
       b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';
       b.onclick=function(){ inv({action:'fixApplyUrl',appid:APPID,url:e.url,fixType:(online?'Online Fix':'Generic Fix'),file:e.file}); };
       box.appendChild(b); card.appendChild(box);
+    });
+    var TOKEER=${tokeerJson};
+    if(TOKEER&&TOKEER.name){
+      var tb=document.createElement('div');tb.style.cssText='border:1px solid rgba(202,168,255,.35);background:rgba(202,168,255,.07);border-radius:8px;padding:10px;margin-bottom:8px;';
+      var tt=document.createElement('div');tt.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+(TOKEER.total==null?'':(' / '+TOKEER.total))+' keys available';tt.style.cssText='font-size:14px;font-weight:600;margin-bottom:4px;';tb.appendChild(tt);
+      var td=document.createElement('div');td.textContent='Live Discord availability matched for this game. Uses the same Tokeer setup and validation as the library Fixes menu.';td.style.cssText='font-size:11px;opacity:.75;line-height:1.4;margin-bottom:7px;';tb.appendChild(td);
+      var tx=document.createElement('button');tx.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+' keys';tx.style.cssText='width:100%;background:#7655a8;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';tx.onclick=function(){inv({action:'tokeer',appid:APPID});};tb.appendChild(tx);card.appendChild(tb);
+    }
+    var CATALOG=${catalogJson};
+    CATALOG.forEach(function(e,i){
+      var box=document.createElement('div');box.style.cssText='border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin-bottom:8px;';
+      var tags=(e.tags||[]).map(function(t){return typeof t==='string'?t:(t&&(t.name||t.label||t.text||t.title||t.tag))||'';}).filter(Boolean);
+      var title=document.createElement('div');title.textContent=(e.name&&e.name!==String(APPID)?e.name:(e.build?('Build '+e.build):('lua.tools fix '+(i+1))));title.style.cssText='font-size:14px;font-weight:600;margin-bottom:3px;';box.appendChild(title);
+      if(tags.length){var tg=document.createElement('div');tg.textContent=tags.join(' · ');tg.style.cssText='font-size:11px;color:#caa8ff;margin-bottom:4px;';box.appendChild(tg);}
+      var meta=[e.release_date?('Released '+String(e.release_date).slice(0,10)):'',e.build?('build '+e.build):''].filter(Boolean).join(' · ');if(meta){var m=document.createElement('div');m.textContent=meta;m.style.cssText='font-size:11px;opacity:.6;margin-bottom:4px;';box.appendChild(m);}
+      if(e.description){var d=document.createElement('div');d.textContent=e.description;d.style.cssText='font-size:11px;opacity:.78;white-space:pre-wrap;line-height:1.4;margin-bottom:7px;max-height:150px;overflow:auto;';box.appendChild(d);}
+      var b=document.createElement('button');b.textContent='Apply lua.tools fix';b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';b.onclick=function(){inv({action:'ltApply',appid:APPID,fix:e});};box.appendChild(b);card.appendChild(box);
     });
     if(${onlineAvail ? "true" : "false"}) card.appendChild(row('Online Fix (perondepot)', true, 'online'));
     // The generic/crack fix had no row at all: genericAvail was accepted as a
@@ -389,6 +413,12 @@ async function onAction(payloadStr: string): Promise<void> {
     setStatus("Checking fixes…");
     try {
       const f = await checkFixesFull(appid);
+      const cached = readTokeerAvailabilityCache();
+      let tokeer: any = null;
+      try {
+        const live = hasFreshTokeerFixCache(cached) ? cached : await refreshTokeerAvailabilityCache(true);
+        if (live) tokeer = await resolveTokeerAvailabilityForGame(appid, f?.gameName || "");
+      } catch { tokeer = null; }
       evaluate(
         buildFixModal(
           appid,
@@ -396,13 +426,45 @@ async function onAction(payloadStr: string): Promise<void> {
           !!f?.onlineFix?.available,
           !!f?.genericFix?.available,
           f?.unsteamFix?.available !== false,
-          JSON.stringify((f as any)?.ryuuFixes || [])
+          JSON.stringify((f as any)?.ryuuFixes || []),
+          JSON.stringify((f as any)?.luatoolsCatalog || []),
+          JSON.stringify(tokeer)
         )
       );
       setStatus("");
     } catch {
       setStatus("Could not check fixes");
     }
+    return;
+  }
+
+  if (action === "tokeer") {
+    setStatus("Checking Tokeer prerequisites…");
+    try {
+      const preflight = await tokeerPreflight(appid, "");
+      if (!preflight.success || !preflight.installed) { setStatus(preflight.error || "Game is not installed"); return; }
+      const r = await setupAndVerifyTokeer(appid, setStatus);
+      if (!r.success) { setStatus(describeTokeerFailure(r)); return; }
+      if (r.code) { try { await navigator.clipboard.writeText(r.code); } catch {} }
+      setStatus(`Tokeer ready${r.code ? " — TLX1 copied" : ""}`);
+    } catch (e) { setStatus(`Tokeer failed: ${e}`); }
+    return;
+  }
+
+  if (action === "ltApply") {
+    setStatus("Locating game…");
+    try {
+      const p = await getGameInstallPath(appid);
+      if (!p.success || !p.installPath) { setStatus("Game not installed — add it first, then install"); return; }
+      const f = msg.fix || {};
+      const started = await applyLuatoolsFix(appid, String(f.id || ""), p.installPath, String(f.manifest_id || f.build || ""), String(f.depot_id || ""), "lua.tools fix", "");
+      if (!started.success) { setStatus(started.error || "Could not start lua.tools fix"); return; }
+      clearPoll();
+      poll = setInterval(async () => {
+        const r = await getFixStatus(appid); const st: any = r.state || {}; setStatus("Fix: " + (st.status || ""));
+        if (["done","failed","cancelled"].includes(st.status || "")) { clearPoll(); if (st.status === "done") applyFixRuntime(appid, st.overrides); setStatus(st.status === "done" ? "lua.tools fix applied — restart Steam" : st.error || "Fix failed"); }
+      }, 800);
+    } catch (e) { setStatus(`lua.tools fix failed: ${e}`); }
     return;
   }
 

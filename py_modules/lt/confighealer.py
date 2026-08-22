@@ -194,9 +194,13 @@ def _block_of(lines: List[str], start: int) -> int:
     i = start + 1
     while i < len(lines):
         line = lines[i]
-        if not line.strip() or line.startswith("#"):
+        if not line.strip():
             i += 1
             continue
+        # A top-level comment documents the NEXT top-level option in the
+        # shipped template. It is not part of the previous key's value block.
+        if line.startswith("#"):
+            break
         if line[:1] in (" ", "\t") or line.lstrip().startswith("-"):
             i += 1
             continue

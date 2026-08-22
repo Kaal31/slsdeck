@@ -91,6 +91,7 @@ export function TokeerSection() {
   const [submittedTlx,setSubmittedTlx]=useState(savedRef.current?.submittedTlx||"");
   const [automationError,setAutomationError]=useState(savedRef.current?.automationError||"");
   const automationRunningRef=useRef(false);
+  const loginPendingRef=useRef(false);
 
   const checkpoint=(patch:Partial<SavedTokeerSession>)=>{
     try{
@@ -456,15 +457,16 @@ export function TokeerSection() {
   return <>
     <PanelSection title="1. Choose game in Tokeer">
       {!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
+        if(loginPendingRef.current)return;
+        loginPendingRef.current=true;setBusy("Waiting for Discord sign-in…");
         setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
-        await openDedevisionDiscordLogin();
-        // Previously the button just sat there after login: nothing re-checked
-        // the session, so it only vanished on some later unrelated refresh.
-        // Watch for the transition and drop it as soon as it actually happens.
-        if(await waitForDiscordSignIn()){
-          setDiscordSignedIn(true);
-          setMessage("Discord signed in. You can connect Tokeer silently now.");
-        }
+        try{
+          await openDedevisionDiscordLogin();
+          if(await waitForDiscordSignIn()){
+            setDiscordSignedIn(true);
+            setMessage("Discord signed in. You can connect Tokeer silently now.");
+          }else setMessage("Discord sign-in was not detected. You can retry without opening duplicate login pages.");
+        }finally{loginPendingRef.current=false;setBusy("");}
       }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
       {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
