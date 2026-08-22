@@ -1,0 +1,119 @@
+name: Release safe-restart
+
+on:
+  push:
+    branches:
+      - safe-restart
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-safe-restart
+  # Other maintenance workflows also commit to this branch. Let an in-flight
+  # release finish so those commits cannot leave the rolling tag stale.
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout safe-restart
+        uses: actions/checkout@v4
+        with:
+          ref: safe-restart
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Verify Tokeer snapshot fix is compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'Could not parse Discord DOM snapshot' dist/index.js
+          grep -q 'Discord DOM snapshot returned no object' dist/index.js
+
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+
+      - name: Keep compiled bundle in the release workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Package the bundle built above directly. A separate validation
+          # workflow may commit dist/index.js; pushing it here creates a race
+          # that can abort the release after a successful build.
+          test -s dist/index.js
+
+      - name: Restore tracked dist support files for packaging
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-safe-restart.zip
+          mkdir -p artifact/SLSDeckUniversal
+
+          # Decky's current loader defaults to LEGACY_EVAL_IIFE when package.json
+          # is absent. Our @decky/rollup bundle is ESM and ends in a normal export,
+          # so package.json (with "type": "module") MUST ship with the plugin.
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+
+          # Fail the release rather than publish a ZIP Decky would misclassify as
+          # a legacy eval/IIFE plugin and then choke on `export` during startup.
+          test -f artifact/SLSDeckUniversal/package.json
+          node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") { console.error("Packaged plugin is not marked as an ES module"); process.exit(1); }'
+
+          cd artifact
+          zip -qr ../SLSDeckUniversal-safe-restart.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-safe-restart.zip | grep -q 'SLSDeckUniversal/package.json'
+
+      - name: Update rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="safe-restart-latest"
+          TITLE="SLSDeck safe dependency restart"
+          NOTES="Rolling prerelease built automatically from the safe-restart branch."
+
+          git fetch origin --tags --force
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target safe-restart
+          fi
+
+          gh release upload "$TAG" SLSDeckUniversal-safe-restart.zip --clobber
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-safe-restart
+          path: SLSDeckUniversal-safe-restart.zip
+          if-no-files-found: error
+          retention-days: 14
+
+# Safe-restart rolling prerelease.
