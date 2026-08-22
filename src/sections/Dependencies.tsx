@@ -120,7 +120,16 @@ export function DependenciesSection() {
 
   useEffect(() => {
     refresh();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    const onChanged = () => refresh();
+    window.addEventListener("slsdeck-dependencies-changed", onChanged);
+    // Installers run outside this page after plugin updates. Poll lightweight
+    // read-only health so colors change without reopening Dependencies.
+    const healthPoll = setInterval(refresh, 5000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      clearInterval(healthPoll);
+      window.removeEventListener("slsdeck-dependencies-changed", onChanged);
+    };
   }, []);
 
   // The post-restart GE-Proton + CloudRedirect jobs are started by the
@@ -194,6 +203,21 @@ export function DependenciesSection() {
       if (!r.success) { setN("fix", r.error || "failed"); setB("fix", false); return; }
       watch("fix", "Client fix done — reboot the Deck", false);
     } catch (e) { setN("fix", `error: ${e}`); setB("fix", false); }
+  };
+
+  const installTokeerRuntime = async () => {
+    setB("tokeer", true);
+    setN("tokeer", tokeerInstalled ? "checking/updating Tokeer runtime…" : "installing Tokeer runtime…");
+    try {
+      const r = await tokeerEnsureRuntime();
+      setTokeerInstalled(!!r.success);
+      setN("tokeer", r.success ? `runtime ready (${r.version || "latest"})` : `failed: ${r.error || "unknown error"}`);
+      toaster.toast({ title: "SLSDeck", body: r.success ? "Tokeer runtime ready" : "Tokeer runtime installation failed" });
+    } catch (e) {
+      setN("tokeer", `error: ${e}`);
+    }
+    setB("tokeer", false);
+    refresh();
   };
 
   const installProton = async () => {
@@ -340,6 +364,8 @@ export function DependenciesSection() {
           health={tokeerInstalled ? "ok" : "off"}
           statusText={note.tokeer || (tokeerInstalled ? "runtime installed" : "not installed yet")}
           busy={!!busy.tokeer}
+          actionLabel={tokeerInstalled ? "Check / reinstall Tokeer runtime" : "Install Tokeer runtime"}
+          onAction={installTokeerRuntime}
         />
         <DepRow
           label="GE-Proton10-34"
