@@ -5267,7 +5267,6 @@ function DependenciesSection() {
     const [busy, setBusy] = SP_REACT.useState({});
     const [note, setNote] = SP_REACT.useState({});
     const pollRef = SP_REACT.useRef(null);
-    const postRestartAuto = SP_REACT.useRef(false);
     const preRestartInstall = SP_REACT.useRef(false);
     const setB = (id, v) => setBusy((b) => ({ ...b, [id]: v }));
     const setN = (id, v) => setNote((n) => ({ ...n, [id]: v }));
@@ -5305,42 +5304,8 @@ function DependenciesSection() {
         return () => { if (pollRef.current)
             clearInterval(pollRef.current); };
     }, []);
-    // Once Steam returns from the normal SLSsteam restart, install the two large
-    // optional payloads in the background. Both backend installers are idempotent:
-    // a healthy exact install is skipped, while partial/leftover managed files are
-    // cleaned before retrying. Run them sequentially to avoid competing for disk
-    // and network bandwidth on the Deck.
-    SP_REACT.useEffect(() => {
-        if (!sls?.installed || preRestartInstall.current || postRestartAuto.current)
-            return;
-        postRestartAuto.current = true;
-        (async () => {
-            setB("tokeerProton", true);
-            setN("tokeerProton", "installing GE-Proton10-34 in background…");
-            try {
-                const proton = await tokeerEnsureProton();
-                setN("tokeerProton", proton.success ? "GE-Proton10-34 installed" : `install failed: ${proton.error || "unknown error"}`);
-            }
-            catch (e) {
-                setN("tokeerProton", `install failed: ${e}`);
-            }
-            setB("tokeerProton", false);
-            setB("cr", true);
-            setN("cr", "installing CloudRedirect Moon in background… (first run is slow)");
-            try {
-                const r = await crEnsureInstalledAuto();
-                setN("cr", r.installed
-                    ? "installed · Moon hook verified"
-                    : r.capped
-                        ? (r.log || "auto-install off — use Reinstall")
-                        : "will retry — " + (r.log || "check network"));
-            }
-            catch (e) {
-                setN("cr", `install failed: ${e}`);
-            }
-            setB("cr", false);
-        })();
-    }, [sls?.installed]);
+    // The post-restart GE-Proton + CloudRedirect jobs are started by the
+    // plugin root, so they run even when this Dependencies page is never opened.
     const watch = (id, doneMsg, restart) => {
         if (pollRef.current)
             clearInterval(pollRef.current);
@@ -5358,6 +5323,10 @@ function DependenciesSection() {
                         toaster.toast({ title: "SLSDeck", body: doneMsg });
                         if (restart && state.installed) {
                             preRestartInstall.current = true;
+                            try {
+                                window.localStorage.setItem("slsdeck.heavyDepsAfterRestart", String(Date.now()));
+                            }
+                            catch { /* */ }
                             setB("tokeer", true);
                             // Tokeer's shared runtime is small and belongs in the normal
                             // dependency order before the SLSsteam restart. GE-Proton and
@@ -9480,6 +9449,8 @@ const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
+const PLUGIN_SESSION_STARTED = Date.now();
+let heavyDepsStarted = false;
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
 // isn't in SLSsteam's list (SafeMode aborts the load). We detect that and offer a
 // one-tap client-fix (Headcrab re-pin), instead of leaving the user with a
@@ -9533,6 +9504,43 @@ function Content() {
     // Until SLSsteam is installed, the QAM shows only the setup block — no game
     // actions, game list or tools (there's nothing for them to act on yet).
     const [installed, setInstalled] = SP_REACT.useState(false);
+    SP_REACT.useEffect(() => {
+        if (!installed || heavyDepsStarted)
+            return;
+        let deferredAt = 0;
+        try {
+            deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0");
+        }
+        catch { /* */ }
+        // The first SLSsteam installation marks this session before it restarts.
+        // Do not start large downloads in that same session; a newly loaded plugin
+        // has a later PLUGIN_SESSION_STARTED value and proceeds automatically.
+        if (deferredAt >= PLUGIN_SESSION_STARTED)
+            return;
+        heavyDepsStarted = true;
+        try {
+            window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart");
+        }
+        catch { /* */ }
+        (async () => {
+            try {
+                const proton = await tokeerEnsureProton();
+                if (!proton.success)
+                    console.warn("SLSDeck: background GE-Proton install failed", proton.error);
+            }
+            catch (e) {
+                console.warn("SLSDeck: background GE-Proton install failed", e);
+            }
+            try {
+                const cloud = await crEnsureInstalledAuto();
+                if (!cloud.installed)
+                    console.warn("SLSDeck: background CloudRedirect install incomplete", cloud.log);
+            }
+            catch (e) {
+                console.warn("SLSDeck: background CloudRedirect install failed", e);
+            }
+        })();
+    }, [installed]);
     SP_REACT.useEffect(() => {
         const readActionsFixes = () => {
             try {
