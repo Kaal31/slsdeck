@@ -7210,13 +7210,13 @@ async function openTokeerDiscord() {
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 4, border: "1px solid rgba(255,255,255,.25)", background: "rgba(0,0,0,.22)", color: "inherit" };
 const checks = (v) => v?.checks || { installed: false, prefix: false, hook: false, launchOpt: false, proton: null };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
+const TOKEER_SESSION_KEY$1 = "slsdeck.tokeerSession.v1";
 const TOKEER_SESSION_MS = 30 * 60 * 1000;
 function readSavedSession() {
     try {
-        const parsed = JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY) || "null");
+        const parsed = JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY$1) || "null");
         if (!parsed || Number(parsed.expiresAt) <= Date.now()) {
-            window.localStorage.removeItem(TOKEER_SESSION_KEY);
+            window.localStorage.removeItem(TOKEER_SESSION_KEY$1);
             return null;
         }
         return parsed;
@@ -7250,7 +7250,7 @@ function TokeerSection() {
             ticket, gate, activation, verify, message,
         };
         try {
-            window.localStorage.setItem(TOKEER_SESSION_KEY, JSON.stringify(data));
+            window.localStorage.setItem(TOKEER_SESSION_KEY$1, JSON.stringify(data));
         }
         catch { }
     }, [selectedGame, selectedMenus, ticket, gate, activation, verify, message]);
@@ -8046,6 +8046,16 @@ async function syncSlsCollection() {
 const ACTIONS_FIXES_QAM_KEY$1 = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT$1 = "slsdeck-actions-fixes-qam";
 const DECKY_HV_VISIBLE_KEY = "slsdeck.showDeckyHv";
+const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
+function hasActiveTokeerSession() {
+    try {
+        const session = JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY) || "null");
+        return !!session && Number(session.expiresAt) > Date.now() && !!(session.selectedGame || session.ticket || session.gate);
+    }
+    catch {
+        return false;
+    }
+}
 function readDeckyHvVisible() {
     try {
         return window.localStorage.getItem(DECKY_HV_VISIBLE_KEY) === "1";
@@ -8275,6 +8285,7 @@ function AdvancedPage() {
     const bump = () => setTok((t) => t + 1);
     const [gamesInQam, setGamesInQam2] = SP_REACT.useState(false);
     const [showDeckyHv, setShowDeckyHv] = SP_REACT.useState(readDeckyHvVisible);
+    const [resumeTokeer] = SP_REACT.useState(hasActiveTokeerSession);
     SP_REACT.useEffect(() => {
         getGamesInQam().then((r) => setGamesInQam2(!!r.enabled)).catch(() => { });
     }, []);
@@ -8288,6 +8299,11 @@ function AdvancedPage() {
         }
     };
     return (SP_JSX.jsx(DFL.SidebarNavigation, { title: "SLSDeck", showTitle: true, pages: [
+            ...(resumeTokeer ? [{
+                    title: "Anti-Denuvo",
+                    icon: SP_JSX.jsx(FaShieldAlt, {}),
+                    content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(TokeerSection, {}) }),
+                }] : []),
             {
                 title: "Dependencies",
                 icon: SP_JSX.jsx(FaBoxOpen, {}),
@@ -8318,11 +8334,11 @@ function AdvancedPage() {
                 icon: SP_JSX.jsx(FaCloud, {}),
                 content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(CloudRedirectSection, {}) }),
             },
-            {
-                title: "Anti-Denuvo",
-                icon: SP_JSX.jsx(FaShieldAlt, {}),
-                content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(TokeerSection, {}) }),
-            },
+            ...(!resumeTokeer ? [{
+                    title: "Anti-Denuvo",
+                    icon: SP_JSX.jsx(FaShieldAlt, {}),
+                    content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(TokeerSection, {}) }),
+                }] : []),
             ...(showDeckyHv ? [{
                     title: "Hypervisor Bypass Module",
                     icon: SP_JSX.jsx(FaShieldAlt, {}),
