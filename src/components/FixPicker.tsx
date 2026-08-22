@@ -46,14 +46,14 @@ import {
   triggerSteamInstall,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
-import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
+import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
 import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
-import { getTokeerAvailabilityForGame, refreshTokeerAvailabilityCache, TokeerAvailableGame } from "../lib/tokeerAvailability";
+import { getTokeerAvailabilityForGame, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailableGame } from "../lib/tokeerAvailability";
 
 interface RowDef {
   key: string;
@@ -101,6 +101,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [check, setCheck] = useState<FixCheck | null>(null);
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
+  const [tokeerLookup, setTokeerLookup] = useState<{ name: string; cachedGames: number; updatedAt?: number }>({ name: "", cachedGames: 0 });
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
   const [pinned, setPinned] = useState(false);
@@ -157,8 +158,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       const fullCheck = await checkFixesFull(appid);
       setCheck(fullCheck);
       // Show the last good cache immediately, then force a live Discord scrape
-      // for this Fixes opening and update/hide the card in place.
-      setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName));
+      // for this Fixes opening and update/hide the card in place. Steam's own
+      // display name is authoritative; source indexes may return a blank title.
+      const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
+      const cached = readTokeerAvailabilityCache();
+      setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
+      setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
       if (tokeerRefreshApp.current !== appid) {
         tokeerRefreshApp.current = appid;
         const requestedAppid = appid;
@@ -166,7 +171,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         refreshTokeerAvailabilityCache(true)
           .then(() => {
             if (tokeerRefreshApp.current === requestedAppid) {
-              setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, fullCheck?.gameName));
+              const fresh = readTokeerAvailabilityCache();
+              setTokeerLookup({ name: lookupName, cachedGames: fresh?.games.length || 0, updatedAt: fresh?.updatedAt });
+              setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName));
             }
           })
           .catch(() => {})
@@ -279,6 +286,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setCheck(null);
     setTokeerGame(null);
     setTokeerRefreshing(false);
+    setTokeerLookup({ name: appDisplayName(appid), cachedGames: 0 });
     setApplied([]);
     setAwaiting(null);
     setActiveFixKey("");
@@ -1023,6 +1031,15 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           {busy === "tokeer" ? "Setting up and validating…" : `Tokeer · ${tokeerGame.remaining ?? "?"} keys`}
         </DialogButton>
       </div>}
+      {!tokeerGame && (
+        <div style={{ fontSize: 11, opacity: 0.65, padding: "5px 2px" }}>
+          Tokeer: {tokeerRefreshing
+            ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
+            : !tokeerLookup.updatedAt
+            ? "no successful availability cache yet — connect Discord in Anti-Denuvo and refresh the vault"
+            : `not currently matched as available (${tokeerLookup.cachedGames} cached games; zero-key games are excluded)`}
+        </div>
+      )}
       {rows.length === 0 && (
         <div style={{ fontSize: 12, opacity: 0.6 }}>No ryuu fixes indexed for this game.</div>
       )}
