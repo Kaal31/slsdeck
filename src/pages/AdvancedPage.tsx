@@ -56,7 +56,7 @@ const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
 function hasActiveTokeerSession(): boolean {
   try {
     const session=JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY)||"null");
-    return !!session && Number(session.expiresAt)>Date.now() && !!(session.selectedGame||session.ticket||session.gate);
+    return !!session && (!session.expiresAt||Number(session.expiresAt)>Date.now()) && !!(session.selectedGame||session.ticket||session.gate);
   } catch { return false; }
 }
 
