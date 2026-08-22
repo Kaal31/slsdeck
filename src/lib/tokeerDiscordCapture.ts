@@ -2,6 +2,7 @@ import { fetchNoCors } from "@decky/api";
 import { Navigation } from "@decky/ui";
 
 export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
+export const DEDEVISION_INVITE_URL = "https://discord.gg/denuvo";
 const GUILD_ID = "1464130182364270696";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
@@ -87,7 +88,9 @@ function cdpCommand(wsUrl: string, method: string, params: Record<string, any> =
 }
 
 async function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
-  const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
+  const result = await cdpCommand(wsUrl, "Runtime.evaluate", {
+    expression, returnByValue: true, awaitPromise: true,
+  }, timeoutMs);
   return result?.result?.value ?? null;
 }
 
@@ -132,6 +135,20 @@ async function findDiscordTab(): Promise<CdpTab | null> {
     if (!fallback) fallback = resolved;
   }
   return fallback;
+}
+
+/** Whether Steam CEF currently holds an authenticated Discord web session. */
+export async function getDiscordSignInState(): Promise<{ signedIn: boolean; found: boolean }> {
+  const tab = await findDiscordTab();
+  if (!tab?.webSocketDebuggerUrl) return { signedIn: false, found: false };
+  const expression = `(async function(){try{
+    var u=String(location.href||document.URL||'');
+    if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
+    if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
+    var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
+    return response.status===200;
+  }catch(e){return false;}})()`;
+  return { signedIn: !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500)), found: true };
 }
 
 async function findSharedJsContext(): Promise<CdpTab | null> {
@@ -613,6 +630,27 @@ export async function openTokeerDiscord(): Promise<boolean> {
     const SC: any = (window as any).SteamClient;
     if (SC?.System?.OpenInSystemBrowser) {
       SC.System.OpenInSystemBrowser(TOKEER_DISCORD_URL);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+/** Open DeDevision's invite. Discord itself asks for login when the shared
+ * Steam-CEF Discord session is unauthenticated, then continues to the server. */
+export async function openDedevisionDiscordLogin(): Promise<boolean> {
+  try { await hideTokeerBrowserView(); } catch {}
+  try {
+    const nav: any = Navigation as any;
+    if (typeof nav?.NavigateToExternalWeb === "function") {
+      nav.NavigateToExternalWeb(DEDEVISION_INVITE_URL);
+      return true;
+    }
+  } catch {}
+  try {
+    const SC: any = (window as any).SteamClient;
+    if (SC?.System?.OpenInSystemBrowser) {
+      SC.System.OpenInSystemBrowser(DEDEVISION_INVITE_URL);
       return true;
     }
   } catch {}
