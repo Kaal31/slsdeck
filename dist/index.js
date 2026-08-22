@@ -853,7 +853,10 @@ function clearFixLaunchOptions(appid) {
 /** The exact Steam display name for an app, used for the perondepot name match. */
 function appDisplayName(appid) {
     try {
-        return window.appStore?.GetAppOverviewByAppID?.(appid)?.display_name || "";
+        const store = window.appStore;
+        return (store?.GetAppOverviewByGameID?.(appid)?.display_name ||
+            store?.GetAppOverviewByAppID?.(appid)?.display_name ||
+            "");
     }
     catch {
         return "";
@@ -2247,6 +2250,67 @@ async function refreshTokeerAvailabilityCache(force = false) {
     })();
     return refreshPromise;
 }
+const ROMAN_TO_ARABIC = {
+    I: "1", II: "2", III: "3", IV: "4", V: "5", VI: "6", VII: "7",
+    VIII: "8", IX: "9", X: "10", XI: "11", XII: "12", XIII: "13",
+    XIV: "14", XV: "15", XVI: "16", XVII: "17", XVIII: "18", XIX: "19", XX: "20",
+};
+function decodeHtmlTitle(value) {
+    return String(value || "")
+        .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+        .replace(/&colon;/gi, ":").replace(/\s+on Steam$/i, "").trim();
+}
+function nameVariants(value) {
+    const raw = String(value || "").replace(/_/g, " ").trim();
+    if (!raw)
+        return [];
+    const roman = raw.split(/\s+/).map((word) => ROMAN_TO_ARABIC[word.toUpperCase()] || word).join(" ");
+    return Array.from(new Set([
+        normalizeTokeerGameName(raw),
+        normalizeTokeerGameName(raw.replace(/[®™©]/g, "")),
+        normalizeTokeerGameName(roman),
+    ].filter(Boolean)));
+}
+async function steamNameCandidates(appid, hint) {
+    const values = new Set();
+    if (hint)
+        values.add(hint);
+    try {
+        const store = window.appStore;
+        const overview = store?.GetAppOverviewByGameID?.(appid) ||
+            store?.GetAppOverviewByAppID?.(appid);
+        if (overview?.display_name)
+            values.add(String(overview.display_name));
+    }
+    catch { }
+    try {
+        const response = await fetchNoCors(`https://store.steampowered.com/app/${encodeURIComponent(appid)}`, { method: "GET" });
+        const html = await response.text();
+        const title = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)/i)?.[1];
+        if (title)
+            values.add(decodeHtmlTitle(title));
+        const slug = response.url?.match(/\/app\/\d+\/([^/?#]+)/i)?.[1] ||
+            html.match(/<meta\s+property=["']og:url["']\s+content=["'][^"']*\/app\/\d+\/([^/"']+)/i)?.[1];
+        if (slug)
+            values.add(decodeURIComponent(slug).replace(/_/g, " "));
+    }
+    catch { }
+    return Array.from(values);
+}
+async function resolveTokeerAvailabilityForGame(appid, gameName) {
+    const cache = readTokeerAvailabilityCache();
+    if (!cache)
+        return null;
+    const byAppid = cache.games.find((game) => game.appid === appid);
+    if (byAppid)
+        return byAppid;
+    const candidates = new Set();
+    for (const name of await steamNameCandidates(appid, gameName)) {
+        for (const variant of nameVariants(name))
+            candidates.add(variant);
+    }
+    return cache.games.find((game) => nameVariants(game.name).some((variant) => candidates.has(variant))) || null;
+}
 function getTokeerAvailabilityForGame(appid, gameName) {
     const cache = readTokeerAvailabilityCache();
     if (!cache)
@@ -2361,6 +2425,10 @@ function FixPicker({ appid, onReload, onClose }) {
             const cached = readTokeerAvailabilityCache();
             setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
             setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
+            resolveTokeerAvailabilityForGame(appid, lookupName)
+                .then((game) => { if (tokeerRefreshApp.current === 0 || tokeerRefreshApp.current === appid)
+                setTokeerGame(game); })
+                .catch(() => { });
             if (tokeerRefreshApp.current !== appid) {
                 tokeerRefreshApp.current = appid;
                 const requestedAppid = appid;
@@ -2370,7 +2438,10 @@ function FixPicker({ appid, onReload, onClose }) {
                     if (tokeerRefreshApp.current === requestedAppid) {
                         const fresh = readTokeerAvailabilityCache();
                         setTokeerLookup({ name: lookupName, cachedGames: fresh?.games.length || 0, updatedAt: fresh?.updatedAt });
-                        setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName));
+                        resolveTokeerAvailabilityForGame(requestedAppid, lookupName)
+                            .then((game) => { if (tokeerRefreshApp.current === requestedAppid)
+                            setTokeerGame(game); })
+                            .catch(() => setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName)));
                     }
                 })
                     .catch(() => { })
