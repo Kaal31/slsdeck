@@ -16,6 +16,7 @@ import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPen
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
+import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -86,6 +87,17 @@ function Content() {
   // Until SLSsteam is installed, the QAM shows only the setup block — no game
   // actions, game list or tools (there's nothing for them to act on yet).
   const [installed, setInstalled] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!installed) return;
+    // Refresh Discord-backed vault/game availability independently of the
+    // Anti-Denuvo page. The cache itself coalesces callers and preserves the
+    // last good result when Discord is logged out or temporarily unrendered.
+    const refresh = () => refreshTokeerAvailabilityCache(false).catch(() => {});
+    const first = setTimeout(refresh, 12000);
+    const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
+    return () => { clearTimeout(first); clearInterval(interval); };
+  }, [installed]);
 
   useEffect(() => {
     if (!installed || heavyDepsStarted) return;
