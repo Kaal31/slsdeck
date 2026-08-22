@@ -1,6 +1,7 @@
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
-import { tokeerPrepare, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
+import { tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
+import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
 import {
   chooseSelectorOption,
   clickLatestTicketGate,
@@ -228,10 +229,15 @@ export function TokeerSection() {
   const prepare=async()=>{
     if(!appid)return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
     setBusy("Preparing Tokeer…");
-    setMessage(`Preparing ${selectedGame||`AppID ${appid}`} using the AppID supplied by the Tokeer ticket. Steam may restart.`);
+    setMessage(`Preparing ${selectedGame||`AppID ${appid}`} using the AppID supplied by the Tokeer ticket. Steam will stay open.`);
     try{
-      const r=await tokeerPrepare(appid);
-      setMessage(r.success?"Prepare complete. If Steam restarted, reopen SLSDeck/Discord and press Verify.":(r.error||r.output||"Prepare failed."));
+      const r=await setupAndVerifyTokeer(appid,setMessage);
+      if(r.success){
+        setVerify(r);
+        setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
+      }else{
+        setMessage(r.error||r.output||"Prepare/verify failed.");
+      }
       setRuntime(await tokeerRuntimeStatus());
     }catch(e){setMessage(String(e));}
     finally{setBusy("");}
