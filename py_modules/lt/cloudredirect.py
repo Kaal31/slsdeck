@@ -373,6 +373,53 @@ def _installed() -> bool:
         return False
 
 
+def uninstall_app(purge_data: bool = True) -> dict:
+    """Remove the companion, Moon hooks, and every known CloudRedirect leftover.
+
+    This is deliberately used only by Decky's true plugin-uninstall callback or
+    an explicit full-removal action, never by plugin unload/update.
+    """
+    home = slssteam._home()
+    removed = []
+    errors = []
+    try:
+        cmd = _wrap_cr([
+            "flatpak", "uninstall", "--user", "-y", "--noninteractive",
+            "--delete-data", CR_APP_ID,
+        ])
+        result = subprocess.run(cmd, env=slssteam._rich_env(), capture_output=True, timeout=300)
+        if result.returncode not in (0, 1):
+            errors.append((result.stderr or result.stdout).decode("utf-8", "replace")[-800:])
+    except Exception as exc:
+        errors.append(f"flatpak uninstall: {exc}")
+
+    targets = list(_cr_dirs())
+    if purge_data:
+        targets.extend([
+            os.path.join(home, ".config", "CloudRedirect"),
+            os.path.join(home, ".cache", "CloudRedirect"),
+            os.path.join(home, ".local", "state", "CloudRedirect"),
+            os.path.join(home, ".var", "app", CR_APP_ID),
+            os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".config", "CloudRedirect"),
+        ])
+    import shutil
+    for path in dict.fromkeys(targets):
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+                removed.append(path)
+            elif os.path.lexists(path):
+                os.remove(path)
+                removed.append(path)
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+    logger.log(f"CloudRedirect uninstall: removed={len(removed)} errors={len(errors)}")
+    return {
+        "success": not errors, "installed": False, "removedPaths": removed,
+        "errors": errors, "purgedData": bool(purge_data),
+    }
+
+
 def open_app() -> dict:
     if not _installed():
         # Try to install it right here (first launch can take a few minutes for
