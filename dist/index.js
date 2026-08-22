@@ -6773,6 +6773,17 @@ async function hasTokeerBrowserView() {
         return false;
     return !!(await evalJson(shared.webSocketDebuggerUrl, `(function(){try{return !!(window.SLSDECK_TOKEER_VIEW&&window.SLSDECK_TOKEER_VIEW.m_browserView);}catch(e){return false;}})()`, 2000));
 }
+async function findManagedTokeerTab() {
+    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
+    for (const tab of tabs) {
+        const managed = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{return window.__SLSDECK_TOKEER_MANAGED===true;}catch(e){return false;}})()`, 1200);
+        if (!managed)
+            continue;
+        const resolvedUrl = await resolveTabUrl(tab);
+        return { ...tab, resolvedUrl, url: resolvedUrl };
+    }
+    return null;
+}
 async function hideTokeerBrowserView() {
     const shared = await findSharedJsContext();
     if (!shared?.webSocketDebuggerUrl)
@@ -6880,9 +6891,14 @@ async function createTokeerDiscordBrowserView() {
         return null;
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
-        const tab = await findDiscordTab();
-        if (tab?.webSocketDebuggerUrl)
-            return tab;
+        // The websocket belongs to the exact BrowserView we created. Do not call
+        // findDiscordTab() here: a separately opened manual Discord tab may win
+        // that search and leave the managed embedded surface on its placeholder.
+        const liveUrl = await resolveTabUrl(target);
+        if (looksLikeDiscordUrl(liveUrl)) {
+            await evalJson(target.webSocketDebuggerUrl, `(function(){try{window.__SLSDECK_TOKEER_MANAGED=true;return true;}catch(e){return false;}})()`, 2000);
+            return { ...target, resolvedUrl: liveUrl, url: liveUrl };
+        }
         await new Promise((r) => setTimeout(r, 300));
     }
     return null;
@@ -6948,7 +6964,18 @@ async function openSelectorAndReadOptions(index) {
     if (!ok)
         return [];
     await new Promise((r) => setTimeout(r, 450));
-    const optionsExpr = `(function(){try{return JSON.stringify([].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}).map(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();}).filter(Boolean));}catch(e){return '[]';}})()`;
+    const optionsExpr = `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+    var boxes=[].slice.call(document.querySelectorAll('[role="listbox"]')).filter(visible);
+    var root=boxes.length?boxes[boxes.length-1]:document;
+    var rows=[].slice.call(root.querySelectorAll('[role="option"]')).filter(visible);
+    if(!rows.length)rows=[].slice.call(document.querySelectorAll('[role="option"]')).filter(visible);
+    var labels=rows.map(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();}).filter(Boolean);
+    // Tokeer's game rows carry availability text. If those are present, keep
+    // only them and discard Discord navigation/notification menu entries.
+    var games=labels.filter(function(t){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining\\s*\\(\\d+%\\)/i.test(t);});
+    return JSON.stringify(games.length?games:labels);
+  }catch(e){return '[]';}})()`;
     const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
     try {
         return JSON.parse(String(raw || "[]"));
@@ -6961,11 +6988,11 @@ async function chooseSelectorOption(index, label) {
     const tab = await findDiscordTab();
     if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
         return false;
-    const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
+    const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
     const alreadyOpen = !!(await evalJson(tab.webSocketDebuggerUrl, visibleExpr));
     if (!alreadyOpen)
         await openSelectorAndReadOptions(index);
-    const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).find(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
+    const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
     return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
 const TICKET_GATE_EXPR = `(function(){try{
@@ -7088,7 +7115,10 @@ async function connectTokeerDiscordHidden() {
     // readable through CDP but cannot be repositioned inside the plugin page.
     if (await hasTokeerBrowserView()) {
         try {
-            const existing = await findDiscordTab();
+            // Reuse only the CDP target tagged by createTokeerDiscordBrowserView.
+            // A user's manual/login Discord tab is readable too, but it is not the
+            // BrowserView that positionTokeerDiscordEmbedded() can move.
+            const existing = await findManagedTokeerTab();
             if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
                 try {
                     await parkTokeerBrowserView();
