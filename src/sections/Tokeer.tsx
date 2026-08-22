@@ -19,6 +19,7 @@ import {
   TokeerTicketContext,
   waitForTicketContext,
 } from "../lib/tokeerDiscordCapture";
+import { readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
@@ -55,6 +56,7 @@ export function TokeerSection() {
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
   const codeReceivedAtRef=useRef<number|undefined>(savedRef.current?.codeReceivedAt);
   const [discord,setDiscord]=useState<TokeerDiscordState|null>(null);
+  const [availability,setAvailability]=useState<TokeerAvailabilityCache|null>(readTokeerAvailabilityCache());
   const [runtime,setRuntime]=useState<any>(null);
   const [verify,setVerify]=useState<TokeerVerifyResult|null>(savedRef.current?.verify||null);
   const [activation,setActivation]=useState(savedRef.current?.activation||"");
@@ -94,7 +96,19 @@ export function TokeerSection() {
   },[codeExpiresAt]);
 
   const refreshDiscord=async()=>{ try{setDiscord(await readTokeerDiscord());}catch{} };
-  useEffect(()=>{ tokeerRuntimeStatus().then(setRuntime).catch(()=>{}); refreshDiscord(); const t=setInterval(refreshDiscord,15000); return()=>clearInterval(t); },[]);
+  const refreshAvailability=async(force=false)=>{
+    const value=await refreshTokeerAvailabilityCache(force);
+    if(value)setAvailability(value);
+  };
+  useEffect(()=>{
+    tokeerRuntimeStatus().then(setRuntime).catch(()=>{});
+    refreshDiscord();
+    refreshAvailability(false).catch(()=>{});
+    const onCache=(event:any)=>setAvailability(event?.detail||readTokeerAvailabilityCache());
+    window.addEventListener("slsdeck-tokeer-cache",onCache as EventListener);
+    const t=setInterval(refreshDiscord,15000);
+    return()=>{clearInterval(t);window.removeEventListener("slsdeck-tokeer-cache",onCache as EventListener);};
+  },[]);
   useEffect(()=>{
     if(!embedded){hideTokeerDiscordEmbedded().catch(()=>{});return;}
     let stopped=false;
@@ -154,7 +168,14 @@ export function TokeerSection() {
         state=await readTokeerDiscord();
       }
       setDiscord(state);
-      setMessage(state.found?"Hidden Tokeer panel connected.":(state.error||"Discord connected, but the activation panel is still loading."));
+      if(state.found){
+        setMessage("Hidden Tokeer panel connected. Refreshing vault and availability cache…");
+        const cached=await refreshTokeerAvailabilityCache(true);
+        if(cached)setAvailability(cached);
+        setMessage(cached?`Vault cache updated: ${cached.games.length} available games.`:"Panel connected, but the game menus were not ready; the previous cache was preserved.");
+      }else{
+        setMessage(state.error||"Discord connected, but the activation panel is still loading.");
+      }
     }catch(e){setMessage(String(e));}
     finally{setBusy("");}
   };
@@ -285,7 +306,16 @@ export function TokeerSection() {
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>setEmbedded(v=>!v)}>{embedded?"Hide embedded Discord":"Show embedded Discord"}</ButtonItem></PanelSectionRow>
       {embedded&&<PanelSectionRow><div ref={embeddedRef} style={{width:"100%",height:420,border:"1px solid rgba(255,255,255,.22)",borderRadius:6,background:"rgba(0,0,0,.35)",boxSizing:"border-box"}} /></PanelSectionRow>}
-      {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
+      {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Live · Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
+      {availability&&<PanelSectionRow><div style={{width:"100%",padding:8,borderRadius:6,background:"rgba(255,255,255,.055)",fontSize:11,lineHeight:1.55}}>
+        <div style={{fontWeight:700,marginBottom:3}}>Cached vault stats</div>
+        <div>Games listed: <b>{availability.vault.gamesListed??"?"}</b> · Keys remaining: <b>{availability.vault.keysRemaining??"?"}</b> · High demand: <b>{availability.vault.highDemand??"?"}</b></div>
+        <div>Available games cached: <b>{availability.games.length}</b> · Updated: <b>{new Date(availability.updatedAt).toLocaleString()}</b></div>
+        <div style={{marginTop:6,maxHeight:150,overflowY:"auto",opacity:.85}}>
+          {availability.games.map(game=><div key={game.appid||game.name}>{game.name}{game.remaining!==undefined?` — ${game.remaining}/${game.total??"?"} keys`:""}</div>)}
+        </div>
+      </div></PanelSectionRow>}
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>refreshAvailability(true)}>Refresh vault & available games</ButtonItem></PanelSectionRow>
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description="Live game list from the Tokeer Discord panel"
