@@ -506,6 +506,51 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
   return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
+export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boolean; error?: string }> {
+  let tab = await findManagedTokeerTab();
+  if (!tab?.webSocketDebuggerUrl) tab = await findDiscordTab();
+  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view is not connected." };
+
+  if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
+    await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+      url: ticketUrl, transitionType: "address_bar",
+    }, 4000);
+    await new Promise((r) => setTimeout(r, 900));
+  }
+
+  const clickCancel = `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var label=function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();};
+    var click=function(e){var r=e.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,p));});};
+    var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible);
+    var exact=buttons.filter(function(b){return /^(?:cancel|close)\\s+(?:this\\s+)?ticket$/i.test(label(b));});
+    var danger=exact.find(function(b){return /danger|red|negative|critical/i.test(String(b.className||'')+' '+String(b.getAttribute('data-look')||'')+' '+String(b.getAttribute('aria-label')||''));});
+    var target=danger||exact[exact.length-1];
+    if(!target)return JSON.stringify({ok:false,error:'The red Cancel Ticket button was not found in the open ticket.'});
+    click(target);
+    return JSON.stringify({ok:true,label:label(target)});
+  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
+  const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
+  let first: any;
+  try { first = JSON.parse(String(raw || "")); } catch { first = null; }
+  if (!first?.ok) return { success: false, error: first?.error || "Could not press Cancel Ticket." };
+
+  // Some ticket bots ask for a second confirmation in a modal.
+  await new Promise((r) => setTimeout(r, 650));
+  const confirmExpr = `(function(){try{
+    var d=[].slice.call(document.querySelectorAll('[role="dialog"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
+    if(!d)return false;
+    var bs=[].slice.call(d.querySelectorAll('button,[role="button"]'));
+    var b=bs.find(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return /^(?:confirm|yes|(?:cancel|close)\\s+(?:this\\s+)?ticket)$/i.test(t);});
+    if(!b)return false;
+    var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};
+    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});
+    return true;
+  }catch(e){return false;}})()`;
+  await evalJson(tab.webSocketDebuggerUrl, confirmExpr, 3000);
+  return { success: true };
+}
+
 /** Connect the automation surface without putting Discord on screen. The
  * BrowserView shares Steam CEF's Discord session, so a prior visible login is
  * reused. */
