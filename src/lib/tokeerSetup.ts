@@ -8,6 +8,7 @@ export type TokeerSetupResult = TokeerVerifyResult & {
   runtimeUpdated?: boolean;
   runtimeVersion?: string;
   proton?: string;
+  protonSkipped?: boolean;
   launchOptions?: string;
   error?: string;
 };
@@ -46,7 +47,11 @@ export async function setupAndVerifyTokeer(
   }
 
   const requiredProton = proton.name || runtime.requiredProton || "GE-Proton10-34";
-  onStatus?.(`Configuring ${requiredProton} and merging Steam launch options live…`);
+  onStatus?.(
+    proton.skipped
+      ? `${requiredProton} is already installed and healthy; skipping download. Merging Steam launch options live…`
+      : `${requiredProton} installed/repaired. Selecting it and merging Steam launch options live…`
+  );
   const configured = configureTokeerLaunch(appid, runtime.home, requiredProton);
   if (!configured.success) {
     return {
@@ -75,6 +80,7 @@ export async function setupAndVerifyTokeer(
     runtimeUpdated: !!runtime.updated,
     runtimeVersion: runtime.version,
     proton: requiredProton,
+    protonSkipped: !!proton.skipped,
     launchOptions: configured.options,
   };
 }
