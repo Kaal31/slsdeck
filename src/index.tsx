@@ -26,39 +26,95 @@ const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
 const PLUGIN_SESSION_STARTED = Date.now();
+const DEPENDENCY_INITIAL_DELAY_MS = 2 * 60 * 1000;
+const DEPENDENCY_STABLE_WINDOW_MS = 45 * 1000;
+const DEPENDENCY_STEP_GAP_MS = 20 * 1000;
+const DEPENDENCY_RETRY_MS = 30 * 60 * 1000;
+const DEPENDENCY_LOCK_KEY = "__slsdeckDependencyRepairPromise";
 
-async function repairMissingDependenciesFromPluginLifecycle(): Promise<void> {
-  const sls = await getSlssteamStatus().catch(() => null);
-  if (!sls?.installed) return;
+type DependencyLifecycleToken = { active: boolean; stableSince: number };
 
-  try {
-    const status = await tokeerRuntimeStatus();
-    if (!status.installed) await tokeerEnsureRuntime();
-  } catch (e) {
-    console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
-  }
+function lifecyclePause(ms: number, token: DependencyLifecycleToken): Promise<void> {
+  return new Promise((resolve) => {
+    if (!token.active) return resolve();
+    window.setTimeout(resolve, ms);
+  });
+}
 
-  let deferredAt = 0;
-  try { deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0"); } catch { /* */ }
-  if (deferredAt >= PLUGIN_SESSION_STARTED) {
-    window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+function cefLooksStable(token: DependencyLifecycleToken): boolean {
+  if (!token.active) return false;
+  if (document.visibilityState !== "visible") return false;
+  if (!(window as any).SteamClient) return false;
+  return Date.now() - token.stableSince >= DEPENDENCY_STABLE_WINDOW_MS;
+}
+
+async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLifecycleToken): Promise<void> {
+  if (!cefLooksStable(token)) {
+    console.info("SLSDeck: dependency repair deferred until Steam CEF is stable");
     return;
   }
-  try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
 
-  try {
-    const status = await tokeerProtonStatus();
-    if (!status.installed) await tokeerEnsureProton();
-  } catch (e) {
-    console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
+  const shared = window as any;
+  if (shared[DEPENDENCY_LOCK_KEY]) {
+    console.info("SLSDeck: dependency repair already running; coalescing request");
+    await shared[DEPENDENCY_LOCK_KEY].catch(() => {});
+    return;
   }
+
+  const run = (async () => {
+    const sls = await getSlssteamStatus().catch(() => null);
+    if (!token.active || !sls?.installed || !cefLooksStable(token)) return;
+
+    try {
+      const status = await tokeerRuntimeStatus();
+      if (token.active && !status.installed) {
+        await tokeerEnsureRuntime();
+        await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
+      }
+    } catch (e) {
+      console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
+    }
+    if (!token.active || !cefLooksStable(token)) return;
+
+    let deferredAt = 0;
+    try { deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0"); } catch { /* */ }
+    if (deferredAt >= PLUGIN_SESSION_STARTED) {
+      window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+      return;
+    }
+    try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
+
+    try {
+      const status = await tokeerProtonStatus();
+      const healthy = !!status.installed && status.healthy !== false && !status.partial;
+      if (token.active && !healthy) {
+        await tokeerEnsureProton();
+        await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
+      }
+    } catch (e) {
+      console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
+    }
+    if (!token.active || !cefLooksStable(token)) return;
+
+    try {
+      const status: any = await crInstallStatus();
+      // Never reinstall a healthy CloudRedirect. Accept both the aggregate flag
+      // and the detailed Moon/UI flags returned by newer backends.
+      const healthy = !!status.installed ||
+        (!!status.uiInstalled && !!(status.nativeMoon || status.hasLib));
+      if (token.active && !healthy) await crEnsureInstalled();
+    } catch (e) {
+      console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
+    }
+    if (token.active) window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+  })();
+
+  shared[DEPENDENCY_LOCK_KEY] = run;
   try {
-    const status = await crInstallStatus();
-    if (!status.installed) await crEnsureInstalled();
-  } catch (e) {
-    console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
+    await run;
+  } finally {
+    if (shared[DEPENDENCY_LOCK_KEY] === run) delete shared[DEPENDENCY_LOCK_KEY];
   }
-  window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
 }
 
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
@@ -242,14 +298,26 @@ export default definePlugin(() => {
     console.error("SLSDeck: failed to register Advanced route", e);
   }
 
-  // Dependency repair belongs to plugin initialization, not a page component:
-  // it therefore runs after installs/updates even if QAM/Advanced is never opened.
+  // Dependency repair belongs to plugin initialization, not a page component.
+  // Do not start it while Steam/CEF is still recovering from a plugin install or
+  // client restart: repeated webhelper disconnects make Decky stop itself after
+  // the third crash. A shared lock serializes hot-reload/duplicate invocations.
+  const dependencyLifecycleToken: DependencyLifecycleToken = {
+    active: true,
+    stableSince: Date.now(),
+  };
+  const noteCefTransition = () => {
+    dependencyLifecycleToken.stableSince = Date.now();
+  };
+  document.addEventListener("visibilitychange", noteCefTransition);
+  window.addEventListener("pageshow", noteCefTransition);
+
   const dependencyRepairFirst = setTimeout(() => {
-    repairMissingDependenciesFromPluginLifecycle().catch(() => {});
-  }, 1500);
+    repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
+  }, DEPENDENCY_INITIAL_DELAY_MS);
   const dependencyRepairRetry = setInterval(() => {
-    repairMissingDependenciesFromPluginLifecycle().catch(() => {});
-  }, 30 * 60 * 1000);
+    repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
+  }, DEPENDENCY_RETRY_MS);
 
   // Persistent background notifier: adds run in the backend even if the UI that
   // started them is closed, so this always-running poller fires the toast.
@@ -341,8 +409,11 @@ export default definePlugin(() => {
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");
+      dependencyLifecycleToken.active = false;
       try { clearTimeout(dependencyRepairFirst); } catch { /* ignore */ }
       try { clearInterval(dependencyRepairRetry); } catch { /* ignore */ }
+      try { document.removeEventListener("visibilitychange", noteCefTransition); } catch { /* ignore */ }
+      try { window.removeEventListener("pageshow", noteCefTransition); } catch { /* ignore */ }
       try { clearInterval(addNotifier); } catch { /* ignore */ }
       try { clearInterval(autoFixSweep); } catch { /* ignore */ }
       try { clearInterval(collectionSync); } catch { /* ignore */ }
