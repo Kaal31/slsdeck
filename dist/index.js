@@ -1524,6 +1524,737 @@ async function setupAndVerifyTokeer(appid, onStatus) {
     };
 }
 
+const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
+const GUILD_ID = "1464130182364270696";
+const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
+const TARGET_MESSAGE = "1535685399265935422";
+const CDP_PORTS = [8080, 8081];
+const TOKEER_VIEW_NAME = "slsdeck_tokeer";
+async function listCdpTabs() {
+    const merged = [];
+    const seen = new Set();
+    for (const port of CDP_PORTS) {
+        try {
+            const r = await fetchNoCors(`http://localhost:${port}/json`);
+            const tabs = await r.json();
+            if (!Array.isArray(tabs))
+                continue;
+            for (const tab of tabs) {
+                const key = String(tab.webSocketDebuggerUrl || `${tab.type || ""}|${tab.title || ""}|${tab.url || ""}`);
+                if (seen.has(key))
+                    continue;
+                seen.add(key);
+                merged.push({ ...tab, cdpPort: port });
+            }
+        }
+        catch {
+            /* this debugger port is not active */
+        }
+    }
+    return merged;
+}
+function cdpCommand(wsUrl, method, params = {}, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+        let done = false;
+        let sock;
+        const finish = (v) => {
+            if (done)
+                return;
+            done = true;
+            try {
+                sock.close();
+            }
+            catch { }
+            resolve(v);
+        };
+        try {
+            sock = new WebSocket(wsUrl);
+        }
+        catch {
+            resolve(null);
+            return;
+        }
+        const id = 1;
+        sock.onopen = () => sock.send(JSON.stringify({ id, method, params }));
+        sock.onmessage = (ev) => {
+            try {
+                const m = JSON.parse(String(ev.data));
+                if (m?.id === id)
+                    finish(m?.result ?? null);
+            }
+            catch { }
+        };
+        sock.onerror = () => finish(null);
+        setTimeout(() => finish(null), timeoutMs);
+    });
+}
+async function evalJson(wsUrl, expression, timeoutMs = 5000) {
+    const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
+    return result?.result?.value ?? null;
+}
+async function evalDetailed(wsUrl, expression, timeoutMs = 5000) {
+    const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
+    const error = result?.exceptionDetails?.exception?.description || result?.exceptionDetails?.text;
+    if (error)
+        return { error: String(error) };
+    return { value: result?.result?.value };
+}
+function looksLikeDiscordUrl(url) {
+    return /(^|\.)discord\.com(?:\/|$)/i.test(String(url || "").replace(/^https?:\/\//i, ""));
+}
+/** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
+ * actual JS execution context what it is rendering instead of trusting metadata. */
+async function resolveTabUrl(t) {
+    if (!t.webSocketDebuggerUrl)
+        return String(t.url || "");
+    const expr = `(function(){try{
+    var here=String(location.href||document.URL||'');
+    var frames=[].slice.call(document.querySelectorAll('iframe')).map(function(f){return String(f.src||'');});
+    return JSON.stringify({here:here,frames:frames});
+  }catch(e){return JSON.stringify({here:'',frames:[]});}})()`;
+    const raw = await evalJson(t.webSocketDebuggerUrl, expr, 1800);
+    try {
+        const parsed = JSON.parse(String(raw || ""));
+        const urls = [parsed?.here, ...(Array.isArray(parsed?.frames) ? parsed.frames : [])].filter(Boolean);
+        return urls.find((u) => looksLikeDiscordUrl(u)) || String(parsed?.here || t.url || "");
+    }
+    catch {
+        return String(t.url || "");
+    }
+}
+async function findDiscordTab() {
+    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
+    let fallback = null;
+    for (const tab of tabs) {
+        const resolvedUrl = await resolveTabUrl(tab);
+        if (!looksLikeDiscordUrl(resolvedUrl))
+            continue;
+        const resolved = { ...tab, resolvedUrl, url: resolvedUrl };
+        if (resolvedUrl.includes(TOKEER_CHANNEL))
+            return resolved;
+        if (!fallback)
+            fallback = resolved;
+    }
+    return fallback;
+}
+async function findSharedJsContext() {
+    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
+    return tabs.find((t) => String(t.title || "") === "SharedJSContext")
+        || tabs.find((t) => /SharedJSContext/i.test(String(t.title || "")))
+        || null;
+}
+async function hasTokeerBrowserView() {
+    const shared = await findSharedJsContext();
+    if (!shared?.webSocketDebuggerUrl)
+        return false;
+    return !!(await evalJson(shared.webSocketDebuggerUrl, `(function(){try{return !!(window.SLSDECK_TOKEER_VIEW&&window.SLSDECK_TOKEER_VIEW.m_browserView);}catch(e){return false;}})()`, 2000));
+}
+async function findManagedTokeerTab() {
+    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
+    for (const tab of tabs) {
+        const managed = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{return window.__SLSDECK_TOKEER_MANAGED===true;}catch(e){return false;}})()`, 1200);
+        if (!managed)
+            continue;
+        const resolvedUrl = await resolveTabUrl(tab);
+        return { ...tab, resolvedUrl, url: resolvedUrl };
+    }
+    return null;
+}
+async function hideTokeerBrowserView() {
+    const shared = await findSharedJsContext();
+    if (!shared?.webSocketDebuggerUrl)
+        return;
+    await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+    var v=window.SLSDECK_TOKEER_VIEW;
+    if(!v||!v.m_browserView)return false;
+    v.m_browserView.SetVisible(false);return true;
+  }catch(e){return false;}})()`, 2000);
+}
+async function parkTokeerBrowserView() {
+    const shared = await findSharedJsContext();
+    if (!shared?.webSocketDebuggerUrl)
+        return;
+    await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+    var v=window.SLSDECK_TOKEER_VIEW;
+    if(!v||!v.m_browserView)return false;
+    // A truly hidden Chromium view is suspended. Keep a normal-sized surface
+    // rendered far outside the Steam viewport so Discord stays live without
+    // being visible or receiving gamepad input.
+    v.m_browserView.SetBounds(-10000,-10000,1280,720);
+    v.m_browserView.SetVisible(true);return true;
+  }catch(e){return false;}})()`, 2000);
+}
+async function positionTokeerDiscordEmbedded(bounds) {
+    const shared = await findSharedJsContext();
+    if (!shared?.webSocketDebuggerUrl)
+        return false;
+    const b = {
+        x: Math.max(0, Math.round(bounds.x)), y: Math.max(0, Math.round(bounds.y)),
+        width: Math.max(1, Math.round(bounds.width)), height: Math.max(1, Math.round(bounds.height)),
+    };
+    return !!(await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+    var v=window.SLSDECK_TOKEER_VIEW;if(!v||!v.m_browserView)return false;
+    v.m_browserView.SetBounds(${b.x},${b.y},${b.width},${b.height});
+    v.m_browserView.SetVisible(true);return true;
+  }catch(e){return false;}})()`, 2000));
+}
+async function hideTokeerDiscordEmbedded() {
+    await parkTokeerBrowserView();
+}
+async function showTokeerDiscordEmbedded(bounds) {
+    if (!(await connectTokeerDiscordHidden()))
+        return false;
+    return positionTokeerDiscordEmbedded(bounds);
+}
+async function waitForExactUrl(url, timeoutMs = 6500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const tabs = await listCdpTabs();
+        const tab = tabs.find((t) => !!t.webSocketDebuggerUrl && String(t.url || "") === url);
+        if (tab)
+            return tab;
+        await new Promise((r) => setTimeout(r, 200));
+    }
+    return null;
+}
+/**
+ * Steamcord-style creation path: create a BrowserView from Steam's debuggable
+ * SharedJSContext, tag it with a unique data: URL, discover that exact CDP target,
+ * then navigate the target to Discord. This avoids NavigateToExternalWeb, whose
+ * BrowserView is not exposed in CDP on some Steam Deck builds.
+ */
+async function createTokeerDiscordBrowserView() {
+    const shared = await findSharedJsContext();
+    if (!shared?.webSocketDebuggerUrl)
+        return null;
+    const placeholder = `data:text/plain,slsdeck_tokeer_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const expr = `(function(){try{
+    if(window.SLSDECK_TOKEER_VIEW!==undefined){
+      try{window.SLSDECK_TOKEER_VIEW.m_browserView.SetVisible(false);}catch(e){}
+      try{window.SLSDECK_TOKEER_VIEW.Destroy();}catch(e){}
+      window.SLSDECK_TOKEER_VIEW=undefined;
+    }
+    var main=window.DFL&&window.DFL.Router&&window.DFL.Router.WindowStore&&window.DFL.Router.WindowStore.GamepadUIMainWindowInstance;
+    if(!main||typeof main.CreateBrowserView!=='function') return JSON.stringify({ok:false,error:'CreateBrowserView unavailable'});
+    var view=main.CreateBrowserView(${JSON.stringify(TOKEER_VIEW_NAME)});
+    window.SLSDECK_TOKEER_VIEW=view;
+    try{view.WIDTH=1280;view.HEIGHT=720;view.m_browserView.SetBounds(-10000,-10000,1280,720);}catch(e){}
+    // Visible to Chromium (so it renders), parked outside Steam's viewport.
+    try{view.m_browserView.SetVisible(true);}catch(e){}
+    view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
+    return JSON.stringify({ok:true});
+  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
+    const raw = await evalJson(shared.webSocketDebuggerUrl, expr, 4000);
+    try {
+        const created = JSON.parse(String(raw || ""));
+        if (!created?.ok)
+            return null;
+    }
+    catch {
+        return null;
+    }
+    const target = await waitForExactUrl(placeholder);
+    if (!target?.webSocketDebuggerUrl)
+        return null;
+    // Keep Discord's SPA active while the Deck/QAM focus changes.
+    await cdpCommand(target.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+    await cdpCommand(target.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+    const nav = await cdpCommand(target.webSocketDebuggerUrl, "Page.navigate", {
+        url: TOKEER_DISCORD_URL,
+        transitionType: "address_bar",
+    }, 4000);
+    if (!nav)
+        return null;
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+        // The websocket belongs to the exact BrowserView we created. Do not call
+        // findDiscordTab() here: a separately opened manual Discord tab may win
+        // that search and leave the managed embedded surface on its placeholder.
+        const liveUrl = await resolveTabUrl(target);
+        if (looksLikeDiscordUrl(liveUrl)) {
+            await evalJson(target.webSocketDebuggerUrl, `(function(){try{window.__SLSDECK_TOKEER_MANAGED=true;return true;}catch(e){return false;}})()`, 2000);
+            return { ...target, resolvedUrl: liveUrl, url: liveUrl };
+        }
+        await new Promise((r) => setTimeout(r, 300));
+    }
+    return null;
+}
+async function cdpDiagnostic() {
+    const tabs = await listCdpTabs();
+    if (!tabs.length)
+        return "CDP 8080/8081 returned no targets.";
+    const ports = Array.from(new Set(tabs.map((t) => t.cdpPort).filter(Boolean))).join("/");
+    const shared = tabs.some((t) => /SharedJSContext/i.test(String(t.title || "")));
+    return `Steam CDP is active on ${ports || "an unknown port"} (${tabs.length} targets; SharedJSContext ${shared ? "found" : "missing"}).`;
+}
+async function navigateDiscordTabToTokeer(tab) {
+    if (!tab.webSocketDebuggerUrl)
+        return false;
+    const liveUrl = await resolveTabUrl(tab);
+    if (liveUrl.includes(TOKEER_CHANNEL))
+        return true;
+    const nav = await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+        url: TOKEER_DISCORD_URL,
+        transitionType: "address_bar",
+    }, 4000);
+    return !!nav;
+}
+const SNAPSHOT_EXPR = `(function(){try{
+  var id=${JSON.stringify(TARGET_MESSAGE)};
+  var exact=document.querySelector('[data-list-item-id$="-'+id+'"]') || (document.querySelector('#message-accessories-'+id) && document.querySelector('#message-accessories-'+id).closest('[role="article"]')) || (document.querySelector('#message-reactions-'+id) && document.querySelector('#message-reactions-'+id).closest('[role="article"]'));
+  var arts=[].slice.call(document.querySelectorAll('[role="article"]'));
+  var controls=function(a){return [].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"],button[aria-expanded]'));};
+  var article=exact || arts.reverse().find(function(a){var t=(a.innerText||'');return controls(a).length>0 && /steam|games? listed|keys? remaining|high demand|tokeer/i.test(t);});
+  if(!article) return {found:false,selectors:[],error:'Discord is open, but the Tokeer activation panel is not rendered. Sign in if needed, open the Linux activation channel, and press Refresh.'};
+  var text=(article.innerText||'').replace(/\u00a0/g,' ');
+  var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
+  var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};
+  var selects=controls(article).filter(function(e){return e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox';}).map(function(e,i){
+    var label=(e.innerText||e.textContent||'').trim();
+    return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};
+  });
+  return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
+}catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
+async function readTokeerDiscord() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl) {
+        const diag = await cdpDiagnostic();
+        return { found: false, selectors: [], error: `No Discord page found in Steam CDP. ${diag}` };
+    }
+    if (!tab.url?.includes(TOKEER_CHANNEL)) {
+        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
+    }
+    const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
+    if (snap.error)
+        return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };
+    if (!snap.value || typeof snap.value !== "object")
+        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object." };
+    return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
+}
+async function openSelectorAndReadOptions(index) {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
+        return [];
+    const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var arts=[].slice.call(document.querySelectorAll('[role="article"]'));var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];var e=xs[${Number(index)}];if(!e)return false;var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;}catch(e){return false;}})()`;
+    const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr);
+    if (!ok)
+        return [];
+    await new Promise((r) => setTimeout(r, 450));
+    const optionsExpr = `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+    var boxes=[].slice.call(document.querySelectorAll('[role="listbox"]')).filter(visible);
+    var root=boxes.length?boxes[boxes.length-1]:document;
+    var rows=[].slice.call(root.querySelectorAll('[role="option"]')).filter(visible);
+    if(!rows.length)rows=[].slice.call(document.querySelectorAll('[role="option"]')).filter(visible);
+    var labels=rows.map(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();}).filter(Boolean);
+    // Tokeer's game rows carry availability text. If those are present, keep
+    // only them and discard Discord navigation/notification menu entries.
+    var games=labels.filter(function(t){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining\\s*\\(\\d+%\\)/i.test(t);});
+    return JSON.stringify(games.length?games:labels);
+  }catch(e){return '[]';}})()`;
+    const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
+    try {
+        return JSON.parse(String(raw || "[]"));
+    }
+    catch {
+        return [];
+    }
+}
+async function chooseSelectorOption(index, label) {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
+        return false;
+    const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
+    const alreadyOpen = !!(await evalJson(tab.webSocketDebuggerUrl, visibleExpr));
+    if (!alreadyOpen)
+        await openSelectorAndReadOptions(index);
+    const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
+    return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+}
+const TICKET_GATE_EXPR = `(function(){try{
+  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+  for(var i=0;i<arts.length;i++){
+    var a=arts[i], bs=[].slice.call(a.querySelectorAll('button'));
+    for(var j=0;j<bs.length;j++){
+      var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
+      if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((a.innerText||'')+' '+label)){
+        return JSON.stringify({found:true,label:label,disabled:b.disabled||b.getAttribute('aria-disabled')==='true',messageText:(a.innerText||'').slice(0,5000)});
+      }
+    }
+  }
+  return JSON.stringify({found:false,error:'Waiting for the newest Tokeer confirmation message…'});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+async function readLatestTicketGate() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
+        return { found: false, error: "Tokeer activation channel is not open." };
+    const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_GATE_EXPR);
+    try {
+        return JSON.parse(String(raw || ""));
+    }
+    catch {
+        return { found: false, error: "Could not read the ticket confirmation button." };
+    }
+}
+async function clickLatestTicketGate() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
+        return { success: false, error: "Tokeer activation channel is not open." };
+    const expr = `(function(){try{
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+    for(var i=0;i<arts.length;i++){
+      var bs=[].slice.call(arts[i].querySelectorAll('button'));
+      for(var j=0;j<bs.length;j++){
+        var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
+        if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((arts[i].innerText||'')+' '+label) && !b.disabled && b.getAttribute('aria-disabled')!=='true'){var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});return true;}
+      }
+    }
+    return false;
+  }catch(e){return false;}})()`;
+    const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+    return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
+}
+const TICKET_CONTEXT_EXPR = `(function(){try{
+  var text=(document.body.innerText||'').replace(/\\u00a0/g,' ');
+  var code=[].slice.call(document.querySelectorAll('pre,code,[class*="codeBlock"],[class*="markup"]')).map(function(e){return e.innerText||e.textContent||'';}).join('\\n');
+  var hay=(code+'\\n'+text).slice(0,50000);
+  var patterns=[
+    /tokeer\\s+verify(?:\\s+--?appid(?:=|\\s+)|\\s+)(\\d{3,10})/i,
+    /(?:--?appid|app[_ -]?id)(?:=|:|\\s+|["']+)(\\d{3,10})/i,
+    /(?:store\\.steampowered\\.com\\/app|steam:\\/\\/(?:run|install)|steamdb\\.info\\/app)\\/(\\d{3,10})/i,
+    /\\/app\\/(\\d{3,10})(?:\\/|\\b)/i,
+    /bash\\s+-s\\s+--(?:[^\\n\\r\\d]{0,40})(\\d{3,10})/i,
+    /(?:tokeer|activate|prepare|verify)[^\\n\\r]{0,80}\\b(\\d{3,10})\\b/i
+  ];
+  var m=null;
+  for(var i=0;i<patterns.length&&!m;i++)m=hay.match(patterns[i]);
+  if(!m){
+    var nums=code.match(/\\b\\d{3,10}\\b/g)||[];
+    var unique=nums.filter(function(v,p,a){return a.indexOf(v)===p;});
+    if(unique.length===1)m=[unique[0],unique[0]];
+  }
+  var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
+  return JSON.stringify(m?{found:true,opened:true,appid:Number(m[1]),rawText:text.slice(0,20000)}:{found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+const TICKET_LINK_EXPR = `(function(){try{
+  var channel=${JSON.stringify(TOKEER_CHANNEL)};
+  var guild=${JSON.stringify(`/channels/${GUILD_ID}/`)};
+  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+  for(var i=0;i<Math.min(arts.length,30);i++){
+    var a=arts[i], text=(a.innerText||'').replace(/\u00a0/g,' ');
+    if(!/(?:ticket|activation|private|continue|created|opened)/i.test(text))continue;
+    var links=[].slice.call(a.querySelectorAll('a[href*="/channels/"]'));
+    for(var j=0;j<links.length;j++){
+      var href=String(links[j].href||links[j].getAttribute('href')||'');
+      if(href.indexOf(guild)>=0 && href.indexOf(channel)<0)return JSON.stringify({found:true,url:href,text:text.slice(0,3000)});
+    }
+  }
+  return JSON.stringify({found:false});
+}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastError = "Waiting for Tokeer ticket…";
+    let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? fromUrl : "";
+    if (lastTicketUrl) {
+        try {
+            const managed = await findManagedTokeerTab();
+            if (managed?.webSocketDebuggerUrl && String(managed.url || "") !== lastTicketUrl) {
+                await cdpCommand(managed.webSocketDebuggerUrl, "Page.navigate", {
+                    url: lastTicketUrl, transitionType: "address_bar",
+                }, 4000);
+            }
+        }
+        catch { }
+    }
+    while (Date.now() < deadline) {
+        const tabs = await listCdpTabs();
+        const candidates = [];
+        for (const rawTab of tabs.filter((t) => !!t.webSocketDebuggerUrl)) {
+            const resolvedUrl = await resolveTabUrl(rawTab);
+            if (!looksLikeDiscordUrl(resolvedUrl))
+                continue;
+            const tab = { ...rawTab, resolvedUrl, url: resolvedUrl };
+            const u = String(tab.url || "");
+            // Discord can open a private thread in the same target, a modal without
+            // changing the URL, or a new target. Inspect all guild tabs, including
+            // the activation target that initiated the interaction.
+            if (u.includes(`/channels/${GUILD_ID}/`))
+                candidates.push(tab);
+        }
+        for (const tab of candidates) {
+            if (!tab.webSocketDebuggerUrl)
+                continue;
+            const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
+            try {
+                const parsed = JSON.parse(String(raw || ""));
+                if (parsed?.found && parsed?.appid)
+                    return { ...parsed, opened: true, url: tab.url };
+                if (parsed?.opened && !String(tab.url || "").includes(TOKEER_CHANNEL))
+                    lastTicketUrl = String(tab.url || "");
+                if (parsed?.error)
+                    lastError = parsed.error;
+            }
+            catch { }
+            // Ticket bots often post a private-channel link instead of changing the
+            // current SPA route. Discover that link from recent messages and move the
+            // same hidden target into it.
+            try {
+                const linkRaw = await evalJson(tab.webSocketDebuggerUrl, TICKET_LINK_EXPR);
+                const link = JSON.parse(String(linkRaw || ""));
+                if (link?.found && looksLikeDiscordUrl(link.url || "")) {
+                    lastTicketUrl = String(link.url);
+                    if (String(tab.url || "") !== lastTicketUrl) {
+                        await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+                            url: lastTicketUrl, transitionType: "link",
+                        }, 4000);
+                    }
+                    lastError = "Ticket found; waiting for its setup commands…";
+                }
+            }
+            catch { }
+        }
+        await new Promise((r) => setTimeout(r, 600));
+    }
+    return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
+}
+async function cancelTokeerTicket(ticketUrl = "") {
+    let tab = await findManagedTokeerTab();
+    if (!tab?.webSocketDebuggerUrl)
+        tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl)
+        return { success: false, error: "The Discord ticket view is not connected." };
+    if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
+        await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+            url: ticketUrl, transitionType: "address_bar",
+        }, 4000);
+        await new Promise((r) => setTimeout(r, 900));
+    }
+    const clickCancel = `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var label=function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();};
+    var click=function(e){var r=e.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,p));});};
+    var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible);
+    var exact=buttons.filter(function(b){return /(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(label(b));});
+    var danger=exact.find(function(b){return /danger|red|negative|critical/i.test(String(b.className||'')+' '+String(b.getAttribute('data-look')||'')+' '+String(b.getAttribute('aria-label')||''));});
+    var target=danger||exact[exact.length-1];
+    if(!target)return JSON.stringify({ok:false,error:'The red Cancel Ticket button was not found in the open ticket.'});
+    click(target);
+    return JSON.stringify({ok:true,label:label(target)});
+  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
+    const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
+    let first;
+    try {
+        first = JSON.parse(String(raw || ""));
+    }
+    catch {
+        first = null;
+    }
+    if (!first?.ok)
+        return { success: false, error: first?.error || "Could not press Cancel Ticket." };
+    // Some ticket bots ask for a second confirmation in a modal.
+    await new Promise((r) => setTimeout(r, 650));
+    const confirmExpr = `(function(){try{
+    var d=[].slice.call(document.querySelectorAll('[role="dialog"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
+    if(!d)return false;
+    var bs=[].slice.call(d.querySelectorAll('button,[role="button"]'));
+    var b=bs.find(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return /^(?:confirm|yes)$/i.test(t)||/(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(t);});
+    if(!b)return false;
+    var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};
+    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});
+    return true;
+  }catch(e){return false;}})()`;
+    await evalJson(tab.webSocketDebuggerUrl, confirmExpr, 3000);
+    return { success: true };
+}
+/** Connect the automation surface without putting Discord on screen. The
+ * BrowserView shares Steam CEF's Discord session, so a prior visible login is
+ * reused. */
+async function connectTokeerDiscordHidden() {
+    // Reuse only our managed BrowserView. A normal Steam external-web tab may be
+    // readable through CDP but cannot be repositioned inside the plugin page.
+    if (await hasTokeerBrowserView()) {
+        try {
+            // Reuse only the CDP target tagged by createTokeerDiscordBrowserView.
+            // A user's manual/login Discord tab is readable too, but it is not the
+            // BrowserView that positionTokeerDiscordEmbedded() can move.
+            const existing = await findManagedTokeerTab();
+            if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
+                try {
+                    await parkTokeerBrowserView();
+                }
+                catch { }
+                try {
+                    await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+                }
+                catch { }
+                return true;
+            }
+        }
+        catch { }
+    }
+    try {
+        const created = await createTokeerDiscordBrowserView();
+        try {
+            await parkTokeerBrowserView();
+        }
+        catch { }
+        return !!created?.webSocketDebuggerUrl;
+    }
+    catch {
+        return false;
+    }
+}
+async function openTokeerDiscord() {
+    // Hide a raw fallback view left by an older SLSDeck build. A visible raw
+    // BrowserView has no Steam navigation chrome and traps the B button.
+    try {
+        await hideTokeerBrowserView();
+    }
+    catch { }
+    // Visible login/manual path: Steam owns this page and supplies its normal
+    // Back action. Silent automation uses connectTokeerDiscordHidden instead.
+    try {
+        const nav = DFL.Navigation;
+        if (typeof nav?.NavigateToExternalWeb === "function") {
+            nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
+            return true;
+        }
+    }
+    catch { }
+    try {
+        const SC = window.SteamClient;
+        if (SC?.System?.OpenInSystemBrowser) {
+            SC.System.OpenInSystemBrowser(TOKEER_DISCORD_URL);
+            return true;
+        }
+    }
+    catch { }
+    return false;
+}
+
+const CACHE_KEY = "slsdeck.tokeerAvailability.v1";
+const TOKEER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+function finite(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+}
+function normalizeTokeerGameName(value) {
+    return String(value || "")
+        .normalize("NFKD")
+        .replace(/[®™©]/g, "")
+        .replace(/[^a-z0-9]+/gi, " ")
+        .trim()
+        .toLowerCase();
+}
+function parseTokeerGameLabel(label) {
+    const text = String(label || "").replace(/\s+/g, " ").trim();
+    const availability = text.match(/^(.*?)\s+(\d+)\s+of\s+(\d+)\s+remaining(?:\s*\((\d+)%\))?/i);
+    if (!availability)
+        return null;
+    const rawName = availability[1].trim();
+    const appidMatch = text.match(/(?:app\s*id|appid)\s*[:#-]?\s*(\d{3,10})/i);
+    const name = rawName.replace(/\s*[-–—(]*\s*(?:app\s*id|appid)\s*[:#-]?\s*\d{3,10}\)?\s*$/i, "").trim();
+    return {
+        label: text,
+        name,
+        remaining: finite(availability[2]),
+        total: finite(availability[3]),
+        percent: finite(availability[4]),
+        appid: appidMatch ? finite(appidMatch[1]) : undefined,
+    };
+}
+function readTokeerAvailabilityCache() {
+    try {
+        const value = JSON.parse(window.localStorage.getItem(CACHE_KEY) || "null");
+        if (!value || value.version !== 1 || !Array.isArray(value.games))
+            return null;
+        return value;
+    }
+    catch {
+        return null;
+    }
+}
+function writeCache(state, games) {
+    const deduped = new Map();
+    for (const game of games) {
+        const key = game.appid ? `appid:${game.appid}` : `name:${normalizeTokeerGameName(game.name)}`;
+        if (!key.endsWith(":") && !deduped.has(key))
+            deduped.set(key, game);
+    }
+    const cache = {
+        version: 1,
+        updatedAt: Date.now(),
+        vault: {
+            steamStatus: state.steamStatus,
+            gamesListed: state.gamesListed,
+            steamGames: state.steamGames,
+            eaGames: state.eaGames,
+            ubisoftGames: state.ubisoftGames,
+            keysRemaining: state.keysRemaining,
+            highDemand: state.highDemand,
+        },
+        games: Array.from(deduped.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    };
+    try {
+        window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+        window.dispatchEvent(new CustomEvent("slsdeck-tokeer-cache", { detail: cache }));
+    }
+    catch { }
+    return cache;
+}
+let refreshPromise = null;
+async function refreshTokeerAvailabilityCache(force = false) {
+    const current = readTokeerAvailabilityCache();
+    if (!force && current && Date.now() - current.updatedAt < TOKEER_CACHE_TTL_MS)
+        return current;
+    if (refreshPromise)
+        return refreshPromise;
+    refreshPromise = (async () => {
+        try {
+            if (!(await connectTokeerDiscordHidden()))
+                return current;
+            let state = await readTokeerDiscord();
+            for (let i = 0; i < 20 && !state.found; i++) {
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                state = await readTokeerDiscord();
+            }
+            if (!state.found)
+                return current;
+            const parsed = [];
+            for (const selector of state.selectors || []) {
+                const labels = await openSelectorAndReadOptions(selector.index);
+                for (const label of labels) {
+                    const game = parseTokeerGameLabel(label);
+                    if (game && (game.remaining === undefined || game.remaining > 0))
+                        parsed.push(game);
+                }
+            }
+            // Do not replace a populated game cache with an empty scrape caused by a
+            // temporarily unrendered Discord menu. Vault-only snapshots may still seed
+            // a new cache on first use.
+            if (!parsed.length && current?.games.length)
+                return current;
+            return writeCache(state, parsed);
+        }
+        catch {
+            return current;
+        }
+        finally {
+            refreshPromise = null;
+        }
+    })();
+    return refreshPromise;
+}
+function isTokeerGameAvailable(appid, gameName) {
+    const cache = readTokeerAvailabilityCache();
+    if (!cache)
+        return false;
+    if (cache.games.some((game) => game.appid === appid))
+        return true;
+    const wanted = normalizeTokeerGameName(gameName || "");
+    return !!wanted && cache.games.some((game) => normalizeTokeerGameName(game.name) === wanted);
+}
+
 // Colour a source badge (Ryuu / luatools ship Online / Bypass / Crack / Tested /
 // Generic / Hypervisor). Shown as a small pill next to the fix name so the exact
 // tag the source gave is visible instead of the collapsed row label.
@@ -1562,6 +2293,7 @@ function BadgeChip({ badge, inline }) {
 }
 function FixPicker({ appid, onReload, onClose }) {
     const [check, setCheck] = SP_REACT.useState(null);
+    const [tokeerAvailable, setTokeerAvailable] = SP_REACT.useState(false);
     const [applied, setApplied] = SP_REACT.useState([]);
     const [installPath, setInstallPath] = SP_REACT.useState("");
     const [pinned, setPinned] = SP_REACT.useState(false);
@@ -1612,10 +2344,13 @@ function FixPicker({ appid, onReload, onClose }) {
     }, []);
     const refresh = async () => {
         try {
-            setCheck(await checkFixesFull(appid));
+            const fullCheck = await checkFixesFull(appid);
+            setCheck(fullCheck);
+            setTokeerAvailable(isTokeerGameAvailable(appid, fullCheck?.gameName));
         }
         catch {
             setCheck(null);
+            setTokeerAvailable(false);
         }
         try {
             const r = await getInstalledFixes();
@@ -1727,6 +2462,7 @@ function FixPicker({ appid, onReload, onClose }) {
         setBusy("");
         setMsg("");
         setCheck(null);
+        setTokeerAvailable(false);
         setApplied([]);
         setAwaiting(null);
         setActiveFixKey("");
@@ -2357,7 +3093,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: "Tokeer" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["Checks/updates the shared runtime, configures GE-Proton10-34 and merges Tokeer into this game's live launch options, then validates AppID ", appid, ". Steam is not restarted."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : "Tokeer" })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
+                            : "Pin this version" }), tokeerAvailable && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: "Tokeer \u00B7 Available" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : "Tokeer" })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
                     padding: 8,
@@ -6813,614 +7549,6 @@ function HypervisorSection() {
                                         : protonDl.status === "extracting" ? "Extracting…" : protonDl.status })] }) }))] })), games.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 4 }, children: "Marked games" }) }), games.map((aid) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => unmark(aid), children: SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: appDisplayName(Number(aid)) || `AppID ${aid}` }), SP_JSX.jsx("span", { style: { fontSize: 11, opacity: 0.6 }, children: "tap to unmark" })] }) }) }, aid)))] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("reboot", hvReboot, "Rebooting…"), disabled: working, children: "Reboot Deck now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: loadLog, children: showLog ? "Hide build log ▾" : "Show build log ▸" }) }), showLog && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: log, maxHeight: 240, mono: true, fontSize: 10 }) })), st?.kernel_release && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: 0.5 }, children: ["kernel ", st.kernel_release, st?.compiler_name ? ` · ${st.compiler_name}` : ""] }) }))] }));
 }
 
-const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
-const GUILD_ID = "1464130182364270696";
-const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
-const TARGET_MESSAGE = "1535685399265935422";
-const CDP_PORTS = [8080, 8081];
-const TOKEER_VIEW_NAME = "slsdeck_tokeer";
-async function listCdpTabs() {
-    const merged = [];
-    const seen = new Set();
-    for (const port of CDP_PORTS) {
-        try {
-            const r = await fetchNoCors(`http://localhost:${port}/json`);
-            const tabs = await r.json();
-            if (!Array.isArray(tabs))
-                continue;
-            for (const tab of tabs) {
-                const key = String(tab.webSocketDebuggerUrl || `${tab.type || ""}|${tab.title || ""}|${tab.url || ""}`);
-                if (seen.has(key))
-                    continue;
-                seen.add(key);
-                merged.push({ ...tab, cdpPort: port });
-            }
-        }
-        catch {
-            /* this debugger port is not active */
-        }
-    }
-    return merged;
-}
-function cdpCommand(wsUrl, method, params = {}, timeoutMs = 5000) {
-    return new Promise((resolve) => {
-        let done = false;
-        let sock;
-        const finish = (v) => {
-            if (done)
-                return;
-            done = true;
-            try {
-                sock.close();
-            }
-            catch { }
-            resolve(v);
-        };
-        try {
-            sock = new WebSocket(wsUrl);
-        }
-        catch {
-            resolve(null);
-            return;
-        }
-        const id = 1;
-        sock.onopen = () => sock.send(JSON.stringify({ id, method, params }));
-        sock.onmessage = (ev) => {
-            try {
-                const m = JSON.parse(String(ev.data));
-                if (m?.id === id)
-                    finish(m?.result ?? null);
-            }
-            catch { }
-        };
-        sock.onerror = () => finish(null);
-        setTimeout(() => finish(null), timeoutMs);
-    });
-}
-async function evalJson(wsUrl, expression, timeoutMs = 5000) {
-    const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
-    return result?.result?.value ?? null;
-}
-async function evalDetailed(wsUrl, expression, timeoutMs = 5000) {
-    const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
-    const error = result?.exceptionDetails?.exception?.description || result?.exceptionDetails?.text;
-    if (error)
-        return { error: String(error) };
-    return { value: result?.result?.value };
-}
-function looksLikeDiscordUrl(url) {
-    return /(^|\.)discord\.com(?:\/|$)/i.test(String(url || "").replace(/^https?:\/\//i, ""));
-}
-/** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
- * actual JS execution context what it is rendering instead of trusting metadata. */
-async function resolveTabUrl(t) {
-    if (!t.webSocketDebuggerUrl)
-        return String(t.url || "");
-    const expr = `(function(){try{
-    var here=String(location.href||document.URL||'');
-    var frames=[].slice.call(document.querySelectorAll('iframe')).map(function(f){return String(f.src||'');});
-    return JSON.stringify({here:here,frames:frames});
-  }catch(e){return JSON.stringify({here:'',frames:[]});}})()`;
-    const raw = await evalJson(t.webSocketDebuggerUrl, expr, 1800);
-    try {
-        const parsed = JSON.parse(String(raw || ""));
-        const urls = [parsed?.here, ...(Array.isArray(parsed?.frames) ? parsed.frames : [])].filter(Boolean);
-        return urls.find((u) => looksLikeDiscordUrl(u)) || String(parsed?.here || t.url || "");
-    }
-    catch {
-        return String(t.url || "");
-    }
-}
-async function findDiscordTab() {
-    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
-    let fallback = null;
-    for (const tab of tabs) {
-        const resolvedUrl = await resolveTabUrl(tab);
-        if (!looksLikeDiscordUrl(resolvedUrl))
-            continue;
-        const resolved = { ...tab, resolvedUrl, url: resolvedUrl };
-        if (resolvedUrl.includes(TOKEER_CHANNEL))
-            return resolved;
-        if (!fallback)
-            fallback = resolved;
-    }
-    return fallback;
-}
-async function findSharedJsContext() {
-    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
-    return tabs.find((t) => String(t.title || "") === "SharedJSContext")
-        || tabs.find((t) => /SharedJSContext/i.test(String(t.title || "")))
-        || null;
-}
-async function hasTokeerBrowserView() {
-    const shared = await findSharedJsContext();
-    if (!shared?.webSocketDebuggerUrl)
-        return false;
-    return !!(await evalJson(shared.webSocketDebuggerUrl, `(function(){try{return !!(window.SLSDECK_TOKEER_VIEW&&window.SLSDECK_TOKEER_VIEW.m_browserView);}catch(e){return false;}})()`, 2000));
-}
-async function findManagedTokeerTab() {
-    const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
-    for (const tab of tabs) {
-        const managed = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{return window.__SLSDECK_TOKEER_MANAGED===true;}catch(e){return false;}})()`, 1200);
-        if (!managed)
-            continue;
-        const resolvedUrl = await resolveTabUrl(tab);
-        return { ...tab, resolvedUrl, url: resolvedUrl };
-    }
-    return null;
-}
-async function hideTokeerBrowserView() {
-    const shared = await findSharedJsContext();
-    if (!shared?.webSocketDebuggerUrl)
-        return;
-    await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
-    var v=window.SLSDECK_TOKEER_VIEW;
-    if(!v||!v.m_browserView)return false;
-    v.m_browserView.SetVisible(false);return true;
-  }catch(e){return false;}})()`, 2000);
-}
-async function parkTokeerBrowserView() {
-    const shared = await findSharedJsContext();
-    if (!shared?.webSocketDebuggerUrl)
-        return;
-    await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
-    var v=window.SLSDECK_TOKEER_VIEW;
-    if(!v||!v.m_browserView)return false;
-    // A truly hidden Chromium view is suspended. Keep a normal-sized surface
-    // rendered far outside the Steam viewport so Discord stays live without
-    // being visible or receiving gamepad input.
-    v.m_browserView.SetBounds(-10000,-10000,1280,720);
-    v.m_browserView.SetVisible(true);return true;
-  }catch(e){return false;}})()`, 2000);
-}
-async function positionTokeerDiscordEmbedded(bounds) {
-    const shared = await findSharedJsContext();
-    if (!shared?.webSocketDebuggerUrl)
-        return false;
-    const b = {
-        x: Math.max(0, Math.round(bounds.x)), y: Math.max(0, Math.round(bounds.y)),
-        width: Math.max(1, Math.round(bounds.width)), height: Math.max(1, Math.round(bounds.height)),
-    };
-    return !!(await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
-    var v=window.SLSDECK_TOKEER_VIEW;if(!v||!v.m_browserView)return false;
-    v.m_browserView.SetBounds(${b.x},${b.y},${b.width},${b.height});
-    v.m_browserView.SetVisible(true);return true;
-  }catch(e){return false;}})()`, 2000));
-}
-async function hideTokeerDiscordEmbedded() {
-    await parkTokeerBrowserView();
-}
-async function showTokeerDiscordEmbedded(bounds) {
-    if (!(await connectTokeerDiscordHidden()))
-        return false;
-    return positionTokeerDiscordEmbedded(bounds);
-}
-async function waitForExactUrl(url, timeoutMs = 6500) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        const tabs = await listCdpTabs();
-        const tab = tabs.find((t) => !!t.webSocketDebuggerUrl && String(t.url || "") === url);
-        if (tab)
-            return tab;
-        await new Promise((r) => setTimeout(r, 200));
-    }
-    return null;
-}
-/**
- * Steamcord-style creation path: create a BrowserView from Steam's debuggable
- * SharedJSContext, tag it with a unique data: URL, discover that exact CDP target,
- * then navigate the target to Discord. This avoids NavigateToExternalWeb, whose
- * BrowserView is not exposed in CDP on some Steam Deck builds.
- */
-async function createTokeerDiscordBrowserView() {
-    const shared = await findSharedJsContext();
-    if (!shared?.webSocketDebuggerUrl)
-        return null;
-    const placeholder = `data:text/plain,slsdeck_tokeer_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const expr = `(function(){try{
-    if(window.SLSDECK_TOKEER_VIEW!==undefined){
-      try{window.SLSDECK_TOKEER_VIEW.m_browserView.SetVisible(false);}catch(e){}
-      try{window.SLSDECK_TOKEER_VIEW.Destroy();}catch(e){}
-      window.SLSDECK_TOKEER_VIEW=undefined;
-    }
-    var main=window.DFL&&window.DFL.Router&&window.DFL.Router.WindowStore&&window.DFL.Router.WindowStore.GamepadUIMainWindowInstance;
-    if(!main||typeof main.CreateBrowserView!=='function') return JSON.stringify({ok:false,error:'CreateBrowserView unavailable'});
-    var view=main.CreateBrowserView(${JSON.stringify(TOKEER_VIEW_NAME)});
-    window.SLSDECK_TOKEER_VIEW=view;
-    try{view.WIDTH=1280;view.HEIGHT=720;view.m_browserView.SetBounds(-10000,-10000,1280,720);}catch(e){}
-    // Visible to Chromium (so it renders), parked outside Steam's viewport.
-    try{view.m_browserView.SetVisible(true);}catch(e){}
-    view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
-    return JSON.stringify({ok:true});
-  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
-    const raw = await evalJson(shared.webSocketDebuggerUrl, expr, 4000);
-    try {
-        const created = JSON.parse(String(raw || ""));
-        if (!created?.ok)
-            return null;
-    }
-    catch {
-        return null;
-    }
-    const target = await waitForExactUrl(placeholder);
-    if (!target?.webSocketDebuggerUrl)
-        return null;
-    // Keep Discord's SPA active while the Deck/QAM focus changes.
-    await cdpCommand(target.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
-    await cdpCommand(target.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
-    const nav = await cdpCommand(target.webSocketDebuggerUrl, "Page.navigate", {
-        url: TOKEER_DISCORD_URL,
-        transitionType: "address_bar",
-    }, 4000);
-    if (!nav)
-        return null;
-    const deadline = Date.now() + 12000;
-    while (Date.now() < deadline) {
-        // The websocket belongs to the exact BrowserView we created. Do not call
-        // findDiscordTab() here: a separately opened manual Discord tab may win
-        // that search and leave the managed embedded surface on its placeholder.
-        const liveUrl = await resolveTabUrl(target);
-        if (looksLikeDiscordUrl(liveUrl)) {
-            await evalJson(target.webSocketDebuggerUrl, `(function(){try{window.__SLSDECK_TOKEER_MANAGED=true;return true;}catch(e){return false;}})()`, 2000);
-            return { ...target, resolvedUrl: liveUrl, url: liveUrl };
-        }
-        await new Promise((r) => setTimeout(r, 300));
-    }
-    return null;
-}
-async function cdpDiagnostic() {
-    const tabs = await listCdpTabs();
-    if (!tabs.length)
-        return "CDP 8080/8081 returned no targets.";
-    const ports = Array.from(new Set(tabs.map((t) => t.cdpPort).filter(Boolean))).join("/");
-    const shared = tabs.some((t) => /SharedJSContext/i.test(String(t.title || "")));
-    return `Steam CDP is active on ${ports || "an unknown port"} (${tabs.length} targets; SharedJSContext ${shared ? "found" : "missing"}).`;
-}
-async function navigateDiscordTabToTokeer(tab) {
-    if (!tab.webSocketDebuggerUrl)
-        return false;
-    const liveUrl = await resolveTabUrl(tab);
-    if (liveUrl.includes(TOKEER_CHANNEL))
-        return true;
-    const nav = await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
-        url: TOKEER_DISCORD_URL,
-        transitionType: "address_bar",
-    }, 4000);
-    return !!nav;
-}
-const SNAPSHOT_EXPR = `(function(){try{
-  var id=${JSON.stringify(TARGET_MESSAGE)};
-  var exact=document.querySelector('[data-list-item-id$="-'+id+'"]') || (document.querySelector('#message-accessories-'+id) && document.querySelector('#message-accessories-'+id).closest('[role="article"]')) || (document.querySelector('#message-reactions-'+id) && document.querySelector('#message-reactions-'+id).closest('[role="article"]'));
-  var arts=[].slice.call(document.querySelectorAll('[role="article"]'));
-  var controls=function(a){return [].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"],button[aria-expanded]'));};
-  var article=exact || arts.reverse().find(function(a){var t=(a.innerText||'');return controls(a).length>0 && /steam|games? listed|keys? remaining|high demand|tokeer/i.test(t);});
-  if(!article) return {found:false,selectors:[],error:'Discord is open, but the Tokeer activation panel is not rendered. Sign in if needed, open the Linux activation channel, and press Refresh.'};
-  var text=(article.innerText||'').replace(/\u00a0/g,' ');
-  var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
-  var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};
-  var selects=controls(article).filter(function(e){return e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox';}).map(function(e,i){
-    var label=(e.innerText||e.textContent||'').trim();
-    return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};
-  });
-  return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
-}catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
-async function readTokeerDiscord() {
-    const tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl) {
-        const diag = await cdpDiagnostic();
-        return { found: false, selectors: [], error: `No Discord page found in Steam CDP. ${diag}` };
-    }
-    if (!tab.url?.includes(TOKEER_CHANNEL)) {
-        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
-    }
-    const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
-    if (snap.error)
-        return { found: false, selectors: [], tabUrl: tab.url, error: `Discord DOM evaluation failed: ${snap.error}` };
-    if (!snap.value || typeof snap.value !== "object")
-        return { found: false, selectors: [], tabUrl: tab.url, error: "Discord DOM snapshot returned no object." };
-    return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
-}
-async function openSelectorAndReadOptions(index) {
-    const tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
-        return [];
-    const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var arts=[].slice.call(document.querySelectorAll('[role="article"]'));var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];var e=xs[${Number(index)}];if(!e)return false;var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;}catch(e){return false;}})()`;
-    const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr);
-    if (!ok)
-        return [];
-    await new Promise((r) => setTimeout(r, 450));
-    const optionsExpr = `(function(){try{
-    var visible=function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
-    var boxes=[].slice.call(document.querySelectorAll('[role="listbox"]')).filter(visible);
-    var root=boxes.length?boxes[boxes.length-1]:document;
-    var rows=[].slice.call(root.querySelectorAll('[role="option"]')).filter(visible);
-    if(!rows.length)rows=[].slice.call(document.querySelectorAll('[role="option"]')).filter(visible);
-    var labels=rows.map(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();}).filter(Boolean);
-    // Tokeer's game rows carry availability text. If those are present, keep
-    // only them and discard Discord navigation/notification menu entries.
-    var games=labels.filter(function(t){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining\\s*\\(\\d+%\\)/i.test(t);});
-    return JSON.stringify(games.length?games:labels);
-  }catch(e){return '[]';}})()`;
-    const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
-    try {
-        return JSON.parse(String(raw || "[]"));
-    }
-    catch {
-        return [];
-    }
-}
-async function chooseSelectorOption(index, label) {
-    const tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
-        return false;
-    const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
-    const alreadyOpen = !!(await evalJson(tab.webSocketDebuggerUrl, visibleExpr));
-    if (!alreadyOpen)
-        await openSelectorAndReadOptions(index);
-    const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
-    return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
-}
-const TICKET_GATE_EXPR = `(function(){try{
-  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-  for(var i=0;i<arts.length;i++){
-    var a=arts[i], bs=[].slice.call(a.querySelectorAll('button'));
-    for(var j=0;j<bs.length;j++){
-      var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
-      if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((a.innerText||'')+' '+label)){
-        return JSON.stringify({found:true,label:label,disabled:b.disabled||b.getAttribute('aria-disabled')==='true',messageText:(a.innerText||'').slice(0,5000)});
-      }
-    }
-  }
-  return JSON.stringify({found:false,error:'Waiting for the newest Tokeer confirmation message…'});
-}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
-async function readLatestTicketGate() {
-    const tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
-        return { found: false, error: "Tokeer activation channel is not open." };
-    const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_GATE_EXPR);
-    try {
-        return JSON.parse(String(raw || ""));
-    }
-    catch {
-        return { found: false, error: "Could not read the ticket confirmation button." };
-    }
-}
-async function clickLatestTicketGate() {
-    const tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
-        return { success: false, error: "Tokeer activation channel is not open." };
-    const expr = `(function(){try{
-    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-    for(var i=0;i<arts.length;i++){
-      var bs=[].slice.call(arts[i].querySelectorAll('button'));
-      for(var j=0;j<bs.length;j++){
-        var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
-        if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((arts[i].innerText||'')+' '+label) && !b.disabled && b.getAttribute('aria-disabled')!=='true'){var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});return true;}
-      }
-    }
-    return false;
-  }catch(e){return false;}})()`;
-    const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
-    return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
-}
-const TICKET_CONTEXT_EXPR = `(function(){try{
-  var text=(document.body.innerText||'').replace(/\\u00a0/g,' ');
-  var code=[].slice.call(document.querySelectorAll('pre,code,[class*="codeBlock"],[class*="markup"]')).map(function(e){return e.innerText||e.textContent||'';}).join('\\n');
-  var hay=(code+'\\n'+text).slice(0,50000);
-  var patterns=[
-    /tokeer\\s+verify(?:\\s+--?appid(?:=|\\s+)|\\s+)(\\d{3,10})/i,
-    /(?:--?appid|app[_ -]?id)(?:=|:|\\s+|["']+)(\\d{3,10})/i,
-    /(?:store\\.steampowered\\.com\\/app|steam:\\/\\/(?:run|install)|steamdb\\.info\\/app)\\/(\\d{3,10})/i,
-    /\\/app\\/(\\d{3,10})(?:\\/|\\b)/i,
-    /bash\\s+-s\\s+--(?:[^\\n\\r\\d]{0,40})(\\d{3,10})/i,
-    /(?:tokeer|activate|prepare|verify)[^\\n\\r]{0,80}\\b(\\d{3,10})\\b/i
-  ];
-  var m=null;
-  for(var i=0;i<patterns.length&&!m;i++)m=hay.match(patterns[i]);
-  if(!m){
-    var nums=code.match(/\\b\\d{3,10}\\b/g)||[];
-    var unique=nums.filter(function(v,p,a){return a.indexOf(v)===p;});
-    if(unique.length===1)m=[unique[0],unique[0]];
-  }
-  var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
-  return JSON.stringify(m?{found:true,opened:true,appid:Number(m[1]),rawText:text.slice(0,20000)}:{found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'});
-}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
-const TICKET_LINK_EXPR = `(function(){try{
-  var channel=${JSON.stringify(TOKEER_CHANNEL)};
-  var guild=${JSON.stringify(`/channels/${GUILD_ID}/`)};
-  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-  for(var i=0;i<Math.min(arts.length,30);i++){
-    var a=arts[i], text=(a.innerText||'').replace(/\u00a0/g,' ');
-    if(!/(?:ticket|activation|private|continue|created|opened)/i.test(text))continue;
-    var links=[].slice.call(a.querySelectorAll('a[href*="/channels/"]'));
-    for(var j=0;j<links.length;j++){
-      var href=String(links[j].href||links[j].getAttribute('href')||'');
-      if(href.indexOf(guild)>=0 && href.indexOf(channel)<0)return JSON.stringify({found:true,url:href,text:text.slice(0,3000)});
-    }
-  }
-  return JSON.stringify({found:false});
-}catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
-async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
-    const deadline = Date.now() + timeoutMs;
-    let lastError = "Waiting for Tokeer ticket…";
-    let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? fromUrl : "";
-    if (lastTicketUrl) {
-        try {
-            const managed = await findManagedTokeerTab();
-            if (managed?.webSocketDebuggerUrl && String(managed.url || "") !== lastTicketUrl) {
-                await cdpCommand(managed.webSocketDebuggerUrl, "Page.navigate", {
-                    url: lastTicketUrl, transitionType: "address_bar",
-                }, 4000);
-            }
-        }
-        catch { }
-    }
-    while (Date.now() < deadline) {
-        const tabs = await listCdpTabs();
-        const candidates = [];
-        for (const rawTab of tabs.filter((t) => !!t.webSocketDebuggerUrl)) {
-            const resolvedUrl = await resolveTabUrl(rawTab);
-            if (!looksLikeDiscordUrl(resolvedUrl))
-                continue;
-            const tab = { ...rawTab, resolvedUrl, url: resolvedUrl };
-            const u = String(tab.url || "");
-            // Discord can open a private thread in the same target, a modal without
-            // changing the URL, or a new target. Inspect all guild tabs, including
-            // the activation target that initiated the interaction.
-            if (u.includes(`/channels/${GUILD_ID}/`))
-                candidates.push(tab);
-        }
-        for (const tab of candidates) {
-            if (!tab.webSocketDebuggerUrl)
-                continue;
-            const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
-            try {
-                const parsed = JSON.parse(String(raw || ""));
-                if (parsed?.found && parsed?.appid)
-                    return { ...parsed, opened: true, url: tab.url };
-                if (parsed?.opened && !String(tab.url || "").includes(TOKEER_CHANNEL))
-                    lastTicketUrl = String(tab.url || "");
-                if (parsed?.error)
-                    lastError = parsed.error;
-            }
-            catch { }
-            // Ticket bots often post a private-channel link instead of changing the
-            // current SPA route. Discover that link from recent messages and move the
-            // same hidden target into it.
-            try {
-                const linkRaw = await evalJson(tab.webSocketDebuggerUrl, TICKET_LINK_EXPR);
-                const link = JSON.parse(String(linkRaw || ""));
-                if (link?.found && looksLikeDiscordUrl(link.url || "")) {
-                    lastTicketUrl = String(link.url);
-                    if (String(tab.url || "") !== lastTicketUrl) {
-                        await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
-                            url: lastTicketUrl, transitionType: "link",
-                        }, 4000);
-                    }
-                    lastError = "Ticket found; waiting for its setup commands…";
-                }
-            }
-            catch { }
-        }
-        await new Promise((r) => setTimeout(r, 600));
-    }
-    return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
-}
-async function cancelTokeerTicket(ticketUrl = "") {
-    let tab = await findManagedTokeerTab();
-    if (!tab?.webSocketDebuggerUrl)
-        tab = await findDiscordTab();
-    if (!tab?.webSocketDebuggerUrl)
-        return { success: false, error: "The Discord ticket view is not connected." };
-    if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
-        await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
-            url: ticketUrl, transitionType: "address_bar",
-        }, 4000);
-        await new Promise((r) => setTimeout(r, 900));
-    }
-    const clickCancel = `(function(){try{
-    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
-    var label=function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();};
-    var click=function(e){var r=e.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,p));});};
-    var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible);
-    var exact=buttons.filter(function(b){return /(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(label(b));});
-    var danger=exact.find(function(b){return /danger|red|negative|critical/i.test(String(b.className||'')+' '+String(b.getAttribute('data-look')||'')+' '+String(b.getAttribute('aria-label')||''));});
-    var target=danger||exact[exact.length-1];
-    if(!target)return JSON.stringify({ok:false,error:'The red Cancel Ticket button was not found in the open ticket.'});
-    click(target);
-    return JSON.stringify({ok:true,label:label(target)});
-  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
-    const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
-    let first;
-    try {
-        first = JSON.parse(String(raw || ""));
-    }
-    catch {
-        first = null;
-    }
-    if (!first?.ok)
-        return { success: false, error: first?.error || "Could not press Cancel Ticket." };
-    // Some ticket bots ask for a second confirmation in a modal.
-    await new Promise((r) => setTimeout(r, 650));
-    const confirmExpr = `(function(){try{
-    var d=[].slice.call(document.querySelectorAll('[role="dialog"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
-    if(!d)return false;
-    var bs=[].slice.call(d.querySelectorAll('button,[role="button"]'));
-    var b=bs.find(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return /^(?:confirm|yes)$/i.test(t)||/(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(t);});
-    if(!b)return false;
-    var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};
-    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});
-    return true;
-  }catch(e){return false;}})()`;
-    await evalJson(tab.webSocketDebuggerUrl, confirmExpr, 3000);
-    return { success: true };
-}
-/** Connect the automation surface without putting Discord on screen. The
- * BrowserView shares Steam CEF's Discord session, so a prior visible login is
- * reused. */
-async function connectTokeerDiscordHidden() {
-    // Reuse only our managed BrowserView. A normal Steam external-web tab may be
-    // readable through CDP but cannot be repositioned inside the plugin page.
-    if (await hasTokeerBrowserView()) {
-        try {
-            // Reuse only the CDP target tagged by createTokeerDiscordBrowserView.
-            // A user's manual/login Discord tab is readable too, but it is not the
-            // BrowserView that positionTokeerDiscordEmbedded() can move.
-            const existing = await findManagedTokeerTab();
-            if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
-                try {
-                    await parkTokeerBrowserView();
-                }
-                catch { }
-                try {
-                    await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
-                }
-                catch { }
-                return true;
-            }
-        }
-        catch { }
-    }
-    try {
-        const created = await createTokeerDiscordBrowserView();
-        try {
-            await parkTokeerBrowserView();
-        }
-        catch { }
-        return !!created?.webSocketDebuggerUrl;
-    }
-    catch {
-        return false;
-    }
-}
-async function openTokeerDiscord() {
-    // Hide a raw fallback view left by an older SLSDeck build. A visible raw
-    // BrowserView has no Steam navigation chrome and traps the B button.
-    try {
-        await hideTokeerBrowserView();
-    }
-    catch { }
-    // Visible login/manual path: Steam owns this page and supplies its normal
-    // Back action. Silent automation uses connectTokeerDiscordHidden instead.
-    try {
-        const nav = DFL.Navigation;
-        if (typeof nav?.NavigateToExternalWeb === "function") {
-            nav.NavigateToExternalWeb(TOKEER_DISCORD_URL);
-            return true;
-        }
-    }
-    catch { }
-    try {
-        const SC = window.SteamClient;
-        if (SC?.System?.OpenInSystemBrowser) {
-            SC.System.OpenInSystemBrowser(TOKEER_DISCORD_URL);
-            return true;
-        }
-    }
-    catch { }
-    return false;
-}
-
 const inputStyle = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 4, border: "1px solid rgba(255,255,255,.25)", background: "rgba(0,0,0,.22)", color: "inherit" };
 const checks = (v) => v?.checks || { installed: false, prefix: false, hook: false, launchOpt: false, proton: null };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -9504,6 +9632,17 @@ function Content() {
     // Until SLSsteam is installed, the QAM shows only the setup block — no game
     // actions, game list or tools (there's nothing for them to act on yet).
     const [installed, setInstalled] = SP_REACT.useState(false);
+    SP_REACT.useEffect(() => {
+        if (!installed)
+            return;
+        // Refresh Discord-backed vault/game availability independently of the
+        // Anti-Denuvo page. The cache itself coalesces callers and preserves the
+        // last good result when Discord is logged out or temporarily unrendered.
+        const refresh = () => refreshTokeerAvailabilityCache(false).catch(() => { });
+        const first = setTimeout(refresh, 12000);
+        const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
+        return () => { clearTimeout(first); clearInterval(interval); };
+    }, [installed]);
     SP_REACT.useEffect(() => {
         if (!installed || heavyDepsStarted)
             return;
