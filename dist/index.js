@@ -1575,13 +1575,21 @@ const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
 const CDP_PORTS = [8080, 8081];
 const TOKEER_VIEW_NAME = "slsdeck_tokeer";
+function settleWithin(work, timeoutMs, fallback) {
+    return Promise.race([
+        work,
+        new Promise((resolve) => setTimeout(() => resolve(fallback), Math.max(1, timeoutMs))),
+    ]);
+}
 async function listCdpTabs() {
     const merged = [];
     const seen = new Set();
     for (const port of CDP_PORTS) {
         try {
-            const r = await fetchNoCors(`http://localhost:${port}/json`);
-            const tabs = await r.json();
+            const r = await settleWithin(fetchNoCors(`http://localhost:${port}/json`), 1800, null);
+            if (!r)
+                continue;
+            const tabs = await settleWithin(r.json(), 1200, []);
             if (!Array.isArray(tabs))
                 continue;
             for (const tab of tabs) {
@@ -1602,10 +1610,13 @@ function cdpCommand(wsUrl, method, params = {}, timeoutMs = 5000) {
     return new Promise((resolve) => {
         let done = false;
         let sock;
+        let timer;
         const finish = (v) => {
             if (done)
                 return;
             done = true;
+            if (timer !== undefined)
+                clearTimeout(timer);
             try {
                 sock.close();
             }
@@ -1630,7 +1641,8 @@ function cdpCommand(wsUrl, method, params = {}, timeoutMs = 5000) {
             catch { }
         };
         sock.onerror = () => finish(null);
-        setTimeout(() => finish(null), timeoutMs);
+        sock.onclose = () => finish(null);
+        timer = setTimeout(() => finish(null), timeoutMs);
     });
 }
 async function evalJson(wsUrl, expression, timeoutMs = 5000) {
@@ -1651,7 +1663,7 @@ function looksLikeDiscordUrl(url) {
 }
 /** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
  * actual JS execution context what it is rendering instead of trusting metadata. */
-async function resolveTabUrl(t) {
+async function resolveTabUrl(t, timeoutMs = 1800) {
     if (!t.webSocketDebuggerUrl)
         return String(t.url || "");
     const expr = `(function(){try{
@@ -1659,7 +1671,7 @@ async function resolveTabUrl(t) {
     var frames=[].slice.call(document.querySelectorAll('iframe')).map(function(f){return String(f.src||'');});
     return JSON.stringify({here:here,frames:frames});
   }catch(e){return JSON.stringify({here:'',frames:[]});}})()`;
-    const raw = await evalJson(t.webSocketDebuggerUrl, expr, 1800);
+    const raw = await evalJson(t.webSocketDebuggerUrl, expr, timeoutMs);
     try {
         const parsed = JSON.parse(String(raw || ""));
         const urls = [parsed?.here, ...(Array.isArray(parsed?.frames) ? parsed.frames : [])].filter(Boolean);
@@ -1698,6 +1710,12 @@ let tabInFlight = null;
  * (navigation, BrowserView create/park) so we never act on a dead socket. */
 function invalidateDiscordTabCache() {
     tabCache = null;
+}
+/** Drop both target and DOM-derived state after navigation or target creation. */
+function invalidateDiscordCaptureCaches() {
+    tabCache = null;
+    snapshotCache = null;
+    lastSignedIn = null;
 }
 async function findDiscordTab() {
     if (tabCache && Date.now() - tabCache.at < TAB_CACHE_MS)
@@ -1875,6 +1893,7 @@ async function createTokeerDiscordBrowserView() {
     }, 4000);
     if (!nav)
         return null;
+    invalidateDiscordCaptureCaches();
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
         // The websocket belongs to the exact BrowserView we created. Do not call
@@ -1907,6 +1926,8 @@ async function navigateDiscordTabToTokeer(tab) {
         url: TOKEER_DISCORD_URL,
         transitionType: "address_bar",
     }, 4000);
+    if (nav)
+        invalidateDiscordCaptureCaches();
     return !!nav;
 }
 const SNAPSHOT_EXPR = `(function(){try{
@@ -1980,12 +2001,12 @@ async function readTokeerDiscordUncached() {
     }
     return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
 }
-async function openSelectorAndReadOptions(index) {
+async function openSelectorAndReadOptions(index, timeoutMs = 5000) {
     const tab = await findDiscordTab();
     if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
         return [];
     const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var arts=[].slice.call(document.querySelectorAll('[role="article"]'));var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];var e=xs[${Number(index)}];if(!e)return false;var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;}catch(e){return false;}})()`;
-    const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr);
+    const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr, Math.min(timeoutMs, 3000));
     if (!ok)
         return [];
     await new Promise((r) => setTimeout(r, 450));
@@ -2001,7 +2022,7 @@ async function openSelectorAndReadOptions(index) {
     var games=labels.filter(function(t){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining\\s*\\(\\d+%\\)/i.test(t);});
     return JSON.stringify(games.length?games:labels);
   }catch(e){return '[]';}})()`;
-    const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
+    const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr, Math.min(timeoutMs, 3000));
     try {
         return JSON.parse(String(raw || "[]"));
     }
@@ -2061,6 +2082,8 @@ async function clickLatestTicketGate() {
     return false;
   }catch(e){return false;}})()`;
     const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+    if (ok)
+        invalidateDiscordCaptureCaches();
     return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
 }
 const TICKET_CONTEXT_EXPR = `(function(){try{
@@ -2111,6 +2134,7 @@ async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
                 await cdpCommand(managed.webSocketDebuggerUrl, "Page.navigate", {
                     url: lastTicketUrl, transitionType: "address_bar",
                 }, 4000);
+                invalidateDiscordCaptureCaches();
             }
         }
         catch { }
@@ -2156,6 +2180,7 @@ async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
                         await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
                             url: lastTicketUrl, transitionType: "link",
                         }, 4000);
+                        invalidateDiscordCaptureCaches();
                     }
                     lastError = "Ticket found; waiting for its setup commands…";
                 }
@@ -2174,6 +2199,7 @@ async function ticketTab(ticketUrl) {
         return null;
     if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
         await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+        invalidateDiscordCaptureCaches();
         await new Promise((r) => setTimeout(r, 1000));
     }
     return tab;
@@ -2260,6 +2286,7 @@ async function cancelTokeerTicket(ticketUrl = "") {
         await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
             url: ticketUrl, transitionType: "address_bar",
         }, 4000);
+        invalidateDiscordCaptureCaches();
         await new Promise((r) => setTimeout(r, 900));
     }
     const clickCancel = `(function(){try{
@@ -2466,10 +2493,24 @@ function writeCache(state, games) {
     return cache;
 }
 let refreshPromise = null;
+let refreshGeneration = 0;
 // Upper bound on one availability refresh. Generous enough for a slow Discord
 // render, short enough that a stuck panel degrades to cached/unknown quickly
 // instead of pinning the UI.
 const REFRESH_BUDGET_MS = 25000;
+function remaining(deadline, cap = 5000) {
+    return Math.max(1, Math.min(cap, deadline - Date.now()));
+}
+async function beforeDeadline(work, deadline, fallback) {
+    return Promise.race([
+        work,
+        new Promise((resolve) => setTimeout(() => resolve(fallback), remaining(deadline, REFRESH_BUDGET_MS))),
+    ]);
+}
+function cancelTokeerAvailabilityRefresh() {
+    refreshGeneration += 1;
+    refreshPromise = null;
+}
 function hasActiveTicketSession() {
     try {
         const session = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
@@ -2482,7 +2523,10 @@ function hasActiveTicketSession() {
 }
 async function refreshTokeerAvailabilityCache(force = false) {
     const current = readTokeerAvailabilityCache();
-    if (!force && current && Date.now() - current.updatedAt < TOKEER_CACHE_TTL_MS)
+    // Avoid hammering Discord within the short freshness window. After that,
+    // callers still receive the cache immediately, but one background refresh is
+    // started even though the six-hour cache remains usable as a fallback.
+    if (!force && current && Date.now() - current.updatedAt < TOKEER_FIX_FRESH_MS)
         return current;
     // Never navigate the managed Discord target away from a live private ticket.
     // A forced caller gets null so it cannot mistake stale cache for a live check.
@@ -2490,7 +2534,8 @@ async function refreshTokeerAvailabilityCache(force = false) {
         return force ? null : current;
     if (refreshPromise)
         return refreshPromise;
-    refreshPromise = (async () => {
+    const generation = ++refreshGeneration;
+    const run = (async () => {
         // Hard wall-clock budget for the WHOLE refresh. The old loop bounded only the
         // number of retries (20 x 500ms), but each readTokeerDiscord can itself take
         // seconds (target resolution + a 5s Runtime.evaluate), so a Discord page that
@@ -2498,21 +2543,24 @@ async function refreshTokeerAvailabilityCache(force = false) {
         // Fixes stuck on "checking" and starved every later call behind it.
         const deadline = Date.now() + REFRESH_BUDGET_MS;
         const outOfTime = () => Date.now() > deadline;
+        const cancelled = () => generation !== refreshGeneration;
         try {
-            if (!(await connectTokeerDiscordHidden()))
+            if (!(await beforeDeadline(connectTokeerDiscordHidden(), deadline, false)))
                 return force ? null : current;
-            let state = await readTokeerDiscord(true);
-            while (!state.found && !outOfTime()) {
+            if (cancelled())
+                return current;
+            let state = await beforeDeadline(readTokeerDiscord(true), deadline, { found: false, selectors: [], error: "Discord snapshot timed out." });
+            while (!state.found && !outOfTime() && !cancelled()) {
                 await new Promise((resolve) => setTimeout(resolve, 500));
-                state = await readTokeerDiscord(true);
+                state = await beforeDeadline(readTokeerDiscord(true), deadline, { found: false, selectors: [], error: "Discord snapshot timed out." });
             }
-            if (!state.found)
+            if (!state.found || cancelled())
                 return force ? null : current;
             const parsed = [];
             for (const selector of state.selectors || []) {
-                if (outOfTime())
+                if (outOfTime() || cancelled())
                     break;
-                const labels = await openSelectorAndReadOptions(selector.index);
+                const labels = await beforeDeadline(openSelectorAndReadOptions(selector.index, remaining(deadline)), deadline, []);
                 for (const label of labels) {
                     const game = parseTokeerGameLabel(label);
                     if (game && (game.remaining === undefined || game.remaining > 0))
@@ -2522,6 +2570,8 @@ async function refreshTokeerAvailabilityCache(force = false) {
             // Do not replace a populated game cache with an empty scrape caused by a
             // temporarily unrendered Discord menu. Vault-only snapshots may still seed
             // a new cache on first use.
+            if (cancelled())
+                return current;
             if (!parsed.length && current?.games.length)
                 return force ? null : current;
             return writeCache(state, parsed);
@@ -2530,10 +2580,16 @@ async function refreshTokeerAvailabilityCache(force = false) {
             return force ? null : current;
         }
         finally {
-            refreshPromise = null;
+            if (generation === refreshGeneration)
+                refreshPromise = null;
         }
     })();
-    return refreshPromise;
+    refreshPromise = run;
+    if (!force && current) {
+        void run.catch(() => null);
+        return current;
+    }
+    return run;
 }
 const ROMAN_TO_ARABIC = {
     I: "1", II: "2", III: "3", IV: "4", V: "5", VI: "6", VII: "7",
@@ -2646,6 +2702,7 @@ function BadgeChip({ badge, inline }) {
         }, children: label }));
 }
 function FixPicker({ appid, onReload, onClose }) {
+    SP_REACT.useEffect(() => () => cancelTokeerAvailabilityRefresh(), [appid]);
     const [check, setCheck] = SP_REACT.useState(null);
     const [tokeerGame, setTokeerGame] = SP_REACT.useState(null);
     const [tokeerRefreshing, setTokeerRefreshing] = SP_REACT.useState(false);
@@ -8150,6 +8207,7 @@ function readAutoConnect() {
     }
 }
 function TokeerSection() {
+    SP_REACT.useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
     const savedRef = SP_REACT.useRef(readSavedSession());
     const sessionStartedRef = SP_REACT.useRef(savedRef.current?.startedAt || Date.now());
     const codeReceivedAtRef = SP_REACT.useRef(savedRef.current?.codeReceivedAt);
@@ -8496,6 +8554,7 @@ function TokeerSection() {
         }
     };
     const openTicket = async () => {
+        cancelTokeerAvailabilityRefresh();
         setBusy("Opening Tokeer ticket…");
         setMessage("Pressing the real green Discord confirmation and waiting for the ticket/thread…");
         try {

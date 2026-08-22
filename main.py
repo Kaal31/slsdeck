@@ -64,13 +64,13 @@ class Plugin:
         return await self._run_slow(tokeer.preflight, appid, game_name)
 
     async def tokeer_ensure_runtime(self) -> Dict[str, Any]:
-        return await self._run_slow(tokeer.ensure_runtime_latest)
+        return await self._run_dependency_install(tokeer.ensure_runtime_latest)
 
     async def tokeer_proton_status(self) -> Dict[str, Any]:
         return await self._run(tokeer.required_proton_status)
 
     async def tokeer_ensure_proton(self, force: bool = False) -> Dict[str, Any]:
-        return await self._run_slow(tokeer.ensure_required_proton, bool(force))
+        return await self._run_dependency_install(tokeer.ensure_required_proton, bool(force))
 
     async def tokeer_prepare(self, appid: int) -> Dict[str, Any]:
         return await self._run_slow(tokeer.prepare, appid)
@@ -173,6 +173,7 @@ class Plugin:
         # Dedicated pool for long blocking work (see _run_slow). Deliberately
         # small: its job is to CONTAIN slow calls, not to run many at once.
         self._slow_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slsdeck-slow")
+        self._dependency_install_lock = asyncio.Lock()
         decky.logger.info("SLSDeck: bootstrapping")
         try:
             path = steam.detect_steam_install_path()
@@ -469,6 +470,14 @@ class Plugin:
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: slow RPC {getattr(fn, '__name__', str(fn))} failed: {exc}")
             return {"success": False, "error": str(exc)}
+
+    async def _run_dependency_install(self, fn, *args):
+        """Serialize dependency mutations; status reads stay independent."""
+        lock = getattr(self, "_dependency_install_lock", None)
+        if lock is None:
+            return await self._run_slow(fn, *args)
+        async with lock:
+            return await self._run_slow(fn, *args)
 
     # ── environment / status ──────────────────────────────────────────────
     async def get_steam_status(self) -> Dict[str, Any]:

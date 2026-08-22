@@ -10,6 +10,13 @@ const CDP_PORTS = [8080, 8081];
 const TOKEER_VIEW_NAME = "slsdeck_tokeer";
 
 interface CdpTab { url: string; title?: string; type?: string; webSocketDebuggerUrl?: string; resolvedUrl?: string; cdpPort?: number }
+
+function settleWithin<T>(work: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), Math.max(1, timeoutMs))),
+  ]);
+}
 export type TokeerDiscordState = {
   found: boolean;
   steamStatus?: string;
@@ -47,8 +54,9 @@ async function listCdpTabs(): Promise<CdpTab[]> {
   const seen = new Set<string>();
   for (const port of CDP_PORTS) {
     try {
-      const r = await fetchNoCors(`http://localhost:${port}/json`);
-      const tabs: CdpTab[] = await r.json();
+      const r = await settleWithin(fetchNoCors(`http://localhost:${port}/json`), 1800, null as any);
+      if (!r) continue;
+      const tabs: CdpTab[] = await settleWithin(r.json(), 1200, []);
       if (!Array.isArray(tabs)) continue;
       for (const tab of tabs) {
         const key = String(tab.webSocketDebuggerUrl || `${tab.type || ""}|${tab.title || ""}|${tab.url || ""}`);
@@ -67,9 +75,11 @@ function cdpCommand(wsUrl: string, method: string, params: Record<string, any> =
   return new Promise((resolve) => {
     let done = false;
     let sock: WebSocket;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (v: any) => {
       if (done) return;
       done = true;
+      if (timer !== undefined) clearTimeout(timer);
       try { sock.close(); } catch {}
       resolve(v);
     };
@@ -83,7 +93,8 @@ function cdpCommand(wsUrl: string, method: string, params: Record<string, any> =
       } catch {}
     };
     sock.onerror = () => finish(null);
-    setTimeout(() => finish(null), timeoutMs);
+    sock.onclose = () => finish(null);
+    timer = setTimeout(() => finish(null), timeoutMs);
   });
 }
 
@@ -107,14 +118,14 @@ function looksLikeDiscordUrl(url: string): boolean {
 
 /** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
  * actual JS execution context what it is rendering instead of trusting metadata. */
-async function resolveTabUrl(t: CdpTab): Promise<string> {
+async function resolveTabUrl(t: CdpTab, timeoutMs = 1800): Promise<string> {
   if (!t.webSocketDebuggerUrl) return String(t.url || "");
   const expr = `(function(){try{
     var here=String(location.href||document.URL||'');
     var frames=[].slice.call(document.querySelectorAll('iframe')).map(function(f){return String(f.src||'');});
     return JSON.stringify({here:here,frames:frames});
   }catch(e){return JSON.stringify({here:'',frames:[]});}})()`;
-  const raw = await evalJson(t.webSocketDebuggerUrl, expr, 1800);
+  const raw = await evalJson(t.webSocketDebuggerUrl, expr, timeoutMs);
   try {
     const parsed = JSON.parse(String(raw || ""));
     const urls = [parsed?.here, ...(Array.isArray(parsed?.frames) ? parsed.frames : [])].filter(Boolean);
@@ -152,6 +163,13 @@ let tabInFlight: Promise<CdpTab | null> | null = null;
  * (navigation, BrowserView create/park) so we never act on a dead socket. */
 export function invalidateDiscordTabCache(): void {
   tabCache = null;
+}
+
+/** Drop both target and DOM-derived state after navigation or target creation. */
+export function invalidateDiscordCaptureCaches(): void {
+  tabCache = null;
+  snapshotCache = null;
+  lastSignedIn = null;
 }
 
 async function findDiscordTab(): Promise<CdpTab | null> {
@@ -368,6 +386,7 @@ async function createTokeerDiscordBrowserView(): Promise<CdpTab | null> {
     transitionType: "address_bar",
   }, 4000);
   if (!nav) return null;
+  invalidateDiscordCaptureCaches();
 
   const deadline = Date.now() + 12000;
   while (Date.now() < deadline) {
@@ -401,6 +420,7 @@ async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
     url: TOKEER_DISCORD_URL,
     transitionType: "address_bar",
   }, 4000);
+  if (nav) invalidateDiscordCaptureCaches();
   return !!nav;
 }
 
@@ -475,11 +495,11 @@ async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
   return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
 }
 
-export async function openSelectorAndReadOptions(index: number): Promise<string[]> {
+export async function openSelectorAndReadOptions(index: number, timeoutMs = 5000): Promise<string[]> {
   const tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return [];
   const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var arts=[].slice.call(document.querySelectorAll('[role="article"]'));var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];var e=xs[${Number(index)}];if(!e)return false;var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;}catch(e){return false;}})()`;
-  const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr);
+  const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr, Math.min(timeoutMs, 3000));
   if (!ok) return [];
   await new Promise((r) => setTimeout(r, 450));
   const optionsExpr = `(function(){try{
@@ -494,7 +514,7 @@ export async function openSelectorAndReadOptions(index: number): Promise<string[
     var games=labels.filter(function(t){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining\\s*\\(\\d+%\\)/i.test(t);});
     return JSON.stringify(games.length?games:labels);
   }catch(e){return '[]';}})()`;
-  const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr);
+  const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr, Math.min(timeoutMs, 3000));
   try { return JSON.parse(String(raw || "[]")); } catch { return []; }
 }
 
@@ -544,6 +564,7 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
     return false;
   }catch(e){return false;}})()`;
   const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+  if (ok) invalidateDiscordCaptureCaches();
   return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
 }
 
@@ -598,6 +619,7 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
         await cdpCommand(managed.webSocketDebuggerUrl, "Page.navigate", {
           url: lastTicketUrl, transitionType: "address_bar",
         }, 4000);
+        invalidateDiscordCaptureCaches();
       }
     } catch {}
   }
@@ -636,6 +658,7 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
             await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
               url: lastTicketUrl, transitionType: "link",
             }, 4000);
+            invalidateDiscordCaptureCaches();
           }
           lastError = "Ticket found; waiting for its setup commands…";
         }
@@ -652,6 +675,7 @@ async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
   if (!tab?.webSocketDebuggerUrl) return null;
   if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
     await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+    invalidateDiscordCaptureCaches();
     await new Promise((r) => setTimeout(r, 1000));
   }
   return tab;
@@ -731,6 +755,7 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
       url: ticketUrl, transitionType: "address_bar",
     }, 4000);
+    invalidateDiscordCaptureCaches();
     await new Promise((r) => setTimeout(r, 900));
   }
 

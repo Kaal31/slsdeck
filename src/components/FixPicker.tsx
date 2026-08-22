@@ -54,7 +54,7 @@ import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
-import { getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
+import { cancelTokeerAvailabilityRefresh, getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 
 interface RowDef {
   key: string;
@@ -100,6 +100,7 @@ function BadgeChip({ badge, inline }: { badge?: string; inline?: boolean }) {
 }
 
 export function FixPicker({ appid, onReload, onClose }: { appid: number; onReload?: () => void; onClose?: () => void }) {
+  useEffect(() => () => cancelTokeerAvailabilityRefresh(), [appid]);
   const [check, setCheck] = useState<FixCheck | null>(null);
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);

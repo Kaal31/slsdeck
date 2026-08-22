@@ -108,11 +108,28 @@ function writeCache(state: TokeerDiscordState, games: TokeerAvailableGame[]): To
 }
 
 let refreshPromise: Promise<TokeerAvailabilityCache | null> | null = null;
+let refreshGeneration = 0;
 
 // Upper bound on one availability refresh. Generous enough for a slow Discord
 // render, short enough that a stuck panel degrades to cached/unknown quickly
 // instead of pinning the UI.
 const REFRESH_BUDGET_MS = 25000;
+
+function remaining(deadline: number, cap = 5000): number {
+  return Math.max(1, Math.min(cap, deadline - Date.now()));
+}
+
+async function beforeDeadline<T>(work: Promise<T>, deadline: number, fallback: T): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), remaining(deadline, REFRESH_BUDGET_MS))),
+  ]);
+}
+
+export function cancelTokeerAvailabilityRefresh(): void {
+  refreshGeneration += 1;
+  refreshPromise = null;
+}
 
 function hasActiveTicketSession(): boolean {
   try {
@@ -124,12 +141,16 @@ function hasActiveTicketSession(): boolean {
 
 export async function refreshTokeerAvailabilityCache(force = false): Promise<TokeerAvailabilityCache | null> {
   const current = readTokeerAvailabilityCache();
-  if (!force && current && Date.now() - current.updatedAt < TOKEER_CACHE_TTL_MS) return current;
+  // Avoid hammering Discord within the short freshness window. After that,
+  // callers still receive the cache immediately, but one background refresh is
+  // started even though the six-hour cache remains usable as a fallback.
+  if (!force && current && Date.now() - current.updatedAt < TOKEER_FIX_FRESH_MS) return current;
   // Never navigate the managed Discord target away from a live private ticket.
   // A forced caller gets null so it cannot mistake stale cache for a live check.
   if (hasActiveTicketSession()) return force ? null : current;
   if (refreshPromise) return refreshPromise;
-  refreshPromise = (async () => {
+  const generation = ++refreshGeneration;
+  const run = (async () => {
     // Hard wall-clock budget for the WHOLE refresh. The old loop bounded only the
     // number of retries (20 x 500ms), but each readTokeerDiscord can itself take
     // seconds (target resolution + a 5s Runtime.evaluate), so a Discord page that
@@ -137,18 +158,20 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
     // Fixes stuck on "checking" and starved every later call behind it.
     const deadline = Date.now() + REFRESH_BUDGET_MS;
     const outOfTime = () => Date.now() > deadline;
+    const cancelled = () => generation !== refreshGeneration;
     try {
-      if (!(await connectTokeerDiscordHidden())) return force ? null : current;
-      let state = await readTokeerDiscord(true);
-      while (!state.found && !outOfTime()) {
+      if (!(await beforeDeadline(connectTokeerDiscordHidden(), deadline, false))) return force ? null : current;
+      if (cancelled()) return current;
+      let state = await beforeDeadline(readTokeerDiscord(true), deadline, { found: false, selectors: [], error: "Discord snapshot timed out." });
+      while (!state.found && !outOfTime() && !cancelled()) {
         await new Promise((resolve) => setTimeout(resolve, 500));
-        state = await readTokeerDiscord(true);
+        state = await beforeDeadline(readTokeerDiscord(true), deadline, { found: false, selectors: [], error: "Discord snapshot timed out." });
       }
-      if (!state.found) return force ? null : current;
+      if (!state.found || cancelled()) return force ? null : current;
       const parsed: TokeerAvailableGame[] = [];
       for (const selector of state.selectors || []) {
-        if (outOfTime()) break;
-        const labels = await openSelectorAndReadOptions(selector.index);
+        if (outOfTime() || cancelled()) break;
+        const labels = await beforeDeadline(openSelectorAndReadOptions(selector.index, remaining(deadline)), deadline, [] as string[]);
         for (const label of labels) {
           const game = parseTokeerGameLabel(label);
           if (game && (game.remaining === undefined || game.remaining > 0)) parsed.push(game);
@@ -157,15 +180,21 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
       // Do not replace a populated game cache with an empty scrape caused by a
       // temporarily unrendered Discord menu. Vault-only snapshots may still seed
       // a new cache on first use.
+      if (cancelled()) return current;
       if (!parsed.length && current?.games.length) return force ? null : current;
       return writeCache(state, parsed);
     } catch {
       return force ? null : current;
     } finally {
-      refreshPromise = null;
+      if (generation === refreshGeneration) refreshPromise = null;
     }
   })();
-  return refreshPromise;
+  refreshPromise = run;
+  if (!force && current) {
+    void run.catch(() => null);
+    return current;
+  }
+  return run;
 }
 
 const ROMAN_TO_ARABIC: Record<string, string> = {

@@ -22,7 +22,7 @@ import {
   waitForTicketContext,
   waitForTokeerActivationCode,
 } from "../lib/tokeerDiscordCapture";
-import { readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
+import { cancelTokeerAvailabilityRefresh, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
@@ -67,6 +67,7 @@ function readAutoConnect(): boolean {
 }
 
 export function TokeerSection() {
+  useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
   const codeReceivedAtRef=useRef<number|undefined>(savedRef.current?.codeReceivedAt);
@@ -332,6 +333,7 @@ export function TokeerSection() {
   };
 
   const openTicket=async()=>{
+    cancelTokeerAvailabilityRefresh();
     setBusy("Opening Tokeer ticket…");
     setMessage("Pressing the real green Discord confirmation and waiting for the ticket/thread…");
     try{
