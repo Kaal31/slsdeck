@@ -114,6 +114,7 @@ function FaWrench (props) {
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
 const tokeerPrepare = callable("tokeer_prepare");
+callable("tokeer_prepare_verify");
 const tokeerVerify = callable("tokeer_verify");
 const tokeerRedeem = callable("tokeer_redeem");
 // ── Callables ──────────────────────────────────────────────────────────────
