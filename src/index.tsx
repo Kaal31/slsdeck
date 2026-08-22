@@ -27,6 +27,40 @@ const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 let savedScroll = 0;
 const PLUGIN_SESSION_STARTED = Date.now();
 
+async function repairMissingDependenciesFromPluginLifecycle(): Promise<void> {
+  const sls = await getSlssteamStatus().catch(() => null);
+  if (!sls?.installed) return;
+
+  try {
+    const status = await tokeerRuntimeStatus();
+    if (!status.installed) await tokeerEnsureRuntime();
+  } catch (e) {
+    console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
+  }
+
+  let deferredAt = 0;
+  try { deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0"); } catch { /* */ }
+  if (deferredAt >= PLUGIN_SESSION_STARTED) {
+    window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+    return;
+  }
+  try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
+
+  try {
+    const status = await tokeerProtonStatus();
+    if (!status.installed) await tokeerEnsureProton();
+  } catch (e) {
+    console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
+  }
+  try {
+    const status = await crInstallStatus();
+    if (!status.installed) await crEnsureInstalledAuto();
+  } catch (e) {
+    console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
+  }
+  window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+}
+
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
 // isn't in SLSsteam's list (SafeMode aborts the load). We detect that and offer a
 // one-tap client-fix (Headcrab re-pin), instead of leaving the user with a
@@ -98,46 +132,7 @@ function Content() {
     return () => { clearTimeout(first); clearInterval(interval); };
   }, [installed]);
 
-  useEffect(() => {
-    if (!installed) return;
-    let stopped = false;
-    const repairMissingDependencies = async () => {
-      try {
-        const status = await tokeerRuntimeStatus();
-        if (!status.installed) await tokeerEnsureRuntime();
-      } catch (e) {
-        console.warn("SLSDeck: background Tokeer runtime repair failed", e);
-      }
 
-      let deferredAt = 0;
-      try { deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0"); } catch { /* */ }
-      // During the original SLSsteam installation, install only the tiny runtime
-      // and leave large payloads until Steam reloads. On updates/reloads the new
-      // plugin session has a later start timestamp and proceeds.
-      if (deferredAt >= PLUGIN_SESSION_STARTED) {
-        window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
-        return;
-      }
-      try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
-
-      try {
-        const status = await tokeerProtonStatus();
-        if (!status.installed) await tokeerEnsureProton();
-      } catch (e) {
-        console.warn("SLSDeck: background GE-Proton repair failed", e);
-      }
-      try {
-        const status = await crInstallStatus();
-        if (!status.installed) await crEnsureInstalledAuto();
-      } catch (e) {
-        console.warn("SLSDeck: background CloudRedirect repair failed", e);
-      }
-      if (!stopped) window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
-    };
-    const first = setTimeout(repairMissingDependencies, 1200);
-    const retry = setInterval(repairMissingDependencies, 30 * 60 * 1000);
-    return () => { stopped = true; clearTimeout(first); clearInterval(retry); };
-  }, [installed]);
 
   useEffect(() => {
     const readActionsFixes = () => {
@@ -247,6 +242,15 @@ export default definePlugin(() => {
     console.error("SLSDeck: failed to register Advanced route", e);
   }
 
+  // Dependency repair belongs to plugin initialization, not a page component:
+  // it therefore runs after installs/updates even if QAM/Advanced is never opened.
+  const dependencyRepairFirst = setTimeout(() => {
+    repairMissingDependenciesFromPluginLifecycle().catch(() => {});
+  }, 1500);
+  const dependencyRepairRetry = setInterval(() => {
+    repairMissingDependenciesFromPluginLifecycle().catch(() => {});
+  }, 30 * 60 * 1000);
+
   // Persistent background notifier: adds run in the backend even if the UI that
   // started them is closed, so this always-running poller fires the toast.
   const addNotifier = setInterval(async () => {
@@ -337,6 +341,8 @@ export default definePlugin(() => {
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");
+      try { clearTimeout(dependencyRepairFirst); } catch { /* ignore */ }
+      try { clearInterval(dependencyRepairRetry); } catch { /* ignore */ }
       try { clearInterval(addNotifier); } catch { /* ignore */ }
       try { clearInterval(autoFixSweep); } catch { /* ignore */ }
       try { clearInterval(collectionSync); } catch { /* ignore */ }
