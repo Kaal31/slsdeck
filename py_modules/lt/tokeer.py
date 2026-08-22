@@ -94,6 +94,30 @@ def prepare(appid: int) -> Dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
+def prepare_and_verify(appid: int) -> Dict[str, Any]:
+    """Run upstream Step 1 and then its local verifier as one backend job.
+
+    Keeping both commands in one Decky-side call matters because Step 1 may
+    restart Steam, destroying the React UI before it could issue a second RPC.
+    """
+    prepared = prepare(appid)
+    if not prepared.get("success"):
+        return {
+            "success": False,
+            "phase": "prepare",
+            "prepare": prepared,
+            "output": prepared.get("output", ""),
+            "error": prepared.get("error") or "Tokeer setup failed.",
+        }
+    checked = verify(appid)
+    return {
+        **checked,
+        "phase": "verified" if checked.get("success") else "verify",
+        "prepare": prepared,
+        "steamMayRestart": bool(prepared.get("steamMayRestart")),
+    }
+
+
 def _decode_tlx(code: str) -> Dict[str, Any]:
     try:
         parts = code.split(".")
