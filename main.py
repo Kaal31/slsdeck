@@ -378,6 +378,15 @@ class Plugin:
                 decky.logger.warning(f"SLSDeck: CloudRedirect uninstall issues: {result.get('errors')}")
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: CloudRedirect uninstall failed: {exc}")
+        # Tokeer is also an SLSDeck-managed dependency. Remove its runtime and
+        # command link on a true plugin uninstall, but deliberately preserve the
+        # separately installed GE-Proton10-34 compatibility tool.
+        try:
+            result = await self._run(tokeer.uninstall_runtime)
+            if not result.get("success"):
+                decky.logger.warning(f"SLSDeck: Tokeer uninstall issues: {result.get('errors')}")
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: Tokeer uninstall failed: {exc}")
         # Stop background daemons/pools so nothing survives the removal.
         try:
             watchdog.stop_watchdog()
@@ -399,11 +408,13 @@ class Plugin:
             pass
 
     async def full_uninstall_cleanup(self) -> Dict[str, Any]:
-        """Manual full removal includes the CloudRedirect dependency."""
+        """Manual full removal includes CloudRedirect and Tokeer runtime."""
         sls = await self._run(slssteam.full_uninstall_cleanup)
         cloud = await self._run(cloudredirect.uninstall_app, True)
-        return {"success": bool(sls.get("success") and cloud.get("success")),
-                "slssteam": sls, "cloudredirect": cloud}
+        tk = await self._run(tokeer.uninstall_runtime)
+        return {"success": bool(sls.get("success") and cloud.get("success") and tk.get("success")),
+                "slssteam": sls, "cloudredirect": cloud, "tokeer": tk,
+                "geProtonPreserved": True}
 
     # ── helper ────────────────────────────────────────────────────────────
     async def _run(self, fn, *args):
