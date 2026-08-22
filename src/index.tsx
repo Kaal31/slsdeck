@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, tokeerEnsureProton, crEnsureInstalledAuto } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, tokeerEnsureRuntime, tokeerEnsureProton, crEnsureInstalledAuto } from "./api";
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -110,6 +110,15 @@ function Content() {
     heavyDepsStarted = true;
     try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
     (async () => {
+      // A plugin-only reinstall may find SLSsteam already present and therefore
+      // never pass through the first-install pre-restart path. The runtime is
+      // tiny and version-aware, so ensure it here before the large dependencies.
+      try {
+        const runtime = await tokeerEnsureRuntime();
+        if (!runtime.success) console.warn("SLSDeck: background Tokeer runtime install failed", runtime.error);
+      } catch (e) {
+        console.warn("SLSDeck: background Tokeer runtime install failed", e);
+      }
       try {
         const proton = await tokeerEnsureProton();
         if (!proton.success) console.warn("SLSDeck: background GE-Proton install failed", proton.error);
