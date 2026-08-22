@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import tempfile
 import urllib.request
+import zipfile
+import importlib.util
 from typing import Any, Dict
 
 from .paths import get_user_home
@@ -23,6 +25,9 @@ from .paths import get_user_home
 RUNTIME_ZIP = "https://github.com/Tesla697/TokeerDRM-App/releases/latest/download/tokeer-linux.zip"
 INSTALL_SCRIPT = "https://raw.githubusercontent.com/Tesla697/TokeerDRM-App/main/install_linux.sh"
 DEFAULT_COOLDOWN_HOURS = 48
+RELEASE_API = "https://api.github.com/repos/Tesla697/TokeerDRM-App/releases/latest"
+VERSION_FILE = ".slsdeck_runtime_version"
+REQUIRED_PROTON = "GE-Proton10-34"
 
 
 def _home() -> str:
@@ -69,6 +74,143 @@ def _download(url: str, dest: str) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "SLSDeck-Tokeer/1.0"})
     with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
+
+
+def _latest_bundle() -> tuple[str, str]:
+    """Return (release tag, Linux bundle URL), with the stable asset fallback."""
+    try:
+        req = urllib.request.Request(RELEASE_API, headers={
+            "User-Agent": "SLSDeck-Tokeer/1.0",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=20) as response:
+            release = json.loads(response.read().decode("utf-8"))
+        tag = str(release.get("tag_name") or "")
+        for asset in release.get("assets") or []:
+            name = str(asset.get("name") or "").lower()
+            if name == "tokeer-linux.zip":
+                return tag, str(asset.get("browser_download_url") or RUNTIME_ZIP)
+        return tag, RUNTIME_ZIP
+    except Exception:
+        return "", RUNTIME_ZIP
+
+
+def _installed_runtime_version() -> str:
+    try:
+        with open(os.path.join(_tdir(), VERSION_FILE), "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def ensure_runtime_latest() -> Dict[str, Any]:
+    """Install/update shared Tokeer files without touching live Steam config."""
+    td = _tdir()
+    required = ["tokeer", "tokeer_validate_linux.py", "tokeer_redeem_linux.py",
+                "ost-run.sh", "ost_native_hook.so", "tokeer_steam_config.py"]
+    tag, bundle_url = _latest_bundle()
+    installed_version = _installed_runtime_version()
+    complete = all(os.path.isfile(os.path.join(td, name)) for name in required)
+
+    # A known matching release is a true latest-version skip. If GitHub is
+    # temporarily unreachable, preserve a complete runtime instead of replacing
+    # it blindly; the next invocation checks the release again.
+    if complete and ((tag and installed_version == tag) or not tag):
+        return {
+            "success": True, "installed": True, "updated": False,
+            "skipped": True, "version": installed_version or "installed",
+            "latest": tag or None, "home": td, "requiredProton": REQUIRED_PROTON,
+        }
+
+    try:
+        os.makedirs(td, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="slsdeck-tokeer-runtime-") as tmp:
+            archive = os.path.join(tmp, "tokeer-linux.zip")
+            _download(bundle_url, archive)
+            unpacked = os.path.join(tmp, "unpacked")
+            os.makedirs(unpacked, exist_ok=True)
+            with zipfile.ZipFile(archive) as zf:
+                base = os.path.abspath(unpacked)
+                for member in zf.infolist():
+                    target = os.path.abspath(os.path.join(base, member.filename))
+                    if not (target == base or target.startswith(base + os.sep)):
+                        raise RuntimeError("Unsafe path in Tokeer runtime archive.")
+                zf.extractall(unpacked)
+
+            source_dir = ""
+            for root, _dirs, files in os.walk(unpacked):
+                if "ost_native_hook.c" in files and "tokeer" in files:
+                    source_dir = root
+                    break
+            if not source_dir:
+                raise RuntimeError("The latest Tokeer Linux bundle is incomplete.")
+            for name in os.listdir(source_dir):
+                src = os.path.join(source_dir, name)
+                dst = os.path.join(td, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+
+        with open(os.path.join(td, "server_config.py"), "w", encoding="utf-8") as fh:
+            fh.write('SERVER_URL = "https://luastools.xyz"\n')
+        for name in ("tokeer", "ost-run.sh", "build.sh"):
+            path = os.path.join(td, name)
+            if os.path.isfile(path):
+                os.chmod(path, os.stat(path).st_mode | 0o111)
+
+        hook = os.path.join(td, "ost_native_hook.so")
+        if not os.path.isfile(hook):
+            build = os.path.join(td, "build.sh")
+            if not os.path.isfile(build):
+                raise RuntimeError("Tokeer bundle has no native hook or build script.")
+            built = _run_as_user(["bash", build], timeout=240)
+            if built.returncode != 0 or not os.path.isfile(hook):
+                raise RuntimeError((built.stdout or "Could not build Tokeer native hook.")[-6000:])
+
+        bindir = os.path.join(_home(), ".local", "bin")
+        os.makedirs(bindir, exist_ok=True)
+        link = os.path.join(bindir, "tokeer")
+        try:
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.join(td, "tokeer"), link)
+        except OSError:
+            pass
+
+        saved_version = tag or installed_version or "latest"
+        with open(os.path.join(td, VERSION_FILE), "w", encoding="utf-8") as fh:
+            fh.write(saved_version + "\n")
+        return {
+            "success": True, "installed": True, "updated": True,
+            "skipped": False, "version": saved_version, "latest": tag or None,
+            "home": td, "requiredProton": REQUIRED_PROTON,
+        }
+    except Exception as exc:
+        return {"success": False, "installed": complete, "error": str(exc),
+                "home": td, "requiredProton": REQUIRED_PROTON}
+
+
+def ensure_required_proton() -> Dict[str, Any]:
+    """Install upstream's exact GE-Proton requirement, without editing VDF."""
+    cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
+    if not os.path.isfile(cfg_path):
+        return {"success": False, "error": "Tokeer Steam configurator is missing.",
+                "requiredProton": REQUIRED_PROTON}
+    try:
+        spec = importlib.util.spec_from_file_location("slsdeck_tokeer_steam_config", cfg_path)
+        if not spec or not spec.loader:
+            raise RuntimeError("Could not load Tokeer's Proton installer.")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        roots = module.steam_roots()
+        if not roots:
+            raise RuntimeError("Steam installation was not found.")
+        path = module.ensure_proton_installed(roots[0], REQUIRED_PROTON)
+        if not path:
+            raise RuntimeError(f"Could not install {REQUIRED_PROTON}.")
+        return {"success": True, "installed": True, "name": REQUIRED_PROTON,
+                "path": path, "requiredProton": REQUIRED_PROTON}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "requiredProton": REQUIRED_PROTON}
 
 
 def prepare(appid: int) -> Dict[str, Any]:
