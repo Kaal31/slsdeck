@@ -6,14 +6,13 @@ import {
   chooseSelectorOption,
   clickLatestTicketGate,
   cancelTokeerTicket,
+  captureTokeerDiscordFrame,
   connectTokeerDiscordHidden,
   hideTokeerDiscordEmbedded,
   openSelectorAndReadOptions,
   openTokeerDiscord,
   readLatestTicketGate,
   readTokeerDiscord,
-  positionTokeerDiscordEmbedded,
-  showTokeerDiscordEmbedded,
   TokeerDiscordState,
   TokeerTicketGate,
   TokeerTicketContext,
@@ -70,7 +69,7 @@ export function TokeerSection() {
   const [gate,setGate]=useState<TokeerTicketGate|null>(savedRef.current?.gate||null);
   const [ticket,setTicket]=useState<TokeerTicketContext|null>(savedRef.current?.ticket||null);
   const [embedded,setEmbedded]=useState(false);
-  const embeddedRef=useRef<HTMLDivElement|null>(null);
+  const [embeddedFrame,setEmbeddedFrame]=useState("");
 
   useEffect(()=>{
     if(!selectedGame&&!ticket&&!gate)return;
@@ -110,25 +109,18 @@ export function TokeerSection() {
     return()=>{clearInterval(t);window.removeEventListener("slsdeck-tokeer-cache",onCache as EventListener);};
   },[]);
   useEffect(()=>{
-    if(!embedded){hideTokeerDiscordEmbedded().catch(()=>{});return;}
+    if(!embedded){setEmbeddedFrame("");hideTokeerDiscordEmbedded().catch(()=>{});return;}
     let stopped=false;
-    const bounds=()=>{
-      const el=embeddedRef.current;if(!el)return null;
-      const r=el.getBoundingClientRect();
-      const top=Math.max(0,r.top),bottom=Math.min(window.innerHeight,r.bottom);
-      if(bottom-top<24||r.right<=0||r.left>=window.innerWidth)return null;
-      return {x:Math.max(0,r.left),y:top,width:Math.min(window.innerWidth,r.right)-Math.max(0,r.left),height:bottom-top};
-    };
-    const place=async(first=false)=>{
-      const b=bounds();
-      if(!b){await hideTokeerDiscordEmbedded();return;}
-      const ok=first?await showTokeerDiscordEmbedded(b):await positionTokeerDiscordEmbedded(b);
-      if(first&&!ok&&!stopped)setMessage("Could not embed Discord. Use the visible login once, press B, then reconnect silently.");
-    };
     let timer:ReturnType<typeof setTimeout>|null=null;
-    const loop=async()=>{if(stopped)return;await place(false);if(!stopped)timer=setTimeout(loop,700);};
-    const start=setTimeout(async()=>{await place(true);await loop();},60);
-    return()=>{stopped=true;clearTimeout(start);if(timer)clearTimeout(timer);hideTokeerDiscordEmbedded().catch(()=>{});};
+    const loop=async()=>{
+      if(stopped)return;
+      const frame=await captureTokeerDiscordFrame();
+      if(!stopped&&frame)setEmbeddedFrame(frame);
+      if(!stopped)timer=setTimeout(loop,1500);
+    };
+    loop().catch(()=>{});
+    return()=>{stopped=true;if(timer)clearTimeout(timer);hideTokeerDiscordEmbedded().catch(()=>{});};
+
   },[embedded]);
   const appid=Number(ticket?.appid||0);
   const remainingMs=codeExpiresAt?Math.max(0,codeExpiresAt-clockNow):0;
@@ -304,8 +296,12 @@ export function TokeerSection() {
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
-      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>setEmbedded(v=>!v)}>{embedded?"Hide embedded Discord":"Show embedded Discord"}</ButtonItem></PanelSectionRow>
-      {embedded&&<PanelSectionRow><div ref={embeddedRef} style={{width:"100%",height:420,border:"1px solid rgba(255,255,255,.22)",borderRadius:6,background:"rgba(0,0,0,.35)",boxSizing:"border-box"}} /></PanelSectionRow>}
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>setEmbedded(v=>!v)}>{embedded?"Hide Discord mirror":"Show Discord mirror"}</ButtonItem></PanelSectionRow>
+      {embedded&&<PanelSectionRow><div style={{width:"100%",minHeight:240,border:"1px solid rgba(255,255,255,.22)",borderRadius:6,background:"rgba(0,0,0,.45)",boxSizing:"border-box",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        {embeddedFrame
+          ?<img src={embeddedFrame} style={{display:"block",width:"100%",height:"auto",maxHeight:430,objectFit:"contain"}}/>
+          :<div style={{fontSize:11,opacity:.7,padding:20}}><Spinner style={{width:14,height:14,marginRight:8}}/>Waiting for the live Discord frame…</div>}
+      </div></PanelSectionRow>}
       {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Live · Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:8,borderRadius:6,background:"rgba(255,255,255,.055)",fontSize:11,lineHeight:1.55}}>
         <div style={{fontWeight:700,marginBottom:3}}>Cached vault stats</div>
