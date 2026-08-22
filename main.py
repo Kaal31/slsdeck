@@ -62,6 +62,9 @@ class Plugin:
     async def tokeer_prepare(self, appid: int) -> Dict[str, Any]:
         return await self._run(tokeer.prepare, appid)
 
+    async def tokeer_prepare_verify(self, appid: int) -> Dict[str, Any]:
+        return await self._run(tokeer.prepare_and_verify, appid)
+
     async def tokeer_verify(self, appid: int) -> Dict[str, Any]:
         return await self._run(tokeer.verify, appid)
 
