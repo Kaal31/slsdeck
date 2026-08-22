@@ -77,6 +77,7 @@ export function DependenciesSection() {
   const [note, setNote] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const postRestartAuto = useRef(false);
+  const preRestartInstall = useRef(false);
 
   const setB = (id: string, v: boolean) => setBusy((b) => ({ ...b, [id]: v }));
   const setN = (id: string, v: string) => setNote((n) => ({ ...n, [id]: v }));
@@ -107,7 +108,7 @@ export function DependenciesSection() {
   // cleaned before retrying. Run them sequentially to avoid competing for disk
   // and network bandwidth on the Deck.
   useEffect(() => {
-    if (!sls?.installed || postRestartAuto.current) return;
+    if (!sls?.installed || preRestartInstall.current || postRestartAuto.current) return;
     postRestartAuto.current = true;
     (async () => {
       setB("tokeerProton", true);
@@ -153,6 +154,8 @@ export function DependenciesSection() {
             setN(id, "done");
             toaster.toast({ title: "SLSDeck", body: doneMsg });
             if (restart && state.installed) {
+              preRestartInstall.current = true;
+              setB("tokeer", true);
               // Tokeer's shared runtime is small and belongs in the normal
               // dependency order before the SLSsteam restart. GE-Proton and
               // CloudRedirect are intentionally deferred until Steam returns.
@@ -163,6 +166,7 @@ export function DependenciesSection() {
               } catch (e) {
                 setN("tokeer", `runtime failed: ${e}`);
               }
+              setB("tokeer", false);
               setTimeout(() => reloadSteam(), 1200);
             }
           } else {
