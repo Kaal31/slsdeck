@@ -1,3 +1,4 @@
+import { fetchNoCors } from "@decky/api";
 import {
   connectTokeerDiscordHidden,
   openSelectorAndReadOptions,
@@ -135,6 +136,66 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
     }
   })();
   return refreshPromise;
+}
+
+const ROMAN_TO_ARABIC: Record<string, string> = {
+  I: "1", II: "2", III: "3", IV: "4", V: "5", VI: "6", VII: "7",
+  VIII: "8", IX: "9", X: "10", XI: "11", XII: "12", XIII: "13",
+  XIV: "14", XV: "15", XVI: "16", XVII: "17", XVIII: "18", XIX: "19", XX: "20",
+};
+
+function decodeHtmlTitle(value: string): string {
+  return String(value || "")
+    .replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/&colon;/gi, ":").replace(/\s+on Steam$/i, "").trim();
+}
+
+function nameVariants(value: string): string[] {
+  const raw = String(value || "").replace(/_/g, " ").trim();
+  if (!raw) return [];
+  const roman = raw.split(/\s+/).map((word) => ROMAN_TO_ARABIC[word.toUpperCase()] || word).join(" ");
+  return Array.from(new Set([
+    normalizeTokeerGameName(raw),
+    normalizeTokeerGameName(raw.replace(/[®™©]/g, "")),
+    normalizeTokeerGameName(roman),
+  ].filter(Boolean)));
+}
+
+async function steamNameCandidates(appid: number, hint?: string): Promise<string[]> {
+  const values = new Set<string>();
+  if (hint) values.add(hint);
+  try {
+    const store: any = (window as any).appStore;
+    const overview =
+      store?.GetAppOverviewByGameID?.(appid) ||
+      store?.GetAppOverviewByAppID?.(appid);
+    if (overview?.display_name) values.add(String(overview.display_name));
+  } catch {}
+  try {
+    const response = await fetchNoCors(`https://store.steampowered.com/app/${encodeURIComponent(appid)}`, { method: "GET" } as any);
+    const html = await response.text();
+    const title = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)/i)?.[1];
+    if (title) values.add(decodeHtmlTitle(title));
+    const slug =
+      response.url?.match(/\/app\/\d+\/([^/?#]+)/i)?.[1] ||
+      html.match(/<meta\s+property=["']og:url["']\s+content=["'][^"']*\/app\/\d+\/([^/"']+)/i)?.[1];
+    if (slug) values.add(decodeURIComponent(slug).replace(/_/g, " "));
+  } catch {}
+  return Array.from(values);
+}
+
+export async function resolveTokeerAvailabilityForGame(appid: number, gameName?: string): Promise<TokeerAvailableGame | null> {
+  const cache = readTokeerAvailabilityCache();
+  if (!cache) return null;
+  const byAppid = cache.games.find((game) => game.appid === appid);
+  if (byAppid) return byAppid;
+  const candidates = new Set<string>();
+  for (const name of await steamNameCandidates(appid, gameName)) {
+    for (const variant of nameVariants(name)) candidates.add(variant);
+  }
+  return cache.games.find((game) =>
+    nameVariants(game.name).some((variant) => candidates.has(variant))
+  ) || null;
 }
 
 export function getTokeerAvailabilityForGame(appid: number, gameName?: string): TokeerAvailableGame | null {
