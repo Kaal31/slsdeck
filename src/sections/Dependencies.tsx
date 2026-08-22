@@ -200,7 +200,7 @@ export function DependenciesSection() {
     setB("tokeerProton", true);
     setN("tokeerProton", protonStatus?.installed ? "reinstalling GE-Proton10-34…" : "installing GE-Proton10-34…");
     try {
-      const r = await tokeerEnsureProton();
+      const r = await tokeerEnsureProton(true);
       setN("tokeerProton", r.success ? "GE-Proton10-34 installed" : `failed: ${r.error || "unknown error"}`);
       toaster.toast({ title: "SLSDeck", body: r.success ? "GE-Proton10-34 ready" : "GE-Proton installation failed" });
     } catch (e) {
