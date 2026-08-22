@@ -62,6 +62,9 @@ class Plugin:
     async def tokeer_ensure_runtime(self) -> Dict[str, Any]:
         return await self._run(tokeer.ensure_runtime_latest)
 
+    async def tokeer_proton_status(self) -> Dict[str, Any]:
+        return await self._run(tokeer.required_proton_status)
+
     async def tokeer_ensure_proton(self) -> Dict[str, Any]:
         return await self._run(tokeer.ensure_required_proton)
 
@@ -1433,6 +1436,12 @@ class Plugin:
     async def cr_provider_status(self) -> Dict[str, Any]:
         try:
             return await self._run(cloudredirect.provider_status)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def cr_install_status(self) -> Dict[str, Any]:
+        try:
+            return await self._run(cloudredirect.install_status)
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
