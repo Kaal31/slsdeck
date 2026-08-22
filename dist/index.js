@@ -114,7 +114,7 @@ function FaWrench (props) {
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
 const tokeerEnsureRuntime = callable("tokeer_ensure_runtime");
-callable("tokeer_proton_status");
+const tokeerProtonStatus = callable("tokeer_proton_status");
 const tokeerEnsureProton = callable("tokeer_ensure_proton");
 callable("tokeer_prepare");
 callable("tokeer_prepare_verify");
@@ -312,7 +312,7 @@ const getDiagnostics = callable("get_diagnostics");
 const runClientFix = callable("run_client_fix");
 const clientFixNeeded = callable("client_fix_needed");
 const crProviderStatus = callable("cr_provider_status");
-callable("cr_install_status");
+const crInstallStatus = callable("cr_install_status");
 const fixStuckUpdate = callable("fix_stuck_update");
 const injectionHealth = callable("injection_health");
 const refreshPatterns = callable("refresh_patterns");
@@ -6028,6 +6028,8 @@ function DependenciesSection() {
     const [sls, setSls] = SP_REACT.useState(null);
     const [sysSt, setSysSt] = SP_REACT.useState(null);
     const [tokeerInstalled, setTokeerInstalled] = SP_REACT.useState(false);
+    const [protonStatus, setProtonStatus] = SP_REACT.useState(null);
+    const [cloudStatus, setCloudStatus] = SP_REACT.useState(null);
     const [diag, setDiag] = SP_REACT.useState("");
     const [busy, setBusy] = SP_REACT.useState({});
     const [note, setNote] = SP_REACT.useState({});
@@ -6045,6 +6047,24 @@ function DependenciesSection() {
             setTokeerInstalled(!!runtime.installed);
             if (runtime.installed)
                 setN("tokeer", "runtime installed");
+        }
+        catch { /* */ }
+        try {
+            const proton = await tokeerProtonStatus();
+            setProtonStatus(proton);
+            if (proton.installed)
+                setN("tokeerProton", "GE-Proton10-34 installed");
+            else if (proton.partial)
+                setN("tokeerProton", "partial installation detected — repair required");
+        }
+        catch { /* */ }
+        try {
+            const cloud = await crInstallStatus();
+            setCloudStatus(cloud);
+            if (cloud.installed)
+                setN("cr", "installed · Moon hook verified");
+            else if (cloud.partial)
+                setN("cr", "partial installation detected — repair required");
         }
         catch { /* */ }
         try {
@@ -6167,6 +6187,20 @@ function DependenciesSection() {
             setB("fix", false);
         }
     };
+    const installProton = async () => {
+        setB("tokeerProton", true);
+        setN("tokeerProton", protonStatus?.installed ? "reinstalling GE-Proton10-34…" : "installing GE-Proton10-34…");
+        try {
+            const r = await tokeerEnsureProton(true);
+            setN("tokeerProton", r.success ? "GE-Proton10-34 installed" : `failed: ${r.error || "unknown error"}`);
+            toaster.toast({ title: "SLSDeck", body: r.success ? "GE-Proton10-34 ready" : "GE-Proton installation failed" });
+        }
+        catch (e) {
+            setN("tokeerProton", `error: ${e}`);
+        }
+        setB("tokeerProton", false);
+        refresh();
+    };
     const installCloud = async () => {
         setB("cr", true);
         setN("cr", "replacing CloudRedirect…");
@@ -6265,7 +6299,7 @@ function DependenciesSection() {
     const setupDone = !!sls?.installed && !!sls?.injected;
     const slsHealth = sls?.installed ? (sls.injected ? "ok" : "warn") : "off";
     const slsBusy = !!busy.sls;
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Setup", children: [sysSt?.foreignEngine && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { margin: "2px 0 6px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "Another engine detected" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: [sysSt.foreignName || "A different engine", " is present alongside slsteam-moon and can fight over injection. Disable it (reversibly) so SLSDeck's engine runs cleanly."] }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy.foreign, onClick: disableForeign, children: busy.foreign ? "Disabling…" : `Disable ${sysSt.foreignName || "other engine"}` }), note.foreign ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: note.foreign }) : null] }) })), !setupDone && !slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: installSls, children: "Install SLSsteam" }) })), slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 13, height: 13, marginRight: 8 } }), note.sls || "installing…"] }) })), SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DepRow, { label: "SLSsteam", hint: "Core steamclient hook that adds games to your library.", health: slsHealth, statusText: sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed", busy: slsBusy, actionLabel: sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam", onAction: installSls }), SP_JSX.jsx(DepRow, { label: "Steam client fix", hint: "Pins the Steam client to a version SLSsteam supports (h3adcr-b).", health: busy.fix ? "unknown" : sls?.clientFixRan ? "ok" : "warn", statusText: note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear"), busy: !!busy.fix, actionLabel: "Run client fix", onAction: runFix }), SP_JSX.jsx(DepRow, { label: "Tokeer runtime", hint: "Small shared verifier/hook runtime; updated before the normal SLSsteam restart.", health: tokeerInstalled ? "ok" : "off", statusText: note.tokeer || (tokeerInstalled ? "runtime installed" : "not installed yet"), busy: !!busy.tokeer }), SP_JSX.jsx(DepRow, { label: "GE-Proton10-34", hint: "Exact compatibility layer required by Tokeer; installed after restart in the background.", health: note.tokeerProton === "GE-Proton10-34 installed" ? "ok" : "unknown", statusText: note.tokeerProton || "installs automatically after SLSsteam setup", busy: !!busy.tokeerProton }), SP_JSX.jsx(DepRow, { label: "CloudRedirect", hint: "Cloud saves for added games \u2014 installs automatically after setup. Off by default; enable in Advanced \u25B8 Cloud saves.", health: busy.cr ? "unknown" : note.cr === "installed" || note.cr === "installed · shortcut rebound" ? "ok" : "unknown", statusText: note.cr || "installs automatically after SLSsteam setup", busy: !!busy.cr, actionLabel: "Reinstall CloudRedirect", onAction: installCloud }), SP_JSX.jsxs("div", { style: { padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, margin: "2px 0 4px" }, children: "Injection & diagnostics" }), sls?.installed && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, margin: "0 0 4px 2px" }, children: ["Injection is ", sls.injectionActive ? "active" : "inactive", "."] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: sls.injectionActive ? doDeactivate : doActivate, children: sls.injectionActive ? "Deactivate injection" : "Activate injection" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runDiag, children: "Run diagnostics" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runRefreshPatterns, children: "Refresh engine patterns (fix \u201Ccan\u2019t match patterns\u201D)" }) }), diag && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: diag, maxHeight: 300, mono: true, fontSize: 10 }) }))] })] })] }));
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Setup", children: [sysSt?.foreignEngine && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { margin: "2px 0 6px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "Another engine detected" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: [sysSt.foreignName || "A different engine", " is present alongside slsteam-moon and can fight over injection. Disable it (reversibly) so SLSDeck's engine runs cleanly."] }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy.foreign, onClick: disableForeign, children: busy.foreign ? "Disabling…" : `Disable ${sysSt.foreignName || "other engine"}` }), note.foreign ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: note.foreign }) : null] }) })), !setupDone && !slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: installSls, children: "Install SLSsteam" }) })), slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 13, height: 13, marginRight: 8 } }), note.sls || "installing…"] }) })), SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DepRow, { label: "SLSsteam", hint: "Core steamclient hook that adds games to your library.", health: slsHealth, statusText: sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed", busy: slsBusy, actionLabel: sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam", onAction: installSls }), SP_JSX.jsx(DepRow, { label: "Steam client fix", hint: "Pins the Steam client to a version SLSsteam supports (h3adcr-b).", health: busy.fix ? "unknown" : sls?.clientFixRan ? "ok" : "warn", statusText: note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear"), busy: !!busy.fix, actionLabel: "Run client fix", onAction: runFix }), SP_JSX.jsx(DepRow, { label: "Tokeer runtime", hint: "Small shared verifier/hook runtime; updated before the normal SLSsteam restart.", health: tokeerInstalled ? "ok" : "off", statusText: note.tokeer || (tokeerInstalled ? "runtime installed" : "not installed yet"), busy: !!busy.tokeer }), SP_JSX.jsx(DepRow, { label: "GE-Proton10-34", hint: "Exact compatibility layer required by Tokeer; installed after restart in the background.", health: protonStatus?.installed ? "ok" : protonStatus?.partial ? "warn" : "off", statusText: note.tokeerProton || (protonStatus?.installed ? "installed · verified" : protonStatus?.partial ? "partial installation · repair required" : "not installed"), busy: !!busy.tokeerProton, actionLabel: protonStatus?.installed ? "Reinstall GE-Proton10-34" : protonStatus?.partial ? "Repair GE-Proton10-34" : "Install GE-Proton10-34", onAction: installProton }), SP_JSX.jsx(DepRow, { label: "CloudRedirect", hint: "Cloud saves for added games \u2014 installs automatically after setup. Off by default; enable in Advanced \u25B8 Cloud saves.", health: busy.cr ? "unknown" : cloudStatus?.installed ? "ok" : cloudStatus?.partial ? "warn" : "off", statusText: note.cr || (cloudStatus?.installed ? "installed · Moon hook verified" : cloudStatus?.partial ? "partial installation · repair required" : "not installed"), busy: !!busy.cr, actionLabel: cloudStatus?.installed ? "Reinstall CloudRedirect" : cloudStatus?.partial ? "Repair CloudRedirect" : "Install CloudRedirect", onAction: installCloud }), SP_JSX.jsxs("div", { style: { padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, margin: "2px 0 4px" }, children: "Injection & diagnostics" }), sls?.installed && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, margin: "0 0 4px 2px" }, children: ["Injection is ", sls.injectionActive ? "active" : "inactive", "."] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: sls.injectionActive ? doDeactivate : doActivate, children: sls.injectionActive ? "Deactivate injection" : "Activate injection" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runDiag, children: "Run diagnostics" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runRefreshPatterns, children: "Refresh engine patterns (fix \u201Ccan\u2019t match patterns\u201D)" }) }), diag && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: diag, maxHeight: 300, mono: true, fontSize: 10 }) }))] })] })] }));
 }
 
 const TOPICS = [
