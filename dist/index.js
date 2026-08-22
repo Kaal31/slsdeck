@@ -2300,6 +2300,7 @@ function FixPicker({ appid, onReload, onClose }) {
     const [check, setCheck] = SP_REACT.useState(null);
     const [tokeerGame, setTokeerGame] = SP_REACT.useState(null);
     const [tokeerRefreshing, setTokeerRefreshing] = SP_REACT.useState(false);
+    const [tokeerLookup, setTokeerLookup] = SP_REACT.useState({ name: "", cachedGames: 0 });
     const [applied, setApplied] = SP_REACT.useState([]);
     const [installPath, setInstallPath] = SP_REACT.useState("");
     const [pinned, setPinned] = SP_REACT.useState(false);
@@ -2354,8 +2355,12 @@ function FixPicker({ appid, onReload, onClose }) {
             const fullCheck = await checkFixesFull(appid);
             setCheck(fullCheck);
             // Show the last good cache immediately, then force a live Discord scrape
-            // for this Fixes opening and update/hide the card in place.
-            setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName));
+            // for this Fixes opening and update/hide the card in place. Steam's own
+            // display name is authoritative; source indexes may return a blank title.
+            const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
+            const cached = readTokeerAvailabilityCache();
+            setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
+            setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
             if (tokeerRefreshApp.current !== appid) {
                 tokeerRefreshApp.current = appid;
                 const requestedAppid = appid;
@@ -2363,7 +2368,9 @@ function FixPicker({ appid, onReload, onClose }) {
                 refreshTokeerAvailabilityCache(true)
                     .then(() => {
                     if (tokeerRefreshApp.current === requestedAppid) {
-                        setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, fullCheck?.gameName));
+                        const fresh = readTokeerAvailabilityCache();
+                        setTokeerLookup({ name: lookupName, cachedGames: fresh?.games.length || 0, updatedAt: fresh?.updatedAt });
+                        setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName));
                     }
                 })
                     .catch(() => { })
@@ -2491,6 +2498,7 @@ function FixPicker({ appid, onReload, onClose }) {
         setCheck(null);
         setTokeerGame(null);
         setTokeerRefreshing(false);
+        setTokeerLookup({ name: appDisplayName(appid), cachedGames: 0 });
         setApplied([]);
         setAwaiting(null);
         setActiveFixKey("");
@@ -3121,7 +3129,11 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), tokeerGame && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
+                            : "Pin this version" }), tokeerGame && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` })] }), !tokeerGame && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.65, padding: "5px 2px" }, children: ["Tokeer: ", tokeerRefreshing
+                        ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
+                        : !tokeerLookup.updatedAt
+                            ? "no successful availability cache yet — connect Discord in Anti-Denuvo and refresh the vault"
+                            : `not currently matched as available (${tokeerLookup.cachedGames} cached games; zero-key games are excluded)`] })), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
                     padding: 8,
