@@ -114,6 +114,7 @@ function FaWrench (props) {
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
 const tokeerEnsureRuntime = callable("tokeer_ensure_runtime");
+callable("tokeer_proton_status");
 const tokeerEnsureProton = callable("tokeer_ensure_proton");
 callable("tokeer_prepare");
 callable("tokeer_prepare_verify");
@@ -311,6 +312,7 @@ const getDiagnostics = callable("get_diagnostics");
 const runClientFix = callable("run_client_fix");
 const clientFixNeeded = callable("client_fix_needed");
 const crProviderStatus = callable("cr_provider_status");
+callable("cr_install_status");
 const fixStuckUpdate = callable("fix_stuck_update");
 const injectionHealth = callable("injection_health");
 const refreshPatterns = callable("refresh_patterns");
