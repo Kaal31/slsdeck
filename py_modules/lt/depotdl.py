@@ -59,6 +59,21 @@ def _set(appid: int, upd: Dict[str, Any]) -> None:
         DL_STATE[appid] = s
 
 
+def _enrich_state(appid: int, depot_ids: List[str]) -> None:
+    """Detached metadata-only phase. It cannot alter the download plan."""
+    try:
+        from . import dlc
+        result = dlc.enrich_depot_relationships(appid, depot_ids)
+        if result.get("success"):
+            _set(appid, {"enrichmentStatus": "done",
+                         "depotMetadata": result.get("depots", {}),
+                         "dlcAppids": result.get("dlcAppids", [])})
+        else:
+            _set(appid, {"enrichmentStatus": "unavailable"})
+    except Exception:
+        _set(appid, {"enrichmentStatus": "unavailable"})
+
+
 def get_state(appid: int) -> Dict[str, Any]:
     with _LOCK:
         return dict(DL_STATE.get(int(appid), {}))
@@ -158,7 +173,10 @@ def _run(appid: int, app: int, depot_gid: Dict[str, str], keys: Dict[str, str],
         ],
         "currentDepot": "", "completedDepots": [], "failedDepots": [],
         "depotDone": 0, "depotTotal": len(depot_gid),
+        "enrichmentStatus": "running",
     })
+    threading.Thread(target=_enrich_state, args=(appid, list(depot_gid.keys())),
+                     name=f"depotdl-enrich-{appid}", daemon=True).start()
     kf = _write_keyfile({d: keys[d] for d in depot_gid if d in keys}, dest_dir)
     ok = fail = 0
     last = ""

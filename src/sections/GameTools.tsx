@@ -168,7 +168,7 @@ export function GameToolsSection() {
   // DepotDownloader job progress for THIS game. The download runs in a backend
   // thread and its state lives in DL_STATE; we poll depotdl_queue so the user
   // sees percent / completion / errors instead of a fire-and-forget toast.
-  type DdlJob = { appid: number; status: string; percent: number; op?: string; error?: string; plannedDepots?: { depot: string; manifest: string; kind: string }[]; currentDepot?: string; currentManifest?: string; completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number };
+  type DdlJob = { appid: number; status: string; percent: number; op?: string; error?: string; plannedDepots?: { depot: string; manifest: string; kind: string }[]; currentDepot?: string; currentManifest?: string; completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number; enrichmentStatus?: string; depotMetadata?: Record<string,{kind:string;confidence:string;source:string;dlcAppid?:number;fromAppid?:number;name?:string;os?:string;language?:string}> };
   const [ddl, setDdl] = useState<DdlJob | null>(null);
   const ddlTimer = useRef<any>(null);
   const stopDdl = () => { if (ddlTimer.current) { clearInterval(ddlTimer.current); ddlTimer.current = null; } };
@@ -904,10 +904,11 @@ export function GameToolsSection() {
             )}
             {!!ddl.plannedDepots?.length && <div style={{marginTop:7,padding:7,borderRadius:6,background:"rgba(0,0,0,.18)",fontSize:10,lineHeight:1.5}}>
               <div style={{fontWeight:700,marginBottom:3}}>Depots {ddl.depotDone||0}/{ddl.depotTotal||ddl.plannedDepots.length}</div>
-              {ddl.plannedDepots.map((d)=><div key={d.depot} style={{display:"flex",justifyContent:"space-between",gap:8,color:ddl.failedDepots?.includes(d.depot)?"#f0ad4e":ddl.completedDepots?.includes(d.depot)?"#8fd49a":ddl.currentDepot===d.depot?"#72c7ff":"rgba(255,255,255,.72)"}}>
-                <span>{ddl.currentDepot===d.depot?"▶ ":ddl.completedDepots?.includes(d.depot)?"✓ ":ddl.failedDepots?.includes(d.depot)?"! ":""}Depot {d.depot}</span>
-                <span style={{opacity:.65}}>{d.kind==="dlc-candidate"?"DLC candidate":"build"} · GID {d.manifest}</span>
-              </div>)}
+              {ddl.plannedDepots.map((d)=>{const m=ddl.depotMetadata?.[d.depot];const label=m?.kind==="dlc"?`DLC ${m.dlcAppid||""}`:m?.kind==="shared"?`shared from ${m.fromAppid||"app"}`:m?.kind==="base-or-shared"?"base/shared":d.kind==="dlc-candidate"?"DLC candidate":"build";return <div key={d.depot} style={{display:"flex",justifyContent:"space-between",gap:8,color:ddl.failedDepots?.includes(d.depot)?"#f0ad4e":ddl.completedDepots?.includes(d.depot)?"#8fd49a":ddl.currentDepot===d.depot?"#72c7ff":"rgba(255,255,255,.72)"}}>
+                <span>{ddl.currentDepot===d.depot?"▶ ":ddl.completedDepots?.includes(d.depot)?"✓ ":ddl.failedDepots?.includes(d.depot)?"! ":""}Depot {d.depot}{m?.name?` · ${m.name}`:""}</span>
+                <span style={{opacity:.65}}>{label}{m?.os?` · ${m.os}`:""}{m?.language?` · ${m.language}`:""} · GID {d.manifest}</span>
+              </div>})}
+              {ddl.enrichmentStatus==="running"&&<div style={{marginTop:5,opacity:.65}}>Enriching depot relationships in the background…</div>}
               {ddl.op==="dlc"&&<div style={{marginTop:5,color:"#d7b7ff",opacity:.85}}>Candidate means the depot came from the full game bundle; Steam app-info is still required to prove that it belongs to a DLC.</div>}
             </div>}
             {ddl.status === "done" && !ddl.error && (

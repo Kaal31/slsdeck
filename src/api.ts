@@ -562,6 +562,9 @@ export type DepotDownloadJob = {
   appid: number; status: string; percent: number; op?: string; error?: string;
   plannedDepots?: DepotDownloadItem[]; currentDepot?: string; currentManifest?: string;
   completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number;
+  enrichmentStatus?: "running" | "done" | "unavailable";
+  depotMetadata?: Record<string, { kind: string; confidence: string; source: string; dlcAppid?: number; fromAppid?: number; name?: string; os?: string; language?: string }>;
+  dlcAppids?: number[];
 };
 export const depotdlQueue = callable<[], { success: boolean; items: DepotDownloadJob[] }>("depotdl_queue");
 export const ensureAllDlcKeys = callable<[appid: number], { success: boolean; keys: number; source: string }>("ensure_all_dlc_keys");
