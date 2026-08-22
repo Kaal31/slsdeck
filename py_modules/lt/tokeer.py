@@ -112,6 +112,44 @@ def runtime_status() -> Dict[str, Any]:
             "defaultCooldownHours": DEFAULT_COOLDOWN_HOURS}
 
 
+def uninstall_runtime() -> Dict[str, Any]:
+    """Remove the SLSDeck-managed Tokeer runtime, but preserve GE-Proton.
+
+    Only remove the command link when it is the link created by Tokeer and
+    points into ~/.tokeer.  A different user-owned executable at the same path
+    is left untouched. Compatibility tools live in Steam's separate
+    compatibilitytools.d directory and are deliberately not considered here.
+    """
+    td = os.path.realpath(_tdir())
+    link = os.path.join(_home(), ".local", "bin", "tokeer")
+    removed = []
+    errors = []
+    try:
+        if os.path.islink(link):
+            target = os.path.realpath(link)
+            if target == td or target.startswith(td + os.sep):
+                os.remove(link)
+                removed.append(link)
+    except Exception as exc:
+        errors.append(f"command link: {exc}")
+    try:
+        if os.path.isdir(td):
+            shutil.rmtree(td)
+            removed.append(td)
+        elif os.path.lexists(td):
+            os.remove(td)
+            removed.append(td)
+    except Exception as exc:
+        errors.append(f"runtime: {exc}")
+    return {
+        "success": not errors,
+        "removed": removed,
+        "errors": errors,
+        "protonPreserved": True,
+        "requiredProton": REQUIRED_PROTON,
+    }
+
+
 def _shared_fetch(url: str, dest: str | None = None, label: str = ""):
     """Fetch through the same pooled HTTPX transport used by CloudRedirect Moon.
 
