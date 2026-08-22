@@ -261,6 +261,8 @@ export function TokeerSection() {
       setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
       if(r.success){
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+        setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);
+        setVerify(null);setActivation("");setCodeExpiresAt(undefined);
         sessionStartedRef.current=Date.now();
         codeReceivedAtRef.current=undefined;
       }
