@@ -157,23 +157,25 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const fullCheck = await checkFixesFull(appid);
       setCheck(fullCheck);
-      // Show the last good cache immediately, then force a live Discord scrape
-      // for this Fixes opening and update/hide the card in place. Steam's own
-      // display name is authoritative; source indexes may return a blank title.
+      // A Tokeer action is exposed only after this Fixes opening completes a
+      // live Discord scrape. Never show a stale cached action while refreshing.
       const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
       const cached = readTokeerAvailabilityCache();
       setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
-      setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
-      resolveTokeerAvailabilityForGame(appid, lookupName)
-        .then((game) => { if (tokeerRefreshApp.current === 0 || tokeerRefreshApp.current === appid) setTokeerGame(game); })
-        .catch(() => {});
+      setTokeerGame(null);
       if (tokeerRefreshApp.current !== appid) {
         tokeerRefreshApp.current = appid;
         const requestedAppid = appid;
         setTokeerRefreshing(true);
         refreshTokeerAvailabilityCache(true)
-          .then(() => {
+          .then((live) => {
             if (tokeerRefreshApp.current === requestedAppid) {
+              if (!live) {
+                setTokeerGame(null);
+                setMsg("Tokeer availability could not be refreshed from Discord. The Tokeer action is hidden until a live check succeeds.");
+                toaster.toast({ title: "SLSDeck · Tokeer", body: "Discord availability refresh failed; Tokeer action hidden for this game." });
+                return;
+              }
               const fresh = readTokeerAvailabilityCache();
               setTokeerLookup({ name: lookupName, cachedGames: fresh?.games.length || 0, updatedAt: fresh?.updatedAt });
               resolveTokeerAvailabilityForGame(requestedAppid, lookupName)
@@ -181,7 +183,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
                 .catch(() => setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName)));
             }
           })
-          .catch(() => {})
+          .catch(() => {
+            if (tokeerRefreshApp.current === requestedAppid) {
+              setTokeerGame(null);
+              setMsg("Tokeer availability refresh failed. The Tokeer action remains hidden.");
+              toaster.toast({ title: "SLSDeck · Tokeer", body: "Discord availability refresh failed; Tokeer action hidden for this game." });
+            }
+          })
           .finally(() => {
             if (tokeerRefreshApp.current === requestedAppid) setTokeerRefreshing(false);
           });

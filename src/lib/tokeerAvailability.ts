@@ -7,6 +7,7 @@ import {
 } from "./tokeerDiscordCapture";
 
 const CACHE_KEY = "slsdeck.tokeerAvailability.v1";
+const SESSION_KEY = "slsdeck.tokeerSession.v1";
 export const TOKEER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 export type TokeerAvailableGame = {
@@ -103,19 +104,30 @@ function writeCache(state: TokeerDiscordState, games: TokeerAvailableGame[]): To
 
 let refreshPromise: Promise<TokeerAvailabilityCache | null> | null = null;
 
+function hasActiveTicketSession(): boolean {
+  try {
+    const session = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
+    return !!session && (!session.expiresAt || Number(session.expiresAt) > Date.now()) &&
+      !!(session.ticket?.opened || session.ticket?.url || session.gate);
+  } catch { return false; }
+}
+
 export async function refreshTokeerAvailabilityCache(force = false): Promise<TokeerAvailabilityCache | null> {
   const current = readTokeerAvailabilityCache();
   if (!force && current && Date.now() - current.updatedAt < TOKEER_CACHE_TTL_MS) return current;
+  // Never navigate the managed Discord target away from a live private ticket.
+  // A forced caller gets null so it cannot mistake stale cache for a live check.
+  if (hasActiveTicketSession()) return force ? null : current;
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     try {
-      if (!(await connectTokeerDiscordHidden())) return current;
+      if (!(await connectTokeerDiscordHidden())) return force ? null : current;
       let state = await readTokeerDiscord();
       for (let i = 0; i < 20 && !state.found; i++) {
         await new Promise((resolve) => setTimeout(resolve, 500));
         state = await readTokeerDiscord();
       }
-      if (!state.found) return current;
+      if (!state.found) return force ? null : current;
       const parsed: TokeerAvailableGame[] = [];
       for (const selector of state.selectors || []) {
         const labels = await openSelectorAndReadOptions(selector.index);
@@ -127,10 +139,10 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
       // Do not replace a populated game cache with an empty scrape caused by a
       // temporarily unrendered Discord menu. Vault-only snapshots may still seed
       // a new cache on first use.
-      if (!parsed.length && current?.games.length) return current;
+      if (!parsed.length && current?.games.length) return force ? null : current;
       return writeCache(state, parsed);
     } catch {
-      return current;
+      return force ? null : current;
     } finally {
       refreshPromise = null;
     }

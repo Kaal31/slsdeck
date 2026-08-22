@@ -24,6 +24,7 @@ const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10p
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
 const sleep = (ms:number)=>new Promise((r)=>setTimeout(r,ms));
 const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
+const TOKEER_AUTO_CONNECT_KEY = "slsdeck.tokeerAutoConnect.v1";
 const TOKEER_SESSION_MS = 30 * 60 * 1000;
 
 type SavedTokeerSession = {
@@ -50,6 +51,11 @@ function readSavedSession(): SavedTokeerSession|null {
   } catch { return null; }
 }
 
+function readAutoConnect(): boolean {
+  try { return window.localStorage.getItem(TOKEER_AUTO_CONNECT_KEY) === "1"; }
+  catch { return false; }
+}
+
 export function TokeerSection() {
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
@@ -69,6 +75,7 @@ export function TokeerSection() {
   const [gate,setGate]=useState<TokeerTicketGate|null>(savedRef.current?.gate||null);
   const [ticket,setTicket]=useState<TokeerTicketContext|null>(savedRef.current?.ticket||null);
   const [discordSignedIn,setDiscordSignedIn]=useState(false);
+  const [autoConnect,setAutoConnect]=useState(readAutoConnect);
 
   useEffect(()=>{
     if(!selectedGame&&!ticket&&!gate)return;
@@ -97,14 +104,42 @@ export function TokeerSection() {
     const [state,auth]=await Promise.all([readTokeerDiscord(),getDiscordSignInState()]);
     setDiscord(state);setDiscordSignedIn(auth.signedIn);
   }catch{} };
+  const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
   const refreshAvailability=async(force=false)=>{
+    if(force&&ticketChainActive()){
+      setMessage("Vault refresh is paused while the private Discord ticket is open, so its command chain is not disturbed.");
+      return null;
+    }
     const value=await refreshTokeerAvailabilityCache(force);
     if(value)setAvailability(value);
+    return value;
   };
   useEffect(()=>{
     tokeerRuntimeStatus().then(setRuntime).catch(()=>{});
-    refreshDiscord();
-    refreshAvailability(false).catch(()=>{});
+    const openInBackground=async()=>{
+      // Preserve the managed target when resuming an unfinished ticket.
+      if(savedRef.current?.ticket?.opened||savedRef.current?.ticket?.url||savedRef.current?.gate){
+        await refreshDiscord();
+        return;
+      }
+      if(readAutoConnect()){
+        const ok=await connectTokeerDiscordHidden();
+        await refreshDiscord();
+        if(ok){
+          const auth=await getDiscordSignInState();
+          setDiscordSignedIn(auth.signedIn);
+          if(auth.signedIn){
+            const cached=await refreshTokeerAvailabilityCache(true);
+            if(cached)setAvailability(cached);
+            else setMessage("Background Discord refresh failed. The previous vault cache was preserved; game Fixes will hide Tokeer until their own live check succeeds.");
+          }
+        }
+      }else{
+        await refreshDiscord();
+        await refreshAvailability(false);
+      }
+    };
+    openInBackground().catch(()=>{});
     const onCache=(event:any)=>setAvailability(event?.detail||readTokeerAvailabilityCache());
     window.addEventListener("slsdeck-tokeer-cache",onCache as EventListener);
     const t=setInterval(refreshDiscord,15000);
@@ -137,6 +172,10 @@ export function TokeerSection() {
   };
 
   const connectHidden=async()=>{
+    if(ticketChainActive()){
+      setMessage("The private ticket is still open. Background vault connection is paused to preserve its command chain.");
+      return;
+    }
     setBusy("Connecting hidden Tokeer panel…");
     setMessage("Connecting to Discord in the background. Discord will stay hidden.");
     try{
@@ -149,6 +188,14 @@ export function TokeerSection() {
       }
       setDiscord(state);
       if(state.found){
+        const auth=await getDiscordSignInState();
+        setDiscordSignedIn(auth.signedIn);
+        if(!auth.signedIn){
+          setMessage("Discord is not signed in yet. Use the DeDevision sign-in button, return here, then connect again.");
+          return;
+        }
+        try{window.localStorage.setItem(TOKEER_AUTO_CONNECT_KEY,"1");}catch{}
+        setAutoConnect(true);
         setMessage("Hidden Tokeer panel connected. Refreshing vault and availability cache…");
         const cached=await refreshTokeerAvailabilityCache(true);
         if(cached)setAvailability(cached);
@@ -285,8 +332,8 @@ export function TokeerSection() {
         setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
         await openDedevisionDiscordLogin();
       }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
+      {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
-      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Live · Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:8,borderRadius:6,background:"rgba(255,255,255,.055)",fontSize:11,lineHeight:1.55}}>
