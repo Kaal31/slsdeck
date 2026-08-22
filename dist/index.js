@@ -114,7 +114,7 @@ function FaWrench (props) {
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
 const tokeerPrepare = callable("tokeer_prepare");
-callable("tokeer_prepare_verify");
+const tokeerPrepareVerify = callable("tokeer_prepare_verify");
 const tokeerVerify = callable("tokeer_verify");
 const tokeerRedeem = callable("tokeer_redeem");
 // ── Callables ──────────────────────────────────────────────────────────────
@@ -2123,6 +2123,35 @@ function FixPicker({ appid, onReload, onClose }) {
         }
         setBusy("");
     };
+    const doTokeer = async () => {
+        setBusy("tokeer");
+        setMsg("Running official Tokeer setup, then local verification… Steam may restart.");
+        try {
+            const r = await tokeerPrepareVerify(appid);
+            if (!r.success) {
+                const phase = r.phase === "prepare" ? "Setup" : "Verification";
+                setMsg(`${phase} failed: ${r.error || r.output || "Unknown error"}`);
+                return;
+            }
+            const c = r.checks;
+            const summary = c
+                ? `installed ${c.installed ? "✓" : "✗"} · prefix ${c.prefix ? "✓" : "✗"} · hook ${c.hook ? "✓" : "✗"} · launch option ${c.launchOpt ? "✓" : "✗"}`
+                : "all checks passed";
+            if (r.code) {
+                try {
+                    await navigator.clipboard.writeText(r.code);
+                }
+                catch { }
+            }
+            setMsg(`Tokeer ready — ${summary}.${r.code ? " TLX1 copied to clipboard." : ""}`);
+        }
+        catch (e) {
+            setMsg(`Tokeer failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
     const isApplied = (fixType) => applied.some((f) => (f.fixType || "").toLowerCase() === fixType.toLowerCase());
     const working = busy !== "";
     const bs = { minWidth: 0, flex: 1, padding: "5px 8px", fontSize: 12 };
@@ -2191,7 +2220,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
+                            : "Pin this version" }), SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: "Tokeer" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["Runs the official Linux setup for AppID ", appid, ", then validates the game and generates TLX1. Steam may restart during setup."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : "Tokeer" })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
                     padding: 8,
