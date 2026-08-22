@@ -140,6 +140,13 @@ async function findSharedJsContext(): Promise<CdpTab | null> {
     || null;
 }
 
+async function hasTokeerBrowserView(): Promise<boolean> {
+  const shared = await findSharedJsContext();
+  if (!shared?.webSocketDebuggerUrl) return false;
+  return !!(await evalJson(shared.webSocketDebuggerUrl,
+    `(function(){try{return !!(window.SLSDECK_TOKEER_VIEW&&window.SLSDECK_TOKEER_VIEW.m_browserView);}catch(e){return false;}})()`, 2000));
+}
+
 async function hideTokeerBrowserView(): Promise<void> {
   const shared = await findSharedJsContext();
   if (!shared?.webSocketDebuggerUrl) return;
@@ -162,6 +169,31 @@ async function parkTokeerBrowserView(): Promise<void> {
     v.m_browserView.SetBounds(-10000,-10000,1280,720);
     v.m_browserView.SetVisible(true);return true;
   }catch(e){return false;}})()`, 2000);
+}
+
+export type TokeerViewBounds = { x: number; y: number; width: number; height: number };
+
+export async function positionTokeerDiscordEmbedded(bounds: TokeerViewBounds): Promise<boolean> {
+  const shared = await findSharedJsContext();
+  if (!shared?.webSocketDebuggerUrl) return false;
+  const b = {
+    x: Math.max(0, Math.round(bounds.x)), y: Math.max(0, Math.round(bounds.y)),
+    width: Math.max(1, Math.round(bounds.width)), height: Math.max(1, Math.round(bounds.height)),
+  };
+  return !!(await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+    var v=window.SLSDECK_TOKEER_VIEW;if(!v||!v.m_browserView)return false;
+    v.m_browserView.SetBounds(${b.x},${b.y},${b.width},${b.height});
+    v.m_browserView.SetVisible(true);return true;
+  }catch(e){return false;}})()`, 2000));
+}
+
+export async function hideTokeerDiscordEmbedded(): Promise<void> {
+  await parkTokeerBrowserView();
+}
+
+export async function showTokeerDiscordEmbedded(bounds: TokeerViewBounds): Promise<boolean> {
+  if (!(await connectTokeerDiscordHidden())) return false;
+  return positionTokeerDiscordEmbedded(bounds);
 }
 
 async function waitForExactUrl(url: string, timeoutMs = 6500): Promise<CdpTab | null> {
@@ -415,14 +447,18 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
  * BrowserView shares Steam CEF's Discord session, so a prior visible login is
  * reused. */
 export async function connectTokeerDiscordHidden(): Promise<boolean> {
-  try {
-    const existing = await findDiscordTab();
-    if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
-      try { await parkTokeerBrowserView(); } catch {}
-      try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000); } catch {}
-      return true;
-    }
-  } catch {}
+  // Reuse only our managed BrowserView. A normal Steam external-web tab may be
+  // readable through CDP but cannot be repositioned inside the plugin page.
+  if (await hasTokeerBrowserView()) {
+    try {
+      const existing = await findDiscordTab();
+      if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
+        try { await parkTokeerBrowserView(); } catch {}
+        try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000); } catch {}
+        return true;
+      }
+    } catch {}
+  }
   try {
     const created = await createTokeerDiscordBrowserView();
     try { await parkTokeerBrowserView(); } catch {}

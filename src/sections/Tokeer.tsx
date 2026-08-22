@@ -1,14 +1,17 @@
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { tokeerPrepare, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
 import {
   chooseSelectorOption,
   clickLatestTicketGate,
   connectTokeerDiscordHidden,
+  hideTokeerDiscordEmbedded,
   openSelectorAndReadOptions,
   openTokeerDiscord,
   readLatestTicketGate,
   readTokeerDiscord,
+  positionTokeerDiscordEmbedded,
+  showTokeerDiscordEmbedded,
   TokeerDiscordState,
   TokeerTicketGate,
   TokeerTicketContext,
@@ -31,9 +34,32 @@ export function TokeerSection() {
   const [selectedGame,setSelectedGame]=useState("");
   const [gate,setGate]=useState<TokeerTicketGate|null>(null);
   const [ticket,setTicket]=useState<TokeerTicketContext|null>(null);
+  const [embedded,setEmbedded]=useState(false);
+  const embeddedRef=useRef<HTMLDivElement|null>(null);
 
   const refreshDiscord=async()=>{ try{setDiscord(await readTokeerDiscord());}catch{} };
   useEffect(()=>{ tokeerRuntimeStatus().then(setRuntime).catch(()=>{}); refreshDiscord(); const t=setInterval(refreshDiscord,15000); return()=>clearInterval(t); },[]);
+  useEffect(()=>{
+    if(!embedded){hideTokeerDiscordEmbedded().catch(()=>{});return;}
+    let stopped=false;
+    const bounds=()=>{
+      const el=embeddedRef.current;if(!el)return null;
+      const r=el.getBoundingClientRect();
+      const top=Math.max(0,r.top),bottom=Math.min(window.innerHeight,r.bottom);
+      if(bottom-top<24||r.right<=0||r.left>=window.innerWidth)return null;
+      return {x:Math.max(0,r.left),y:top,width:Math.min(window.innerWidth,r.right)-Math.max(0,r.left),height:bottom-top};
+    };
+    const place=async(first=false)=>{
+      const b=bounds();
+      if(!b){await hideTokeerDiscordEmbedded();return;}
+      const ok=first?await showTokeerDiscordEmbedded(b):await positionTokeerDiscordEmbedded(b);
+      if(first&&!ok&&!stopped)setMessage("Could not embed Discord. Use the visible login once, press B, then reconnect silently.");
+    };
+    let timer:ReturnType<typeof setTimeout>|null=null;
+    const loop=async()=>{if(stopped)return;await place(false);if(!stopped)timer=setTimeout(loop,700);};
+    const start=setTimeout(async()=>{await place(true);await loop();},60);
+    return()=>{stopped=true;clearTimeout(start);if(timer)clearTimeout(timer);hideTokeerDiscordEmbedded().catch(()=>{});};
+  },[embedded]);
   const appid=Number(ticket?.appid||0);
 
   const openMenu=async(i:number,showMenu?:()=>void)=>{
@@ -143,6 +169,8 @@ export function TokeerSection() {
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>setEmbedded(v=>!v)}>{embedded?"Hide embedded Discord":"Show embedded Discord"}</ButtonItem></PanelSectionRow>
+      {embedded&&<PanelSectionRow><div ref={embeddedRef} style={{width:"100%",height:420,border:"1px solid rgba(255,255,255,.22)",borderRadius:6,background:"rgba(0,0,0,.35)",boxSizing:"border-box"}} /></PanelSectionRow>}
       {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
