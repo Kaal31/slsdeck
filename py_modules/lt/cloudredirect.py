@@ -251,6 +251,24 @@ def install_app() -> dict:
     return {"success": ok, "installed": ok, "hasLib": have_lib, "log": "\n".join(log)[-1800:]}
 
 
+def install_status() -> dict:
+    """Read-only app + Moon-hook health for dependency UI."""
+    app = _installed()
+    paths = [os.path.join(d, "cloud_redirect.so") for d in _cr_dirs()]
+    valid = [path for path in paths if _valid_cr_lib(path)]
+    return {
+        "success": True,
+        "installed": app and len(valid) == len(paths),
+        "healthy": app and len(valid) == len(paths),
+        "appInstalled": app,
+        "moonHookInstalled": bool(valid),
+        "allHookLocationsValid": len(valid) == len(paths),
+        "expectedHookLocations": len(paths),
+        "validHookLocations": len(valid),
+        "partial": bool(app or valid) and not (app and len(valid) == len(paths)),
+    }
+
+
 def ensure_installed() -> dict:
     """Manual reinstall: replace managed files even when the Flatpak exists."""
     settings.reset_dep_fail("cloudredirect")
