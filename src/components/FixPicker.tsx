@@ -44,6 +44,7 @@ import {
   CustomItem,
   getDlcOwnedOnly,
   triggerSteamInstall,
+  tokeerPrepareVerify,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
@@ -816,6 +817,31 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("");
   };
 
+  const doTokeer = async () => {
+    setBusy("tokeer");
+    setMsg("Running official Tokeer setup, then local verification… Steam may restart.");
+    try {
+      const r = await tokeerPrepareVerify(appid);
+      if (!r.success) {
+        const phase = (r as any).phase === "prepare" ? "Setup" : "Verification";
+        setMsg(`${phase} failed: ${r.error || r.output || "Unknown error"}`);
+        return;
+      }
+      const c = r.checks;
+      const summary = c
+        ? `installed ${c.installed ? "✓" : "✗"} · prefix ${c.prefix ? "✓" : "✗"} · hook ${c.hook ? "✓" : "✗"} · launch option ${c.launchOpt ? "✓" : "✗"}`
+        : "all checks passed";
+      if (r.code) {
+        try { await navigator.clipboard.writeText(r.code); } catch {}
+      }
+      setMsg(`Tokeer ready — ${summary}.${r.code ? " TLX1 copied to clipboard." : ""}`);
+    } catch (e) {
+      setMsg(`Tokeer failed: ${e}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
   const isApplied = (fixType: string) =>
     applied.some((f) => (f.fixType || "").toLowerCase() === fixType.toLowerCase());
   const working = busy !== "";
@@ -957,6 +983,15 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           ? "Pinning…"
           : "Pin this version"}
       </DialogButton>
+      <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Tokeer</div>
+        <div style={{ fontSize: 11, opacity: 0.68, marginBottom: 6 }}>
+          Runs the official Linux setup for AppID {appid}, then validates the game and generates TLX1. Steam may restart during setup.
+        </div>
+        <DialogButton style={bs} disabled={working || !!awaiting} onClick={doTokeer}>
+          {busy === "tokeer" ? "Setting up and validating…" : "Tokeer"}
+        </DialogButton>
+      </div>
       {rows.length === 0 && (
         <div style={{ fontSize: 12, opacity: 0.6 }}>No ryuu fixes indexed for this game.</div>
       )}
