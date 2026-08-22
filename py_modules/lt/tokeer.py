@@ -22,6 +22,7 @@ from typing import Any, Dict
 
 from .paths import get_user_home
 from .httpc import ensure_http_client
+from .steam import detect_steam_install_path
 
 RUNTIME_ZIP = "https://github.com/Tesla697/TokeerDRM-App/releases/latest/download/tokeer-linux.zip"
 INSTALL_SCRIPT = "https://raw.githubusercontent.com/Tesla697/TokeerDRM-App/main/install_linux.sh"
@@ -35,6 +36,48 @@ def _home() -> str:
 
 def _tdir() -> str:
     return os.path.join(_home(), ".tokeer")
+
+
+def _steam_roots(config_module=None):
+    """Return Steam roots using SLSDeck discovery plus upstream fallbacks.
+
+    Decky may run the backend as root, so Tokeer's standalone configurator can
+    inspect /root and report no Steam installation.  SLSDeck already resolves
+    the actual Deck user home; keep upstream results, but merge them with that
+    proven resolver and explicit native/Flatpak locations.
+    """
+    roots = []
+    if config_module is not None:
+        try:
+            roots.extend(config_module.steam_roots() or [])
+        except Exception:
+            pass
+    detected = detect_steam_install_path()
+    if detected:
+        roots.append(detected)
+    home = _home()
+    roots.extend([
+        os.path.join(home, ".steam", "steam"),
+        os.path.join(home, ".steam", "root"),
+        os.path.join(home, ".local", "share", "Steam"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                     ".steam", "steam"),
+    ])
+    result = []
+    seen = set()
+    for root in roots:
+        try:
+            real = os.path.realpath(root)
+            if real in seen or not os.path.isdir(real):
+                continue
+            if not (os.path.isdir(os.path.join(real, "steamapps")) or
+                    os.path.isdir(os.path.join(real, "config"))):
+                continue
+            seen.add(real)
+            result.append(real)
+        except Exception:
+            continue
+    return result
 
 
 def _deck_user() -> str:
@@ -249,7 +292,7 @@ def required_proton_status() -> Dict[str, Any]:
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-                for root in module.steam_roots() or []:
+                for root in _steam_roots(module):
                     candidates.extend([
                         os.path.join(root, "compatibilitytools.d", REQUIRED_PROTON),
                         os.path.join(root, "steamapps", "compatibilitytools.d", REQUIRED_PROTON),
@@ -294,7 +337,7 @@ def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
         # Python CA store. Reuse SLSDeck's proven CloudRedirect HTTPX transport
         # while preserving upstream URLs, extraction and SHA-512 verification.
         module._fetch = _shared_fetch
-        roots = module.steam_roots()
+        roots = _steam_roots(module)
         if not roots:
             raise RuntimeError("Steam installation was not found.")
 
