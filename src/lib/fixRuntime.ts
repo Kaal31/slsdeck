@@ -199,7 +199,7 @@ export function configureTokeerLaunch(
     // Remove only an existing Tokeer wrapper. Other wrappers (SLSDECKREPOINT,
     // LD_AUDIT/netsock, user commands) remain in the command.
     const wrapper = `${tokeerHome.replace(/\/$/, "")}/ost-run.sh`;
-    const escaped = wrapper.replace(/[.*+?^${}()|[\]\\]/g, "\\/** Allow re-running when the user applies a fix to the same game again. */");
+    const escaped = wrapper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     rest = rest
       .replace(new RegExp(`(?:'${escaped}'|"${escaped}"|${escaped})\\s*`, "g"), "")
       .replace(/\s+/g, " ")
