@@ -684,19 +684,46 @@ async function autoRepointFromState(appid, st) {
     }
 }
 function mergeLaunchOptions(current, overrides) {
-    let rest = (current || "")
-        .replace(/WINEDLLOVERRIDES=".*?"\s*/g, "")
-        .replace(/WINEDLLOVERRIDES=[^\s]+\s*/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
+    const existing = [];
+    let rest = (current || "").replace(/WINEDLLOVERRIDES=(?:"([^"]*)"|'([^']*)'|([^\s]+))\s*/gi, (_all, dq, sq, bare) => {
+        String(dq ?? sq ?? bare ?? "").split(";").map((x) => x.trim()).filter(Boolean).forEach((x) => existing.push(x));
+        return "";
+    }).replace(/\s+/g, " ").trim();
+    const incoming = [];
+    let extra = (overrides || "").replace(/WINEDLLOVERRIDES=(?:"([^"]*)"|'([^']*)'|([^\s]+))\s*/gi, (_all, dq, sq, bare) => {
+        String(dq ?? sq ?? bare ?? "").split(";").map((x) => x.trim()).filter(Boolean).forEach((x) => incoming.push(x));
+        return "";
+    }).replace(/\s+/g, " ").trim();
     if (!overrides)
         return current || "";
-    if (rest === "")
-        return `${overrides} %command%`;
-    if (rest.includes("%command%")) {
-        return rest.replace("%command%", `${overrides} %command%`).replace(/\s+/g, " ").trim();
+    if (!incoming.length) {
+        // Older backend responses sometimes already contain a complete env prefix.
+        if (rest === "")
+            return `${overrides} %command%`;
+        return rest.includes("%command%")
+            ? rest.replace("%command%", `${overrides} %command%`).replace(/\s+/g, " ").trim()
+            : `${overrides} ${rest} %command%`;
     }
-    return `${overrides} ${rest} %command%`;
+    const all = [...existing, ...incoming];
+    if (/\/\.tokeer\/ost-run\.sh/.test(current || "")) {
+        for (let i = all.length - 1; i >= 0; i--) {
+            if (/^dinput8\s*=/i.test(all[i]))
+                all.splice(i, 1);
+        }
+        all.push("dinput8=n,b");
+    }
+    const merged = all.filter((entry, i, values) => {
+        const key = entry.split("=")[0].trim().toLowerCase();
+        return values.map((x) => x.split("=")[0].trim().toLowerCase()).lastIndexOf(key) === i;
+    });
+    const prefix = `WINEDLLOVERRIDES="${merged.join(";")}"`;
+    if (extra)
+        rest = `${extra} ${rest}`.trim();
+    if (rest === "")
+        return `${prefix} %command%`;
+    return rest.includes("%command%")
+        ? rest.replace("%command%", `${prefix} %command%`).replace(/\s+/g, " ").trim()
+        : `${prefix} ${rest} %command%`;
 }
 function appDetails(appid) {
     try {
@@ -802,13 +829,17 @@ function clearFixLaunchOptions(appid) {
     if (!SC?.Apps?.SetAppLaunchOptions)
         return;
     try {
-        let opts = (currentLaunchOptions(appid) || "")
+        const before = currentLaunchOptions(appid) || "";
+        const keepTokeer = /\/\.tokeer\/ost-run\.sh/.test(before);
+        let opts = before
             .replace(REPOINT_RE, " %command%")
             .replace(/WINEDLLOVERRIDES=".*?"\s*/g, "")
             .replace(/WINEDLLOVERRIDES=[^\s]+\s*/g, "")
             .replace(/\s+/g, " ")
             .trim();
-        if (opts === "%command%")
+        if (keepTokeer)
+            opts = `WINEDLLOVERRIDES="dinput8=n,b" ${opts || "%command%"}`;
+        else if (opts === "%command%")
             opts = "";
         SC.Apps.SetAppLaunchOptions(appid, opts);
     }
