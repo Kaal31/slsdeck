@@ -13,6 +13,7 @@ import os
 import pwd
 import re
 import shutil
+import ssl
 import subprocess
 import tempfile
 import urllib.request
@@ -28,6 +29,23 @@ DEFAULT_COOLDOWN_HOURS = 48
 RELEASE_API = "https://api.github.com/repos/Tesla697/TokeerDRM-App/releases/latest"
 VERSION_FILE = ".slsdeck_runtime_version"
 REQUIRED_PROTON = "GE-Proton10-34"
+SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+)
+
+
+def _system_ca_bundle() -> str:
+    configured = os.environ.get("SSL_CERT_FILE", "")
+    if configured and os.path.isfile(configured):
+        return configured
+    return next((path for path in SYSTEM_CA_BUNDLES if os.path.isfile(path)), "")
+
+
+def _ssl_context() -> ssl.SSLContext:
+    bundle = _system_ca_bundle()
+    return ssl.create_default_context(cafile=bundle or None)
 
 
 def _home() -> str:
@@ -71,9 +89,39 @@ def runtime_status() -> Dict[str, Any]:
 
 
 def _download(url: str, dest: str) -> None:
+    """Download with verified TLS using SteamOS's CA store.
+
+    Decky's embedded Python can have an empty/stale default CA path even though
+    the host OS and curl trust GitHub correctly. Never disable verification.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "SLSDeck-Tokeer/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=_ssl_context()) as response:
+            with open(dest, "wb") as target:
+                shutil.copyfileobj(response, target)
+        return
+    except Exception as urllib_error:
+        curl = shutil.which("curl")
+        if not curl:
+            raise urllib_error
+        result = subprocess.run(
+            [
+                curl, "--fail", "--location", "--silent", "--show-error",
+                "--retry", "3", "--retry-all-errors",
+                "--connect-timeout", "20", "--max-time", "180",
+                "--output", dest, url,
+            ],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=210,
+        )
+        if result.returncode != 0 or not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+            try:
+                if os.path.exists(dest):
+                    os.remove(dest)
+            except OSError:
+                pass
+            detail = (result.stdout or str(urllib_error))[-3000:]
+            raise RuntimeError(f"Secure download failed: {detail}")
 
 
 def _latest_bundle() -> tuple[str, str]:
@@ -83,7 +131,7 @@ def _latest_bundle() -> tuple[str, str]:
             "User-Agent": "SLSDeck-Tokeer/1.0",
             "Accept": "application/vnd.github+json",
         })
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=20, context=_ssl_context()) as response:
             release = json.loads(response.read().decode("utf-8"))
         tag = str(release.get("tag_name") or "")
         for asset in release.get("assets") or []:
@@ -242,6 +290,12 @@ def required_proton_status() -> Dict[str, Any]:
 
 def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
     """Install upstream's exact GE-Proton requirement, without editing VDF."""
+    # Tokeer's bundled configurator uses Python HTTPS internally. Point it at
+    # the SteamOS CA store before importing it so GE-Proton does not hit the
+    # same Decky embedded-Python certificate failure as the runtime download.
+    ca_bundle = _system_ca_bundle()
+    if ca_bundle:
+        os.environ["SSL_CERT_FILE"] = ca_bundle
     before = required_proton_status()
     if before.get("installed") and before.get("healthy") and not force:
         return {
