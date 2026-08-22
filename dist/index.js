@@ -5267,7 +5267,7 @@ function DependenciesSection() {
     const [busy, setBusy] = SP_REACT.useState({});
     const [note, setNote] = SP_REACT.useState({});
     const pollRef = SP_REACT.useRef(null);
-    const crAuto = SP_REACT.useRef(false);
+    const postRestartAuto = SP_REACT.useRef(false);
     const setB = (id, v) => setBusy((b) => ({ ...b, [id]: v }));
     const setN = (id, v) => setNote((n) => ({ ...n, [id]: v }));
     const refresh = async () => {
@@ -5304,19 +5304,32 @@ function DependenciesSection() {
         return () => { if (pollRef.current)
             clearInterval(pollRef.current); };
     }, []);
-    // CloudRedirect installs itself automatically once SLSsteam is set up. Runs
-    // at most once (the flatpak + KDE runtime are heavy).
+    // Once Steam returns from the normal SLSsteam restart, install the two large
+    // optional payloads in the background. Both backend installers are idempotent:
+    // a healthy exact install is skipped, while partial/leftover managed files are
+    // cleaned before retrying. Run them sequentially to avoid competing for disk
+    // and network bandwidth on the Deck.
     SP_REACT.useEffect(() => {
-        if (!sls?.installed || crAuto.current)
+        if (!sls?.installed || postRestartAuto.current)
             return;
-        crAuto.current = true;
+        postRestartAuto.current = true;
         (async () => {
+            setB("tokeerProton", true);
+            setN("tokeerProton", "installing GE-Proton10-34 in background…");
+            try {
+                const proton = await tokeerEnsureProton();
+                setN("tokeerProton", proton.success ? "GE-Proton10-34 installed" : `install failed: ${proton.error || "unknown error"}`);
+            }
+            catch (e) {
+                setN("tokeerProton", `install failed: ${e}`);
+            }
+            setB("tokeerProton", false);
             setB("cr", true);
-            setN("cr", "installing in background… (first run is slow)");
+            setN("cr", "installing CloudRedirect Moon in background… (first run is slow)");
             try {
                 const r = await crEnsureInstalledAuto();
                 setN("cr", r.installed
-                    ? "installed"
+                    ? "installed · Moon hook verified"
                     : r.capped
                         ? (r.log || "auto-install off — use Reinstall")
                         : "will retry — " + (r.log || "check network"));
@@ -5342,8 +5355,20 @@ function DependenciesSection() {
                     if (s === "done") {
                         setN(id, "done");
                         toaster.toast({ title: "SLSDeck", body: doneMsg });
-                        if (restart && state.installed)
-                            setTimeout(() => reloadSteam(), 3000);
+                        if (restart && state.installed) {
+                            // Tokeer's shared runtime is small and belongs in the normal
+                            // dependency order before the SLSsteam restart. GE-Proton and
+                            // CloudRedirect are intentionally deferred until Steam returns.
+                            setN("tokeer", "installing/updating Tokeer runtime before restart…");
+                            try {
+                                const runtime = await tokeerEnsureRuntime();
+                                setN("tokeer", runtime.success ? `runtime ready (${runtime.version || "latest"})` : `runtime failed: ${runtime.error || "unknown error"}`);
+                            }
+                            catch (e) {
+                                setN("tokeer", `runtime failed: ${e}`);
+                            }
+                            setTimeout(() => reloadSteam(), 1200);
+                        }
                     }
                     else {
                         setN(id, state.error || "failed");
@@ -5494,7 +5519,7 @@ function DependenciesSection() {
     const setupDone = !!sls?.installed && !!sls?.injected;
     const slsHealth = sls?.installed ? (sls.injected ? "ok" : "warn") : "off";
     const slsBusy = !!busy.sls;
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Setup", children: [sysSt?.foreignEngine && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { margin: "2px 0 6px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "Another engine detected" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: [sysSt.foreignName || "A different engine", " is present alongside slsteam-moon and can fight over injection. Disable it (reversibly) so SLSDeck's engine runs cleanly."] }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy.foreign, onClick: disableForeign, children: busy.foreign ? "Disabling…" : `Disable ${sysSt.foreignName || "other engine"}` }), note.foreign ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: note.foreign }) : null] }) })), !setupDone && !slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: installSls, children: "Install SLSsteam" }) })), slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 13, height: 13, marginRight: 8 } }), note.sls || "installing…"] }) })), SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DepRow, { label: "SLSsteam", hint: "Core steamclient hook that adds games to your library.", health: slsHealth, statusText: sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed", busy: slsBusy, actionLabel: sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam", onAction: installSls }), SP_JSX.jsx(DepRow, { label: "Steam client fix", hint: "Pins the Steam client to a version SLSsteam supports (h3adcr-b).", health: busy.fix ? "unknown" : sls?.clientFixRan ? "ok" : "warn", statusText: note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear"), busy: !!busy.fix, actionLabel: "Run client fix", onAction: runFix }), SP_JSX.jsx(DepRow, { label: "CloudRedirect", hint: "Cloud saves for added games \u2014 installs automatically after setup. Off by default; enable in Advanced \u25B8 Cloud saves.", health: busy.cr ? "unknown" : note.cr === "installed" || note.cr === "installed · shortcut rebound" ? "ok" : "unknown", statusText: note.cr || "installs automatically after SLSsteam setup", busy: !!busy.cr, actionLabel: "Reinstall CloudRedirect", onAction: installCloud }), SP_JSX.jsxs("div", { style: { padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, margin: "2px 0 4px" }, children: "Injection & diagnostics" }), sls?.installed && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, margin: "0 0 4px 2px" }, children: ["Injection is ", sls.injectionActive ? "active" : "inactive", "."] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: sls.injectionActive ? doDeactivate : doActivate, children: sls.injectionActive ? "Deactivate injection" : "Activate injection" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runDiag, children: "Run diagnostics" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runRefreshPatterns, children: "Refresh engine patterns (fix \u201Ccan\u2019t match patterns\u201D)" }) }), diag && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: diag, maxHeight: 300, mono: true, fontSize: 10 }) }))] })] })] }));
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Setup", children: [sysSt?.foreignEngine && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { margin: "2px 0 6px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "Another engine detected" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: [sysSt.foreignName || "A different engine", " is present alongside slsteam-moon and can fight over injection. Disable it (reversibly) so SLSDeck's engine runs cleanly."] }), SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy.foreign, onClick: disableForeign, children: busy.foreign ? "Disabling…" : `Disable ${sysSt.foreignName || "other engine"}` }), note.foreign ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: note.foreign }) : null] }) })), !setupDone && !slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: installSls, children: "Install SLSsteam" }) })), slsBusy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 13, height: 13, marginRight: 8 } }), note.sls || "installing…"] }) })), SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DepRow, { label: "SLSsteam", hint: "Core steamclient hook that adds games to your library.", health: slsHealth, statusText: sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed", busy: slsBusy, actionLabel: sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam", onAction: installSls }), SP_JSX.jsx(DepRow, { label: "Steam client fix", hint: "Pins the Steam client to a version SLSsteam supports (h3adcr-b).", health: busy.fix ? "unknown" : sls?.clientFixRan ? "ok" : "warn", statusText: note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear"), busy: !!busy.fix, actionLabel: "Run client fix", onAction: runFix }), SP_JSX.jsx(DepRow, { label: "Tokeer runtime", hint: "Small shared verifier/hook runtime; updated before the normal SLSsteam restart.", health: note.tokeer?.startsWith("runtime ready") ? "ok" : "unknown", statusText: note.tokeer || "checked during SLSsteam installation", busy: !!busy.tokeer }), SP_JSX.jsx(DepRow, { label: "GE-Proton10-34", hint: "Exact compatibility layer required by Tokeer; installed after restart in the background.", health: note.tokeerProton === "GE-Proton10-34 installed" ? "ok" : "unknown", statusText: note.tokeerProton || "installs automatically after SLSsteam setup", busy: !!busy.tokeerProton }), SP_JSX.jsx(DepRow, { label: "CloudRedirect", hint: "Cloud saves for added games \u2014 installs automatically after setup. Off by default; enable in Advanced \u25B8 Cloud saves.", health: busy.cr ? "unknown" : note.cr === "installed" || note.cr === "installed · shortcut rebound" ? "ok" : "unknown", statusText: note.cr || "installs automatically after SLSsteam setup", busy: !!busy.cr, actionLabel: "Reinstall CloudRedirect", onAction: installCloud }), SP_JSX.jsxs("div", { style: { padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, margin: "2px 0 4px" }, children: "Injection & diagnostics" }), sls?.installed && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, margin: "0 0 4px 2px" }, children: ["Injection is ", sls.injectionActive ? "active" : "inactive", "."] }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: sls.injectionActive ? doDeactivate : doActivate, children: sls.injectionActive ? "Deactivate injection" : "Activate injection" }) })] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runDiag, children: "Run diagnostics" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runRefreshPatterns, children: "Refresh engine patterns (fix \u201Ccan\u2019t match patterns\u201D)" }) }), diag && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(ScrollableResult, { text: diag, maxHeight: 300, mono: true, fontSize: 10 }) }))] })] })] }));
 }
 
 const TOPICS = [
