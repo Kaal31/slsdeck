@@ -150,6 +150,20 @@ async function hideTokeerBrowserView(): Promise<void> {
   }catch(e){return false;}})()`, 2000);
 }
 
+async function parkTokeerBrowserView(): Promise<void> {
+  const shared = await findSharedJsContext();
+  if (!shared?.webSocketDebuggerUrl) return;
+  await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+    var v=window.SLSDECK_TOKEER_VIEW;
+    if(!v||!v.m_browserView)return false;
+    // A truly hidden Chromium view is suspended. Keep a normal-sized surface
+    // rendered far outside the Steam viewport so Discord stays live without
+    // being visible or receiving gamepad input.
+    v.m_browserView.SetBounds(-10000,-10000,1280,720);
+    v.m_browserView.SetVisible(true);return true;
+  }catch(e){return false;}})()`, 2000);
+}
+
 async function waitForExactUrl(url: string, timeoutMs = 6500): Promise<CdpTab | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -182,10 +196,9 @@ async function createTokeerDiscordBrowserView(): Promise<CdpTab | null> {
     if(!main||typeof main.CreateBrowserView!=='function') return JSON.stringify({ok:false,error:'CreateBrowserView unavailable'});
     var view=main.CreateBrowserView(${JSON.stringify(TOKEER_VIEW_NAME)});
     window.SLSDECK_TOKEER_VIEW=view;
-    try{view.WIDTH=860;view.HEIGHT=495;view.m_browserView.SetBounds(0,0,860,495);}catch(e){}
-    // Automation fallback only. User-facing Discord is opened through Steam's
-    // normal external-web navigation so the B button can always leave it.
-    try{view.m_browserView.SetVisible(false);}catch(e){}
+    try{view.WIDTH=1280;view.HEIGHT=720;view.m_browserView.SetBounds(-10000,-10000,1280,720);}catch(e){}
+    // Visible to Chromium (so it renders), parked outside Steam's viewport.
+    try{view.m_browserView.SetVisible(true);}catch(e){}
     view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
     return JSON.stringify({ok:true});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
@@ -203,6 +216,7 @@ async function createTokeerDiscordBrowserView(): Promise<CdpTab | null> {
 
   // Keep Discord's SPA active while the Deck/QAM focus changes.
   await cdpCommand(target.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+  await cdpCommand(target.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
   const nav = await cdpCommand(target.webSocketDebuggerUrl, "Page.navigate", {
     url: TOKEER_DISCORD_URL,
     transitionType: "address_bar",
@@ -284,7 +298,9 @@ export async function openSelectorAndReadOptions(index: number): Promise<string[
 export async function chooseSelectorOption(index: number, label: string): Promise<boolean> {
   const tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return false;
-  await openSelectorAndReadOptions(index);
+  const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
+  const alreadyOpen = !!(await evalJson(tab.webSocketDebuggerUrl, visibleExpr));
+  if (!alreadyOpen) await openSelectorAndReadOptions(index);
   const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).find(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
   return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
@@ -399,13 +415,17 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
  * BrowserView shares Steam CEF's Discord session, so a prior visible login is
  * reused. */
 export async function connectTokeerDiscordHidden(): Promise<boolean> {
-  try { await hideTokeerBrowserView(); } catch {}
   try {
     const existing = await findDiscordTab();
-    if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) return true;
+    if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
+      try { await parkTokeerBrowserView(); } catch {}
+      try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000); } catch {}
+      return true;
+    }
   } catch {}
   try {
     const created = await createTokeerDiscordBrowserView();
+    try { await parkTokeerBrowserView(); } catch {}
     return !!created?.webSocketDebuggerUrl;
   } catch {
     return false;

@@ -1,4 +1,4 @@
-import { ButtonItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
+import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { tokeerPrepare, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
 import {
@@ -26,8 +26,8 @@ export function TokeerSection() {
   const [activation,setActivation]=useState("");
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState("");
-  const [menu,setMenu]=useState<number|null>(null);
-  const [options,setOptions]=useState<string[]>([]);
+  const [options,setOptions]=useState<Record<number,string[]>>({});
+  const [selectedMenus,setSelectedMenus]=useState<Record<number,string>>({});
   const [selectedGame,setSelectedGame]=useState("");
   const [gate,setGate]=useState<TokeerTicketGate|null>(null);
   const [ticket,setTicket]=useState<TokeerTicketContext|null>(null);
@@ -36,10 +36,13 @@ export function TokeerSection() {
   useEffect(()=>{ tokeerRuntimeStatus().then(setRuntime).catch(()=>{}); refreshDiscord(); const t=setInterval(refreshDiscord,15000); return()=>clearInterval(t); },[]);
   const appid=Number(ticket?.appid||0);
 
-  const openMenu=async(i:number)=>{
-    setBusy("Reading live game list…"); setMenu(i);
-    try{setOptions(await openSelectorAndReadOptions(i));}
-    finally{setBusy("");}
+  const openMenu=async(i:number,showMenu?:()=>void)=>{
+    setBusy("Reading live game list…");
+    try{
+      const items=await openSelectorAndReadOptions(i);
+      setOptions((old)=>({...old,[i]:items}));
+      setTimeout(()=>showMenu?.(),0);
+    }finally{setBusy("");}
   };
 
   const connectHidden=async()=>{
@@ -48,8 +51,11 @@ export function TokeerSection() {
     try{
       const ok=await connectTokeerDiscordHidden();
       if(!ok){setMessage("Hidden Discord connection failed. Open Discord login once, sign in, press B, then retry.");return;}
-      await sleep(1400);
-      const state=await readTokeerDiscord();
+      let state=await readTokeerDiscord();
+      for(let i=0;i<30&&!state.found;i++){
+        await sleep(500);
+        state=await readTokeerDiscord();
+      }
       setDiscord(state);
       setMessage(state.found?"Hidden Tokeer panel connected.":(state.error||"Discord connected, but the activation panel is still loading."));
     }catch(e){setMessage(String(e));}
@@ -66,12 +72,11 @@ export function TokeerSection() {
     setMessage("The game was selected, but the green Tokeer confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
   };
 
-  const choose=async(label:string)=>{
-    if(menu==null)return;
+  const choose=async(index:number,label:string)=>{
     setBusy(`Selecting ${label} in Discord…`);
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
-    const ok=await chooseSelectorOption(menu,label);
-    setOptions([]); setMenu(null);
+    setSelectedMenus((old)=>({...old,[index]:label}));
+    const ok=await chooseSelectorOption(index,label);
     if(!ok){setMessage("Discord selection failed. Keep the Tokeer message open and retry.");setBusy("");return;}
     setBusy("Waiting for Tokeer confirmation…");
     setMessage(`Selected ${label}. Waiting for the newest bot message…`);
@@ -139,11 +144,18 @@ export function TokeerSection() {
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.6}}>Steam: <b>{discord.steamStatus||"Unknown"}</b> · Games: <b>{discord.gamesListed??"?"}</b> · Keys: <b>{discord.keysRemaining??"?"}</b> · High demand: <b>{discord.highDemand??"?"}</b></div></PanelSectionRow>}
-      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><ButtonItem layout="below" disabled={s.disabled||!!busy} onClick={()=>openMenu(s.index)}>{s.label||`Game menu ${s.index+1}`}</ButtonItem></PanelSectionRow>)}
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
+        label={s.label||`Game menu ${s.index+1}`}
+        description="Live game list from the Tokeer Discord panel"
+        disabled={s.disabled||!!busy}
+        rgOptions={(options[s.index]||[]).map(x=>({data:x,label:x}))}
+        selectedOption={selectedMenus[s.index]||null}
+        strDefaultLabel={s.label||"Choose a game"}
+        onMenuWillOpen={(showMenu)=>openMenu(s.index,showMenu)}
+        onChange={(o:any)=>choose(s.index,String(o.data))}
+      /></PanelSectionRow>)}
       {!discord?.found&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>{discord?.error||"Open the Linux activation message once and leave the Discord tab alive."}</div></PanelSectionRow>}
     </PanelSection>
-
-    {menu!=null&&options.length>0&&<PanelSection title="Live Discord games">{options.map(x=><PanelSectionRow key={x}><ButtonItem layout="below" onClick={()=>choose(x)}>{x}</ButtonItem></PanelSectionRow>)}</PanelSection>}
 
     {(selectedGame||gate)&&<PanelSection title="2. Open activation ticket">
       {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{selectedGame}</b></div></PanelSectionRow>}
