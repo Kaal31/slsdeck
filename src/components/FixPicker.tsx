@@ -53,7 +53,7 @@ import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { setupAndVerifyTokeer } from "../lib/tokeerSetup";
-import { getTokeerAvailabilityForGame, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailableGame } from "../lib/tokeerAvailability";
+import { getTokeerAvailabilityForGame, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 
 interface RowDef {
   key: string;
@@ -164,6 +164,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       const cached = readTokeerAvailabilityCache();
       setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
       setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
+      resolveTokeerAvailabilityForGame(appid, lookupName)
+        .then((game) => { if (tokeerRefreshApp.current === 0 || tokeerRefreshApp.current === appid) setTokeerGame(game); })
+        .catch(() => {});
       if (tokeerRefreshApp.current !== appid) {
         tokeerRefreshApp.current = appid;
         const requestedAppid = appid;
@@ -173,7 +176,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             if (tokeerRefreshApp.current === requestedAppid) {
               const fresh = readTokeerAvailabilityCache();
               setTokeerLookup({ name: lookupName, cachedGames: fresh?.games.length || 0, updatedAt: fresh?.updatedAt });
-              setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName));
+              resolveTokeerAvailabilityForGame(requestedAppid, lookupName)
+                .then((game) => { if (tokeerRefreshApp.current === requestedAppid) setTokeerGame(game); })
+                .catch(() => setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName)));
             }
           })
           .catch(() => {})
