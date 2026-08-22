@@ -113,6 +113,7 @@ function FaWrench (props) {
 }
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
+const tokeerPreflight = callable("tokeer_preflight");
 const tokeerEnsureRuntime = callable("tokeer_ensure_runtime");
 const tokeerProtonStatus = callable("tokeer_proton_status");
 const tokeerEnsureProton = callable("tokeer_ensure_proton");
@@ -311,6 +312,10 @@ const deactivateInjection = callable("deactivate_injection");
 const getDiagnostics = callable("get_diagnostics");
 const runClientFix = callable("run_client_fix");
 const clientFixNeeded = callable("client_fix_needed");
+// SLSsteam config.yaml validator/healer. `analyze` writes nothing; `heal`
+// repairs in place after backing the file up.
+const slsConfigHealth = callable("sls_config_health");
+const healSlsConfig = callable("heal_sls_config");
 const crProviderStatus = callable("cr_provider_status");
 const crInstallStatus = callable("cr_install_status");
 const fixStuckUpdate = callable("fix_stuck_update");
@@ -349,6 +354,8 @@ const getAutoReinject = callable("get_auto_reinject");
 const setAutoReinject = callable("set_auto_reinject");
 const getAutoClientRepin = callable("get_auto_client_repin");
 const setAutoClientRepin = callable("set_auto_client_repin");
+const getCheckDependenciesOnBoot = callable("get_check_dependencies_on_boot");
+const setCheckDependenciesOnBoot = callable("set_check_dependencies_on_boot");
 const checkFixes = callable("check_fixes");
 callable("set_only_update_on_launch");
 const getGameInstallPath = callable("get_game_install_path");
@@ -1470,6 +1477,23 @@ function launchGame(appid) {
 }
 
 const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function describeTokeerFailure(result) {
+    if (result.error)
+        return result.error;
+    const checks = result.checks;
+    if (!checks)
+        return "Tokeer validation failed.";
+    const failed = [];
+    if (!checks.installed)
+        failed.push("game installation");
+    if (!checks.prefix)
+        failed.push("Proton prefix");
+    if (!checks.hook)
+        failed.push("native hook");
+    if (!checks.launchOpt)
+        failed.push("launch option");
+    return failed.length ? `Tokeer validation failed: ${failed.join(", ")}.` : "Tokeer validation failed.";
+}
 /**
  * Restart-free Tokeer setup:
  *  1. update shared runtime only when its GitHub release changed;
@@ -1479,6 +1503,15 @@ const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  5. run the official local verifier.
  */
 async function setupAndVerifyTokeer(appid, onStatus) {
+    onStatus?.("Confirming that the game is installed…");
+    const preflight = await tokeerPreflight(appid, "");
+    if (!preflight.success || !preflight.installed) {
+        return {
+            success: false,
+            checks: { installed: false, prefix: false, hook: false, launchOpt: false, proton: null },
+            error: preflight.error || "Game is not installed. Install it completely before using Tokeer.",
+        };
+    }
     onStatus?.("Checking Tokeer runtime version…");
     const runtime = await tokeerEnsureRuntime();
     if (!runtime.success || !runtime.home) {
@@ -1522,7 +1555,7 @@ async function setupAndVerifyTokeer(appid, onStatus) {
                 break;
         }
     }
-    return {
+    const result = {
         ...verified,
         runtimeUpdated: !!runtime.updated,
         runtimeVersion: runtime.version,
@@ -1530,9 +1563,13 @@ async function setupAndVerifyTokeer(appid, onStatus) {
         protonSkipped: !!proton.skipped,
         launchOptions: configured.options,
     };
+    if (!result.success && !result.error)
+        result.error = describeTokeerFailure(result);
+    return result;
 }
 
 const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
+const DEDEVISION_INVITE_URL = "https://discord.gg/denuvo";
 const GUILD_ID = "1464130182364270696";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
 const TARGET_MESSAGE = "1535685399265935422";
@@ -1597,7 +1634,9 @@ function cdpCommand(wsUrl, method, params = {}, timeoutMs = 5000) {
     });
 }
 async function evalJson(wsUrl, expression, timeoutMs = 5000) {
-    const result = await cdpCommand(wsUrl, "Runtime.evaluate", { expression, returnByValue: true }, timeoutMs);
+    const result = await cdpCommand(wsUrl, "Runtime.evaluate", {
+        expression, returnByValue: true, awaitPromise: true,
+    }, timeoutMs);
     return result?.result?.value ?? null;
 }
 async function evalDetailed(wsUrl, expression, timeoutMs = 5000) {
@@ -1645,6 +1684,20 @@ async function findDiscordTab() {
     }
     return fallback;
 }
+/** Whether Steam CEF currently holds an authenticated Discord web session. */
+async function getDiscordSignInState() {
+    const tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl)
+        return { signedIn: false, found: false };
+    const expression = `(async function(){try{
+    var u=String(location.href||document.URL||'');
+    if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
+    if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
+    var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
+    return response.status===200;
+  }catch(e){return false;}})()`;
+    return { signedIn: !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500)), found: true };
+}
 async function findSharedJsContext() {
     const tabs = (await listCdpTabs()).filter((t) => !!t.webSocketDebuggerUrl);
     return tabs.find((t) => String(t.title || "") === "SharedJSContext")
@@ -1691,26 +1744,6 @@ async function parkTokeerBrowserView() {
     v.m_browserView.SetBounds(-10000,-10000,1280,720);
     v.m_browserView.SetVisible(true);return true;
   }catch(e){return false;}})()`, 2000);
-}
-async function captureTokeerDiscordFrame() {
-    if (!(await connectTokeerDiscordHidden()))
-        return "";
-    const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
-    if (!tab?.webSocketDebuggerUrl)
-        return "";
-    try {
-        await cdpCommand(tab.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 1500);
-        const shot = await cdpCommand(tab.webSocketDebuggerUrl, "Page.captureScreenshot", {
-            format: "jpeg", quality: 72, fromSurface: true, captureBeyondViewport: false,
-        }, 6000);
-        return shot?.data ? `data:image/jpeg;base64,${shot.data}` : "";
-    }
-    catch {
-        return "";
-    }
-}
-async function hideTokeerDiscordEmbedded() {
-    await parkTokeerBrowserView();
 }
 async function waitForExactUrl(url, timeoutMs = 6500) {
     const deadline = Date.now() + timeoutMs;
@@ -2023,6 +2056,90 @@ async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
     }
     return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
+async function ticketTab(ticketUrl) {
+    let tab = await findManagedTokeerTab();
+    if (!tab?.webSocketDebuggerUrl)
+        tab = await findDiscordTab();
+    if (!tab?.webSocketDebuggerUrl)
+        return null;
+    if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
+        await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+        await new Promise((r) => setTimeout(r, 1000));
+    }
+    return tab;
+}
+async function sendTokeerTicketMessage(ticketUrl, message) {
+    const text = String(message || "").trim();
+    if (!/^TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
+        return { success: false, error: "The generated verification value is not a valid TLX1 code; nothing was sent to Discord." };
+    }
+    const tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl)
+        return { success: false, error: "The Discord ticket view is not connected." };
+    const focusExpr = `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
+    var box=boxes[boxes.length-1];
+    if(!box)return JSON.stringify({ok:false,error:'Discord message box was not found in the ticket.'});
+    box.focus();return JSON.stringify({ok:true});
+  }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
+    const focusedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 4000);
+    let focused;
+    try {
+        focused = JSON.parse(String(focusedRaw || ""));
+    }
+    catch {
+        focused = null;
+    }
+    if (!focused?.ok)
+        return { success: false, error: focused?.error || "Could not focus the Discord ticket message box." };
+    await cdpCommand(tab.webSocketDebuggerUrl, "Input.insertText", { text }, 3000);
+    await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
+    await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
+    await new Promise((r) => setTimeout(r, 700));
+    const verifyExpr = `(function(){try{
+    var expected=${JSON.stringify(text)};
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12);
+    return arts.some(function(a){return String(a.innerText||'').indexOf(expected)>=0;});
+  }catch(e){return false;}})()`;
+    const appeared = await evalJson(tab.webSocketDebuggerUrl, verifyExpr, 3000);
+    return appeared ? { success: true } : { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
+}
+async function waitForTokeerActivationCode(ticketUrl, timeoutMs = 15 * 60 * 1000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const tab = await ticketTab(ticketUrl);
+        if (!tab?.webSocketDebuggerUrl)
+            return { success: false, error: "The Discord ticket view disconnected while waiting for the activation code." };
+        const expr = `(function(){try{
+      var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
+      var common=/^(?:verify|setup|ticket|cancel|close|valid|code|redeem|tokeer|linux|steam|proton)$/i;
+      for(var i=0;i<arts.length;i++){
+        var a=arts[i], text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
+        if(/TLX1\./i.test(text))continue;
+        var nodes=[].slice.call(a.querySelectorAll('code,pre')).map(function(n){return String(n.textContent||'').trim();});
+        var contextual=/(?:activation|redeem|single[- ]use|expires|30\s*minutes?|verification\s+(?:succeeded|complete))/i.test(text);
+        var matches=nodes.filter(function(v){return /^[A-Za-z0-9_-]{6}$/.test(v)&&!common.test(v);});
+        if(!matches.length&&contextual){
+          matches=(text.match(/(?:^|\s|[:#])([A-Za-z0-9_-]{6})(?=$|\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
+        }
+        if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0]});
+      }
+      return JSON.stringify({found:false});
+    }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
+        const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 4000);
+        try {
+            const found = JSON.parse(String(raw || ""));
+            if (found?.found && /^[A-Za-z0-9_-]{6}$/.test(String(found.code || "")))
+                return { success: true, code: String(found.code) };
+            if (found?.error)
+                return { success: false, error: found.error };
+        }
+        catch { }
+        await new Promise((r) => setTimeout(r, 1500));
+    }
+    return { success: false, error: "Timed out waiting for the six-character activation code. The ticket is still saved and can be resumed." };
+}
 async function cancelTokeerTicket(ticketUrl = "") {
     let tab = await findManagedTokeerTab();
     if (!tab?.webSocketDebuggerUrl)
@@ -2137,8 +2254,34 @@ async function openTokeerDiscord() {
     catch { }
     return false;
 }
+/** Open DeDevision's invite. Discord itself asks for login when the shared
+ * Steam-CEF Discord session is unauthenticated, then continues to the server. */
+async function openDedevisionDiscordLogin() {
+    try {
+        await hideTokeerBrowserView();
+    }
+    catch { }
+    try {
+        const nav = DFL.Navigation;
+        if (typeof nav?.NavigateToExternalWeb === "function") {
+            nav.NavigateToExternalWeb(DEDEVISION_INVITE_URL);
+            return true;
+        }
+    }
+    catch { }
+    try {
+        const SC = window.SteamClient;
+        if (SC?.System?.OpenInSystemBrowser) {
+            SC.System.OpenInSystemBrowser(DEDEVISION_INVITE_URL);
+            return true;
+        }
+    }
+    catch { }
+    return false;
+}
 
 const CACHE_KEY = "slsdeck.tokeerAvailability.v1";
+const SESSION_KEY = "slsdeck.tokeerSession.v1";
 const TOKEER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 function finite(value) {
     const n = Number(value);
@@ -2209,23 +2352,37 @@ function writeCache(state, games) {
     return cache;
 }
 let refreshPromise = null;
+function hasActiveTicketSession() {
+    try {
+        const session = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
+        return !!session && (!session.expiresAt || Number(session.expiresAt) > Date.now()) &&
+            !!(session.ticket?.opened || session.ticket?.url || session.gate);
+    }
+    catch {
+        return false;
+    }
+}
 async function refreshTokeerAvailabilityCache(force = false) {
     const current = readTokeerAvailabilityCache();
     if (!force && current && Date.now() - current.updatedAt < TOKEER_CACHE_TTL_MS)
         return current;
+    // Never navigate the managed Discord target away from a live private ticket.
+    // A forced caller gets null so it cannot mistake stale cache for a live check.
+    if (hasActiveTicketSession())
+        return force ? null : current;
     if (refreshPromise)
         return refreshPromise;
     refreshPromise = (async () => {
         try {
             if (!(await connectTokeerDiscordHidden()))
-                return current;
+                return force ? null : current;
             let state = await readTokeerDiscord();
             for (let i = 0; i < 20 && !state.found; i++) {
                 await new Promise((resolve) => setTimeout(resolve, 500));
                 state = await readTokeerDiscord();
             }
             if (!state.found)
-                return current;
+                return force ? null : current;
             const parsed = [];
             for (const selector of state.selectors || []) {
                 const labels = await openSelectorAndReadOptions(selector.index);
@@ -2239,11 +2396,11 @@ async function refreshTokeerAvailabilityCache(force = false) {
             // temporarily unrendered Discord menu. Vault-only snapshots may still seed
             // a new cache on first use.
             if (!parsed.length && current?.games.length)
-                return current;
+                return force ? null : current;
             return writeCache(state, parsed);
         }
         catch {
-            return current;
+            return force ? null : current;
         }
         finally {
             refreshPromise = null;
@@ -2419,24 +2576,25 @@ function FixPicker({ appid, onReload, onClose }) {
         try {
             const fullCheck = await checkFixesFull(appid);
             setCheck(fullCheck);
-            // Show the last good cache immediately, then force a live Discord scrape
-            // for this Fixes opening and update/hide the card in place. Steam's own
-            // display name is authoritative; source indexes may return a blank title.
+            // A Tokeer action is exposed only after this Fixes opening completes a
+            // live Discord scrape. Never show a stale cached action while refreshing.
             const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
             const cached = readTokeerAvailabilityCache();
             setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
-            setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
-            resolveTokeerAvailabilityForGame(appid, lookupName)
-                .then((game) => { if (tokeerRefreshApp.current === 0 || tokeerRefreshApp.current === appid)
-                setTokeerGame(game); })
-                .catch(() => { });
+            setTokeerGame(null);
             if (tokeerRefreshApp.current !== appid) {
                 tokeerRefreshApp.current = appid;
                 const requestedAppid = appid;
                 setTokeerRefreshing(true);
                 refreshTokeerAvailabilityCache(true)
-                    .then(() => {
+                    .then((live) => {
                     if (tokeerRefreshApp.current === requestedAppid) {
+                        if (!live) {
+                            setTokeerGame(null);
+                            setMsg("Tokeer availability could not be refreshed from Discord. The Tokeer action is hidden until a live check succeeds.");
+                            toaster.toast({ title: "SLSDeck · Tokeer", body: "Discord availability refresh failed; Tokeer action hidden for this game." });
+                            return;
+                        }
                         const fresh = readTokeerAvailabilityCache();
                         setTokeerLookup({ name: lookupName, cachedGames: fresh?.games.length || 0, updatedAt: fresh?.updatedAt });
                         resolveTokeerAvailabilityForGame(requestedAppid, lookupName)
@@ -2445,7 +2603,13 @@ function FixPicker({ appid, onReload, onClose }) {
                             .catch(() => setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName)));
                     }
                 })
-                    .catch(() => { })
+                    .catch(() => {
+                    if (tokeerRefreshApp.current === requestedAppid) {
+                        setTokeerGame(null);
+                        setMsg("Tokeer availability refresh failed. The Tokeer action remains hidden.");
+                        toaster.toast({ title: "SLSDeck · Tokeer", body: "Discord availability refresh failed; Tokeer action hidden for this game." });
+                    }
+                })
                     .finally(() => {
                     if (tokeerRefreshApp.current === requestedAppid)
                         setTokeerRefreshing(false);
@@ -3106,13 +3270,20 @@ function FixPicker({ appid, onReload, onClose }) {
     };
     const doTokeer = async () => {
         setBusy("tokeer");
-        setMsg("Installing/checking Tokeer runtime and GE-Proton10-34…");
-        toaster.toast({ title: "SLSDeck · Tokeer", body: "Dependency setup started. This may take several minutes on first use." });
         try {
+            setMsg("Confirming that the game is installed…");
+            const preflight = await tokeerPreflight(appid, "");
+            if (!preflight.success || !preflight.installed) {
+                const failure = preflight.error || "Game is not installed. Install it completely before using Tokeer.";
+                setMsg(failure);
+                toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
+                return;
+            }
+            setMsg("Installing/checking Tokeer runtime and GE-Proton10-34…");
+            toaster.toast({ title: "SLSDeck · Tokeer", body: "Installation confirmed. Dependency setup started." });
             const r = await setupAndVerifyTokeer(appid, setMsg);
             if (!r.success) {
-                const phase = r.phase === "prepare" ? "Setup" : "Verification";
-                const failure = `${phase} failed: ${r.error || r.output || "Unknown error"}`;
+                const failure = describeTokeerFailure(r);
                 setMsg(failure);
                 toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
                 return;
@@ -7739,6 +7910,7 @@ const inputStyle = { width: "100%", boxSizing: "border-box", padding: "8px 10px"
 const checks = (v) => v?.checks || { installed: false, prefix: false, hook: false, launchOpt: false, proton: null };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TOKEER_SESSION_KEY$1 = "slsdeck.tokeerSession.v1";
+const TOKEER_AUTO_CONNECT_KEY = "slsdeck.tokeerAutoConnect.v1";
 const TOKEER_SESSION_MS = 30 * 60 * 1000;
 function readSavedSession() {
     try {
@@ -7751,6 +7923,14 @@ function readSavedSession() {
     }
     catch {
         return null;
+    }
+}
+function readAutoConnect() {
+    try {
+        return window.localStorage.getItem(TOKEER_AUTO_CONNECT_KEY) === "1";
+    }
+    catch {
+        return false;
     }
 }
 function TokeerSection() {
@@ -7771,8 +7951,20 @@ function TokeerSection() {
     const [selectedGame, setSelectedGame] = SP_REACT.useState(savedRef.current?.selectedGame || "");
     const [gate, setGate] = SP_REACT.useState(savedRef.current?.gate || null);
     const [ticket, setTicket] = SP_REACT.useState(savedRef.current?.ticket || null);
-    const [embedded, setEmbedded] = SP_REACT.useState(false);
-    const [embeddedFrame, setEmbeddedFrame] = SP_REACT.useState("");
+    const [discordSignedIn, setDiscordSignedIn] = SP_REACT.useState(false);
+    const [autoConnect, setAutoConnect] = SP_REACT.useState(readAutoConnect);
+    const [automationStage, setAutomationStage] = SP_REACT.useState(savedRef.current?.automationStage || "idle");
+    const [tlxSubmitted, setTlxSubmitted] = SP_REACT.useState(!!savedRef.current?.tlxSubmitted);
+    const [submittedTlx, setSubmittedTlx] = SP_REACT.useState(savedRef.current?.submittedTlx || "");
+    const [automationError, setAutomationError] = SP_REACT.useState(savedRef.current?.automationError || "");
+    const automationRunningRef = SP_REACT.useRef(false);
+    const checkpoint = (patch) => {
+        try {
+            const current = readSavedSession() || { startedAt: sessionStartedRef.current };
+            window.localStorage.setItem(TOKEER_SESSION_KEY$1, JSON.stringify({ ...current, ...patch }));
+        }
+        catch { }
+    };
     SP_REACT.useEffect(() => {
         if (!selectedGame && !ticket && !gate)
             return;
@@ -7785,12 +7977,13 @@ function TokeerSection() {
             startedAt, codeReceivedAt,
             expiresAt: codeExpiresAt,
             selectedGame, selectedMenus, ticket, gate, activation, verify, message,
+            automationStage, tlxSubmitted, submittedTlx, automationError,
         };
         try {
             window.localStorage.setItem(TOKEER_SESSION_KEY$1, JSON.stringify(data));
         }
         catch { }
-    }, [selectedGame, selectedMenus, ticket, gate, activation, verify, message, codeExpiresAt]);
+    }, [selectedGame, selectedMenus, ticket, gate, activation, verify, message, codeExpiresAt, automationStage, tlxSubmitted, submittedTlx, automationError]);
     SP_REACT.useEffect(() => {
         if (!codeExpiresAt)
             return;
@@ -7799,45 +7992,59 @@ function TokeerSection() {
         const timer = setInterval(tick, 250);
         return () => clearInterval(timer);
     }, [codeExpiresAt]);
-    const refreshDiscord = async () => { try {
-        setDiscord(await readTokeerDiscord());
-    }
-    catch { } };
+    const refreshDiscord = async () => {
+        try {
+            const [state, auth] = await Promise.all([readTokeerDiscord(), getDiscordSignInState()]);
+            setDiscord(state);
+            setDiscordSignedIn(auth.signedIn);
+        }
+        catch { }
+    };
+    const ticketChainActive = () => !!(ticket?.opened || ticket?.url || gate?.found);
     const refreshAvailability = async (force = false) => {
+        if (force && ticketChainActive()) {
+            setMessage("Vault refresh is paused while the private Discord ticket is open, so its command chain is not disturbed.");
+            return null;
+        }
         const value = await refreshTokeerAvailabilityCache(force);
         if (value)
             setAvailability(value);
+        return value;
     };
     SP_REACT.useEffect(() => {
         tokeerRuntimeStatus().then(setRuntime).catch(() => { });
-        refreshDiscord();
-        refreshAvailability(false).catch(() => { });
+        const openInBackground = async () => {
+            // Preserve the managed target when resuming an unfinished ticket.
+            if (savedRef.current?.ticket?.opened || savedRef.current?.ticket?.url || savedRef.current?.gate) {
+                await refreshDiscord();
+                return;
+            }
+            if (readAutoConnect()) {
+                const ok = await connectTokeerDiscordHidden();
+                await refreshDiscord();
+                if (ok) {
+                    const auth = await getDiscordSignInState();
+                    setDiscordSignedIn(auth.signedIn);
+                    if (auth.signedIn) {
+                        const cached = await refreshTokeerAvailabilityCache(true);
+                        if (cached)
+                            setAvailability(cached);
+                        else
+                            setMessage("Background Discord refresh failed. The previous vault cache was preserved; game Fixes will hide Tokeer until their own live check succeeds.");
+                    }
+                }
+            }
+            else {
+                await refreshDiscord();
+                await refreshAvailability(false);
+            }
+        };
+        openInBackground().catch(() => { });
         const onCache = (event) => setAvailability(event?.detail || readTokeerAvailabilityCache());
         window.addEventListener("slsdeck-tokeer-cache", onCache);
         const t = setInterval(refreshDiscord, 15000);
         return () => { clearInterval(t); window.removeEventListener("slsdeck-tokeer-cache", onCache); };
     }, []);
-    SP_REACT.useEffect(() => {
-        if (!embedded) {
-            setEmbeddedFrame("");
-            hideTokeerDiscordEmbedded().catch(() => { });
-            return;
-        }
-        let stopped = false;
-        let timer = null;
-        const loop = async () => {
-            if (stopped)
-                return;
-            const frame = await captureTokeerDiscordFrame();
-            if (!stopped && frame)
-                setEmbeddedFrame(frame);
-            if (!stopped)
-                timer = setTimeout(loop, 1500);
-        };
-        loop().catch(() => { });
-        return () => { stopped = true; if (timer)
-            clearTimeout(timer); hideTokeerDiscordEmbedded().catch(() => { }); };
-    }, [embedded]);
     const appid = Number(ticket?.appid || 0);
     const remainingMs = codeExpiresAt ? Math.max(0, codeExpiresAt - clockNow) : 0;
     const remainingSeconds = Math.ceil(remainingMs / 1000);
@@ -7865,6 +8072,10 @@ function TokeerSection() {
         }
     };
     const connectHidden = async () => {
+        if (ticketChainActive()) {
+            setMessage("The private ticket is still open. Background vault connection is paused to preserve its command chain.");
+            return;
+        }
         setBusy("Connecting hidden Tokeer panel…");
         setMessage("Connecting to Discord in the background. Discord will stay hidden.");
         try {
@@ -7880,6 +8091,17 @@ function TokeerSection() {
             }
             setDiscord(state);
             if (state.found) {
+                const auth = await getDiscordSignInState();
+                setDiscordSignedIn(auth.signedIn);
+                if (!auth.signedIn) {
+                    setMessage("Discord is not signed in yet. Use the DeDevision sign-in button, return here, then connect again.");
+                    return;
+                }
+                try {
+                    window.localStorage.setItem(TOKEER_AUTO_CONNECT_KEY, "1");
+                }
+                catch { }
+                setAutoConnect(true);
                 setMessage("Hidden Tokeer panel connected. Refreshing vault and availability cache…");
                 const cached = await refreshTokeerAvailabilityCache(true);
                 if (cached)
@@ -7911,11 +8133,24 @@ function TokeerSection() {
         setMessage("The game was selected, but the green Tokeer confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
     };
     const choose = async (index, label) => {
+        setBusy(`Checking whether ${label} is installed…`);
+        const installed = await tokeerPreflight(0, label).catch(() => null);
+        if (!installed?.success || !installed.installed) {
+            const failure = installed?.error || "Could not verify that this game is installed.";
+            setMessage(failure);
+            toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
+            setBusy("");
+            return;
+        }
         setBusy(`Selecting ${label} in Discord…`);
         setSelectedGame(label);
         setGate(null);
         setTicket(null);
         setVerify(null);
+        setAutomationStage("idle");
+        setTlxSubmitted(false);
+        setSubmittedTlx("");
+        setAutomationError("");
         setSelectedMenus((old) => ({ ...old, [index]: label }));
         const ok = await chooseSelectorOption(index, label);
         if (!ok) {
@@ -7927,6 +8162,110 @@ function TokeerSection() {
         setMessage(`Selected ${label}. Waiting for the newest bot message…`);
         await waitForGate();
         setBusy("");
+    };
+    const runAutomation = async (ctx, resume) => {
+        if (automationRunningRef.current || !ctx.appid || !ctx.url)
+            return;
+        automationRunningRef.current = true;
+        const fail = (body) => {
+            setAutomationStage("failed");
+            setAutomationError(body);
+            setMessage(body);
+            checkpoint({ automationStage: "failed", automationError: body, ticket: ctx });
+            toaster.toast({ title: "SLSDeck · Tokeer automation", body: body.slice(0, 220) });
+        };
+        try {
+            let stage = resume?.automationStage || "preparing";
+            let tlx = resume?.submittedTlx || "";
+            let wasSubmitted = !!resume?.tlxSubmitted;
+            if (stage === "redeeming" && resume?.activation) {
+                updateActivation(resume.activation);
+                setBusy("Redeeming saved Tokeer activation…");
+                const redeemed = await tokeerRedeem(resume.activation);
+                if (!redeemed.success) {
+                    fail(redeemed.error || redeemed.output || "Activation redemption failed.");
+                    return;
+                }
+                setAutomationStage("done");
+                setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
+                try {
+                    window.localStorage.removeItem(TOKEER_SESSION_KEY$1);
+                }
+                catch { }
+                return;
+            }
+            if (stage !== "waiting-code" || !wasSubmitted) {
+                setAutomationStage("preparing");
+                setAutomationError("");
+                setBusy("Preparing and verifying Tokeer locally…");
+                checkpoint({ automationStage: "preparing", automationError: "", ticket: ctx });
+                const preflight = await tokeerPreflight(ctx.appid, "");
+                if (!preflight.success || !preflight.installed) {
+                    fail(preflight.error || "Game is not installed; Discord was not sent a verification result.");
+                    return;
+                }
+                const prepared = await setupAndVerifyTokeer(ctx.appid, setMessage);
+                if (!prepared.success || !prepared.code) {
+                    fail(describeTokeerFailure(prepared));
+                    return;
+                }
+                tlx = prepared.code;
+                setVerify(prepared);
+                setSubmittedTlx(tlx);
+                checkpoint({ automationStage: "submitting", verify: prepared, submittedTlx: tlx, ticket: ctx });
+                setAutomationStage("submitting");
+                setBusy("Submitting verified TLX1 to the Discord ticket…");
+                const sent = await sendTokeerTicketMessage(ctx.url, tlx);
+                if (!sent.success) {
+                    fail(sent.error || "Could not submit TLX1 to Discord.");
+                    return;
+                }
+                wasSubmitted = true;
+                setTlxSubmitted(true);
+                setAutomationStage("waiting-code");
+                checkpoint({ automationStage: "waiting-code", tlxSubmitted: true, submittedTlx: tlx, verify: prepared, ticket: ctx });
+            }
+            setAutomationStage("waiting-code");
+            setBusy("Waiting for Discord activation code…");
+            setMessage("Local verification passed and TLX1 was submitted. Waiting for Tokeer's six-character activation code…");
+            const received = await waitForTokeerActivationCode(ctx.url);
+            if (!received.success || !received.code) {
+                fail(received.error || "No activation code was detected.");
+                return;
+            }
+            updateActivation(received.code);
+            setAutomationStage("redeeming");
+            setBusy("Redeeming Tokeer activation locally…");
+            checkpoint({ automationStage: "redeeming", activation: received.code, codeReceivedAt: Date.now(), expiresAt: Date.now() + TOKEER_SESSION_MS, ticket: ctx, tlxSubmitted: true, submittedTlx: tlx });
+            const redeemed = await tokeerRedeem(received.code);
+            if (!redeemed.success) {
+                fail(redeemed.error || redeemed.output || "Activation redemption failed. The received code is preserved for manual retry.");
+                return;
+            }
+            setAutomationStage("done");
+            setMessage("Tokeer activation was received and redeemed automatically. Launch the game from Steam.");
+            toaster.toast({ title: "SLSDeck · Tokeer", body: "Activation received and redeemed successfully." });
+            try {
+                window.localStorage.removeItem(TOKEER_SESSION_KEY$1);
+            }
+            catch { }
+            setSelectedGame("");
+            setSelectedMenus({});
+            setGate(null);
+            setTicket(null);
+            setVerify(null);
+            setActivation("");
+            setCodeExpiresAt(undefined);
+            codeReceivedAtRef.current = undefined;
+            sessionStartedRef.current = Date.now();
+        }
+        catch (e) {
+            fail(String(e));
+        }
+        finally {
+            automationRunningRef.current = false;
+            setBusy("");
+        }
     };
     const openTicket = async () => {
         setBusy("Opening Tokeer ticket…");
@@ -7940,7 +8279,8 @@ function TokeerSection() {
             const ctx = await waitForTicketContext(r.fromUrl || "", 25000);
             setTicket(ctx);
             if (ctx.found && ctx.appid) {
-                setMessage(`Ticket opened for ${selectedGame || "selected game"}. Tokeer reported Steam AppID ${ctx.appid}. No manual AppID entry is needed.`);
+                setMessage(`Ticket opened for ${selectedGame || "selected game"}. Starting local preparation and automatic verification.`);
+                await runAutomation(ctx);
             }
             else {
                 setMessage(ctx.error || "Ticket opened, but the AppID commands were not found yet.");
@@ -7961,8 +8301,10 @@ function TokeerSection() {
         try {
             const ctx = await waitForTicketContext(ticket.url, 35000);
             setTicket((old) => ({ ...old, ...ctx, url: ctx.url || old?.url, opened: true }));
-            if (ctx.found && ctx.appid)
-                setMessage(`Commands detected. Tokeer reported Steam AppID ${ctx.appid}.`);
+            if (ctx.found && ctx.appid) {
+                setMessage(`Commands detected. Resuming Tokeer automation for Steam AppID ${ctx.appid}.`);
+                await runAutomation({ ...ticket, ...ctx, url: ctx.url || ticket.url, opened: true }, savedRef.current || undefined);
+            }
             else
                 setMessage(ctx.error || "Ticket is open, but its AppID still was not found.");
         }
@@ -7973,6 +8315,15 @@ function TokeerSection() {
             setBusy("");
         }
     };
+    SP_REACT.useEffect(() => {
+        const saved = savedRef.current;
+        if (!saved?.ticket?.found || !saved.ticket.appid || !saved.ticket.url)
+            return;
+        if (!["preparing", "submitting", "waiting-code", "redeeming"].includes(saved.automationStage || ""))
+            return;
+        const timer = setTimeout(() => runAutomation(saved.ticket, saved), 500);
+        return () => clearTimeout(timer);
+    }, []);
     const cancelTicket = async () => {
         if (!ticket?.url)
             return setMessage("No saved private ticket URL is available.");
@@ -8017,7 +8368,10 @@ function TokeerSection() {
                 setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated ? "Runtime updated; " : "Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
             }
             else {
-                setMessage(r.error || r.output || "Prepare/verify failed.");
+                const failure = describeTokeerFailure(r);
+                setVerify(null);
+                setMessage(failure);
+                toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
             }
             setRuntime(await tokeerRuntimeStatus());
         }
@@ -8033,9 +8387,25 @@ function TokeerSection() {
             return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
         setBusy("Verifying setup…");
         try {
+            const preflight = await tokeerPreflight(appid, "");
+            if (!preflight.success || !preflight.installed) {
+                const failure = preflight.error || "Game is not installed.";
+                setVerify(null);
+                setMessage(failure);
+                toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
+                return;
+            }
             const r = await tokeerVerify(appid);
-            setVerify(r);
-            setMessage(r.success ? "Setup verified. Copy the TLX1 and paste it into the open Discord ticket." : (r.error || "Verification failed."));
+            if (r.success) {
+                setVerify(r);
+                setMessage("Setup verified. Copy the TLX1 and paste it into the open Discord ticket.");
+            }
+            else {
+                const failure = describeTokeerFailure(r);
+                setVerify(null);
+                setMessage(failure);
+                toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
+            }
         }
         catch (e) {
             setMessage(String(e));
@@ -8086,13 +8456,14 @@ function TokeerSection() {
         }
     };
     const c = checks(verify || undefined);
-    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => setEmbedded(v => !v), children: embedded ? "Hide Discord mirror" : "Show Discord mirror" }) }), embedded && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { width: "100%", minHeight: 240, border: "1px solid rgba(255,255,255,.22)", borderRadius: 6, background: "rgba(0,0,0,.45)", boxSizing: "border-box", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }, children: embeddedFrame
-                                ? SP_JSX.jsx("img", { src: embeddedFrame, style: { display: "block", width: "100%", height: "auto", maxHeight: 430, objectFit: "contain" } })
-                                : SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: .7, padding: 20 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), "Waiting for the live Discord frame\u2026"] }) }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Live \u00B7 Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: 8, borderRadius: 6, background: "rgba(255,255,255,.055)", fontSize: 11, lineHeight: 1.55 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 700, marginBottom: 3 }, children: "Cached vault stats" }), SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: availability.vault.gamesListed ?? "?" }), " \u00B7 Keys remaining: ", SP_JSX.jsx("b", { children: availability.vault.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: availability.vault.highDemand ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Available games cached: ", SP_JSX.jsx("b", { children: availability.games.length }), " \u00B7 Updated: ", SP_JSX.jsx("b", { children: new Date(availability.updatedAt).toLocaleString() })] }), SP_JSX.jsx("div", { style: { marginTop: 6, maxHeight: 150, overflowY: "auto", opacity: .85 }, children: availability.games.map(game => SP_JSX.jsxs("div", { children: [game.name, game.remaining !== undefined ? ` — ${game.remaining}/${game.total ?? "?"} keys` : ""] }, game.appid || game.name)) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => refreshAvailability(true), children: "Refresh vault & available games" }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), ticket?.opened && !ticket.appid
+    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [!discordSignedIn && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: async () => {
+                                setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
+                                await openDedevisionDiscordLogin();
+                            }, children: "Sign in to DeDevision Discord" }) }), (!discordSignedIn || !autoConnect) && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Live \u00B7 Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: 8, borderRadius: 6, background: "rgba(255,255,255,.055)", fontSize: 11, lineHeight: 1.55 }, children: [SP_JSX.jsx("div", { style: { fontWeight: 700, marginBottom: 3 }, children: "Cached vault stats" }), SP_JSX.jsxs("div", { children: ["Games listed: ", SP_JSX.jsx("b", { children: availability.vault.gamesListed ?? "?" }), " \u00B7 Keys remaining: ", SP_JSX.jsx("b", { children: availability.vault.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: availability.vault.highDemand ?? "?" })] }), SP_JSX.jsxs("div", { children: ["Available games cached: ", SP_JSX.jsx("b", { children: availability.games.length }), " \u00B7 Updated: ", SP_JSX.jsx("b", { children: new Date(availability.updatedAt).toLocaleString() })] }), SP_JSX.jsx("div", { style: { marginTop: 6, maxHeight: 150, overflowY: "auto", opacity: .85 }, children: availability.games.map(game => SP_JSX.jsxs("div", { children: [game.name, game.remaining !== undefined ? ` — ${game.remaining}/${game.total ?? "?"} keys` : ""] }, game.appid || game.name)) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => refreshAvailability(true), children: "Refresh vault & available games" }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), ticket?.opened && !ticket.appid
                         ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !ticket.url, onClick: resumeTicket, children: "Resume existing ticket / detect commands" }) })
                         : gate?.found
                             ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: gate.label || "✅ I've read this & watched the tutorial" }) })
-                            : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: .7 }, children: ["Private ticket saved. ", codeExpiresAt ? "Activation-code countdown is running." : "The 30-minute code timer has not started yet."] }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: cancelTicket, children: "Cancel ticket in Discord" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) })] }), ticket?.found && ticket.appid && SP_JSX.jsxs(DFL.PanelSection, { title: "3. Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => updateActivation(e.target.value) }) }), codeExpiresAt && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "4px 2px 8px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: remainingMs > 0 ? "#fff" : "#ff5b5b" }, children: [SP_JSX.jsx("span", { children: remainingMs > 0 ? "Activation window" : "Activation code expired" }), SP_JSX.jsx("span", { style: { fontVariantNumeric: "tabular-nums" }, children: countdown })] }), SP_JSX.jsx("div", { style: { height: 7, marginTop: 6, borderRadius: 6, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: { height: "100%", width: `${countdownPct}%`, borderRadius: 6, background: countdownPct > 25 ? "#59bf40" : countdownPct > 10 ? "#e5a629" : "#e34b4b", transition: "width .25s linear, background .3s ease" } }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
+                            : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: .7 }, children: ["Private ticket saved. ", codeExpiresAt ? "Activation-code countdown is running." : "The 30-minute code timer has not started yet."] }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: cancelTicket, children: "Cancel ticket in Discord" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) }), automationStage !== "idle" && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: ["Automation: ", SP_JSX.jsx("b", { children: automationStage.replace("-", " ") }), tlxSubmitted ? " · TLX1 submitted" : "", automationError ? SP_JSX.jsx("div", { style: { color: "#ff7b72", marginTop: 3 }, children: automationError }) : null] }) })] }), ticket?.found && ticket.appid && SP_JSX.jsxs(DFL.PanelSection, { title: "3. Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => updateActivation(e.target.value) }) }), codeExpiresAt && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "4px 2px 8px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: remainingMs > 0 ? "#fff" : "#ff5b5b" }, children: [SP_JSX.jsx("span", { children: remainingMs > 0 ? "Activation window" : "Activation code expired" }), SP_JSX.jsx("span", { style: { fontVariantNumeric: "tabular-nums" }, children: countdown })] }), SP_JSX.jsx("div", { style: { height: 7, marginTop: 6, borderRadius: 6, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: { height: "100%", width: `${countdownPct}%`, borderRadius: 6, background: countdownPct > 25 ? "#59bf40" : countdownPct > 10 ? "#e5a629" : "#e34b4b", transition: "width .25s linear, background .3s ease" } }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
 }
 
 function fmtSize$1(bytes) {
@@ -8720,13 +9091,15 @@ function DlcCloudToggles() {
                     } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Disable Steam cloud on SLS games", description: "Turn off Steam cloud saves for games added via SLSsteam (avoids Valve's rejected-sync errors). Only affects added games, not your legit ones. Mutually exclusive with CloudRedirect. Off by default.", checked: noCloud, onChange: async (v) => { setNoCloud(v); await setDisableCloud(v); toaster.toast({ title: "SLSDeck", body: "Cloud setting written — reload Steam" }); } }) }), busy ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7 }, children: "Scanning library\u2026" }) }) : null] }));
 }
 function InjectionRecovery() {
-    const [reinject, setReinject] = SP_REACT.useState(false);
-    const [repin, setRepin] = SP_REACT.useState(false);
+    const [reinject, setReinject] = SP_REACT.useState(true);
+    const [repin, setRepin] = SP_REACT.useState(true);
+    const [deps, setDeps] = SP_REACT.useState(true);
     SP_REACT.useEffect(() => {
         getAutoReinject().then((r) => setReinject(!!r.enabled)).catch(() => { });
         getAutoClientRepin().then((r) => setRepin(!!r.enabled)).catch(() => { });
+        getCheckDependenciesOnBoot().then((r) => setDeps(!!r.enabled)).catch(() => { });
     }, []);
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Injection recovery", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Auto re-activate injection on boot", description: "If a Steam update leaves injection off, re-patch steam.sh on startup and fully restart Steam (steam -shutdown + relaunch through steam.sh) to apply it. Capped so it can't loop.", checked: reinject, onChange: async (v) => { setReinject(v); await setAutoReinject(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Auto re-pin Steam client on boot", description: "If injection broke after a client update, automatically run the client fix (h3adcr-b) \u2014 this pins/downgrades the client and REBOOTS. Heavy; capped. Leave off unless you want it fully hands-off.", checked: repin, onChange: async (v) => { setRepin(v); await setAutoClientRepin(v); } }) })] }));
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Injection recovery", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Check dependency status on boot", description: "After Steam CEF is stable, verify SLSsteam, the client fix, Tokeer, GE-Proton10-34 and CloudRedirect; install or repair anything missing. Heavy work is serialized and delayed to protect Decky.", checked: deps, onChange: async (v) => { setDeps(v); await setCheckDependenciesOnBoot(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Auto re-activate injection on boot", description: "If a Steam update leaves injection off, re-patch steam.sh on startup and fully restart Steam (steam -shutdown + relaunch through steam.sh) to apply it. Capped so it can't loop.", checked: reinject, onChange: async (v) => { setReinject(v); await setAutoReinject(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Auto re-pin Steam client on boot", description: "If injection broke after a client update, automatically run the client fix (h3adcr-b) \u2014 this pins/downgrades the client and REBOOTS. Heavy, failure-capped, and on by default.", checked: repin, onChange: async (v) => { setRepin(v); await setAutoClientRepin(v); } }) })] }));
 }
 /** Scrollable page body — SidebarNavigation panes don't scroll on their own. */
 function Body({ children }) {
@@ -9776,48 +10149,129 @@ const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
 const PLUGIN_SESSION_STARTED = Date.now();
-async function repairMissingDependenciesFromPluginLifecycle() {
-    const sls = await getSlssteamStatus().catch(() => null);
-    if (!sls?.installed)
+// Decky counts three rapid Steam webhelper disconnects as a crash loop.
+const DEPENDENCY_INITIAL_DELAY_MS = 2 * 60 * 1000;
+const DEPENDENCY_STABLE_WINDOW_MS = 45 * 1000;
+const DEPENDENCY_STEP_GAP_MS = 20 * 1000;
+const DEPENDENCY_RETRY_MS = 30 * 60 * 1000;
+const DEPENDENCY_LOCK_KEY = "__slsdeckDependencyRepairPromise";
+function lifecyclePause(ms, token) {
+    return new Promise((resolve) => {
+        if (!token.active)
+            return resolve();
+        window.setTimeout(resolve, ms);
+    });
+}
+function cefLooksStable(token) {
+    if (!token.active)
+        return false;
+    if (document.visibilityState !== "visible")
+        return false;
+    if (!window.SteamClient)
+        return false;
+    return Date.now() - token.stableSince >= DEPENDENCY_STABLE_WINDOW_MS;
+}
+async function repairMissingDependenciesFromPluginLifecycle(token) {
+    if (!cefLooksStable(token)) {
+        console.info("SLSDeck: dependency repair deferred until Steam CEF is stable");
         return;
-    try {
-        const status = await tokeerRuntimeStatus();
-        if (!status.installed)
-            await tokeerEnsureRuntime();
     }
-    catch (e) {
-        console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
-    }
-    let deferredAt = 0;
-    try {
-        deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0");
-    }
-    catch { /* */ }
-    if (deferredAt >= PLUGIN_SESSION_STARTED) {
-        window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+    const shared = window;
+    if (shared[DEPENDENCY_LOCK_KEY]) {
+        console.info("SLSDeck: dependency repair already running; coalescing request");
+        await shared[DEPENDENCY_LOCK_KEY].catch(() => { });
         return;
     }
+    const run = (async () => {
+        const enabled = await getCheckDependenciesOnBoot().catch(() => ({ enabled: true }));
+        if (!enabled.enabled || !token.active || !cefLooksStable(token))
+            return;
+        const sls = await getSlssteamStatus().catch(() => null);
+        if (!token.active || !cefLooksStable(token))
+            return;
+        if (!sls?.installed) {
+            await installSlssteam().catch((e) => {
+                console.warn("SLSDeck: lifecycle SLSsteam install failed", e);
+            });
+            // Installation is asynchronous and may lead into the normal Steam/client
+            // recovery flow. Re-check the remaining chain on the next lifecycle pass.
+            return;
+        }
+        try {
+            const fix = await clientFixNeeded();
+            if (token.active && fix.success && fix.needed) {
+                await runClientFix(false);
+                // The client fix can restart Steam. Do not begin another heavy install
+                // in the same CEF session; the next boot resumes the chain.
+                return;
+            }
+        }
+        catch (e) {
+            console.warn("SLSDeck: lifecycle client-fix check failed", e);
+        }
+        try {
+            // Always ask the version-aware installer to reconcile the runtime. It
+            // skips an already-current bundle, updates an older one and repairs an
+            // incomplete one, so an existing dependency is not mistaken for current.
+            if (token.active) {
+                await tokeerEnsureRuntime();
+                await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
+            }
+        }
+        catch (e) {
+            console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
+        }
+        if (!token.active || !cefLooksStable(token))
+            return;
+        let deferredAt = 0;
+        try {
+            deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0");
+        }
+        catch { /* */ }
+        if (deferredAt >= PLUGIN_SESSION_STARTED) {
+            window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+            return;
+        }
+        try {
+            window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart");
+        }
+        catch { /* */ }
+        try {
+            const status = await tokeerProtonStatus();
+            const healthy = !!status.installed && status.healthy !== false && !status.partial;
+            if (token.active && !healthy) {
+                await tokeerEnsureProton();
+                await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
+            }
+        }
+        catch (e) {
+            console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
+        }
+        if (!token.active || !cefLooksStable(token))
+            return;
+        try {
+            const status = await crInstallStatus();
+            // Never reinstall a healthy CloudRedirect. Accept both the aggregate flag
+            // and the detailed Moon/UI flags returned by newer backends.
+            const healthy = !!status.installed ||
+                (!!status.uiInstalled && !!(status.nativeMoon || status.hasLib));
+            if (token.active && !healthy)
+                await crEnsureInstalled();
+        }
+        catch (e) {
+            console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
+        }
+        if (token.active)
+            window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
+    })();
+    shared[DEPENDENCY_LOCK_KEY] = run;
     try {
-        window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart");
+        await run;
     }
-    catch { /* */ }
-    try {
-        const status = await tokeerProtonStatus();
-        if (!status.installed)
-            await tokeerEnsureProton();
+    finally {
+        if (shared[DEPENDENCY_LOCK_KEY] === run)
+            delete shared[DEPENDENCY_LOCK_KEY];
     }
-    catch (e) {
-        console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
-    }
-    try {
-        const status = await crInstallStatus();
-        if (!status.installed)
-            await crEnsureInstalled();
-    }
-    catch (e) {
-        console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
-    }
-    window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
 }
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
 // isn't in SLSsteam's list (SafeMode aborts the load). We detect that and offer a
@@ -9826,6 +10280,11 @@ async function repairMissingDependenciesFromPluginLifecycle() {
 function RepairBanner() {
     const [needed, setNeeded] = SP_REACT.useState(false);
     const [reason, setReason] = SP_REACT.useState("");
+    // A broken config.yaml is the OTHER way the engine goes silently dead:
+    // injection can be perfectly healthy while a malformed/missing key makes
+    // SLSsteam fall back to its own defaults (DisableUpdates: yes hands added
+    // games zero depots). Both faults surface through this one banner.
+    const [cfgIssues, setCfgIssues] = SP_REACT.useState([]);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [done, setDone] = SP_REACT.useState("");
     SP_REACT.useEffect(() => {
@@ -9836,10 +10295,19 @@ function RepairBanner() {
                 const st = await getSlssteamStatus();
                 if (!st?.installed)
                     return;
-                const r = await clientFixNeeded();
-                if (r.success && r.needed) {
+                const [fix, cfg] = await Promise.all([
+                    clientFixNeeded().catch(() => ({ success: false })),
+                    slsConfigHealth().catch(() => ({ success: false })),
+                ]);
+                const clientBad = !!(fix?.success && fix.needed);
+                const issues = (cfg?.success && cfg.changed ? cfg.issues : []) || [];
+                if (clientBad) {
                     setNeeded(true);
-                    setReason(r.reason || "");
+                    setReason(fix.reason || "");
+                }
+                if (issues.length) {
+                    setNeeded(true);
+                    setCfgIssues(issues);
                 }
             }
             catch { /* ignore */ }
@@ -9847,13 +10315,38 @@ function RepairBanner() {
     }, []);
     if (!needed)
         return null;
-    return (SP_JSX.jsxs("div", { style: { margin: "6px 8px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: "SLSsteam looks inactive" }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: reason || "A Steam client update may have an unrecognised steamclient.so — added games won't load until it's repaired." }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: async () => {
+    const configOnly = cfgIssues.length > 0 && !reason;
+    return (SP_JSX.jsxs("div", { style: { margin: "6px 8px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "#f5a623" }, children: configOnly ? "SLSsteam config needs repair" : "SLSsteam looks inactive" }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }, children: configOnly
+                    ? `${cfgIssues.length} problem${cfgIssues.length === 1 ? "" : "s"} in config.yaml — SLSsteam falls back to its own defaults for anything malformed, which stops added games downloading.`
+                    : (reason || "A Steam client update may have an unrecognised steamclient.so — added games won't load until it's repaired.") }), cfgIssues.length > 0 && (SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: 0.7, margin: "0 0 6px", whiteSpace: "pre-wrap" }, children: [cfgIssues.slice(0, 4).map((s) => `• ${s}`).join("\n"), cfgIssues.length > 4 ? `\n• …and ${cfgIssues.length - 4} more` : ""] })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: busy, onClick: async () => {
                         setBusy(true);
-                        setDone("Repairing… this can take a couple of minutes and may restart Steam.");
                         try {
-                            const r = await runClientFix();
-                            setDone(r.success ? "Repair started — Steam will reconfigure and reload." : (r.error || "Repair failed."));
-                            if (r.success) {
+                            // Heal the config FIRST: it's seconds of work, and a client fix
+                            // run against a broken config would re-download ~170 MB of Steam
+                            // client and still leave the engine reading bad defaults.
+                            let healed = 0;
+                            if (cfgIssues.length) {
+                                setDone("Repairing config.yaml…");
+                                const h = await healSlsConfig();
+                                if (!h.success) {
+                                    setDone(h.error || "Config repair failed.");
+                                    setBusy(false);
+                                    return;
+                                }
+                                healed = h.count || 0;
+                                setCfgIssues([]);
+                            }
+                            if (reason) {
+                                setDone("Repairing client… this can take a couple of minutes and may restart Steam.");
+                                const r = await runClientFix(true);
+                                setDone(r.success
+                                    ? `Repair started${healed ? ` (fixed ${healed} config issue${healed === 1 ? "" : "s"})` : ""} — Steam will reconfigure and reload.`
+                                    : (r.error || "Repair failed."));
+                                if (r.success)
+                                    setTimeout(() => setNeeded(false), 4000);
+                            }
+                            else {
+                                setDone(`Fixed ${healed} config issue${healed === 1 ? "" : "s"} — fully restart Steam to apply.`);
                                 setTimeout(() => setNeeded(false), 4000);
                             }
                         }
@@ -9861,7 +10354,7 @@ function RepairBanner() {
                             setDone(`Failed: ${e}`);
                         }
                         setBusy(false);
-                    }, children: busy ? "Repairing…" : "Repair SLSsteam" }) }), done ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: done }) : null] }));
+                    }, children: busy ? "Repairing…" : configOnly ? "Repair config" : "Repair SLSsteam" }) }), done ? SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginTop: 4 }, children: done }) : null] }));
 }
 function Content() {
     const [refreshToken, setRefreshToken] = SP_REACT.useState(0);
@@ -9983,14 +10476,25 @@ var index = definePlugin(() => {
     catch (e) {
         console.error("SLSDeck: failed to register Advanced route", e);
     }
-    // Dependency repair belongs to plugin initialization, not a page component:
-    // it therefore runs after installs/updates even if QAM/Advanced is never opened.
+    // Dependency repair belongs to plugin initialization, not a page component.
+    // Do not start it while Steam/CEF is still recovering from a plugin install or
+    // client restart: repeated webhelper disconnects make Decky stop itself after
+    // the third crash. A shared lock serializes hot-reload/duplicate invocations.
+    const dependencyLifecycleToken = {
+        active: true,
+        stableSince: Date.now(),
+    };
+    const noteCefTransition = () => {
+        dependencyLifecycleToken.stableSince = Date.now();
+    };
+    document.addEventListener("visibilitychange", noteCefTransition);
+    window.addEventListener("pageshow", noteCefTransition);
     const dependencyRepairFirst = setTimeout(() => {
-        repairMissingDependenciesFromPluginLifecycle().catch(() => { });
-    }, 1500);
+        repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => { });
+    }, DEPENDENCY_INITIAL_DELAY_MS);
     const dependencyRepairRetry = setInterval(() => {
-        repairMissingDependenciesFromPluginLifecycle().catch(() => { });
-    }, 30 * 60 * 1000);
+        repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => { });
+    }, DEPENDENCY_RETRY_MS);
     // Persistent background notifier: adds run in the backend even if the UI that
     // started them is closed, so this always-running poller fires the toast.
     const addNotifier = setInterval(async () => {
@@ -10071,12 +10575,21 @@ var index = definePlugin(() => {
         icon: SP_JSX.jsx(FaPuzzlePiece, {}),
         onDismount() {
             console.log("SLSDeck unloading");
+            dependencyLifecycleToken.active = false;
             try {
                 clearTimeout(dependencyRepairFirst);
             }
             catch { /* ignore */ }
             try {
                 clearInterval(dependencyRepairRetry);
+            }
+            catch { /* ignore */ }
+            try {
+                document.removeEventListener("visibilitychange", noteCefTransition);
+            }
+            catch { /* ignore */ }
+            try {
+                window.removeEventListener("pageshow", noteCefTransition);
             }
             catch { /* ignore */ }
             try {

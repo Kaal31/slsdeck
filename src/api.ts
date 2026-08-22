@@ -513,6 +513,10 @@ export const deactivateInjection = callable<[], { success: boolean; error?: stri
 export const getDiagnostics = callable<[], any>("get_diagnostics");
 export const runClientFix = callable<[force?: boolean], { success: boolean; error?: string; skipped?: boolean; reason?: string }>("run_client_fix");
 export const clientFixNeeded = callable<[], { success: boolean; needed?: boolean; reason?: string }>("client_fix_needed");
+// SLSsteam config.yaml validator/healer. `analyze` writes nothing; `heal`
+// repairs in place after backing the file up.
+export const slsConfigHealth = callable<[], { success: boolean; present?: boolean; issues?: string[]; count?: number; changed?: boolean; error?: string }>("sls_config_health");
+export const healSlsConfig = callable<[], { success: boolean; issues?: string[]; count?: number; changed?: boolean; backup?: string; error?: string }>("heal_sls_config");
 export const crProviderStatus = callable<[], { success: boolean; configured?: boolean; providers?: string[] }>("cr_provider_status");
 export const crInstallStatus = callable<[], { success: boolean; installed: boolean; healthy?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean; allHookLocationsValid?: boolean; partial?: boolean }>("cr_install_status");
 export const fixStuckUpdate = callable<[appid: number], { success: boolean; copied?: number; note?: string; error?: string }>("fix_stuck_update");

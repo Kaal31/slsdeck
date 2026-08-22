@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -150,6 +150,11 @@ async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLif
 function RepairBanner() {
   const [needed, setNeeded] = useState(false);
   const [reason, setReason] = useState("");
+  // A broken config.yaml is the OTHER way the engine goes silently dead:
+  // injection can be perfectly healthy while a malformed/missing key makes
+  // SLSsteam fall back to its own defaults (DisableUpdates: yes hands added
+  // games zero depots). Both faults surface through this one banner.
+  const [cfgIssues, setCfgIssues] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");
   useEffect(() => {
@@ -159,33 +164,69 @@ function RepairBanner() {
         // "inactive", it's just not set up yet (the onboarding button handles that).
         const st = await getSlssteamStatus();
         if (!st?.installed) return;
-        const r = await clientFixNeeded();
-        if (r.success && r.needed) { setNeeded(true); setReason(r.reason || ""); }
+        const [fix, cfg] = await Promise.all([
+          clientFixNeeded().catch(() => ({ success: false } as any)),
+          slsConfigHealth().catch(() => ({ success: false } as any)),
+        ]);
+        const clientBad = !!(fix?.success && fix.needed);
+        const issues = (cfg?.success && cfg.changed ? cfg.issues : []) || [];
+        if (clientBad) { setNeeded(true); setReason(fix.reason || ""); }
+        if (issues.length) { setNeeded(true); setCfgIssues(issues); }
       } catch { /* ignore */ }
     })();
   }, []);
   if (!needed) return null;
+  const configOnly = cfgIssues.length > 0 && !reason;
   return (
     <div style={{ margin: "6px 8px", padding: "8px 10px", borderRadius: 6, background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)" }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "#f5a623" }}>SLSsteam looks inactive</div>
-      <div style={{ fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }}>
-        {reason || "A Steam client update may have an unrecognised steamclient.so — added games won't load until it's repaired."}
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#f5a623" }}>
+        {configOnly ? "SLSsteam config needs repair" : "SLSsteam looks inactive"}
       </div>
+      <div style={{ fontSize: 11, opacity: 0.8, margin: "2px 0 6px" }}>
+        {configOnly
+          ? `${cfgIssues.length} problem${cfgIssues.length === 1 ? "" : "s"} in config.yaml — SLSsteam falls back to its own defaults for anything malformed, which stops added games downloading.`
+          : (reason || "A Steam client update may have an unrecognised steamclient.so — added games won't load until it's repaired.")}
+      </div>
+      {cfgIssues.length > 0 && (
+        <div style={{ fontSize: 10, opacity: 0.7, margin: "0 0 6px", whiteSpace: "pre-wrap" }}>
+          {cfgIssues.slice(0, 4).map((s) => `• ${s}`).join("\n")}
+          {cfgIssues.length > 4 ? `\n• …and ${cfgIssues.length - 4} more` : ""}
+        </div>
+      )}
       <PanelSectionRow>
         <ButtonItem
           layout="below"
           disabled={busy}
           onClick={async () => {
-            setBusy(true); setDone("Repairing… this can take a couple of minutes and may restart Steam.");
+            setBusy(true);
             try {
-              const r = await runClientFix();
-              setDone(r.success ? "Repair started — Steam will reconfigure and reload." : (r.error || "Repair failed."));
-              if (r.success) { setTimeout(() => setNeeded(false), 4000); }
+              // Heal the config FIRST: it's seconds of work, and a client fix
+              // run against a broken config would re-download ~170 MB of Steam
+              // client and still leave the engine reading bad defaults.
+              let healed = 0;
+              if (cfgIssues.length) {
+                setDone("Repairing config.yaml…");
+                const h = await healSlsConfig();
+                if (!h.success) { setDone(h.error || "Config repair failed."); setBusy(false); return; }
+                healed = h.count || 0;
+                setCfgIssues([]);
+              }
+              if (reason) {
+                setDone("Repairing client… this can take a couple of minutes and may restart Steam.");
+                const r = await runClientFix(true);
+                setDone(r.success
+                  ? `Repair started${healed ? ` (fixed ${healed} config issue${healed === 1 ? "" : "s"})` : ""} — Steam will reconfigure and reload.`
+                  : (r.error || "Repair failed."));
+                if (r.success) setTimeout(() => setNeeded(false), 4000);
+              } else {
+                setDone(`Fixed ${healed} config issue${healed === 1 ? "" : "s"} — fully restart Steam to apply.`);
+                setTimeout(() => setNeeded(false), 4000);
+              }
             } catch (e) { setDone(`Failed: ${e}`); }
             setBusy(false);
           }}
         >
-          {busy ? "Repairing…" : "Repair SLSsteam"}
+          {busy ? "Repairing…" : configOnly ? "Repair config" : "Repair SLSsteam"}
         </ButtonItem>
       </PanelSectionRow>
       {done ? <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>{done}</div> : null}

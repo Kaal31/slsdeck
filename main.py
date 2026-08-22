@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 
 import decky
 
-from lt import (apis, art, audit, backup, buildhistory, buildpicker, cloudredirect, cloudsave, compat, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
+from lt import (apis, art, audit, backup, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
                 opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
                 updates, watchdog, workshop, multiplayer, tokeer,
@@ -550,6 +550,19 @@ class Plugin:
             return {"success": True, **slssteam.client_fix_needed()}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
+
+    async def sls_config_health(self) -> Dict[str, Any]:
+        """Report config.yaml problems the healer would fix, without writing.
+
+        A malformed config makes SLSsteam fall back to its own defaults (which
+        block downloads), so this is a second, independent reason the repair
+        banner should appear -- injection can be perfectly healthy while the
+        config quietly disables everything."""
+        return await self._run(confighealer.analyze)
+
+    async def heal_sls_config(self) -> Dict[str, Any]:
+        """Validate + repair config.yaml in place (backs it up first)."""
+        return await self._run(confighealer.heal)
 
     async def get_ever_added(self) -> Dict[str, Any]:
         return {"success": True, "appids": settings.get_ever_added()}
