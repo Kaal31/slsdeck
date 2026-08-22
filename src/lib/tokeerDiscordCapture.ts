@@ -200,6 +200,21 @@ export async function positionTokeerDiscordEmbedded(bounds: TokeerViewBounds): P
   }catch(e){return false;}})()`, 2000));
 }
 
+export async function captureTokeerDiscordFrame(): Promise<string> {
+  if (!(await connectTokeerDiscordHidden())) return "";
+  const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
+  if (!tab?.webSocketDebuggerUrl) return "";
+  try {
+    await cdpCommand(tab.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 1500);
+    const shot = await cdpCommand(tab.webSocketDebuggerUrl, "Page.captureScreenshot", {
+      format: "jpeg", quality: 72, fromSurface: true, captureBeyondViewport: false,
+    }, 6000);
+    return shot?.data ? `data:image/jpeg;base64,${shot.data}` : "";
+  } catch {
+    return "";
+  }
+}
+
 export async function hideTokeerDiscordEmbedded(): Promise<void> {
   await parkTokeerBrowserView();
 }
