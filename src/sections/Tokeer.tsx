@@ -4,6 +4,7 @@ import { tokeerPrepare, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerV
 import {
   chooseSelectorOption,
   clickLatestTicketGate,
+  cancelTokeerTicket,
   connectTokeerDiscordHidden,
   hideTokeerDiscordEmbedded,
   openSelectorAndReadOptions,
@@ -56,6 +57,8 @@ export function TokeerSection() {
   const [runtime,setRuntime]=useState<any>(null);
   const [verify,setVerify]=useState<TokeerVerifyResult|null>(savedRef.current?.verify||null);
   const [activation,setActivation]=useState(savedRef.current?.activation||"");
+  const [codeExpiresAt,setCodeExpiresAt]=useState<number|undefined>(savedRef.current?.expiresAt);
+  const [clockNow,setClockNow]=useState(Date.now());
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState(savedRef.current?.message||"");
   const [options,setOptions]=useState<Record<number,string[]>>({});
@@ -72,15 +75,22 @@ export function TokeerSection() {
     // Tokeer's 30-minute validity begins only after Discord returns the final
     // activation code. Selecting a game, opening a ticket and generating TLX1
     // must not consume that window.
-    if(activation&&!codeReceivedAtRef.current)codeReceivedAtRef.current=Date.now();
     const codeReceivedAt=codeReceivedAtRef.current;
     const data:SavedTokeerSession={
       startedAt,codeReceivedAt,
-      expiresAt:codeReceivedAt?codeReceivedAt+TOKEER_SESSION_MS:undefined,
+      expiresAt:codeExpiresAt,
       selectedGame,selectedMenus,ticket,gate,activation,verify,message,
     };
     try{window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
-  },[selectedGame,selectedMenus,ticket,gate,activation,verify,message]);
+  },[selectedGame,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt]);
+
+  useEffect(()=>{
+    if(!codeExpiresAt)return;
+    const tick=()=>setClockNow(Date.now());
+    tick();
+    const timer=setInterval(tick,250);
+    return()=>clearInterval(timer);
+  },[codeExpiresAt]);
 
   const refreshDiscord=async()=>{ try{setDiscord(await readTokeerDiscord());}catch{} };
   useEffect(()=>{ tokeerRuntimeStatus().then(setRuntime).catch(()=>{}); refreshDiscord(); const t=setInterval(refreshDiscord,15000); return()=>clearInterval(t); },[]);
@@ -106,6 +116,21 @@ export function TokeerSection() {
     return()=>{stopped=true;clearTimeout(start);if(timer)clearTimeout(timer);hideTokeerDiscordEmbedded().catch(()=>{});};
   },[embedded]);
   const appid=Number(ticket?.appid||0);
+  const remainingMs=codeExpiresAt?Math.max(0,codeExpiresAt-clockNow):0;
+  const remainingSeconds=Math.ceil(remainingMs/1000);
+  const countdown=`${String(Math.floor(remainingSeconds/60)).padStart(2,"0")}:${String(remainingSeconds%60).padStart(2,"0")}`;
+  const countdownPct=codeExpiresAt?Math.max(0,Math.min(100,remainingMs/TOKEER_SESSION_MS*100)):0;
+
+  const updateActivation=(value:string)=>{
+    const next=value.trim();
+    if(next&&!codeReceivedAtRef.current){
+      const issued=Date.now();
+      codeReceivedAtRef.current=issued;
+      setCodeExpiresAt(issued+TOKEER_SESSION_MS);
+      setClockNow(issued);
+    }
+    setActivation(next);
+  };
 
   const openMenu=async(i:number,showMenu?:()=>void)=>{
     setBusy("Reading live game list…");
@@ -185,6 +210,21 @@ export function TokeerSection() {
     finally{setBusy("");}
   };
 
+  const cancelTicket=async()=>{
+    if(!ticket?.url)return setMessage("No saved private ticket URL is available.");
+    setBusy("Cancelling Tokeer ticket…");
+    try{
+      const r=await cancelTokeerTicket(ticket.url);
+      if(!r.success){setMessage(r.error||"Could not press Discord's Cancel Ticket button.");return;}
+      try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+      setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);
+      setVerify(null);setActivation("");setCodeExpiresAt(undefined);
+      codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
+      setMessage("Ticket cancelled in Discord. The saved Tokeer session was cleared.");
+    }catch(e){setMessage(String(e));}
+    finally{setBusy("");}
+  };
+
   const prepare=async()=>{
     if(!appid)return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
     setBusy("Preparing Tokeer…");
@@ -258,7 +298,8 @@ export function TokeerSection() {
         :gate?.found
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
-      {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. The 30-minute code timer has not started yet.</div></PanelSectionRow>}
+      {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
+      {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
     </PanelSection>}
 
@@ -279,7 +320,15 @@ export function TokeerSection() {
     </PanelSection>}
 
     <PanelSection title="4. Redeem activation">
-      <PanelSectionRow><input style={inputStyle} placeholder="Activation code from Discord" value={activation} onChange={(e:any)=>setActivation(e.target.value.trim())}/></PanelSectionRow>
+      <PanelSectionRow><input style={inputStyle} placeholder="Activation code from Discord" value={activation} onChange={(e:any)=>updateActivation(e.target.value)}/></PanelSectionRow>
+      {codeExpiresAt&&<PanelSectionRow><div style={{width:"100%",padding:"4px 2px 8px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:remainingMs>0?"#fff":"#ff5b5b"}}>
+          <span>{remainingMs>0?"Activation window":"Activation code expired"}</span><span style={{fontVariantNumeric:"tabular-nums"}}>{countdown}</span>
+        </div>
+        <div style={{height:7,marginTop:6,borderRadius:6,overflow:"hidden",background:"rgba(255,255,255,.14)"}}>
+          <div style={{height:"100%",width:`${countdownPct}%`,borderRadius:6,background:countdownPct>25?"#59bf40":countdownPct>10?"#e5a629":"#e34b4b",transition:"width .25s linear, background .3s ease"}}/>
+        </div>
+      </div></PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!activation} onClick={redeem}>Activate / write ticket</ButtonItem></PanelSectionRow>
       <PanelSectionRow><div style={{fontSize:10,opacity:.7,lineHeight:1.45}}>Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h · Donator 24h · Lua Basic 12h · Lua Pro 6h · Elite/no-cooldown role: no standard cooldown.</div></PanelSectionRow>
     </PanelSection>
