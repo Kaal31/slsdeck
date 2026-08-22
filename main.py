@@ -369,6 +369,15 @@ class Plugin:
             slssteam.remove_engine_and_headcrab_livesafe()
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: uninstall engine/headcrab removal failed: {exc}")
+        # CloudRedirect is installed as an SLSDeck dependency. A true Decky
+        # uninstall removes the Flatpak, Moon hooks, tokens/config and leftovers.
+        # This callback is not used for ordinary plugin updates/reloads.
+        try:
+            result = await self._run(cloudredirect.uninstall_app, True)
+            if not result.get("success"):
+                decky.logger.warning(f"SLSDeck: CloudRedirect uninstall issues: {result.get('errors')}")
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: CloudRedirect uninstall failed: {exc}")
         # Stop background daemons/pools so nothing survives the removal.
         try:
             watchdog.stop_watchdog()
@@ -390,8 +399,11 @@ class Plugin:
             pass
 
     async def full_uninstall_cleanup(self) -> Dict[str, Any]:
-        """Manual 'Remove SLSsteam completely' — same as the uninstall nuke."""
-        return await self._run(slssteam.full_uninstall_cleanup)
+        """Manual full removal includes the CloudRedirect dependency."""
+        sls = await self._run(slssteam.full_uninstall_cleanup)
+        cloud = await self._run(cloudredirect.uninstall_app, True)
+        return {"success": bool(sls.get("success") and cloud.get("success")),
+                "slssteam": sls, "cloudredirect": cloud}
 
     # ── helper ────────────────────────────────────────────────────────────
     async def _run(self, fn, *args):
