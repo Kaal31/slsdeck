@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, getSlssteamStatus, tokeerEnsureProton, crEnsureInstalledAuto } from "./api";
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -24,6 +24,8 @@ const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
+const PLUGIN_SESSION_STARTED = Date.now();
+let heavyDepsStarted = false;
 
 // SLSsteam goes inactive after a Steam client update whose steamclient.so hash
 // isn't in SLSsteam's list (SafeMode aborts the load). We detect that and offer a
@@ -84,6 +86,32 @@ function Content() {
   // Until SLSsteam is installed, the QAM shows only the setup block — no game
   // actions, game list or tools (there's nothing for them to act on yet).
   const [installed, setInstalled] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!installed || heavyDepsStarted) return;
+    let deferredAt = 0;
+    try { deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0"); } catch { /* */ }
+    // The first SLSsteam installation marks this session before it restarts.
+    // Do not start large downloads in that same session; a newly loaded plugin
+    // has a later PLUGIN_SESSION_STARTED value and proceeds automatically.
+    if (deferredAt >= PLUGIN_SESSION_STARTED) return;
+    heavyDepsStarted = true;
+    try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
+    (async () => {
+      try {
+        const proton = await tokeerEnsureProton();
+        if (!proton.success) console.warn("SLSDeck: background GE-Proton install failed", proton.error);
+      } catch (e) {
+        console.warn("SLSDeck: background GE-Proton install failed", e);
+      }
+      try {
+        const cloud = await crEnsureInstalledAuto();
+        if (!cloud.installed) console.warn("SLSDeck: background CloudRedirect install incomplete", cloud.log);
+      } catch (e) {
+        console.warn("SLSDeck: background CloudRedirect install failed", e);
+      }
+    })();
+  }, [installed]);
 
   useEffect(() => {
     const readActionsFixes = () => {
