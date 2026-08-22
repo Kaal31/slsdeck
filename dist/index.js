@@ -2245,14 +2245,17 @@ async function refreshTokeerAvailabilityCache(force = false) {
     })();
     return refreshPromise;
 }
-function isTokeerGameAvailable(appid, gameName) {
+function getTokeerAvailabilityForGame(appid, gameName) {
     const cache = readTokeerAvailabilityCache();
     if (!cache)
-        return false;
-    if (cache.games.some((game) => game.appid === appid))
-        return true;
+        return null;
+    const byAppid = cache.games.find((game) => game.appid === appid);
+    if (byAppid)
+        return byAppid;
     const wanted = normalizeTokeerGameName(gameName || "");
-    return !!wanted && cache.games.some((game) => normalizeTokeerGameName(game.name) === wanted);
+    return wanted
+        ? cache.games.find((game) => normalizeTokeerGameName(game.name) === wanted) || null
+        : null;
 }
 
 // Colour a source badge (Ryuu / luatools ship Online / Bypass / Crack / Tested /
@@ -2293,7 +2296,8 @@ function BadgeChip({ badge, inline }) {
 }
 function FixPicker({ appid, onReload, onClose }) {
     const [check, setCheck] = SP_REACT.useState(null);
-    const [tokeerAvailable, setTokeerAvailable] = SP_REACT.useState(false);
+    const [tokeerGame, setTokeerGame] = SP_REACT.useState(null);
+    const [tokeerRefreshing, setTokeerRefreshing] = SP_REACT.useState(false);
     const [applied, setApplied] = SP_REACT.useState([]);
     const [installPath, setInstallPath] = SP_REACT.useState("");
     const [pinned, setPinned] = SP_REACT.useState(false);
@@ -2325,6 +2329,7 @@ function FixPicker({ appid, onReload, onClose }) {
     const poll = SP_REACT.useRef(null);
     const dlPoll = SP_REACT.useRef(null);
     const stopFlag = SP_REACT.useRef(false);
+    const tokeerRefreshApp = SP_REACT.useRef(0);
     const stop = () => {
         if (poll.current) {
             clearInterval(poll.current);
@@ -2346,11 +2351,30 @@ function FixPicker({ appid, onReload, onClose }) {
         try {
             const fullCheck = await checkFixesFull(appid);
             setCheck(fullCheck);
-            setTokeerAvailable(isTokeerGameAvailable(appid, fullCheck?.gameName));
+            // Show the last good cache immediately, then force a live Discord scrape
+            // for this Fixes opening and update/hide the card in place.
+            setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName));
+            if (tokeerRefreshApp.current !== appid) {
+                tokeerRefreshApp.current = appid;
+                const requestedAppid = appid;
+                setTokeerRefreshing(true);
+                refreshTokeerAvailabilityCache(true)
+                    .then(() => {
+                    if (tokeerRefreshApp.current === requestedAppid) {
+                        setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, fullCheck?.gameName));
+                    }
+                })
+                    .catch(() => { })
+                    .finally(() => {
+                    if (tokeerRefreshApp.current === requestedAppid)
+                        setTokeerRefreshing(false);
+                });
+            }
         }
         catch {
             setCheck(null);
-            setTokeerAvailable(false);
+            setTokeerGame(null);
+            setTokeerRefreshing(false);
         }
         try {
             const r = await getInstalledFixes();
@@ -2459,10 +2483,12 @@ function FixPicker({ appid, onReload, onClose }) {
         stop();
         stopDl();
         stopFlag.current = false;
+        tokeerRefreshApp.current = 0;
         setBusy("");
         setMsg("");
         setCheck(null);
-        setTokeerAvailable(false);
+        setTokeerGame(null);
+        setTokeerRefreshing(false);
         setApplied([]);
         setAwaiting(null);
         setActiveFixKey("");
@@ -3093,7 +3119,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), tokeerAvailable && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: "Tokeer \u00B7 Available" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : "Tokeer" })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
+                            : "Pin this version" }), tokeerGame && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? "Setting up and validating…" : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` })] }), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
                     padding: 8,
