@@ -149,19 +149,36 @@ def _run(appid: int, app: int, depot_gid: Dict[str, str], keys: Dict[str, str],
         _set(appid, {"status": "failed", "error": backend.get("error", "")})
         return 0, len(depot_gid), backend.get("error", "")
     dotnet = backend["dotnet"]
+    previous = get_state(appid)
+    kind = "dlc-candidate" if previous.get("op") == "dlc" else "build"
+    _set(appid, {
+        "plannedDepots": [
+            {"depot": str(d), "manifest": str(g), "kind": kind}
+            for d, g in depot_gid.items()
+        ],
+        "currentDepot": "", "completedDepots": [], "failedDepots": [],
+        "depotDone": 0, "depotTotal": len(depot_gid),
+    })
     kf = _write_keyfile({d: keys[d] for d in depot_gid if d in keys}, dest_dir)
     ok = fail = 0
     last = ""
+    completed: List[str] = []
+    failed_ids: List[str] = []
     for i, (depot, gid) in enumerate(depot_gid.items()):
+        _set(appid, {"currentDepot": str(depot), "currentManifest": str(gid)})
         if depot not in keys:
             fail += 1
             last = f"no depot key for {depot}"
+            failed_ids.append(str(depot))
+            _set(appid, {"failedDepots": list(failed_ids), "depotDone": i + 1})
             continue
         mfile = _fetch_manifest_file(depot, gid, mf_dir)
         if not mfile:
             fail += 1
             last = f"could not fetch manifest {gid} for depot {depot}"
-            _set(appid, {"percent": int((i + 1) * 100 / max(1, len(depot_gid)))})
+            failed_ids.append(str(depot))
+            _set(appid, {"percent": int((i + 1) * 100 / max(1, len(depot_gid))),
+                         "failedDepots": list(failed_ids), "depotDone": i + 1})
             continue
         args = [dotnet, assella._dll_path(), "-app", str(app), "-depot", str(depot),
                 "-manifest", str(gid), "-os", "windows", "-osarch", "64",
@@ -174,13 +191,18 @@ def _run(appid: int, app: int, depot_gid: Dict[str, str], keys: Dict[str, str],
         if code != 0:
             fail += 1
             last = out_tail or last
+            failed_ids.append(str(depot))
         else:
             ok += 1
-        _set(appid, {"percent": int((i + 1) * 100 / max(1, len(depot_gid)))})
+            completed.append(str(depot))
+        _set(appid, {"percent": int((i + 1) * 100 / max(1, len(depot_gid))),
+                     "depotDone": i + 1, "completedDepots": list(completed),
+                     "failedDepots": list(failed_ids)})
     try:
         os.remove(kf)
     except OSError:
         pass
+    _set(appid, {"currentDepot": "", "currentManifest": ""})
     return ok, fail, last
 
 

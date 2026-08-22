@@ -168,7 +168,7 @@ export function GameToolsSection() {
   // DepotDownloader job progress for THIS game. The download runs in a backend
   // thread and its state lives in DL_STATE; we poll depotdl_queue so the user
   // sees percent / completion / errors instead of a fire-and-forget toast.
-  type DdlJob = { appid: number; status: string; percent: number; op?: string; error?: string };
+  type DdlJob = { appid: number; status: string; percent: number; op?: string; error?: string; plannedDepots?: { depot: string; manifest: string; kind: string }[]; currentDepot?: string; currentManifest?: string; completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number };
   const [ddl, setDdl] = useState<DdlJob | null>(null);
   const ddlTimer = useRef<any>(null);
   const stopDdl = () => { if (ddlTimer.current) { clearInterval(ddlTimer.current); ddlTimer.current = null; } };
@@ -884,7 +884,7 @@ export function GameToolsSection() {
         <PanelSectionRow>
           <div style={{ width: "100%", padding: "2px 0" }}>
             <div style={{ fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-              <span>{ddl.op === "dlc" ? "Content DLC" : "Build"} · {ddl.status}</span>
+              <span>{ddl.op === "dlc" ? "DLC-candidate depots" : "Build depots"} · {ddl.status}</span>
               <span style={{ opacity: 0.8 }}>
                 {ddl.status === "downloading" ? `${ddl.percent || 0}%` : ddl.status === "done" ? "100%" : ""}
               </span>
@@ -902,6 +902,14 @@ export function GameToolsSection() {
                 {ddl.error}
               </div>
             )}
+            {!!ddl.plannedDepots?.length && <div style={{marginTop:7,padding:7,borderRadius:6,background:"rgba(0,0,0,.18)",fontSize:10,lineHeight:1.5}}>
+              <div style={{fontWeight:700,marginBottom:3}}>Depots {ddl.depotDone||0}/{ddl.depotTotal||ddl.plannedDepots.length}</div>
+              {ddl.plannedDepots.map((d)=><div key={d.depot} style={{display:"flex",justifyContent:"space-between",gap:8,color:ddl.failedDepots?.includes(d.depot)?"#f0ad4e":ddl.completedDepots?.includes(d.depot)?"#8fd49a":ddl.currentDepot===d.depot?"#72c7ff":"rgba(255,255,255,.72)"}}>
+                <span>{ddl.currentDepot===d.depot?"▶ ":ddl.completedDepots?.includes(d.depot)?"✓ ":ddl.failedDepots?.includes(d.depot)?"! ":""}Depot {d.depot}</span>
+                <span style={{opacity:.65}}>{d.kind==="dlc-candidate"?"DLC candidate":"build"} · GID {d.manifest}</span>
+              </div>)}
+              {ddl.op==="dlc"&&<div style={{marginTop:5,color:"#d7b7ff",opacity:.85}}>Candidate means the depot came from the full game bundle; Steam app-info is still required to prove that it belongs to a DLC.</div>}
+            </div>}
             {ddl.status === "done" && !ddl.error && (
               <div style={{ fontSize: 11, color: "#8fbf8f", marginTop: 4 }}>Done — files placed in the game folder. Restart Steam if needed.</div>
             )}

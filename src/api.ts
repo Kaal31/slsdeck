@@ -557,7 +557,13 @@ export const depotdlStatus = callable<[], { success: boolean; available: boolean
 export const depotdlDownloadBuild = callable<[appid: number, buildid: string], { success: boolean; error?: string }>("depotdl_download_build");
 export const depotdlDownloadBuildGids = callable<[appid: number, buildid: string, gids: string], { success: boolean; error?: string }>("depotdl_download_build_gids");
 export const depotdlDownloadDlc = callable<[appid: number], { success: boolean; error?: string }>("depotdl_download_dlc");
-export const depotdlQueue = callable<[], { success: boolean; items: { appid: number; status: string; percent: number; op?: string; error?: string }[] }>("depotdl_queue");
+export type DepotDownloadItem = { depot: string; manifest: string; kind: "build" | "dlc-candidate" };
+export type DepotDownloadJob = {
+  appid: number; status: string; percent: number; op?: string; error?: string;
+  plannedDepots?: DepotDownloadItem[]; currentDepot?: string; currentManifest?: string;
+  completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number;
+};
+export const depotdlQueue = callable<[], { success: boolean; items: DepotDownloadJob[] }>("depotdl_queue");
 export const ensureAllDlcKeys = callable<[appid: number], { success: boolean; keys: number; source: string }>("ensure_all_dlc_keys");
 
 export const triggerSteamInstall = callable<[appid: number, library?: number], { success: boolean; error?: string }>("trigger_steam_install");
