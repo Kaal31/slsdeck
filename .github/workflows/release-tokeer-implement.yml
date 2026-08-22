@@ -1,9 +1,9 @@
-name: Release tokeer-implement
+name: Release safe-restart
 
 on:
   push:
     branches:
-      - tokeer-implement
+      - safe-restart
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-tokeer-implement
+  group: release-safe-restart
   # Other maintenance workflows also commit to this branch. Let an in-flight
   # release finish so those commits cannot leave the rolling tag stale.
   cancel-in-progress: false
@@ -21,10 +21,10 @@ jobs:
   build-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout tokeer-implement
+      - name: Checkout safe-restart
         uses: actions/checkout@v4
         with:
-          ref: tokeer-implement
+          ref: safe-restart
           fetch-depth: 0
 
       - name: Set up Node
@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf artifact SLSDeckUniversal-tokeer-implement.zip
+          rm -rf artifact SLSDeckUniversal-safe-restart.zip
           mkdir -p artifact/SLSDeckUniversal
 
           # Decky's current loader defaults to LEGACY_EVAL_IIFE when package.json
@@ -82,9 +82,9 @@ jobs:
           node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") { console.error("Packaged plugin is not marked as an ES module"); process.exit(1); }'
 
           cd artifact
-          zip -qr ../SLSDeckUniversal-tokeer-implement.zip SLSDeckUniversal
+          zip -qr ../SLSDeckUniversal-safe-restart.zip SLSDeckUniversal
           cd ..
-          unzip -l SLSDeckUniversal-tokeer-implement.zip | grep -q 'SLSDeckUniversal/package.json'
+          unzip -l SLSDeckUniversal-safe-restart.zip | grep -q 'SLSDeckUniversal/package.json'
 
       - name: Update rolling prerelease
         env:
@@ -92,9 +92,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="tokeer-implement-latest"
-          TITLE="SLSDeck Tokeer implementation"
-          NOTES="Rolling prerelease built automatically from the tokeer-implement branch."
+          TAG="safe-restart-latest"
+          TITLE="SLSDeck safe restart"
+          NOTES="Rolling prerelease built automatically from the safe-restart branch."
 
           git fetch origin --tags --force
           git tag -f "$TAG" HEAD
@@ -103,17 +103,17 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
           else
-            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target tokeer-implement
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target safe-restart
           fi
 
-          gh release upload "$TAG" SLSDeckUniversal-tokeer-implement.zip --clobber
+          gh release upload "$TAG" SLSDeckUniversal-safe-restart.zip --clobber
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SLSDeckUniversal-tokeer-implement
-          path: SLSDeckUniversal-tokeer-implement.zip
+          name: SLSDeckUniversal-safe-restart
+          path: SLSDeckUniversal-safe-restart.zip
           if-no-files-found: error
           retention-days: 14
 
-# Trigger: package modern Decky ESM metadata with the rolling Tokeer build.
+# Rolling safe-restart build.
