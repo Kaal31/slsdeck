@@ -6777,6 +6777,20 @@ async function hideTokeerBrowserView() {
     v.m_browserView.SetVisible(false);return true;
   }catch(e){return false;}})()`, 2000);
 }
+async function parkTokeerBrowserView() {
+    const shared = await findSharedJsContext();
+    if (!shared?.webSocketDebuggerUrl)
+        return;
+    await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+    var v=window.SLSDECK_TOKEER_VIEW;
+    if(!v||!v.m_browserView)return false;
+    // A truly hidden Chromium view is suspended. Keep a normal-sized surface
+    // rendered far outside the Steam viewport so Discord stays live without
+    // being visible or receiving gamepad input.
+    v.m_browserView.SetBounds(-10000,-10000,1280,720);
+    v.m_browserView.SetVisible(true);return true;
+  }catch(e){return false;}})()`, 2000);
+}
 async function waitForExactUrl(url, timeoutMs = 6500) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -6809,10 +6823,9 @@ async function createTokeerDiscordBrowserView() {
     if(!main||typeof main.CreateBrowserView!=='function') return JSON.stringify({ok:false,error:'CreateBrowserView unavailable'});
     var view=main.CreateBrowserView(${JSON.stringify(TOKEER_VIEW_NAME)});
     window.SLSDECK_TOKEER_VIEW=view;
-    try{view.WIDTH=860;view.HEIGHT=495;view.m_browserView.SetBounds(0,0,860,495);}catch(e){}
-    // Automation fallback only. User-facing Discord is opened through Steam's
-    // normal external-web navigation so the B button can always leave it.
-    try{view.m_browserView.SetVisible(false);}catch(e){}
+    try{view.WIDTH=1280;view.HEIGHT=720;view.m_browserView.SetBounds(-10000,-10000,1280,720);}catch(e){}
+    // Visible to Chromium (so it renders), parked outside Steam's viewport.
+    try{view.m_browserView.SetVisible(true);}catch(e){}
     view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
     return JSON.stringify({ok:true});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
@@ -6830,6 +6843,7 @@ async function createTokeerDiscordBrowserView() {
         return null;
     // Keep Discord's SPA active while the Deck/QAM focus changes.
     await cdpCommand(target.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+    await cdpCommand(target.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
     const nav = await cdpCommand(target.webSocketDebuggerUrl, "Page.navigate", {
         url: TOKEER_DISCORD_URL,
         transitionType: "address_bar",
@@ -6919,7 +6933,10 @@ async function chooseSelectorOption(index, label) {
     const tab = await findDiscordTab();
     if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL))
         return false;
-    await openSelectorAndReadOptions(index);
+    const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
+    const alreadyOpen = !!(await evalJson(tab.webSocketDebuggerUrl, visibleExpr));
+    if (!alreadyOpen)
+        await openSelectorAndReadOptions(index);
     const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="option"],[role="menuitem"],[aria-selected]')).find(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
     return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
@@ -7040,17 +7057,26 @@ async function waitForTicketContext(fromUrl = "", timeoutMs = 20000) {
  * reused. */
 async function connectTokeerDiscordHidden() {
     try {
-        await hideTokeerBrowserView();
-    }
-    catch { }
-    try {
         const existing = await findDiscordTab();
-        if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing))
+        if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
+            try {
+                await parkTokeerBrowserView();
+            }
+            catch { }
+            try {
+                await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+            }
+            catch { }
             return true;
+        }
     }
     catch { }
     try {
         const created = await createTokeerDiscordBrowserView();
+        try {
+            await parkTokeerBrowserView();
+        }
+        catch { }
         return !!created?.webSocketDebuggerUrl;
     }
     catch {
@@ -7095,8 +7121,8 @@ function TokeerSection() {
     const [activation, setActivation] = SP_REACT.useState("");
     const [busy, setBusy] = SP_REACT.useState("");
     const [message, setMessage] = SP_REACT.useState("");
-    const [menu, setMenu] = SP_REACT.useState(null);
-    const [options, setOptions] = SP_REACT.useState([]);
+    const [options, setOptions] = SP_REACT.useState({});
+    const [selectedMenus, setSelectedMenus] = SP_REACT.useState({});
     const [selectedGame, setSelectedGame] = SP_REACT.useState("");
     const [gate, setGate] = SP_REACT.useState(null);
     const [ticket, setTicket] = SP_REACT.useState(null);
@@ -7106,11 +7132,12 @@ function TokeerSection() {
     catch { } };
     SP_REACT.useEffect(() => { tokeerRuntimeStatus().then(setRuntime).catch(() => { }); refreshDiscord(); const t = setInterval(refreshDiscord, 15000); return () => clearInterval(t); }, []);
     const appid = Number(ticket?.appid || 0);
-    const openMenu = async (i) => {
+    const openMenu = async (i, showMenu) => {
         setBusy("Reading live game list…");
-        setMenu(i);
         try {
-            setOptions(await openSelectorAndReadOptions(i));
+            const items = await openSelectorAndReadOptions(i);
+            setOptions((old) => ({ ...old, [i]: items }));
+            setTimeout(() => showMenu?.(), 0);
         }
         finally {
             setBusy("");
@@ -7125,8 +7152,11 @@ function TokeerSection() {
                 setMessage("Hidden Discord connection failed. Open Discord login once, sign in, press B, then retry.");
                 return;
             }
-            await sleep(1400);
-            const state = await readTokeerDiscord();
+            let state = await readTokeerDiscord();
+            for (let i = 0; i < 30 && !state.found; i++) {
+                await sleep(500);
+                state = await readTokeerDiscord();
+            }
             setDiscord(state);
             setMessage(state.found ? "Hidden Tokeer panel connected." : (state.error || "Discord connected, but the activation panel is still loading."));
         }
@@ -7150,17 +7180,14 @@ function TokeerSection() {
         }
         setMessage("The game was selected, but the green Tokeer confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
     };
-    const choose = async (label) => {
-        if (menu == null)
-            return;
+    const choose = async (index, label) => {
         setBusy(`Selecting ${label} in Discord…`);
         setSelectedGame(label);
         setGate(null);
         setTicket(null);
         setVerify(null);
-        const ok = await chooseSelectorOption(menu, label);
-        setOptions([]);
-        setMenu(null);
+        setSelectedMenus((old) => ({ ...old, [index]: label }));
+        const ok = await chooseSelectorOption(index, label);
         if (!ok) {
             setMessage("Discord selection failed. Keep the Tokeer message open and retry.");
             setBusy("");
@@ -7256,7 +7283,7 @@ function TokeerSection() {
         }
     };
     const c = checks(verify || undefined);
-    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: s.disabled || !!busy, onClick: () => openMenu(s.index), children: s.label || `Game menu ${s.index + 1}` }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), menu != null && options.length > 0 && SP_JSX.jsx(DFL.PanelSection, { title: "Live Discord games", children: options.map(x => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => choose(x), children: x }) }, x)) }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), gate?.found ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: gate.label || "✅ I've read this & watched the tutorial" }) }) : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) })] }), ticket?.found && ticket.appid && SP_JSX.jsxs(DFL.PanelSection, { title: "3. Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => setActivation(e.target.value.trim()) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
+    return SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "1. Choose game in Tokeer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: connectHidden, children: "Connect Tokeer silently" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Open Discord login / manual view" }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.6 }, children: ["Steam: ", SP_JSX.jsx("b", { children: discord.steamStatus || "Unknown" }), " \u00B7 Games: ", SP_JSX.jsx("b", { children: discord.gamesListed ?? "?" }), " \u00B7 Keys: ", SP_JSX.jsx("b", { children: discord.keysRemaining ?? "?" }), " \u00B7 High demand: ", SP_JSX.jsx("b", { children: discord.highDemand ?? "?" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy, rgOptions: (options[s.index] || []).map(x => ({ data: x, label: x })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "2. Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: selectedGame })] }) }), gate?.found ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: gate.label || "✅ I've read this & watched the tutorial" }) }) : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) })] }), ticket?.found && ticket.appid && SP_JSX.jsxs(DFL.PanelSection, { title: "3. Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "4. Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => setActivation(e.target.value.trim()) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
 }
 
 function fmtSize$1(bytes) {
