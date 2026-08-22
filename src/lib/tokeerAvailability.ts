@@ -137,10 +137,17 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
   return refreshPromise;
 }
 
-export function isTokeerGameAvailable(appid: number, gameName?: string): boolean {
+export function getTokeerAvailabilityForGame(appid: number, gameName?: string): TokeerAvailableGame | null {
   const cache = readTokeerAvailabilityCache();
-  if (!cache) return false;
-  if (cache.games.some((game) => game.appid === appid)) return true;
+  if (!cache) return null;
+  const byAppid = cache.games.find((game) => game.appid === appid);
+  if (byAppid) return byAppid;
   const wanted = normalizeTokeerGameName(gameName || "");
-  return !!wanted && cache.games.some((game) => normalizeTokeerGameName(game.name) === wanted);
+  return wanted
+    ? cache.games.find((game) => normalizeTokeerGameName(game.name) === wanted) || null
+    : null;
+}
+
+export function isTokeerGameAvailable(appid: number, gameName?: string): boolean {
+  return !!getTokeerAvailabilityForGame(appid, gameName);
 }
