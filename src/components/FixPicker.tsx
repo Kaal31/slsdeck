@@ -132,6 +132,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
   const dlPoll = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopFlag = useRef(false);
+  const tokeerRefreshApp = useRef(0);
 
   const stop = () => {
     if (poll.current) {
@@ -158,11 +159,21 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       // Show the last good cache immediately, then force a live Discord scrape
       // for this Fixes opening and update/hide the card in place.
       setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName));
-      setTokeerRefreshing(true);
-      refreshTokeerAvailabilityCache(true)
-        .then(() => setTokeerGame(getTokeerAvailabilityForGame(appid, fullCheck?.gameName)))
-        .catch(() => {})
-        .finally(() => setTokeerRefreshing(false));
+      if (tokeerRefreshApp.current !== appid) {
+        tokeerRefreshApp.current = appid;
+        const requestedAppid = appid;
+        setTokeerRefreshing(true);
+        refreshTokeerAvailabilityCache(true)
+          .then(() => {
+            if (tokeerRefreshApp.current === requestedAppid) {
+              setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, fullCheck?.gameName));
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (tokeerRefreshApp.current === requestedAppid) setTokeerRefreshing(false);
+          });
+      }
     } catch {
       setCheck(null);
       setTokeerGame(null);
@@ -262,6 +273,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     stop();
     stopDl();
     stopFlag.current = false;
+    tokeerRefreshApp.current = 0;
     setBusy("");
     setMsg("");
     setCheck(null);
