@@ -292,7 +292,12 @@ export function clearFixLaunchOptions(appid: number): void {
 /** The exact Steam display name for an app, used for the perondepot name match. */
 export function appDisplayName(appid: number): string {
   try {
-    return (window as any).appStore?.GetAppOverviewByAppID?.(appid)?.display_name || "";
+    const store: any = (window as any).appStore;
+    return (
+      store?.GetAppOverviewByGameID?.(appid)?.display_name ||
+      store?.GetAppOverviewByAppID?.(appid)?.display_name ||
+      ""
+    );
   } catch {
     return "";
   }
