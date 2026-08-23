@@ -92,9 +92,26 @@ def _deck_user() -> str:
 
 def _run_as_user(argv, timeout=180) -> subprocess.CompletedProcess:
     env = os.environ.copy()
+    # Decky is launched from Steam's/frozen Python runtime and can inherit
+    # loader paths containing a libreadline that is incompatible with the
+    # system /usr/bin/bash.  Letting those variables reach Tokeer's shell
+    # wrapper makes bash itself abort before any verification runs:
+    #   undefined symbol: rl_trim_arg_from_keyseq
+    # Spawn host tools against SteamOS's own libraries instead.  This changes
+    # only the setup/verifier subprocess; game launch options remain intact.
+    for key in (
+        "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT",
+        "STEAM_RUNTIME_LIBRARY_PATH", "SYSTEM_LD_LIBRARY_PATH",
+    ):
+        env.pop(key, None)
     env["HOME"] = _home()
-    env.setdefault("USER", _deck_user())
-    env.setdefault("LOGNAME", _deck_user())
+    env["USER"] = _deck_user()
+    env["LOGNAME"] = _deck_user()
+    env["PATH"] = ":".join([
+        os.path.join(_home(), ".local", "bin"),
+        "/usr/local/bin", "/usr/bin", "/bin",
+        "/usr/local/sbin", "/usr/sbin", "/sbin",
+    ])
     cmd = list(argv)
     if os.geteuid() == 0:
         if shutil.which("runuser"):
