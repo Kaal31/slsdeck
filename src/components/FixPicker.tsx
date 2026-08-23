@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, Navigation } from "@decky/ui";
+import { DialogButton, Focusable, ModalRoot, Navigation, showModal } from "@decky/ui";
 import { openFilePicker, FileSelectionType, toaster } from "@decky/api";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import {
@@ -65,6 +65,33 @@ import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 import { cancelTokeerAvailabilityRefresh, getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
+
+function FullStatusModal({ text, closeModal }: { text: string; closeModal?: () => void }) {
+  return (
+    <ModalRoot closeModal={closeModal}>
+      <div style={{ fontSize: 20, fontWeight: 650, marginBottom: 10 }}>Full error details</div>
+      <div
+        style={{
+          maxHeight: "58vh",
+          overflowY: "auto",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere",
+          userSelect: "text",
+          fontSize: 13,
+          lineHeight: 1.45,
+          padding: "10px 12px",
+          borderRadius: 6,
+          background: "rgba(0,0,0,.28)",
+        }}
+      >
+        {text}
+      </div>
+      <DialogButton style={{ marginTop: 10 }} onClick={() => closeModal?.()}>
+        Close
+      </DialogButton>
+    </ModalRoot>
+  );
+}
 
 interface RowDef {
   key: string;
@@ -1617,7 +1644,30 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         </Focusable>
       )}
 
-      {msg && <div style={{ fontSize: 11, opacity: 0.75, padding: "0 2px" }}>{msg}</div>}
+      {msg && (
+        <Focusable style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <div
+            style={{
+              fontSize: 11,
+              lineHeight: 1.4,
+              opacity: 0.82,
+              padding: "0 2px",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {msg}
+          </div>
+          {msg.length > 140 && (
+            <DialogButton
+              style={{ fontSize: 12, padding: "5px 8px" }}
+              onClick={() => showModal(<FullStatusModal text={msg} />)}
+            >
+              View full error details
+            </DialogButton>
+          )}
+        </Focusable>
+      )}
     </div>
   );
 }

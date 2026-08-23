@@ -27,7 +27,13 @@ export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupRe
     }
     if (!result.code) return "Tokeer setup checks passed, but no TLX1 verification code was generated.";
   }
-  return result.error || "Tokeer validation failed.";
+  if (result.error) return result.error;
+  const output = (result.output || "").trim();
+  if (output) {
+    const exit = typeof result.returnCode === "number" ? ` (exit ${result.returnCode})` : "";
+    return `Tokeer verifier failed${exit}.\n\nVerifier output:\n${output.slice(-12000)}`;
+  }
+  return "Tokeer validation failed without a structured report or diagnostic output.";
 }
 
 /**

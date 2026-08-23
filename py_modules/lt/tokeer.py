@@ -593,6 +593,30 @@ def verify(appid: int) -> Dict[str, Any]:
         m = re.search(r"TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", out)
         code = m.group(0) if m else ""
         report = _decode_tlx(code) if code else {}
+        # Without a TLX1 payload there is no structured report to evaluate.
+        # Treating absent keys as False made one verifier/process failure look
+        # like four independent setup failures (including "game installation"
+        # immediately after preflight had found the game). Preserve the raw
+        # verifier result instead so the UI can show the actual cause.
+        if not code:
+            clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", out).strip()
+            detail = (
+                f"Tokeer verifier did not generate a TLX1 report (exit {p.returncode})."
+            )
+            if clean:
+                detail += "\n\nVerifier output:\n" + clean[-12000:]
+            else:
+                detail += " The verifier returned no diagnostic output."
+            return {
+                "success": False,
+                "code": "",
+                "report": {},
+                "checks": None,
+                "output": out[-24000:],
+                "returnCode": p.returncode,
+                "failedChecks": [],
+                "error": detail,
+            }
         checks = {
             "installed": bool(report.get("installed")),
             "prefix": bool(report.get("prefix")),
@@ -612,8 +636,6 @@ def verify(appid: int) -> Dict[str, Any]:
             failed.append("launch option")
         if failed:
             detail = "Tokeer setup checks failed: " + ", ".join(failed) + "."
-        elif not code:
-            detail = "Tokeer setup checks passed, but the verifier did not generate a TLX1 code."
         else:
             detail = ""
         return {"success": passed, "code": code, "report": report, "checks": checks,
