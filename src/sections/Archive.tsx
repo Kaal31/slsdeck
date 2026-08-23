@@ -49,6 +49,11 @@ function GameDetail({ entry, onBack, onChanged }: {
 }) {
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
+  const buildIsComplete = (b: ArchiveEntry["builds"][number]) =>
+    (b.missingManifests?.length || 0) === 0
+    && Object.keys(b.gids || {}).length > 0
+    && Object.keys(b.keys || {}).length === Object.keys(b.gids || {}).length;
+  const hasActivatableBuild = entry.builds.some(buildIsComplete);
 
   const toggleFix = async (f: ArchivedFix) => {
     setBusy(f.key);
@@ -96,7 +101,7 @@ function GameDetail({ entry, onBack, onChanged }: {
               if (!a.success) { setNote(a.error || "Could not activate"); return; }
               const r = await archiveReconcile(entry.appid, true);
               // Steam-side pieces the backend deliberately does not touch.
-              if (r.success && r.wantLaunchOptions) {
+              if (r.success) {
                 try {
                   const SC: any = (window as any).SteamClient;
                   SC?.Apps?.SetAppLaunchOptions?.(entry.appid, r.wantLaunchOptions);
@@ -185,7 +190,7 @@ function GameDetail({ entry, onBack, onChanged }: {
             const a = await archiveActivateGame(entry.appid, readLaunchArgs());
             if (!a.success) { setNote(a.error || "Could not activate"); return; }
             const r = await archiveReconcile(entry.appid, true);
-            if (r.success && r.wantLaunchOptions) {
+            if (r.success) {
               try {
                 const SC: any = (window as any).SteamClient;
                 SC?.Apps?.SetAppLaunchOptions?.(entry.appid, r.wantLaunchOptions);
@@ -250,16 +255,7 @@ function GameDetail({ entry, onBack, onChanged }: {
           // The backend deactivates an active build before removing it, but the
           // Steam-side half (launch args, file reset) is only reachable here.
           const d = r.deactivated;
-          if (d?.clearLaunchOptions) {
-            try {
-              const SC: any = (window as any).SteamClient;
-              SC?.Apps?.SetAppLaunchOptions?.(entry.appid, "");
-            } catch { /* ignore */ }
-          }
-          if (d?.resetFiles) {
-            triggerSteamInstall(entry.appid).catch(() => {});
-            validateSteamApp(entry.appid).catch(() => {});
-          }
+          runSteamSideCleanup(d);
           setNote(
             (d?.was ? `Deactivated and unarchived build ${buildid} — Steam is resetting the game's files. ` : `Unarchived build ${buildid}. `) +
             `${r.removedManifests ?? 0} manifest(s) freed.`,
@@ -297,7 +293,7 @@ function GameDetail({ entry, onBack, onChanged }: {
           same deactivate cleanup on the way out, so nothing is left applied to
           a template that no longer exists. */}
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={!!busy} onClick={toggleGameActive}>
+        <ButtonItem layout="below" disabled={!!busy || (!entry.activeBuild && !hasActivatableBuild)} onClick={toggleGameActive}>
           {busy === "game-active"
             ? "Working…"
             : entry.activeBuild
@@ -331,7 +327,7 @@ function GameDetail({ entry, onBack, onChanged }: {
         <PanelSectionRow><div style={{ fontSize: 11, opacity: 0.6 }}>None kept for this game.</div></PanelSectionRow>
       )}
       {entry.builds.map((b) => {
-        const incomplete = (b.missingManifests?.length || 0) > 0;
+        const incomplete = !buildIsComplete(b);
         return (
           <PanelSectionRow key={b.buildid}>
             <Focusable style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
@@ -347,7 +343,7 @@ function GameDetail({ entry, onBack, onChanged }: {
               </div>
               <DialogButton
                 style={{ width: 104, minWidth: 104, fontSize: 11, padding: "4px 6px" }}
-                disabled={!!busy}
+                disabled={!!busy || incomplete}
                 onClick={() => toggleActive(b.buildid)}
               >
                 {busy === `act-${b.buildid}` ? "…"

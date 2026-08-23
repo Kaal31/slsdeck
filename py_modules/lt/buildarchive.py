@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +31,8 @@ from .paths import get_user_home
 
 INDEX_NAME = "build_archive.json"
 DIR_NAME = "build_archive"
+_FIX_REAPPLY_LOCK = threading.Lock()
+_FIX_REAPPLY_ACTIVE: set = set()
 
 
 def _root() -> str:
@@ -47,6 +51,50 @@ def archive_dir() -> str:
 
 def index_path() -> str:
     return os.path.join(_root(), INDEX_NAME)
+
+
+def _material_status(build: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the material that makes an archived build self-contained."""
+    gids = {str(d): str(g) for d, g in (build.get("gids") or {}).items()}
+    keys = {str(d): str(k) for d, k in (build.get("keys") or {}).items()}
+    missing_manifests, missing_keys = [], []
+    for depot, gid in gids.items():
+        name = f"{depot}_{gid}.manifest"
+        if not os.path.isfile(os.path.join(archive_dir(), name)):
+            missing_manifests.append(name)
+        key = keys.get(depot, "")
+        if len(key) != 64 or any(c not in "0123456789abcdefABCDEF" for c in key):
+            missing_keys.append(depot)
+    return {"complete": bool(gids) and not missing_manifests and not missing_keys,
+            "missingManifests": missing_manifests, "missingKeys": missing_keys}
+
+
+def _deploy_material(appid: int, build: Dict[str, Any]) -> Dict[str, Any]:
+    """Deploy retained manifests and keys into slsteam-moon's live stores."""
+    status = _material_status(build)
+    if not status["complete"]:
+        return {"success": False, **status, "error": "archived build is incomplete"}
+    from . import slssteam, steam
+    copied = 0
+    for target in (slssteam.manifest_store_dir(), steam.depotcache_dir()):
+        if not target:
+            continue
+        os.makedirs(target, exist_ok=True)
+        for depot, gid in (build.get("gids") or {}).items():
+            name = f"{depot}_{gid}.manifest"
+            shutil.copy2(os.path.join(archive_dir(), name), os.path.join(target, name))
+            copied += 1
+        try:
+            from .utils import chown_to_user
+            chown_to_user(target, recursive=True)
+        except Exception:
+            pass
+    cached = sum(1 for depot, key in (build.get("keys") or {}).items()
+                 if slssteam.cache_depot_key(int(appid), int(depot), str(key)))
+    if cached != len(build.get("gids") or {}):
+        return {"success": False, **status, "copied": copied, "cachedKeys": cached,
+                "error": "could not deploy every archived depot key"}
+    return {"success": True, **status, "copied": copied, "cachedKeys": cached}
 
 
 def _read() -> Dict[str, Any]:
@@ -301,8 +349,10 @@ def snapshot_game(appid: int, launch_options: str = "", compat_tool: str = "",
             merged.append(was)
 
     entry["fixes"] = merged
-    entry["launchOptions"] = str(launch_options or entry.get("launchOptions") or "")
-    entry["compatTool"] = str(compat_tool or entry.get("compatTool") or "")
+    # Empty is meaningful: it records that arguments / a Proton override were
+    # deliberately cleared rather than resurrecting an older snapshot.
+    entry["launchOptions"] = str(launch_options or "")
+    entry["compatTool"] = str(compat_tool or "")
     entry["dlcFiles"] = dlc_files
     entry["updatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
     data["version"] = 1
@@ -391,6 +441,52 @@ def pending_reapply(appid: int) -> Dict[str, Any]:
     return {"success": True, "pending": pending, "count": len(pending)}
 
 
+def _fix_reapply_worker(appid: int, install_path: str, name: str,
+                        pending: List[Dict[str, Any]]) -> None:
+    """Run installers serially because their status and destination are shared."""
+    try:
+        from . import fixes as _fixes
+        for fix in pending:
+            url = str(fix.get("downloadUrl") or "")
+            if not url:
+                continue
+            result = _fixes.apply_game_fix(appid, url, install_path,
+                                           fix.get("fixType") or "", name, no_pin=True) or {}
+            if not result.get("success"):
+                logger.warn(f"buildarchive: fix queue rejected for {appid}: {result.get('error')}")
+                continue
+            deadline = time.time() + 900
+            while time.time() < deadline:
+                state = (_fixes.get_apply_fix_status(appid) or {}).get("state") or {}
+                if state.get("status") in ("done", "failed", "cancelled"):
+                    break
+                time.sleep(1)
+            else:
+                logger.warn(f"buildarchive: fix re-apply timed out for {appid}")
+    finally:
+        with _FIX_REAPPLY_LOCK:
+            _FIX_REAPPLY_ACTIVE.discard(int(appid))
+
+
+def _start_fix_reapply_queue(appid: int, install_path: str, name: str,
+                             pending: List[Dict[str, Any]]) -> bool:
+    try:
+        from . import fixes as _fixes
+        state = (_fixes.get_apply_fix_status(int(appid)) or {}).get("state") or {}
+        if state.get("status") in ("queued", "resolving", "downloading", "extracting", "applying"):
+            return False
+    except Exception:
+        pass
+    with _FIX_REAPPLY_LOCK:
+        if int(appid) in _FIX_REAPPLY_ACTIVE:
+            return False
+        _FIX_REAPPLY_ACTIVE.add(int(appid))
+    threading.Thread(target=_fix_reapply_worker,
+                     args=(int(appid), install_path, name, list(pending)),
+                     name=f"archive-fixes-{appid}", daemon=True).start()
+    return True
+
+
 # ── activation: an archived build as a live template ─────────────────────────
 #
 # Activating a build makes the archive entry AUTHORITATIVE for that game: the
@@ -424,6 +520,14 @@ def activate(appid: int, buildid: str, launch_options_before: str = "") -> Dict[
     entry = (data.get("apps", {}) or {}).get(str(int(appid)))
     if not entry or str(buildid) not in (entry.get("builds") or {}):
         return {"success": False, "error": "that build is not archived"}
+    try:
+        material = _deploy_material(int(appid), entry["builds"][str(buildid)])
+    except Exception as exc:
+        material = {"success": False, "error": str(exc)}
+    if not material.get("success"):
+        return {"success": False, "error": material.get("error", "archive material unavailable"),
+                "missingManifests": material.get("missingManifests", []),
+                "missingKeys": material.get("missingKeys", [])}
     if not entry.get("activeBuild"):
         # Only snapshot the "before" state on a fresh activation -- switching
         # between two archived builds must not overwrite the original.
@@ -537,6 +641,18 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
                 "waiting": "game is not installed — the template will apply once it is",
                 "actions": actions, "todo": todo}
 
+    if apply:
+        try:
+            material = _deploy_material(appid, build)
+        except Exception as exc:
+            material = {"success": False, "error": str(exc)}
+        if not material.get("success"):
+            return {"success": False, "active": active, "installed": True,
+                    "error": material.get("error", "could not deploy archived material"),
+                    "missingManifests": material.get("missingManifests", []),
+                    "missingKeys": material.get("missingKeys", []),
+                    "actions": actions, "todo": todo}
+
     # 2) Correct build pinned?
     want_gids = {str(d): str(g) for d, g in (build.get("gids") or {}).items()}
     have = {}
@@ -551,10 +667,17 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
         if apply:
             try:
                 from . import slssteam
-                slssteam.pin_app_gids(appid, {int(d): g for d, g in want_gids.items()})
+                pin = slssteam.pin_app_gids(appid, {int(d): g for d, g in want_gids.items()}) or {}
+                if not pin.get("success"):
+                    return {"success": False, "active": active, "installed": True,
+                            "error": pin.get("error", "could not pin archived build"),
+                            "actions": actions, "todo": todo, "pinnedOk": False}
                 actions.append(f"pinned build {active}")
             except Exception as exc:
                 logger.warn(f"buildarchive: pin failed for {appid}: {exc}")
+                return {"success": False, "active": active, "installed": True,
+                        "error": f"could not pin archived build: {exc}",
+                        "actions": actions, "todo": todo, "pinnedOk": False}
 
     # 3) Flagged fixes that are not currently applied.
     pend = pending_reapply(appid).get("pending") or []
@@ -564,17 +687,12 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
             todo.append(f"fix {f.get('fixType') or f.get('key')} has no source URL recorded")
             continue
         todo.append(f"fix {f.get('fixType') or 'unknown'} missing")
-        if apply:
-            try:
-                from . import fixes as _fixes
-                # no_pin: this template already owns the pin (step 2). Letting
-                # the fix pin as well would have the two fight over the manifest.
-                _fixes.apply_game_fix(appid, url, install_path,
-                                      f.get("fixType") or "", entry.get("name") or "",
-                                      no_pin=True)
-                actions.append(f"re-applying {f.get('fixType') or 'fix'}")
-            except Exception as exc:
-                logger.warn(f"buildarchive: fix re-apply failed for {appid}: {exc}")
+    runnable = [f for f in pend if f.get("downloadUrl")]
+    if apply and runnable:
+        if _start_fix_reapply_queue(appid, install_path, entry.get("name") or "", runnable):
+            actions.append(f"queued {len(runnable)} fix re-application(s)")
+        else:
+            todo.append("fix re-application is already running")
 
     # 4) DLC content: fetch once, only if the archive recorded some and the
     #    game has no DLC log yet. Re-running would be wasted bandwidth.
@@ -717,7 +835,7 @@ def reconcile_all(apply: bool = True) -> Dict[str, Any]:
     for appid in active_templates():
         try:
             r = reconcile(appid, apply=apply)
-            if r.get("actions") or r.get("todo") or r.get("waiting"):
+            if r.get("installed") or r.get("actions") or r.get("todo") or r.get("waiting"):
                 out.append({"appid": appid, **r})
         except Exception as exc:
             logger.warn(f"buildarchive: boot reconcile failed for {appid}: {exc}")

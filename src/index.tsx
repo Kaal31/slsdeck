@@ -62,12 +62,13 @@ async function applyArchiveTemplatesOnBoot(): Promise<void> {
   try {
     const r = await archiveReconcileAll(false);
     for (const t of r.results || []) {
-      if (!t.installed || !t.wantLaunchOptions) continue;
+      if (!t.success || !t.installed) continue;
       try {
         const SC: any = (window as any).SteamClient;
         const current = SC?.Apps?.GetLaunchOptionsForApp?.(t.appid);
-        if (typeof current === "string" && current === t.wantLaunchOptions) continue;
-        SC?.Apps?.SetAppLaunchOptions?.(t.appid, t.wantLaunchOptions);
+        const wanted = t.wantLaunchOptions ?? "";
+        if (typeof current === "string" && current === wanted) continue;
+        SC?.Apps?.SetAppLaunchOptions?.(t.appid, wanted);
         console.info(`SLSDeck: restored launch args for ${t.appid} from its active build template`);
       } catch { /* Steam may not expose it on this build */ }
     }

@@ -271,7 +271,7 @@ def restore() -> Dict[str, Any]:
         return {"success": True, "found": False}
     _RESTORING = True
     try:
-        from . import settings, slssteam, downloads
+        from . import settings, slssteam, downloads, buildarchive
         from .steam import depotcache_dir
         with zipfile.ZipFile(path, "r") as z:
             state = json.loads(z.read("state.json").decode("utf-8"))
@@ -285,8 +285,12 @@ def restore() -> Dict[str, Any]:
                         existing = buildarchive._read()
                         merged = existing.get("apps", {}) or {}
                         for aid, entry in (payload.get("apps") or {}).items():
-                            tgt = merged.setdefault(aid, {"name": entry.get("name", ""), "builds": {}})
-                            tgt.setdefault("builds", {}).update(entry.get("builds") or {})
+                            old = merged.get(aid) or {}
+                            restored = dict(entry)
+                            builds_merged = dict(old.get("builds") or {})
+                            builds_merged.update(entry.get("builds") or {})
+                            restored["builds"] = builds_merged
+                            merged[aid] = restored
                         buildarchive._write({"version": 1, "apps": merged})
             except Exception as exc:
                 logger.warn(f"survival_backup: build archive restore failed: {exc}")
@@ -299,7 +303,7 @@ def restore() -> Dict[str, Any]:
                 apps = {str(a): {"name": f"App {a}"} for a in pins.keys()}
 
             manifests_restored = 0
-            for target in (slssteam.manifest_store_dir(), depotcache_dir()):
+            for target in (buildarchive.archive_dir(), slssteam.manifest_store_dir(), depotcache_dir()):
                 if not target:
                     continue
                 os.makedirs(target, exist_ok=True)
