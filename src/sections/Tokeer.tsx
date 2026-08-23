@@ -291,6 +291,15 @@ export function TokeerSection() {
       toaster.toast({title:"SLSDeck · Tokeer automation",body:body.slice(0,220)});
     };
     try{
+      // Defence in depth for restored sessions: never run a Discord-derived
+      // AppID when it disagrees with the installed game the user selected.
+      if(selectedGame){
+        const expected=await tokeerPreflight(0,selectedGame);
+        if(expected.success&&expected.installed&&expected.appid&&Number(expected.appid)!==Number(ctx.appid)){
+          fail(`Ignored mismatched ticket AppID ${ctx.appid}; ${selectedGame} is installed as Steam AppID ${expected.appid}. Re-scan the ticket commands.`);
+          return;
+        }
+      }
       let stage=resume?.automationStage||"preparing";
       let tlx=resume?.submittedTlx||"";
       let wasSubmitted=!!resume?.tlxSubmitted;
@@ -344,9 +353,15 @@ export function TokeerSection() {
     setBusy("Opening Tokeer ticket…");
     setMessage("Pressing the real green Discord confirmation and waiting for the ticket/thread…");
     try{
+      const installed=selectedGame?await tokeerPreflight(0,selectedGame):null;
+      if(selectedGame&&(!installed?.success||!installed.installed||!installed.appid)){
+        setMessage(installed?.error||"Could not resolve the selected installed game's Steam AppID.");
+        return;
+      }
+      const expectedAppid=Number(installed?.appid||0);
       const r=await clickLatestTicketGate();
       if(!r.success){setMessage(r.error||"Could not press the Tokeer confirmation button.");return;}
-      const ctx=await waitForTicketContext(r.fromUrl||"",25000);
+      const ctx=await waitForTicketContext(r.fromUrl||"",25000,expectedAppid);
       setTicket(ctx);
       if(ctx.found&&ctx.appid){
         setMessage(`Ticket opened for ${selectedGame||"selected game"}. Starting local preparation and automatic verification.`);
@@ -363,7 +378,9 @@ export function TokeerSection() {
     setBusy("Resuming Tokeer ticket…");
     setMessage("Reopening the existing private ticket and scanning its generated commands…");
     try{
-      const ctx=await waitForTicketContext(ticket.url,35000);
+      const installed=selectedGame?await tokeerPreflight(0,selectedGame):null;
+      const expectedAppid=Number(installed?.success&&installed.installed?installed.appid||0:0);
+      const ctx=await waitForTicketContext(ticket.url,35000,expectedAppid);
       setTicket((old)=>({...old,...ctx,url:ctx.url||old?.url,opened:true}));
       if(ctx.found&&ctx.appid){setMessage(`Commands detected. Resuming Tokeer automation for Steam AppID ${ctx.appid}.`);await runAutomation({...ticket,...ctx,url:ctx.url||ticket.url,opened:true},savedRef.current||undefined);}
       else setMessage(ctx.error||"Ticket is open, but its AppID still was not found.");

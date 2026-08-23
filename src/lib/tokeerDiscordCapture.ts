@@ -577,18 +577,15 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
     /(?:--?appid|app[_ -]?id)(?:=|:|\\s+|["']+)(\\d{3,10})/i,
     /(?:store\\.steampowered\\.com\\/app|steam:\\/\\/(?:run|install)|steamdb\\.info\\/app)\\/(\\d{3,10})/i,
     /\\/app\\/(\\d{3,10})(?:\\/|\\b)/i,
-    /bash\\s+-s\\s+--(?:[^\\n\\r\\d]{0,40})(\\d{3,10})/i,
-    /(?:tokeer|activate|prepare|verify)[^\\n\\r]{0,80}\\b(\\d{3,10})\\b/i
+    /bash\\s+-s\\s+--(?:[^\\n\\r\\d]{0,40})(\\d{3,10})/i
   ];
-  var m=null;
-  for(var i=0;i<patterns.length&&!m;i++)m=hay.match(patterns[i]);
-  if(!m){
-    var nums=code.match(/\\b\\d{3,10}\\b/g)||[];
-    var unique=nums.filter(function(v,p,a){return a.indexOf(v)===p;});
-    if(unique.length===1)m=[unique[0],unique[0]];
+  var ids=[];
+  for(var i=0;i<patterns.length;i++){
+    var m=hay.match(patterns[i]);
+    if(m&&ids.indexOf(Number(m[1]))<0)ids.push(Number(m[1]));
   }
   var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
-  return JSON.stringify(m?{found:true,opened:true,appid:Number(m[1]),rawText:text.slice(0,20000)}:{found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'});
+  return JSON.stringify(ids.length?{found:true,opened:true,appid:ids[0],appids:ids,rawText:text.slice(0,20000)}:{found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 const TICKET_LINK_EXPR = `(function(){try{
@@ -607,7 +604,7 @@ const TICKET_LINK_EXPR = `(function(){try{
   return JSON.stringify({found:false});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
-export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Promise<TokeerTicketContext> {
+export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expectedAppid = 0): Promise<TokeerTicketContext> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "Waiting for Tokeer ticket…";
   let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? fromUrl : "";
@@ -641,7 +638,14 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000): Pro
       const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
       try {
         const parsed = JSON.parse(String(raw || ""));
-        if (parsed?.found && parsed?.appid) return { ...parsed, opened: true, url: tab.url };
+        if (parsed?.found && parsed?.appid) {
+          const candidates = (Array.isArray(parsed.appids) ? parsed.appids : [parsed.appid])
+            .map(Number).filter((value: number) => Number.isFinite(value) && value > 0);
+          if (!expectedAppid || candidates.includes(expectedAppid)) {
+            return { ...parsed, appid: expectedAppid || parsed.appid, opened: true, url: tab.url };
+          }
+          lastError = `Ticket commands contained AppID ${candidates.join(", ")}, but the selected installed game is AppID ${expectedAppid}. Waiting for the correct setup command…`;
+        }
         if (parsed?.opened && !String(tab.url || "").includes(TOKEER_CHANNEL)) lastTicketUrl = String(tab.url || "");
         if (parsed?.error) lastError = parsed.error;
       } catch {}
