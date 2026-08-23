@@ -152,6 +152,8 @@ export function GameToolsSection() {
   // ASSella-inspired: SteamStub removal, version freeze, build rollback, manifest age.
   const [steamless, setSteamless] = useState<{ supported: boolean; hasStub: boolean; installed: boolean } | null>(null);
   const [pinned, setPinned] = useState<boolean | null>(null);
+  const [pinnedBuild, setPinnedBuild] = useState("");
+  const [pinnedDepotCount, setPinnedDepotCount] = useState(0);
   const [ageSec, setAgeSec] = useState<number | null>(null);
   const [histCount, setHistCount] = useState(0);
   // v2 (slsdeckdlc) only: DepotDownloader present → show download buttons.
@@ -200,6 +202,21 @@ export function GameToolsSection() {
     getProtonMapping(appid)
       .then((r) => setProton(r && r.success ? r.toolName || "" : ""))
       .catch(() => setProton(""));
+  }, [appid]);
+
+  const refreshPinStatus = useCallback(() => {
+    if (appid == null) return;
+    getPinStatus(appid)
+      .then((r) => {
+        setPinned(!!r.pinned);
+        setPinnedBuild(r.pinned ? String(r.buildid || "") : "");
+        setPinnedDepotCount(r.pinned ? Object.keys(r.depots || {}).length : 0);
+      })
+      .catch(() => {
+        setPinned(null);
+        setPinnedBuild("");
+        setPinnedDepotCount(0);
+      });
   }, [appid]);
 
   useEffect(() => {
@@ -252,11 +269,11 @@ export function GameToolsSection() {
           ? { supported: true, hasStub: !!r.hasStub, installed: !!r.installed }
           : null))
         .catch(() => setSteamless(null));
-      getPinStatus(appid).then((r) => setPinned(!!r.pinned)).catch(() => setPinned(null));
+      refreshPinStatus();
       manifestAge(appid).then((r) => setAgeSec(r.success && r.installed ? (r.ageSec ?? null) : null)).catch(() => setAgeSec(null));
       buildHistoryList(appid).then((r) => setHistCount(r.success ? (r.items || []).length : 0)).catch(() => setHistCount(0));
     }
-  }, [refreshProton, appid]);
+  }, [refreshProton, refreshPinStatus, appid]);
 
   if (appid == null) return null;
 
@@ -383,11 +400,11 @@ export function GameToolsSection() {
     try {
       if (pinned) {
         await unpinGame(appid);
-        setPinned(false);
+        refreshPinStatus();
         setNote("Version unfrozen — Steam can update this game again.");
       } else {
         const r = await pinGame(appid);
-        if (r.success) { setPinned(true); setNote("Version frozen at the current build — Steam won't update it."); }
+        if (r.success) { refreshPinStatus(); setNote("Version frozen at the current build — Steam won't update it."); }
         else setNote(r.error || "Couldn't freeze (needs the slsteam-moon engine).");
       }
     } catch (e) { setNote(`Failed: ${e}`); }
@@ -814,7 +831,7 @@ export function GameToolsSection() {
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.7, padding: "2px 2px" }}>
             {ageSec != null ? `Manifest age: ${ageSec < 3600 ? Math.round(ageSec / 60) + "m" : ageSec < 86400 ? Math.round(ageSec / 3600) + "h" : Math.round(ageSec / 86400) + "d"}` : ""}
-            {pinned != null ? `${ageSec != null ? " · " : ""}${pinned ? "version frozen" : "auto-updates"}` : ""}
+            {pinned != null ? `${ageSec != null ? " · " : ""}${pinned ? `Pinned build: ${pinnedBuild || "current"}${pinnedDepotCount ? ` · ${pinnedDepotCount} depot${pinnedDepotCount === 1 ? "" : "s"}` : ""}` : "auto-updates"}` : ""}
           </div>
         </PanelSectionRow>
       )}
