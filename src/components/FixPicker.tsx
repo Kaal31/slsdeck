@@ -35,6 +35,8 @@ import {
   dlcDepotPlan,
   dlcDepotStart,
   dlcDepotRemove,
+  depotdlQueue,
+  DepotDownloadJob,
   creamyDeploy,
   buildArchiveAdd,
   buildArchiveRemove,
@@ -113,6 +115,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
   const [tokeerLookup, setTokeerLookup] = useState<{ name: string; cachedGames: number; updatedAt?: number }>({ name: "", cachedGames: 0 });
+  const [dlcDownload, setDlcDownload] = useState<DepotDownloadJob | null>(null);
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
   const [pinned, setPinned] = useState(false);
@@ -165,6 +168,23 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     stopDl();
     stopFlag.current = true;
   }, []);
+
+  // Both the filtered DLC action here and the blind action in Game Tools run
+  // through the same persistent DepotDownloader queue. Poll it while this
+  // picker is open so closing/reopening the menu never loses progress.
+  useEffect(() => {
+    let mounted = true;
+    const read = async () => {
+      try {
+        const q = await depotdlQueue();
+        const job = (q.items || []).find((item) => item.appid === appid && item.op === "dlc") || null;
+        if (mounted) setDlcDownload(job);
+      } catch { /* keep the last visible state */ }
+    };
+    void read();
+    const timer = setInterval(read, 1000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, [appid]);
 
   const refresh = async () => {
     try {
@@ -228,11 +248,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const p = await getPinStatus(appid);
       setPinned(!!p.pinned);
-      setPinInfo({ buildid: p.buildid, depots: p.depots });
+      const snapshotBuild = p.buildid || p.installedBuildid;
+      const snapshotDepots = Object.keys(p.depots || {}).length ? p.depots : p.installedDepots;
+      setPinInfo({ buildid: snapshotBuild, depots: snapshotDepots });
       // Ask about THIS build specifically: the same game can have several
       // builds archived, so "is this game archived" is the wrong question.
-      if (p.buildid) {
-        const a = await archiveIsBuild(appid, p.buildid).catch(() => null);
+      if (snapshotBuild) {
+        const a = await archiveIsBuild(appid, snapshotBuild).catch(() => null);
         setArchived(!!a?.archived);
       } else {
         setArchived(false);
@@ -1440,11 +1462,31 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       {(!dlcOwnedOnly || (!added && isInLibrary(appid))) && (
         <DialogButton
           style={{ fontSize: 12, padding: "5px 8px" }}
-          disabled={working || !!awaiting}
+          disabled={working || !!awaiting || dlcDownload?.status === "resolving" || dlcDownload?.status === "downloading"}
           onClick={doDlcContent}
         >
-          {busy === "dlcdepot" ? "Working…" : "Get DLC files + unlock"}
+          {busy === "dlcdepot" ? "Working…" : dlcDownload?.status === "resolving" || dlcDownload?.status === "downloading"
+            ? `Downloading DLC… ${Math.max(1, Math.min(99, Math.round(dlcDownload.percent || 1)))}%`
+            : "Get DLC files + unlock"}
         </DialogButton>
+      )}
+
+      {dlcDownload && (
+        <div style={{ padding: "2px 2px 7px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+            <span>DLC depots · {dlcDownload.status}</span>
+            <span>{dlcDownload.status === "done" ? 100 : Math.max(1, Math.min(99, Math.round(dlcDownload.percent || 1)))}%</span>
+          </div>
+          <div style={{ height: 7, borderRadius: 4, overflow: "hidden", background: "rgba(255,255,255,.14)" }}>
+            <div style={{
+              height: "100%",
+              width: `${dlcDownload.status === "done" ? 100 : Math.max(1, Math.min(99, Math.round(dlcDownload.percent || 1)))}%`,
+              background: dlcDownload.status === "failed" ? "#d9534f" : dlcDownload.status === "done" ? "#5cb85c" : "linear-gradient(90deg,#4a90d9,#9c74df)",
+              transition: "width .3s ease",
+            }} />
+          </div>
+          {dlcDownload.error && <div style={{ marginTop: 4, fontSize: 10, color: "#f0ad4e" }}>{dlcDownload.error}</div>}
+        </div>
       )}
 
       {(!dlcOwnedOnly || (!added && isInLibrary(appid))) && (
