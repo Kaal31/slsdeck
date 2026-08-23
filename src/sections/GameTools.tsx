@@ -737,7 +737,7 @@ export function GameToolsSection() {
   const protonLabel = proton == null ? "checking…" : proton || "Steam default";
 
   return (
-    <PanelSection title="Actions & fixes">
+    <PanelSection title="Actions">
       <PanelSectionRow>
         <div style={{ fontSize: 12, opacity: 0.85, padding: "2px 0" }}>
           Proton: <span style={{ fontWeight: 600 }}>{protonLabel}</span>
