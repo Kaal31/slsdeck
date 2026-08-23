@@ -464,7 +464,7 @@ export function TokeerSection() {
   const c=checks(verify||undefined);
 
   return <>
-    <PanelSection title="1. Choose game in Tokeer">
+    <PanelSection title="Choose game in Tokeer">
       {!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
         if(loginPendingRef.current)return;
         loginPendingRef.current=true;setBusy("Waiting for Discord sign-in…");
@@ -513,7 +513,7 @@ export function TokeerSection() {
       {!discord?.found&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>{discord?.error||"Open the Linux activation message once and leave the Discord tab alive."}</div></PanelSectionRow>}
     </PanelSection>
 
-    {(selectedGame||gate)&&<PanelSection title="2. Open activation ticket">
+    {(selectedGame||gate)&&<PanelSection title="Open activation ticket">
       {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{selectedGame}</b></div></PanelSectionRow>}
       {ticket?.opened&&!ticket.appid
         ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
@@ -526,7 +526,7 @@ export function TokeerSection() {
       {automationStage!=="idle"&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>Automation: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}{automationError?<div style={{color:"#ff7b72",marginTop:3}}>{automationError}</div>:null}</div></PanelSectionRow>}
     </PanelSection>}
 
-    {ticket?.found&&ticket.appid&&<PanelSection title="3. Prepare & verify">
+    {ticket?.found&&ticket.appid&&<PanelSection title="Prepare & verify">
       <PanelSectionRow><div style={{fontSize:11}}>Runtime: <b>{runtime?.installed?"Installed":"Not prepared"}</b> · Default/free cooldown: <b>48 hours</b></div></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={prepare} disabled={!!busy}>Prepare game</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={runVerify} disabled={!!busy}>Verify setup / generate TLX1</ButtonItem></PanelSectionRow>
@@ -546,7 +546,7 @@ export function TokeerSection() {
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Manual view</ButtonItem></PanelSectionRow>
     </PanelSection>
 
-    <PanelSection title="4. Redeem activation">
+    <PanelSection title="Redeem activation">
       <PanelSectionRow><input style={inputStyle} placeholder="Activation code from Discord" value={activation} onChange={(e:any)=>updateActivation(e.target.value)}/></PanelSectionRow>
       {codeExpiresAt&&<PanelSectionRow><div style={{width:"100%",padding:"4px 2px 8px"}}>
         <div style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:remainingMs>0?"#fff":"#ff5b5b"}}>
