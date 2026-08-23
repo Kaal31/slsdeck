@@ -48,6 +48,11 @@ export function normalizeTokeerGameName(value: string): string {
   return String(value || "")
     .normalize("NFKD")
     .replace(/[®™©]/g, "")
+    // Discord and Steam disagree on straight/curly apostrophes surprisingly
+    // often ("Assassin’s", "Assassin's", "Assassins"). Apostrophes are part of
+    // a word here, so removing them is more accurate than turning them into a
+    // separator and producing the unmatchable "assassin s".
+    .replace(/['’‘`´]/g, "")
     .replace(/[^a-z0-9]+/gi, " ")
     .trim()
     .toLowerCase();
@@ -213,11 +218,24 @@ function nameVariants(value: string): string[] {
   const raw = String(value || "").replace(/_/g, " ").trim();
   if (!raw) return [];
   const roman = raw.split(/\s+/).map((word) => ROMAN_TO_ARABIC[word.toUpperCase()] || word).join(" ");
-  return Array.from(new Set([
+  const base = [
     normalizeTokeerGameName(raw),
     normalizeTokeerGameName(raw.replace(/[®™©]/g, "")),
     normalizeTokeerGameName(roman),
-  ].filter(Boolean)));
+  ].filter(Boolean);
+  const aliases: string[] = [];
+  for (const name of base) {
+    // Tokeer's Discord menus commonly abbreviate the series while Steam uses
+    // its full store title. Keep both forms in the shared matcher.
+    if (/^assassins? creed\s+/.test(name)) aliases.push(name.replace(/^assassins? creed\s+/, "ac "));
+    if (/^ac\s+/.test(name)) aliases.push(name.replace(/^ac\s+/, "assassins creed "));
+    // The vault currently appends availability/marketing qualifiers that are
+    // not part of Steam's library title (for example "Assassin's Creed Shadows
+    // Free" and "Avatar: Frontiers of Pandora Free"). Match only when such a
+    // qualifier is trailing, so meaningful words inside a title stay intact.
+    aliases.push(name.replace(/\s+(?:(?:standard|deluxe|ultimate|complete) edition|free(?: trial)?|trial)$/i, ""));
+  }
+  return Array.from(new Set([...base, ...aliases].filter(Boolean)));
 }
 
 async function steamNameCandidates(appid: number, hint?: string): Promise<string[]> {
@@ -262,9 +280,9 @@ export function getTokeerAvailabilityForGame(appid: number, gameName?: string): 
   if (!cache) return null;
   const byAppid = cache.games.find((game) => game.appid === appid);
   if (byAppid) return byAppid;
-  const wanted = normalizeTokeerGameName(gameName || "");
-  return wanted
-    ? cache.games.find((game) => normalizeTokeerGameName(game.name) === wanted) || null
+  const wanted = new Set(nameVariants(gameName || ""));
+  return wanted.size
+    ? cache.games.find((game) => nameVariants(game.name).some((variant) => wanted.has(variant))) || null
     : null;
 }
 
