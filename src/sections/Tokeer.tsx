@@ -127,8 +127,13 @@ export function TokeerSection() {
 
   const refreshDiscord=async()=>{ try{
     const [state,auth]=await Promise.all([readTokeerDiscord(),getDiscordSignInState()]);
-    setDiscord(state);setDiscordSignedIn(auth.signedIn);
-  }catch{} };
+    // A successfully parsed activation panel is stronger evidence than the
+    // users/@me probe: Steam's Discord webview can block that API request even
+    // while its authenticated channel DOM is fully available.
+    const signedIn=auth.signedIn||state.found;
+    setDiscord(state);setDiscordSignedIn(signedIn);
+    return {state,signedIn};
+  }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
   const refreshAvailability=async(force=false)=>{
     if(force&&ticketChainActive()){
@@ -142,7 +147,10 @@ export function TokeerSection() {
   // Any sign-in transition detected anywhere (this panel, a background poll)
   // updates the button state, so it can never be left stale.
   useEffect(()=>{
-    const onSignIn=(e:any)=>setDiscordSignedIn(!!e?.detail);
+    // Positive transitions can be trusted immediately. A negative users/@me
+    // probe is reconciled by refreshDiscord with the live panel DOM before the
+    // button is shown again.
+    const onSignIn=(e:any)=>{if(e?.detail)setDiscordSignedIn(true);};
     window.addEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
     return ()=>window.removeEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
   },[]);
@@ -156,13 +164,11 @@ export function TokeerSection() {
       }
       if(readAutoConnect()){
         const ok=await connectTokeerDiscordHidden();
-        await refreshDiscord();
+        const observed=await refreshDiscord();
         if(ok){
-          const auth=await getDiscordSignInState();
-          setDiscordSignedIn(auth.signedIn);
-          if(auth.signedIn){
+          if(observed?.signedIn){
             const cached=await refreshTokeerAvailabilityCache(true);
-            if(cached)setAvailability(cached);
+            if(cached){setAvailability(cached);setDiscordSignedIn(true);}
             else setMessage("Background Discord refresh failed. The previous vault cache was preserved; game Fixes will hide Tokeer until their own live check succeeds.");
           }
         }
@@ -225,8 +231,9 @@ export function TokeerSection() {
       setDiscord(state);
       if(state.found){
         const auth=await getDiscordSignInState();
-        setDiscordSignedIn(auth.signedIn);
-        if(!auth.signedIn){
+        const signedIn=auth.signedIn||state.found;
+        setDiscordSignedIn(signedIn);
+        if(!signedIn){
           setMessage("Discord is not signed in yet. Use the DeDevision sign-in button, return here, then connect again.");
           return;
         }
@@ -458,6 +465,19 @@ export function TokeerSection() {
 
   return <>
     <PanelSection title="1. Choose game in Tokeer">
+      {!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
+        if(loginPendingRef.current)return;
+        loginPendingRef.current=true;setBusy("Waiting for Discord sign-in…");
+        setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
+        try{
+          await openDedevisionDiscordLogin();
+          if(await waitForDiscordSignIn()){
+            setDiscordSignedIn(true);
+            setMessage("Discord signed in. You can connect Tokeer silently now.");
+          }else setMessage("Discord sign-in was not detected. You can retry without opening duplicate login pages.");
+        }finally{loginPendingRef.current=false;setBusy("");}
+      }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
+      {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:10,borderRadius:9,background:"linear-gradient(145deg,rgba(28,43,66,.96),rgba(38,25,58,.92))",border:"1px solid rgba(157,198,255,.28)",boxShadow:"0 5px 18px rgba(0,0,0,.22)",fontSize:11,lineHeight:1.55,color:"#f7f9ff"}}>
         <div style={{fontSize:14,fontWeight:800,letterSpacing:.4,marginBottom:8,color:"#fff"}}>Tokeer Vault</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7}}>
@@ -477,21 +497,7 @@ export function TokeerSection() {
         </div>
       </div></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
-      {!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
-        if(loginPendingRef.current)return;
-        loginPendingRef.current=true;setBusy("Waiting for Discord sign-in…");
-        setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
-        try{
-          await openDedevisionDiscordLogin();
-          if(await waitForDiscordSignIn()){
-            setDiscordSignedIn(true);
-            setMessage("Discord signed in. You can connect Tokeer silently now.");
-          }else setMessage("Discord sign-in was not detected. You can retry without opening duplicate login pages.");
-        }finally{loginPendingRef.current=false;setBusy("");}
-      }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
-      {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
-      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Open Discord login / manual view</ButtonItem></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:"#65e69b",fontWeight:800}}>● LIVE</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>refreshAvailability(true)}>Refresh vault & available games</ButtonItem></PanelSectionRow>
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
@@ -535,6 +541,10 @@ export function TokeerSection() {
       </div></PanelSectionRow>
       {verify.code&&<><PanelSectionRow><ButtonItem layout="below" onClick={copyTlx}>Copy TLX1 verification code</ButtonItem></PanelSectionRow><PanelSectionRow><div style={{fontSize:9,wordBreak:"break-all",maxHeight:90,overflowY:"auto",opacity:.7}}>{verify.code}</div></PanelSectionRow></>}
     </PanelSection>}
+
+    <PanelSection title="Discord">
+      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>openTokeerDiscord()}>Manual view</ButtonItem></PanelSectionRow>
+    </PanelSection>
 
     <PanelSection title="4. Redeem activation">
       <PanelSectionRow><input style={inputStyle} placeholder="Activation code from Discord" value={activation} onChange={(e:any)=>updateActivation(e.target.value)}/></PanelSectionRow>
