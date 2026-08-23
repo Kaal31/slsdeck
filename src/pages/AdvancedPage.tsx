@@ -234,6 +234,33 @@ const ADVANCED_PAGE_THEME = `
   .slsdeck-themed-page .${staticClasses.PanelSectionRow}:first-child {
     margin-top: 0;
   }
+  .slsdeck-themed-page button[class*="DialogButton"],
+  .slsdeck-themed-page [role="button"][class*="DialogButton"] {
+    min-height: 42px;
+    border: 1px solid rgba(148, 204, 255, .32);
+    border-radius: 9px;
+    color: #f7f9ff;
+    background: linear-gradient(135deg, rgba(58, 112, 160, .92), rgba(91, 62, 139, .92));
+    box-shadow: 0 5px 15px rgba(5, 10, 22, .24), inset 0 1px rgba(255, 255, 255, .06);
+    font-weight: 700;
+    letter-spacing: .1px;
+    transition: border-color .16s ease, filter .16s ease, transform .16s ease, box-shadow .16s ease;
+  }
+  .slsdeck-themed-page button[class*="DialogButton"]:hover,
+  .slsdeck-themed-page button[class*="DialogButton"]:focus,
+  .slsdeck-themed-page [role="button"][class*="DialogButton"]:hover,
+  .slsdeck-themed-page [role="button"][class*="DialogButton"]:focus {
+    border-color: rgba(174, 224, 255, .72);
+    filter: brightness(1.13);
+    transform: translateY(-1px);
+    box-shadow: 0 7px 20px rgba(5, 10, 22, .34), 0 0 0 2px rgba(114, 199, 255, .14);
+  }
+  .slsdeck-themed-page button[class*="DialogButton"]:disabled,
+  .slsdeck-themed-page [role="button"][class*="DialogButton"][aria-disabled="true"] {
+    opacity: .48;
+    filter: saturate(.55);
+    transform: none;
+  }
   .slsdeck-themed-page::-webkit-scrollbar-thumb {
     border-radius: 8px;
     background: linear-gradient(#72c7ff, #a885e8);
