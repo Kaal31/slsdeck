@@ -17,6 +17,7 @@ import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
 import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
+import { archiveReconcileAll } from "./api";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -47,6 +48,32 @@ function cefLooksStable(token: DependencyLifecycleToken): boolean {
   if (document.visibilityState !== "visible") return false;
   if (!(window as any).SteamClient) return false;
   return Date.now() - token.stableSince >= DEPENDENCY_STABLE_WINDOW_MS;
+}
+
+/**
+ * Re-assert activated build templates on boot.
+ *
+ * The backend already reconciles the parts it owns (pin, fixes, DLC) during its
+ * own warmup. This pass exists for the one piece it CANNOT touch: launch
+ * arguments live in Steam (SetAppLaunchOptions) and are only reachable from
+ * here. Reporting-only on the backend side, so it does no work twice.
+ */
+async function applyArchiveTemplatesOnBoot(): Promise<void> {
+  try {
+    const r = await archiveReconcileAll(false);
+    for (const t of r.results || []) {
+      if (!t.installed || !t.wantLaunchOptions) continue;
+      try {
+        const SC: any = (window as any).SteamClient;
+        const current = SC?.Apps?.GetLaunchOptionsForApp?.(t.appid);
+        if (typeof current === "string" && current === t.wantLaunchOptions) continue;
+        SC?.Apps?.SetAppLaunchOptions?.(t.appid, t.wantLaunchOptions);
+        console.info(`SLSDeck: restored launch args for ${t.appid} from its active build template`);
+      } catch { /* Steam may not expose it on this build */ }
+    }
+  } catch (e) {
+    console.warn("SLSDeck: archive template boot pass failed", e);
+  }
 }
 
 async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLifecycleToken): Promise<void> {
@@ -313,9 +340,12 @@ function Content() {
       <div ref={anchor} style={{ height: 0 }} />
       <RepairBanner />
       <SlsSteamCompact />
+      {/* Per-game surfaces first: "This game" and "Actions & fixes" both act on
+          whatever library page you came from, so they belong above the whole-
+          library list rather than under it. */}
       {installed && actionsFixesQam && <GameControlsSection onChanged={bump} />}
-      {installed && gamesInQam && <InstalledSection refreshToken={refreshToken} onChanged={bump} />}
       {installed && <GameToolsSection />}
+      {installed && gamesInQam && <InstalledSection refreshToken={refreshToken} onChanged={bump} />}
       {installed && !hideToolsQam && <ToolsSection />}
     </>
   );
@@ -440,6 +470,10 @@ export default definePlugin(() => {
   // is off or nothing changed). Boot once, then slowly to catch removals/purges
   // that don't go through the add-notifier above.
   setTimeout(() => { syncSlsCollection().catch(() => {}); }, 6000);
+  // Re-assert activated build templates once Steam has settled. Deliberately
+  // late: SetAppLaunchOptions needs a live SteamClient, and the backend has
+  // already done its half during warmup.
+  setTimeout(() => { applyArchiveTemplatesOnBoot().catch(() => {}); }, 12000);
   const collectionSync = setInterval(() => { syncSlsCollection().catch(() => {}); }, 60000);
 
   return {

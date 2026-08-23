@@ -48,7 +48,7 @@ import {
   hvAutoStatus,
   crakStatus,
   depotdlStatus,
-  depotdlDownloadBuild,
+  buildArchiveAdd,
   depotdlDownloadBuildGids,
   depotdlDownloadDlc,
   depotdlQueue,
@@ -406,22 +406,22 @@ export function GameToolsSection() {
     };
     const pitems: PickItem[] = items.map((e) => ({
       key: e.id,
-      label: e.current ? "Current build" : "Roll back",
+      label: e.current ? "Current build" : "Reset to this build",
       sublabel: fmt(e) + (e.current ? " · installed now" : ""),
     }));
     showModal(
       <PickerModal
-        title="Roll back build"
-        subtitle="Pick a build to pin. Steam will re-download the changed files."
+        title="Reset files"
+        subtitle="Pick a build. Steam re-downloads the files that differ, resetting them to that build."
         items={pitems}
         onPick={(it) => {
           const e = items.find((x) => x.id === it.key);
           if (!e || e.current) { setNote("Already on that build."); return; }
           showModal(
             <ConfirmModal
-              strTitle="Roll back this game?"
+              strTitle="Reset this game's files?"
               strDescription={`Pin ${e.buildid ? `build ${e.buildid}` : "this build"} and let Steam re-download the changed files. Reversible — pin the latest again anytime.`}
-              strOKButtonText="Roll back"
+              strOKButtonText="Reset files"
               onOK={() =>
                 run("rollback", () => buildHistoryRollback(appid, e.id), (r) => {
                   if (!r.success) return r.unsupported ? "Rollback needs the slsteam-moon engine." : (r.error || "Rollback failed");
@@ -566,10 +566,15 @@ export function GameToolsSection() {
                 await noInternetFixBegin(appid).catch(() => ({}));
                 triggerSteamInstall(appid).catch(() => {});
                 const validated = await validateSteamApp(appid).catch(() => ({ success: false }));
+                // Declared OUTSIDE the block: it is read by the return below, and
+                // a block-scoped `const` here left that read referring to nothing
+                // (TS2304), which threw ReferenceError on every pass down this
+                // path -- unconditionally, since the return is not inside the if.
+                let launched = false;
                 if (!validated.success) {
                   // Compatibility fallback for unusual Steam setups where the
                   // protocol handler cannot be invoked from the backend.
-                  const launched = launchGame(appid);
+                  launched = launchGame(appid);
                   if (launched) { try { Navigation.CloseSideMenus?.(); } catch { /* */ } }
                 }
                 return { msg: launched ? `Pinned build ${it.key} — launching to download it…` : v.text };
@@ -819,7 +824,7 @@ export function GameToolsSection() {
       {histCount > 0 && (
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={!!busy} onClick={openRollback}>
-            {busy === "rollback" ? "Working…" : "Roll back build…"}
+            {busy === "rollback" ? "Working…" : "Reset files…"}
           </ButtonItem>
         </PanelSectionRow>
       )}
@@ -843,8 +848,23 @@ export function GameToolsSection() {
               startDdl();
             }}
           >
-            {ddlActive && ddl?.op === "dlc" ? "Downloading DLC…" : "Download content DLC (DepotDownloader)"}
+            {ddlActive && ddl?.op === "dlc" ? "Downloading DLC…" : "Blind download content DLC (DepotDownloader)"}
           </ButtonItem>
+        </PanelSectionRow>
+      )}
+      {depotdl && (
+        <PanelSectionRow>
+          {/* Named "blind" because this path applies no checks at all: it takes
+              every depot in the manifest bundle it holds a key for, without
+              asking whether the depot is DLC, whether it matches this install's
+              platform, or whether you already have it. The Fixes tab's
+              "Get DLC files + unlock" is the filtered equivalent. */}
+          <div style={{ fontSize: 11, opacity: 0.65, padding: "0 2px 4px", lineHeight: 1.4 }}>
+            Downloads every keyed depot with no checks — it does not verify that a depot is
+            DLC (language packs and base depots can be included), does not match your
+            platform, and does not skip files you already have. For the filtered version use
+            “Get DLC files + unlock” in Fixes.
+          </div>
         </PanelSectionRow>
       )}
       {depotdl && (
@@ -860,23 +880,37 @@ export function GameToolsSection() {
               if (!builds.length) { setNote("No older builds on SteamDB for this game."); return; }
               showModal(
                 <PickerModal
-                  title="Download a build (files)"
-                  subtitle="Fetches the build's depots via DepotDownloader into the game folder."
+                  title="Add a build to the archive"
+                  subtitle="Keeps this build's gids, manifests and depot keys so it stays rebuildable later. Downloads no game files."
                   items={builds.map((b) => ({ key: b.buildid, label: `Build ${b.buildid}`, sublabel: b.date }))}
                   onPick={async (it) => {
-                    await run("ddl", async () => {
-                      setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
-                      return depotdlDownloadBuild(appid, it.key);
-                    }, (r) =>
-                      r.success ? `Started — downloading build ${it.key} in the background.` : (r.error || "Could not start"));
-                    await pollDdlOnce();
-                    startDdl();
+                    const dt = builds.find((b) => b.buildid === it.key)?.date || "";
+                    await run("archive", async () => {
+                      // Resolve the exact per-depot gids the same way the
+                      // build picker does — SteamDB's signed-in history,
+                      // date-matched — because that is the only source with a
+                      // depot's full history. Without gids there is nothing
+                      // worth archiving.
+                      setNote(`Resolving depot manifests for build ${it.key}…`);
+                      const map = await resolveGidsViaSteamdb(dt, (s) => setNote(s));
+                      if (!Object.keys(map).length) {
+                        return { success: false, error: "Could not resolve this build's depot manifests (SteamDB sign-in needed)." };
+                      }
+                      setNote(`Archiving build ${it.key} (${Object.keys(map).length} depots)…`);
+                      return buildArchiveAdd(appid, it.key, JSON.stringify(map), dt, "");
+                    }, (r) => {
+                      if (!r.success) return r.error || "Could not archive that build";
+                      const miss = r.missingManifests?.length || 0;
+                      return r.complete
+                        ? `Archived build ${it.key} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s). Kept across plugin removal.`
+                        : `Archived build ${it.key} incomplete — ${miss} manifest(s) unavailable${r.keys !== r.depots ? ` and ${(r.depots || 0) - (r.keys || 0)} depot key(s) missing` : ""}. A Hubcap key usually fixes this.`;
+                    });
                   }}
                 />,
               );
             }}
           >
-            {ddlActive && ddl?.op === "build" ? "Downloading build…" : "Download a build's files…"}
+            {busy === "archive" ? "Archiving…" : "Add this build to archive…"}
           </ButtonItem>
         </PanelSectionRow>
       )}

@@ -51,7 +51,13 @@ _BOOL_KEYS = (
     "DisableFamilyShareLock", "UseWhitelist", "AutoFilterList",
     "PlayNotOwnedGames", "SafeMode", "Notifications", "WarnHashMissmatch",
     "NotifyInit", "API", "DisableCloud", "DisableUpdates", "ExtendedLogging",
-    "Achievements",
+    # Newer-engine keys. Absent from config.default.yaml (so _pass_missing_keys
+    # correctly will not add them -- they are optional), but they MUST still be
+    # normalised when present: moon reads yes/no only, so an
+    # "InjectAllAdvertisedDlc: true" silently falls back to the compiled-in
+    # default while the "Add DLC automatically" toggle still reads ON. That is
+    # exactly the silent divergence this module exists to catch.
+    "Achievements", "InjectAllAdvertisedDlc",
 )
 
 _TRUEISH = ("yes", "true", "on", "1", "enable", "enabled", "y")

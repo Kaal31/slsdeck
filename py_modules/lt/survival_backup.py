@@ -120,6 +120,11 @@ def _manifest_sources() -> list:
     except Exception:
         pass
     try:
+        from . import buildarchive
+        out.append(buildarchive.archive_dir())
+    except Exception:
+        pass
+    try:
         from . import depot_cleanup
         for rec in depot_cleanup._read().values():
             p = str(rec.get("installPath") or "")
@@ -162,8 +167,16 @@ def save() -> Dict[str, Any]:
     except Exception:
         builds = {}
 
+    # Archived builds are a deliberate, user-curated library: they must survive
+    # even when no games are currently registered, so they count as content here.
+    try:
+        from . import buildarchive
+        archived = buildarchive._read()
+    except Exception:
+        archived = {}
+
     path = backup_path()
-    if not pins and not apps:
+    if not pins and not apps and not (archived.get("apps") or {}):
         # A deliberate remove-all must stay removed. Do not let a stale archive
         # resurrect games on the next install.
         try:
@@ -178,6 +191,11 @@ def save() -> Dict[str, Any]:
         for gids in pins.values()
         for depot, gid in gids.items()
     }
+    try:
+        from . import buildarchive
+        wanted |= buildarchive.wanted_manifest_names()
+    except Exception:
+        pass
     tmp = path + ".tmp"
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
@@ -185,6 +203,8 @@ def save() -> Dict[str, Any]:
                 "state.json",
                 json.dumps({"version": 2, "apps": apps, "pins": pins, "buildids": builds}, indent=2),
             )
+            if archived.get("apps"):
+                z.writestr("build_archive.json", json.dumps(archived, indent=2))
 
             found = set()
             for src in _manifest_sources():
@@ -255,6 +275,21 @@ def restore() -> Dict[str, Any]:
         from .steam import depotcache_dir
         with zipfile.ZipFile(path, "r") as z:
             state = json.loads(z.read("state.json").decode("utf-8"))
+            # Restore the archived-build library first: it is pure metadata, so
+            # it cannot fail in a way that should block the rest of the restore.
+            try:
+                if "build_archive.json" in z.namelist():
+                    from . import buildarchive
+                    payload = json.loads(z.read("build_archive.json").decode("utf-8"))
+                    if isinstance(payload, dict) and payload.get("apps"):
+                        existing = buildarchive._read()
+                        merged = existing.get("apps", {}) or {}
+                        for aid, entry in (payload.get("apps") or {}).items():
+                            tgt = merged.setdefault(aid, {"name": entry.get("name", ""), "builds": {}})
+                            tgt.setdefault("builds", {}).update(entry.get("builds") or {})
+                        buildarchive._write({"version": 1, "apps": merged})
+            except Exception as exc:
+                logger.warn(f"survival_backup: build archive restore failed: {exc}")
             pins = state.get("pins") or {}
             builds = state.get("buildids") or {}
             if "apps" in state:

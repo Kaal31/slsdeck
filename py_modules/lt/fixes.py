@@ -990,7 +990,7 @@ def _write_fix_log(install_path, appid, game_name, fix_type, download_url,
         logger.warn(f"SLSDeck: Failed to write fix log: {exc}")
 
 
-def _download_and_extract_fix(appid, download_url, install_path, fix_type, game_name=""):
+def _download_and_extract_fix(appid, download_url, install_path, fix_type, game_name="", no_pin=False):
     client = ensure_http_client("SLSDeck: fix download")
     is_rar = download_url.lower().split("?")[0].endswith(".rar")
     dest_zip = os.path.join(
@@ -1066,7 +1066,10 @@ def _download_and_extract_fix(appid, download_url, install_path, fix_type, game_
             # would be pointless (and could block wanted updates) — skip it.
             _ft = (fix_type or "").lower()
             _universal = ("unsteam" in _ft) or ("universal" in _ft)
-            if _settings.get_pin_on_fix() and not _universal:
+            # no_pin: the Archive's reconcile re-applies a fix to satisfy a
+            # template that ALREADY owns the pin. Letting the fix re-pin here
+            # would have it fight the active build for control of the manifest.
+            if _settings.get_pin_on_fix() and not _universal and not no_pin:
                 # Build-accurate pin: resolve a manifest .lua (lua.tools if signed
                 # in → Hubcap key → ~/Downloads/<appid>.lua) and pin to its
                 # setManifestid build. If none is available (build-agnostic fix
@@ -1326,7 +1329,7 @@ def apply_luatools_fix(appid, fix_id, install_path, manifest_id="", depot_id="",
     return {"success": True}
 
 
-def apply_game_fix(appid, download_url, install_path, fix_type="", game_name="") -> Dict[str, Any]:
+def apply_game_fix(appid, download_url, install_path, fix_type="", game_name="", no_pin=False) -> Dict[str, Any]:
     try:
         appid = int(appid)
     except Exception:
@@ -1338,7 +1341,7 @@ def apply_game_fix(appid, download_url, install_path, fix_type="", game_name="")
     _set_fix_state(appid, {"status": "queued", "bytesRead": 0, "totalBytes": 0, "error": None})
     threading.Thread(
         target=_download_and_extract_fix,
-        args=(appid, download_url, install_path, fix_type, game_name),
+        args=(appid, download_url, install_path, fix_type, game_name, no_pin),
         daemon=True,
     ).start()
     return {"success": True}

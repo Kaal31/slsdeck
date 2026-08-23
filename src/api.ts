@@ -359,6 +359,73 @@ export const dlcUnlockerInstall = callable<
   [appid: number, kind: UnlockerKind],
   { success: boolean; installed?: string[]; overrides?: string; tag?: string; label?: string; dlcCount?: number; unlockAll?: boolean; notSupported?: boolean; error?: string }
 >("dlc_unlocker_install");
+// ── DLC content via DepotDownloader ────────────────────────────────────────
+// plan() detects the installed platform/unlocker from disk and reports what it
+// would fetch AND what it is excluding, so "nothing happened" is never silent.
+export interface DlcDepotRec { depot: string; gid: string; oslist?: string; size?: number; hasKey?: boolean; gidSource?: string }
+export interface DlcDepotPlan {
+  success: boolean;
+  appid?: number;
+  name?: string;
+  // Why the result is what it is: something to fetch, no DLC at all, already
+  // up to date, entitlement-only (no files exist), or blocked (files exist but
+  // we lack the key / they are for another platform).
+  outcome?: "fetch" | "no-dlc" | "up-to-date" | "entitlement-only" | "blocked";
+  target?: {
+    installed?: boolean; installPath?: string; platform?: string; unlocker?: string;
+    libraries?: Array<{ file: string; platform: string; family: string }>;
+    conflict?: string; note?: string;
+  };
+  fetch?: Array<{ appid: number; depots: DlcDepotRec[]; bytes: number }>;
+  skipped?: Array<{ dlc: number; depot: string; reason: string }>;
+  entitlement?: Array<{ appid: number; reason: string }>;
+  bytes?: number;
+  warnings?: string[];
+  error?: string;
+}
+export const dlcDepotPlan = callable<[appid: number], DlcDepotPlan>("dlc_depot_plan");
+export const dlcDepotStart = callable<[appid: number, dlcAppids?: number[]], { success: boolean; error?: string }>("dlc_depot_start");
+// A keepable library of builds: gids + manifest binaries + depot keys, stored
+// so a build stays rebuildable after Hubcap/mirrors stop serving it. Rides along
+// in the survival archive, so it survives plugin removal.
+export const buildArchiveAdd = callable<[appid: number, buildid: string, gidsJson?: string, date?: string, name?: string], { success: boolean; depots?: number; manifests?: number; keys?: number; missingManifests?: string[]; complete?: boolean; error?: string }>("build_archive_add");
+export const buildArchiveList = callable<[appid?: number], { success: boolean; builds?: any[]; count?: number; error?: string }>("build_archive_list");
+export const buildArchiveRemove = callable<[appid: number, buildid: string], { success: boolean; removedManifests?: number; deactivated?: { was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; resetFiles?: boolean }; error?: string }>("build_archive_remove");
+
+// Per-game archive entry. Declarative: it records what a game is SUPPOSED to
+// look like (which builds are kept, which fixes it wants, its launch args and
+// Proton tool) — never copies of the payloads. Toggling a fix flag here changes
+// no files; it decides what a restore should try to re-apply.
+export interface ArchivedBuild {
+  buildid: string; date?: string; gids?: Record<string, string>; keys?: Record<string, string>;
+  manifests?: string[]; missingManifests?: string[]; archivedOn?: string; archivedAt?: number;
+}
+export interface ArchivedFix {
+  key: string; fixType: string; downloadUrl: string; date?: string;
+  files?: number; wanted?: boolean; missing?: boolean; appliedAt?: string;
+}
+export interface ArchiveEntry {
+  appid: number; name: string;
+  builds: ArchivedBuild[]; buildCount: number;
+  fixes: ArchivedFix[]; fixCount: number; wantedFixes: number;
+  launchOptions: string; compatTool: string; dlcFiles: number; updatedOn: string;
+  // Which archived build this game is currently held to ("" = none).
+  activeBuild: string;
+}
+export const archiveIsBuild = callable<[appid: number, buildid: string], { success: boolean; archived?: boolean; active?: boolean; activeBuild?: string }>("archive_is_build");
+export const archiveActivate = callable<[appid: number, buildid: string, launchOptionsBefore?: string], { success: boolean; activeBuild?: string; error?: string }>("archive_activate");
+export const archiveDeactivate = callable<[appid: number, reset?: boolean], { success: boolean; was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; restoredCompatTool?: string; resetFiles?: boolean; error?: string }>("archive_deactivate");
+export const archiveReconcile = callable<[appid: number, apply?: boolean], { success: boolean; active?: string; installed?: boolean; waiting?: string; skipped?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string; wantCompatTool?: string; pinnedOk?: boolean; dlcPending?: boolean; error?: string }>("archive_reconcile");
+export const archiveRemoveGame = callable<[appid: number], { success: boolean; builds?: number; removedManifests?: number; deactivated?: { was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; resetFiles?: boolean }; error?: string }>("archive_remove_game");
+export const archiveActivateGame = callable<[appid: number, launchOptionsBefore?: string], { success: boolean; activeBuild?: string; chosen?: string; ofBuilds?: number; replaced?: string; error?: string }>("archive_activate_game");
+export const archiveReconcileAll = callable<[apply?: boolean], { success: boolean; checked?: number; results?: Array<{ appid: number; active?: string; installed?: boolean; waiting?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string }>; error?: string }>("archive_reconcile_all");
+export const archiveEntries = callable<[], { success: boolean; entries?: ArchiveEntry[]; count?: number; error?: string }>("archive_entries");
+export const archiveSnapshotGame = callable<[appid: number, launchOptions?: string, compatTool?: string, name?: string], { success: boolean; fixes?: number; dlcFiles?: number; error?: string }>("archive_snapshot_game");
+export const archiveSetFixWanted = callable<[appid: number, key: string, wanted: boolean], { success: boolean; wanted?: boolean; error?: string }>("archive_set_fix_wanted");
+export const archiveForgetFix = callable<[appid: number, key: string], { success: boolean; removed?: number; error?: string }>("archive_forget_fix");
+export const archivePendingReapply = callable<[appid: number], { success: boolean; pending?: ArchivedFix[]; count?: number; error?: string }>("archive_pending_reapply");
+export const dlcDepotRemove = callable<[appid: number, alsoUnlock?: boolean], { success: boolean; removed?: number; failed?: string[]; noLog?: boolean; error?: string }>("dlc_depot_remove");
+
 export const dlcUnlockerRemove = callable<
   [appid: number, kind: UnlockerKind],
   { success: boolean; restored?: number; error?: string }
@@ -532,7 +599,7 @@ export const setAutoDownload = callable<[enabled: boolean], { success: boolean }
 
 // ── DLC + cloud toggles ─────────────────────────────────────────────────────
 export const getAutoAddDlc = callable<[], { success: boolean; enabled: boolean }>("get_auto_add_dlc");
-export const setAutoAddDlc = callable<[enabled: boolean], { success: boolean }>("set_auto_add_dlc");
+export const setAutoAddDlc = callable<[enabled: boolean], { success: boolean; enabled?: boolean; settingSaved?: boolean; error?: string }>("set_auto_add_dlc");
 export const getDisableCloud = callable<[], { success: boolean; enabled: boolean }>("get_disable_cloud");
 export const setDisableCloud = callable<[enabled: boolean], { success: boolean }>("set_disable_cloud");
 export const getDisableDlcUnlockOwned = callable<[], { success: boolean; enabled: boolean }>("get_disable_dlc_unlock_owned");

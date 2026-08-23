@@ -381,6 +381,145 @@ def download_dlc(appid: int) -> Dict[str, Any]:
     return {"success": True}
 
 
+def download_dlc_with_gids(appid: int, depot_gid: Dict[str, str]) -> Dict[str, Any]:
+    """Download an EXPLICIT set of DLC depots into a game's install folder.
+
+    Same shape as ``download_dlc``, but the caller chose the depots (see
+    ``dlcdepot.plan``) instead of taking every keyed depot in the bundle.
+
+    Deliberately NOT ``download_build_with_gids``: that path is for replacing a
+    game's build, so its worker rewrites appmanifest_<appid>.acf with the passed
+    depots as the COMPLETE InstalledDepots set, pins those gids in moon, and
+    calls ``slssteam.add_app``. Run with a DLC-only map against an installed,
+    legitimately-owned game, that would erase the record of the base game's
+    depots, pin the app to DLC manifests, and mark an owned game as SLS-added.
+    Adding DLC files must not touch the build at all.
+    """
+    try:
+        appid = int(appid)
+    except Exception:
+        return {"success": False, "error": "Invalid appid"}
+    clean = {str(d): str(g) for d, g in (depot_gid or {}).items()
+             if str(d).isdigit() and str(g).isdigit()}
+    if not clean:
+        return {"success": False, "error": "no depot:gid pairs supplied"}
+    _set(appid, {"status": "resolving", "op": "dlc", "percent": 0, "error": ""})
+    threading.Thread(target=_dlc_gids_worker, args=(appid, clean),
+                     name=f"depotdl-dlc-{appid}", daemon=True).start()
+    return {"success": True}
+
+
+def _now() -> float:
+    import time as _t
+    return _t.time()
+
+
+DLC_LOG_NAME = "slsdeck-dlc-files-{appid}.json"
+
+
+def _snapshot_files(root: str) -> set:
+    """Every regular file path under `root` (our own metadata dir excluded)."""
+    out: set = set()
+    for base, dirs, files in os.walk(root):
+        if ".slsdeck_manifests" in base:
+            continue
+        dirs[:] = [d for d in dirs if d != ".slsdeck_manifests"]
+        for f in files:
+            out.add(os.path.join(base, f))
+    return out
+
+
+def dlc_log_path(appid: int, install_path: str) -> str:
+    return os.path.join(install_path, DLC_LOG_NAME.format(appid=int(appid)))
+
+
+def _write_dlc_log(appid: int, dest: str, depot_gid: Dict[str, str],
+                   created: List[str]) -> None:
+    """Record ONLY the files the DLC download newly created.
+
+    Deliberately not "every file the manifest lists": a DLC depot can legally
+    overwrite a base-game file, and deleting those on removal would corrupt the
+    base install. Files that already existed are therefore excluded here, so
+    removal can never take anything that was not brought in by this download.
+    """
+    import json
+    try:
+        path = dlc_log_path(appid, dest)
+        payload = {
+            "appid": int(appid),
+            "depots": {str(d): str(g) for d, g in depot_gid.items()},
+            "created": sorted(os.path.relpath(p, dest) for p in created),
+            "written": _now(),
+        }
+        existing = {}
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    existing = json.load(fh) or {}
+            except Exception:
+                existing = {}
+        # Merge with any earlier DLC fetch so removal covers all of them.
+        if isinstance(existing.get("created"), list):
+            payload["created"] = sorted(set(payload["created"]) | set(existing["created"]))
+        if isinstance(existing.get("depots"), dict):
+            merged = dict(existing["depots"])
+            merged.update(payload["depots"])
+            payload["depots"] = merged
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=1)
+        try:
+            from .utils import chown_to_user
+            chown_to_user(path, recursive=False)
+        except Exception:
+            pass
+        logger.log(f"depotdl: DLC file log for {appid}: {len(payload['created'])} file(s)")
+    except Exception as exc:
+        logger.warn(f"depotdl: could not write DLC file log for {appid}: {exc}")
+
+
+def _dlc_gids_worker(appid: int, depot_gid: Dict[str, str]) -> None:
+    try:
+        keys = _keys_for(appid)
+        missing = [d for d in depot_gid if d not in keys]
+        if missing:
+            # plan() already filters these out; if one slips through, say so
+            # rather than silently downloading a subset.
+            _set(appid, {"status": "failed",
+                         "error": f"no depot key for {', '.join(missing)} — set a Hubcap key or re-resolve the lua"})
+            return
+        root, installdir, dest = _game_dir(appid)
+        if not dest:
+            _set(appid, {"status": "failed", "error": "game install folder not found"})
+            return
+        os.makedirs(dest, exist_ok=True)
+        mf_dir = os.path.join(dest, ".slsdeck_manifests")
+        os.makedirs(mf_dir, exist_ok=True)
+        # Snapshot before/after so removal only ever touches files this download
+        # actually created (see _write_dlc_log).
+        before = _snapshot_files(dest)
+        _set(appid, {"status": "downloading", "percent": 0, "installPath": dest})
+        ok, fail, last = _run(appid, appid, depot_gid, keys, dest, mf_dir)
+        if ok == 0:
+            _set(appid, {"status": "failed", "error": f"No DLC depot downloaded. {last}"})
+            return
+        try:
+            created = sorted(_snapshot_files(dest) - before)
+            _write_dlc_log(appid, dest, depot_gid, created)
+        except Exception as exc:
+            logger.warn(f"depotdl: DLC snapshot failed for {appid}: {exc}")
+        try:
+            from .utils import chown_to_user
+            chown_to_user(dest, recursive=True)
+        except Exception:
+            pass
+        # NOTE: no appmanifest write, no pin, no add_app -- see the docstring.
+        _set(appid, {"status": "done", "success": True, "percent": 100,
+                     "installPath": dest,
+                     "error": (f"{fail} depot(s) failed" if fail else "")})
+    except Exception as exc:
+        _set(appid, {"status": "failed", "error": str(exc)})
+
+
 def _dlc_worker(appid: int) -> None:
     try:
         bundle = downloads.fetch_manifest_bundle(appid)

@@ -110,6 +110,8 @@ function FaWrench (props) {
   return GenIcon({"attr":{"viewBox":"0 0 448 512"},"child":[{"tag":"path","attr":{"d":"M34.9 289.5l-22.2-22.2c-9.4-9.4-9.4-24.6 0-33.9L207 39c9.4-9.4 24.6-9.4 33.9 0l194.3 194.3c9.4 9.4 9.4 24.6 0 33.9L413 289.4c-9.5 9.5-25 9.3-34.3-.4L264 168.6V456c0 13.3-10.7 24-24 24h-32c-13.3 0-24-10.7-24-24V168.6L69.2 289.1c-9.3 9.8-24.8 10-34.3.4z"},"child":[]}]})(props);
 }function FaArrowLeft (props) {
   return GenIcon({"attr":{"viewBox":"0 0 448 512"},"child":[{"tag":"path","attr":{"d":"M257.5 445.1l-22.2 22.2c-9.4 9.4-24.6 9.4-33.9 0L7 273c-9.4-9.4-9.4-24.6 0-33.9L201.4 44.7c9.4-9.4 24.6-9.4 33.9 0l22.2 22.2c9.5 9.5 9.3 25-.4 34.3L136.6 216H424c13.3 0 24 10.7 24 24v32c0 13.3-10.7 24-24 24H136.6l120.5 114.8c9.8 9.3 10 24.8.4 34.3z"},"child":[]}]})(props);
+}function FaArchive (props) {
+  return GenIcon({"attr":{"viewBox":"0 0 512 512"},"child":[{"tag":"path","attr":{"d":"M32 448c0 17.7 14.3 32 32 32h384c17.7 0 32-14.3 32-32V160H32v288zm160-212c0-6.6 5.4-12 12-12h104c6.6 0 12 5.4 12 12v8c0 6.6-5.4 12-12 12H204c-6.6 0-12-5.4-12-12v-8zM480 32H32C14.3 32 0 46.3 0 64v48c0 8.8 7.2 16 16 16h480c8.8 0 16-7.2 16-16V64c0-17.7-14.3-32-32-32z"},"child":[]}]})(props);
 }
 
 const tokeerRuntimeStatus = callable("tokeer_runtime_status");
@@ -236,6 +238,27 @@ const smokeapiInstall = callable("smokeapi_install");
 const smokeapiRemove = callable("smokeapi_remove");
 const dlcUnlockersStatus = callable("dlc_unlockers_status");
 const dlcUnlockerInstall = callable("dlc_unlocker_install");
+const dlcDepotPlan = callable("dlc_depot_plan");
+const dlcDepotStart = callable("dlc_depot_start");
+// A keepable library of builds: gids + manifest binaries + depot keys, stored
+// so a build stays rebuildable after Hubcap/mirrors stop serving it. Rides along
+// in the survival archive, so it survives plugin removal.
+const buildArchiveAdd = callable("build_archive_add");
+callable("build_archive_list");
+const buildArchiveRemove = callable("build_archive_remove");
+const archiveIsBuild = callable("archive_is_build");
+const archiveActivate = callable("archive_activate");
+const archiveDeactivate = callable("archive_deactivate");
+const archiveReconcile = callable("archive_reconcile");
+const archiveRemoveGame = callable("archive_remove_game");
+const archiveActivateGame = callable("archive_activate_game");
+const archiveReconcileAll = callable("archive_reconcile_all");
+const archiveEntries = callable("archive_entries");
+const archiveSnapshotGame = callable("archive_snapshot_game");
+const archiveSetFixWanted = callable("archive_set_fix_wanted");
+const archiveForgetFix = callable("archive_forget_fix");
+callable("archive_pending_reapply");
+const dlcDepotRemove = callable("dlc_depot_remove");
 const dlcUnlockerRemove = callable("dlc_unlocker_remove");
 // HVAuto (hypervisor crack) — build-first pipeline.
 const hvAutoStatus = callable("hv_auto_status");
@@ -342,7 +365,7 @@ const bpApplyBuild = callable("bp_apply_build");
 callable("bp_apply_manifests");
 // ── v2 DepotDownloader (older-build / content-DLC download) ──────────────────
 const depotdlStatus = callable("depotdl_status");
-const depotdlDownloadBuild = callable("depotdl_download_build");
+callable("depotdl_download_build");
 const depotdlDownloadBuildGids = callable("depotdl_download_build_gids");
 const depotdlDownloadDlc = callable("depotdl_download_dlc");
 const depotdlQueue = callable("depotdl_queue");
@@ -2716,6 +2739,8 @@ function FixPicker({ appid, onReload, onClose }) {
     // own. When this pref is on (default), hide them on SLS-added games.
     const [dlcOwnedOnly, setDlcOwnedOnly] = SP_REACT.useState(true);
     const [smoke, setSmoke] = SP_REACT.useState(null);
+    // Whether the build this game is currently pinned to is in the Archive.
+    const [archived, setArchived] = SP_REACT.useState(false);
     const [dlcU, setDlcU] = SP_REACT.useState({});
     // Set when a crack/HV host blocks auto-download and we hand off to the browser.
     // Surfaces an "Apply from Downloads" button so the user finishes with the file
@@ -2824,10 +2849,20 @@ function FixPicker({ appid, onReload, onClose }) {
             const p = await getPinStatus(appid);
             setPinned(!!p.pinned);
             setPinInfo({ buildid: p.buildid, depots: p.depots });
+            // Ask about THIS build specifically: the same game can have several
+            // builds archived, so "is this game archived" is the wrong question.
+            if (p.buildid) {
+                const a = await archiveIsBuild(appid, p.buildid).catch(() => null);
+                setArchived(!!a?.archived);
+            }
+            else {
+                setArchived(false);
+            }
         }
         catch {
             setPinned(false);
             setPinInfo({});
+            setArchived(false);
         }
         try {
             const r = await getInstalledApps();
@@ -3095,6 +3130,162 @@ function FixPicker({ appid, onReload, onClose }) {
             return;
         }
         await runApply(`lt:${fix.id}`, fix.name || "lua.tools fix", () => applyLuatoolsFix(appid, fix.id, installPath, fix.manifest_id || "", fix.depot_id || "", "lua.tools fix", check?.gameName || ""), () => pinForLuatoolsFix(appid, fix.id));
+    };
+    // Archive the build this game is actually on right now. `pinInfo` already
+    // holds the pinned build + its depot gids, which is exactly what the archive
+    // needs — so no SteamDB scrape is required here, unlike the Archive-a-build
+    // picker in QAM which archives an arbitrary OLD build.
+    const currentBuildId = pinInfo?.buildid || "";
+    const doArchiveToggle = async () => {
+        if (!currentBuildId) {
+            setMsg("No pinned build to archive — pin or install a build first.");
+            return;
+        }
+        setBusy("archive");
+        try {
+            if (archived) {
+                const r = await buildArchiveRemove(appid, currentBuildId);
+                setMsg(r.success
+                    ? `Unarchived build ${currentBuildId} (${r.removedManifests ?? 0} manifest(s) freed).`
+                    : (r.error || "Could not unarchive"));
+                if (r.success)
+                    setArchived(false);
+            }
+            else {
+                const gids = pinInfo?.depots || {};
+                const r = await buildArchiveAdd(appid, currentBuildId, JSON.stringify(gids), "", check?.gameName || "");
+                if (r.success) {
+                    setArchived(true);
+                    // Record the fixes/launch args/Proton alongside the build, so the
+                    // entry is a complete template rather than just depot material.
+                    let opts = "";
+                    try {
+                        const SC = window.SteamClient;
+                        const v = SC?.Apps?.GetLaunchOptionsForApp?.(appid);
+                        opts = typeof v === "string" ? v : "";
+                    }
+                    catch { /* Steam may not expose it */ }
+                    await archiveSnapshotGame(appid, opts, "", check?.gameName || "").catch(() => null);
+                    setMsg(r.complete
+                        ? `Archived build ${currentBuildId} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s).`
+                        : `Archived build ${currentBuildId}, but ${r.missingManifests?.length || 0} manifest(s) are unavailable (a Hubcap key usually fixes this).`);
+                }
+                else {
+                    setMsg(r.error || "Could not archive that build");
+                }
+            }
+        }
+        catch (e) {
+            setMsg(`Failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    // Apply whichever unlocker plan() detected for THIS install, rather than
+    // assuming SmokeAPI. Returns a short sentence for the status line.
+    const applyUnlockFor = async (unlocker) => {
+        try {
+            if (unlocker === "creamysteamy") {
+                const r = await creamyDeploy(appid);
+                return r?.success ? "DLC unlock applied (CreamySteamy)." : `Unlock failed: ${r?.error || "CreamySteamy"}`;
+            }
+            if (unlocker === "uplay_r1" || unlocker === "uplay_r2") {
+                const kind = unlocker === "uplay_r1" ? "uplayr1" : "uplayr2";
+                const r = await dlcUnlockerInstall(appid, kind);
+                return r?.success ? `DLC unlock applied (${kind}).` : `Unlock failed: ${r?.error || kind}`;
+            }
+            if (unlocker === "smokeapi") {
+                const r = await smokeapiInstall(appid);
+                if (r?.success) {
+                    if (r.overrides)
+                        applyFixRuntime(appid, r.overrides);
+                    setSmoke({ installed: true, supported: true });
+                    return `DLC unlock applied (SmokeAPI ${r.tag || ""}).`;
+                }
+                return r?.skippedLauncher
+                    ? "Unlock skipped — publisher-launcher game (SmokeAPI won't help)."
+                    : `Unlock failed: ${r?.error || "SmokeAPI"}`;
+            }
+            return "No DLC unlocker matched this install — apply one manually.";
+        }
+        catch (e) {
+            return `Unlock failed: ${e}`;
+        }
+    };
+    const doDlcRemove = async () => {
+        setBusy("dlcdepot");
+        setMsg("Removing downloaded DLC files and the DLC unlock…");
+        try {
+            const r = await dlcDepotRemove(appid, true);
+            if (!r?.success) {
+                setMsg(r?.noLog
+                    ? "No record of DLC files for this game — nothing was downloaded by SLSDeck."
+                    : r?.error || "Could not remove the DLC files");
+                return;
+            }
+            setSmoke((s) => (s ? { ...s, installed: false } : s));
+            setMsg(`Removed ${r.removed ?? 0} DLC file(s) and the DLC unlock` +
+                (r.failed?.length ? ` — ${r.failed.length} could not be deleted.` : "."));
+        }
+        catch (e) {
+            setMsg(`Remove failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    // Two-step on purpose: plan (reads only), show what it found, then download.
+    // The plan reports its exclusions, so the common "this DLC is entitlement-only,
+    // there is nothing to download" outcome reads as an answer rather than as a
+    // button that did nothing.
+    const doDlcContent = async () => {
+        setBusy("dlcdepot");
+        setMsg("Checking which DLC have downloadable files…");
+        try {
+            const p = await dlcDepotPlan(appid);
+            if (!p?.success) {
+                setMsg(p?.error || "Could not check DLC content");
+                return;
+            }
+            const t = p.target || {};
+            const where = `${t.platform || "unknown platform"}${t.unlocker ? ` · ${t.unlocker}` : ""}`;
+            const fetchCount = (p.fetch || []).length;
+            if (!fetchCount) {
+                const ent = (p.entitlement || []).length;
+                const skipped = p.skipped || [];
+                // Four distinct "nothing to download" outcomes, each said plainly —
+                // an empty result should read as an answer, not as a dead button.
+                const detail = p.outcome === "no-dlc"
+                    ? "This game has no DLC."
+                    : p.outcome === "up-to-date"
+                        ? `All DLC content is already installed and up to date (${skipped.length} depot${skipped.length === 1 ? "" : "s"}).`
+                        : p.outcome === "entitlement-only"
+                            ? `All ${ent} DLC are entitlement-only — there are no files to fetch, the DLC unlock alone covers them.`
+                            : `${skipped.length} depot(s) can't be fetched: ${skipped[0]?.reason}.`;
+                // Still apply the unlock unless the game genuinely has no DLC — for the
+                // entitlement-only case (the common one) the unlocker IS the whole fix,
+                // and for up-to-date/blocked the entitlement half is still wanted.
+                const unlock = p.outcome === "no-dlc" ? "" : await applyUnlockFor(p.target?.unlocker);
+                setMsg(`${detail} (${where}) ${unlock} ${(p.warnings || [])[0] || ""}`.trim());
+                return;
+            }
+            const mb = Math.round((p.bytes || 0) / 1048576);
+            setMsg(`Downloading ${fetchCount} DLC (~${mb} MB, ${where})…`);
+            const r = await dlcDepotStart(appid, (p.fetch || []).map((f) => f.appid));
+            if (!r?.success) {
+                setMsg(r?.error || "Could not start the DLC download");
+                return;
+            }
+            const unlock = await applyUnlockFor(p.target?.unlocker);
+            setMsg(`DLC download started — ${fetchCount} DLC (~${mb} MB). ${unlock}`);
+        }
+        catch (e) {
+            setMsg(`DLC content check failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
     };
     const doSmoke = async (enable) => {
         setBusy("smoke");
@@ -3632,7 +3823,11 @@ function FixPicker({ appid, onReload, onClose }) {
                             const flowKey = `lt:${fix.id}`;
                             return (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: title }), tags.length > 0 && (SP_JSX.jsx("div", { style: { marginBottom: 4 }, children: tags.map((t, ti) => SP_JSX.jsx(BadgeChip, { badge: t }, ti)) })), meta && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, marginBottom: 4 }, children: meta })), fix.description && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.78, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 160, overflowY: "auto", marginBottom: 7 }, children: fix.description })), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: () => doLtFix(fix), children: busy.startsWith(flowKey) ? "Working…" : "Apply & pin to build" }) }), renderFixFlow(flowKey)] }, `lt-${fix.id || i}`));
                         })] }));
-            })(), (!dlcOwnedOnly || (!added && isInLibrary(appid))) && smoke?.supported && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => doSmoke(!smoke.installed), children: busy === "smoke"
+            })(), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting || !currentBuildId, onClick: doArchiveToggle, children: busy === "archive"
+                    ? "Working…"
+                    : archived
+                        ? `Unarchive build ${currentBuildId}`
+                        : currentBuildId ? `Archive this build (${currentBuildId})` : "Archive this build" }), (!dlcOwnedOnly || (!added && isInLibrary(appid))) && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doDlcContent, children: busy === "dlcdepot" ? "Working…" : "Get DLC files + unlock" })), (!dlcOwnedOnly || (!added && isInLibrary(appid))) && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: doDlcRemove, children: busy === "dlcdepot" ? "Working…" : "Unfix + remove DLC files" })), (!dlcOwnedOnly || (!added && isInLibrary(appid))) && smoke?.supported && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || !!awaiting, onClick: () => doSmoke(!smoke.installed), children: busy === "smoke"
                     ? "Working…"
                     : smoke.installed
                         ? "Remove DLC unlock (SmokeAPI)"
@@ -5602,16 +5797,16 @@ function GameToolsSection() {
         };
         const pitems = items.map((e) => ({
             key: e.id,
-            label: e.current ? "Current build" : "Roll back",
+            label: e.current ? "Current build" : "Reset to this build",
             sublabel: fmt(e) + (e.current ? " · installed now" : ""),
         }));
-        DFL.showModal(SP_JSX.jsx(PickerModal, { title: "Roll back build", subtitle: "Pick a build to pin. Steam will re-download the changed files.", items: pitems, onPick: (it) => {
+        DFL.showModal(SP_JSX.jsx(PickerModal, { title: "Reset files", subtitle: "Pick a build. Steam re-downloads the files that differ, resetting them to that build.", items: pitems, onPick: (it) => {
                 const e = items.find((x) => x.id === it.key);
                 if (!e || e.current) {
                     setNote("Already on that build.");
                     return;
                 }
-                DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Roll back this game?", strDescription: `Pin ${e.buildid ? `build ${e.buildid}` : "this build"} and let Steam re-download the changed files. Reversible — pin the latest again anytime.`, strOKButtonText: "Roll back", onOK: () => run("rollback", () => buildHistoryRollback(appid, e.id), (r) => {
+                DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Reset this game's files?", strDescription: `Pin ${e.buildid ? `build ${e.buildid}` : "this build"} and let Steam re-download the changed files. Reversible — pin the latest again anytime.`, strOKButtonText: "Reset files", onOK: () => run("rollback", () => buildHistoryRollback(appid, e.id), (r) => {
                         if (!r.success)
                             return r.unsupported ? "Rollback needs the slsteam-moon engine." : (r.error || "Rollback failed");
                         triggerSteamInstall(appid).catch(() => { });
@@ -5770,10 +5965,15 @@ function GameToolsSection() {
                         await noInternetFixBegin(appid).catch(() => ({}));
                         triggerSteamInstall(appid).catch(() => { });
                         const validated = await validateSteamApp(appid).catch(() => ({ success: false }));
+                        // Declared OUTSIDE the block: it is read by the return below, and
+                        // a block-scoped `const` here left that read referring to nothing
+                        // (TS2304), which threw ReferenceError on every pass down this
+                        // path -- unconditionally, since the return is not inside the if.
+                        let launched = false;
                         if (!validated.success) {
                             // Compatibility fallback for unusual Steam setups where the
                             // protocol handler cannot be invoked from the backend.
-                            const launched = launchGame(appid);
+                            launched = launchGame(appid);
                             if (launched) {
                                 try {
                                     DFL.Navigation.CloseSideMenus?.();
@@ -5893,14 +6093,14 @@ function GameToolsSection() {
                         ? `Backed up ${r.fileCount} save file(s) to ${r.zipPath}`
                         : r.error || "Backup failed"), children: busy === "backup" ? "Backing up…" : "Back up this game's saves" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: restoreSaves, children: busy === "listsaves" || busy === "restore" ? "Working…" : "Restore saves from a backup" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("repair", () => repairGame(appid), (r) => r.success
                         ? `Repaired: ${(r.steps || []).join(", ") || "nothing needed"}`
-                        : r.error || "Repair failed"), children: busy === "repair" ? "Repairing…" : "Repair this game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("stuck", () => fixStuckUpdate(appid), (r) => r.success ? (r.note || "Depotcache refreshed — retry the update in Steam.") : (r.error || "Couldn't fix the update.")), children: busy === "stuck" ? "Working…" : "Fix stuck update" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "If an update won't finish (a new depot needs a key it doesn't have), this re-deploys the game's manifests/keys so Steam can retry." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: fixLaunchTarget, children: busy === "repoint" ? "Working…" : "Fix launch target (use game's real exe)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["If a fix doesn't take effect, point Steam at the game's real Binaries/Win64 executable. Preserves your other launch options.", repointed ? " · Currently repointed." : ""] }) }), repointed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: resetLaunchTarget, children: "Reset launch target" }) })), (ageSec != null || pinned != null || histCount > 0) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, padding: "2px 2px" }, children: [ageSec != null ? `Manifest age: ${ageSec < 3600 ? Math.round(ageSec / 60) + "m" : ageSec < 86400 ? Math.round(ageSec / 3600) + "h" : Math.round(ageSec / 86400) + "d"}` : "", pinned != null ? `${ageSec != null ? " · " : ""}${pinned ? "version frozen" : "auto-updates"}` : ""] }) })), pinned != null && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: toggleFreeze, children: busy === "freeze" ? "Working…" : pinned ? "Unfreeze version (allow updates)" : "Freeze version (block updates)" }) })), histCount > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: openRollback, children: busy === "rollback" ? "Working…" : "Roll back build…" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: openBuildPicker, children: busy === "bp" ? "Working…" : "Install a specific build…" }) }), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || ddlActive, onClick: async () => {
+                        : r.error || "Repair failed"), children: busy === "repair" ? "Repairing…" : "Repair this game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => run("stuck", () => fixStuckUpdate(appid), (r) => r.success ? (r.note || "Depotcache refreshed — retry the update in Steam.") : (r.error || "Couldn't fix the update.")), children: busy === "stuck" ? "Working…" : "Fix stuck update" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "If an update won't finish (a new depot needs a key it doesn't have), this re-deploys the game's manifests/keys so Steam can retry." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: fixLaunchTarget, children: busy === "repoint" ? "Working…" : "Fix launch target (use game's real exe)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: ["If a fix doesn't take effect, point Steam at the game's real Binaries/Win64 executable. Preserves your other launch options.", repointed ? " · Currently repointed." : ""] }) }), repointed && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: resetLaunchTarget, children: "Reset launch target" }) })), (ageSec != null || pinned != null || histCount > 0) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, padding: "2px 2px" }, children: [ageSec != null ? `Manifest age: ${ageSec < 3600 ? Math.round(ageSec / 60) + "m" : ageSec < 86400 ? Math.round(ageSec / 3600) + "h" : Math.round(ageSec / 86400) + "d"}` : "", pinned != null ? `${ageSec != null ? " · " : ""}${pinned ? "version frozen" : "auto-updates"}` : ""] }) })), pinned != null && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: toggleFreeze, children: busy === "freeze" ? "Working…" : pinned ? "Unfreeze version (allow updates)" : "Freeze version (block updates)" }) })), histCount > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: openRollback, children: busy === "rollback" ? "Working…" : "Reset files…" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: openBuildPicker, children: busy === "bp" ? "Working…" : "Install a specific build…" }) }), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || ddlActive, onClick: async () => {
                         await run("ddl", async () => {
                             setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
                             return depotdlDownloadDlc(appid);
                         }, (r) => r.success ? "Started — downloading content DLC in the background." : (r.error || "Could not start"));
                         await pollDdlOnce();
                         startDdl();
-                    }, children: ddlActive && ddl?.op === "dlc" ? "Downloading DLC…" : "Download content DLC (DepotDownloader)" }) })), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: async () => {
+                    }, children: ddlActive && ddl?.op === "dlc" ? "Downloading DLC…" : "Blind download content DLC (DepotDownloader)" }) })), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.65, padding: "0 2px 4px", lineHeight: 1.4 }, children: "Downloads every keyed depot with no checks \u2014 it does not verify that a depot is DLC (language packs and base depots can be included), does not match your platform, and does not skip files you already have. For the filtered version use \u201CGet DLC files + unlock\u201D in Fixes." }) })), depotdl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: async () => {
                         setBusy("bp");
                         let builds = [];
                         try {
@@ -5914,15 +6114,31 @@ function GameToolsSection() {
                             setNote("No older builds on SteamDB for this game.");
                             return;
                         }
-                        DFL.showModal(SP_JSX.jsx(PickerModal, { title: "Download a build (files)", subtitle: "Fetches the build's depots via DepotDownloader into the game folder.", items: builds.map((b) => ({ key: b.buildid, label: `Build ${b.buildid}`, sublabel: b.date })), onPick: async (it) => {
-                                await run("ddl", async () => {
-                                    setNote(".NET / DepotDownloader preparing… first run may download the local .NET runtime.");
-                                    return depotdlDownloadBuild(appid, it.key);
-                                }, (r) => r.success ? `Started — downloading build ${it.key} in the background.` : (r.error || "Could not start"));
-                                await pollDdlOnce();
-                                startDdl();
+                        DFL.showModal(SP_JSX.jsx(PickerModal, { title: "Add a build to the archive", subtitle: "Keeps this build's gids, manifests and depot keys so it stays rebuildable later. Downloads no game files.", items: builds.map((b) => ({ key: b.buildid, label: `Build ${b.buildid}`, sublabel: b.date })), onPick: async (it) => {
+                                const dt = builds.find((b) => b.buildid === it.key)?.date || "";
+                                await run("archive", async () => {
+                                    // Resolve the exact per-depot gids the same way the
+                                    // build picker does — SteamDB's signed-in history,
+                                    // date-matched — because that is the only source with a
+                                    // depot's full history. Without gids there is nothing
+                                    // worth archiving.
+                                    setNote(`Resolving depot manifests for build ${it.key}…`);
+                                    const map = await resolveGidsViaSteamdb(dt, (s) => setNote(s));
+                                    if (!Object.keys(map).length) {
+                                        return { success: false, error: "Could not resolve this build's depot manifests (SteamDB sign-in needed)." };
+                                    }
+                                    setNote(`Archiving build ${it.key} (${Object.keys(map).length} depots)…`);
+                                    return buildArchiveAdd(appid, it.key, JSON.stringify(map), dt, "");
+                                }, (r) => {
+                                    if (!r.success)
+                                        return r.error || "Could not archive that build";
+                                    const miss = r.missingManifests?.length || 0;
+                                    return r.complete
+                                        ? `Archived build ${it.key} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s). Kept across plugin removal.`
+                                        : `Archived build ${it.key} incomplete — ${miss} manifest(s) unavailable${r.keys !== r.depots ? ` and ${(r.depots || 0) - (r.keys || 0)} depot key(s) missing` : ""}. A Hubcap key usually fixes this.`;
+                                });
                             } }));
-                    }, children: ddlActive && ddl?.op === "build" ? "Downloading build…" : "Download a build's files…" }) })), depotdl && ddl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "2px 0" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }, children: [SP_JSX.jsxs("span", { children: [ddl.op === "dlc" ? "DLC-candidate depots" : "Build depots", " \u00B7 ", ddl.status] }), SP_JSX.jsx("span", { style: { opacity: 0.8 }, children: ddl.status === "downloading" ? `${ddl.percent || 0}%` : ddl.status === "done" ? "100%" : "" })] }), SP_JSX.jsx("div", { style: { height: 6, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }, children: SP_JSX.jsx("div", { style: {
+                    }, children: busy === "archive" ? "Archiving…" : "Add this build to archive…" }) })), depotdl && ddl && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "2px 0" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }, children: [SP_JSX.jsxs("span", { children: [ddl.op === "dlc" ? "DLC-candidate depots" : "Build depots", " \u00B7 ", ddl.status] }), SP_JSX.jsx("span", { style: { opacity: 0.8 }, children: ddl.status === "downloading" ? `${ddl.percent || 0}%` : ddl.status === "done" ? "100%" : "" })] }), SP_JSX.jsx("div", { style: { height: 6, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }, children: SP_JSX.jsx("div", { style: {
                                     height: "100%",
                                     width: `${ddl.status === "done" ? 100 : ddl.status === "failed" ? 100 : (ddl.percent || 0)}%`,
                                     background: ddl.status === "failed" ? "#d9534f" : ddl.status === "done" ? "#5cb85c" : "#4a90d9",
@@ -9121,6 +9337,345 @@ function BackupSection() {
     return (SP_JSX.jsxs(DFL.PanelSection, { title: "Backup & restore", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Include API keys", description: "Off (default): your saved API keys are stripped from the export. On: keys are included \u2014 keep the file private.", checked: includeKeys, disabled: busy, onChange: setIncludeKeys }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Include game saves", description: "On (default): also back up each installed SLSDeck game's Proton-prefix saves (AppData, Saved Games, Documents). Can make the archive large.", checked: includeSaves, disabled: busy, onChange: setIncludeSaves }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: doExport, disabled: busy, children: busy ? "Working…" : "Export backup to Downloads" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "Backs up added games, manifests, depot keys, luas, and settings to ~/Downloads/slsdeck_backup_<time>.tar.gz." }) }), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 16, height: 16 } }), " Working\u2026"] }) })), backups.length === 0 ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.7 }, children: "No backups found in Downloads." }) })) : (backups.map((b) => (SP_JSX.jsx("div", { children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => (confirmPath === b.path ? doRestore(b.path) : setConfirmPath(b.path)), disabled: busy, children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600, color: confirmPath === b.path ? "#f5a623" : undefined }, children: confirmPath === b.path ? "Tap again to confirm restore" : `Restore ${b.name}` }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.6 }, children: [fmtSize(b.sizeBytes), " \u00B7 ", fmtDate(b.mtime)] })] }) }) }) }, b.path)))), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", padding: "2px 2px" }, children: "\u26A0 Restore overwrites current config, manifests, and settings, then hands them back to you \u2014 but does NOT re-activate injection. After restoring, run the client fix if needed, then Activate injection and restart Steam." }) })] }));
 }
 
+/**
+ * The Archive: one entry per game holding everything SLSDeck knows it should
+ * be — kept builds, the fixes it wants, its launch arguments and Proton tool.
+ *
+ * Modelled on LumaDeck's list → detail layout (GameList → GameDetail) rather
+ * than a flat table; it rejected tabs only because the QAM is cramped, and this
+ * lives in the Options sidebar where there is room.
+ *
+ * Deliberately declarative. Every fix is a FLAG plus the metadata needed to
+ * fetch it again — never a stored copy of its files. So the toggles here decide
+ * what a restore should try to re-apply; they never touch the game themselves.
+ * The only destructive controls are the explicit remove buttons.
+ */
+function Pill({ text, tone = "dim" }) {
+    const c = tone === "on" ? { bg: "rgba(47,168,92,0.18)", fg: "#5fd08a" }
+        : tone === "warn" ? { bg: "rgba(245,166,35,0.18)", fg: "#f5a623" }
+            : { bg: "rgba(255,255,255,0.10)", fg: "#c8d2e0" };
+    return (SP_JSX.jsx("span", { style: {
+            display: "inline-block", marginRight: 5, padding: "1px 7px", borderRadius: 999,
+            fontSize: 10, fontWeight: 700, background: c.bg, color: c.fg,
+        }, children: text }));
+}
+function GameDetail({ entry, onBack, onChanged }) {
+    const [busy, setBusy] = SP_REACT.useState("");
+    const [note, setNote] = SP_REACT.useState("");
+    const toggleFix = async (f) => {
+        setBusy(f.key);
+        try {
+            const r = await archiveSetFixWanted(entry.appid, f.key, !f.wanted);
+            setNote(r.success
+                ? `${f.fixType || "fix"} ${r.wanted ? "will be re-applied" : "will not be re-applied"} after a restore.`
+                : (r.error || "Could not change that flag"));
+            onChanged();
+        }
+        catch (e) {
+            setNote(`Failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    const forgetFix = async (f) => {
+        setBusy(f.key);
+        try {
+            const r = await archiveForgetFix(entry.appid, f.key);
+            setNote(r.success ? "Removed from the archive (the game is untouched)." : (r.error || "Failed"));
+            onChanged();
+        }
+        catch (e) {
+            setNote(`Failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
+    /**
+     * Activate = make this build the template the game must match, then close
+     * the gaps immediately (pin, fixes, DLC). Deactivate = stop trailing and put
+     * things back: unpin, clear launch args, then Steam's own file reset.
+     *
+     * Launch options and the reset trigger are done HERE rather than in the
+     * backend because Steam owns both — SetAppLaunchOptions and the install/
+     * validate calls only exist on the client side.
+     */
+    const toggleActive = (buildid) => {
+        const isActive = entry.activeBuild === buildid;
+        if (!isActive) {
+            DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: `Activate build ${buildid}?`, strDescription: "This game will be held to this build: it gets pinned and downloaded, the recorded launch arguments are applied, flagged fixes are re-applied, and any archived DLC content is fetched once. Reversible.", strOKButtonText: "Activate", onOK: async () => {
+                    setBusy(`act-${buildid}`);
+                    try {
+                        const a = await archiveActivate(entry.appid, buildid, readLaunchArgs());
+                        if (!a.success) {
+                            setNote(a.error || "Could not activate");
+                            return;
+                        }
+                        const r = await archiveReconcile(entry.appid, true);
+                        // Steam-side pieces the backend deliberately does not touch.
+                        if (r.success && r.wantLaunchOptions) {
+                            try {
+                                const SC = window.SteamClient;
+                                SC?.Apps?.SetAppLaunchOptions?.(entry.appid, r.wantLaunchOptions);
+                            }
+                            catch { /* ignore */ }
+                        }
+                        if (r.success && r.installed) {
+                            triggerSteamInstall(entry.appid).catch(() => { });
+                            validateSteamApp(entry.appid).catch(() => { });
+                        }
+                        const did = (r.actions || []).join(", ");
+                        setNote(!r.installed
+                            ? `Activated. ${r.waiting || "The template applies once the game is installed."}`
+                            : did ? `Activated — ${did}.` : "Activated — the game already matches this build.");
+                        onChanged();
+                    }
+                    catch (e) {
+                        setNote(`Failed: ${e}`);
+                    }
+                    finally {
+                        setBusy("");
+                    }
+                } }));
+            return;
+        }
+        DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: `Deactivate build ${buildid}?`, strDescription: "Stops holding the game to this build: unpins the manifest, clears the launch arguments, and asks Steam to reset the game's files. The archive entry and its fix flags are kept.", strOKButtonText: "Deactivate", onOK: async () => {
+                setBusy(`act-${buildid}`);
+                try {
+                    const r = await archiveDeactivate(entry.appid, true);
+                    if (!r.success) {
+                        setNote(r.error || "Could not deactivate");
+                        return;
+                    }
+                    runSteamSideCleanup(r);
+                    setNote(`Deactivated${r.unpinned ? " and unpinned" : ""} — Steam is resetting the game's files.`);
+                    onChanged();
+                }
+                catch (e) {
+                    setNote(`Failed: ${e}`);
+                }
+                finally {
+                    setBusy("");
+                }
+            } }));
+    };
+    // Steam owns launch arguments, so read them here and hand them to the backend
+    // as the "before" state. Deactivate then RESTORES this instead of blanking —
+    // which is what keeps Proton and native-Linux games symmetric: each is put
+    // back exactly as it was, rather than into a state the template invented.
+    const readLaunchArgs = () => {
+        try {
+            const SC = window.SteamClient;
+            const v = SC?.Apps?.GetLaunchOptionsForApp?.(entry.appid);
+            return typeof v === "string" ? v : "";
+        }
+        catch {
+            return "";
+        }
+    };
+    // Shared Steam-side cleanup: the backend deactivates and reports what it
+    // could not do itself (launch args + file reset are SteamClient-only).
+    const runSteamSideCleanup = (d) => {
+        if (d?.clearLaunchOptions) {
+            try {
+                const SC = window.SteamClient;
+                // "" legitimately means "it had none before", so always write the
+                // reported value rather than treating empty as "skip".
+                SC?.Apps?.SetAppLaunchOptions?.(entry.appid, d.restoreLaunchOptions ?? "");
+            }
+            catch { /* ignore */ }
+        }
+        if (d?.resetFiles) {
+            triggerSteamInstall(entry.appid).catch(() => { });
+            validateSteamApp(entry.appid).catch(() => { });
+        }
+    };
+    const toggleGameActive = () => {
+        if (entry.activeBuild) {
+            toggleActive(entry.activeBuild);
+            return;
+        }
+        DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Activate this game's template?", strDescription: (entry.buildCount > 1
+                ? `This game has ${entry.buildCount} archived builds; the most recently archived one is used. Pick a specific build from the list below instead if you want an older one. `
+                : "") +
+                "The game gets pinned to the archived build and downloaded, its recorded launch arguments are applied, flagged fixes are re-applied and any archived DLC content is fetched once. Re-checked on every boot.", strOKButtonText: "Activate", onOK: async () => {
+                setBusy("game-active");
+                try {
+                    const a = await archiveActivateGame(entry.appid, readLaunchArgs());
+                    if (!a.success) {
+                        setNote(a.error || "Could not activate");
+                        return;
+                    }
+                    const r = await archiveReconcile(entry.appid, true);
+                    if (r.success && r.wantLaunchOptions) {
+                        try {
+                            const SC = window.SteamClient;
+                            SC?.Apps?.SetAppLaunchOptions?.(entry.appid, r.wantLaunchOptions);
+                        }
+                        catch { /* ignore */ }
+                    }
+                    if (r.success && r.installed) {
+                        triggerSteamInstall(entry.appid).catch(() => { });
+                        validateSteamApp(entry.appid).catch(() => { });
+                    }
+                    const did = (r.actions || []).join(", ");
+                    setNote(!r.installed
+                        ? `Activated build ${a.chosen}. ${r.waiting || "It applies once the game is installed."}`
+                        : did ? `Activated build ${a.chosen} — ${did}.` : `Activated build ${a.chosen} — already matching.`);
+                    onChanged();
+                }
+                catch (e) {
+                    setNote(`Failed: ${e}`);
+                }
+                finally {
+                    setBusy("");
+                }
+            } }));
+    };
+    const unarchiveGame = () => DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Unarchive this game?", strDescription: (entry.activeBuild
+            ? "This game is ACTIVE. It will be deactivated first — unpinned, launch arguments cleared and its files reset — and then removed. "
+            : "") +
+            `Deletes the whole snapshot: ${entry.buildCount} archived build(s), ${entry.fixCount} fix record(s), the launch arguments and the Proton tool. The installed game's files are otherwise untouched.`, strOKButtonText: "Unarchive", onOK: async () => {
+            setBusy("game-remove");
+            try {
+                const r = await archiveRemoveGame(entry.appid);
+                if (!r.success) {
+                    setNote(r.error || "Failed");
+                    return;
+                }
+                runSteamSideCleanup(r.deactivated);
+                setNote(`Unarchived — ${r.builds ?? 0} build(s) dropped, ${r.removedManifests ?? 0} manifest(s) freed.`);
+                onChanged();
+                onBack();
+            }
+            catch (e) {
+                setNote(`Failed: ${e}`);
+            }
+            finally {
+                setBusy("");
+            }
+        } }));
+    const isActive = (buildid) => entry.activeBuild === buildid;
+    const dropBuild = (buildid) => DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Unarchive this build?", strDescription: (isActive(buildid)
+            ? "This build is currently ACTIVE. It will be deactivated first — unpinned, launch arguments cleared and the game's files reset — and then removed from the archive. "
+            : "") +
+            `Forgets build ${buildid} and deletes the manifests no other archived build needs. The installed game's files are otherwise untouched.`, strOKButtonText: "Unarchive", onOK: async () => {
+            setBusy(buildid);
+            try {
+                const r = await buildArchiveRemove(entry.appid, buildid);
+                if (!r.success) {
+                    setNote(r.error || "Failed");
+                    return;
+                }
+                // The backend deactivates an active build before removing it, but the
+                // Steam-side half (launch args, file reset) is only reachable here.
+                const d = r.deactivated;
+                if (d?.clearLaunchOptions) {
+                    try {
+                        const SC = window.SteamClient;
+                        SC?.Apps?.SetAppLaunchOptions?.(entry.appid, "");
+                    }
+                    catch { /* ignore */ }
+                }
+                if (d?.resetFiles) {
+                    triggerSteamInstall(entry.appid).catch(() => { });
+                    validateSteamApp(entry.appid).catch(() => { });
+                }
+                setNote((d?.was ? `Deactivated and unarchived build ${buildid} — Steam is resetting the game's files. ` : `Unarchived build ${buildid}. `) +
+                    `${r.removedManifests ?? 0} manifest(s) freed.`);
+                onChanged();
+            }
+            catch (e) {
+                setNote(`Failed: ${e}`);
+            }
+            finally {
+                setBusy("");
+            }
+        } }));
+    const dropDlc = () => DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Remove downloaded DLC files?", strDescription: "Deletes only the files the DLC download created (never files it overwrote) and removes the DLC unlock.", strOKButtonText: "Remove", onOK: async () => {
+            setBusy("dlc");
+            try {
+                const r = await dlcDepotRemove(entry.appid, true);
+                setNote(r.success ? `Removed ${r.removed ?? 0} DLC file(s).` : (r.error || "Failed"));
+                onChanged();
+            }
+            catch (e) {
+                setNote(`Failed: ${e}`);
+            }
+            finally {
+                setBusy("");
+            }
+        } }));
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: entry.name || `App ${entry.appid}`, children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: onBack, children: "\u2190 Back to archive" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: toggleGameActive, children: busy === "game-active"
+                        ? "Working…"
+                        : entry.activeBuild
+                            ? `Deactivate (build ${entry.activeBuild})`
+                            : "Activate" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: unarchiveGame, children: busy === "game-remove" ? "Working…" : "Unarchive this game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.6 }, children: ["AppID ", SP_JSX.jsx("b", { children: entry.appid }), entry.compatTool ? SP_JSX.jsxs(SP_JSX.Fragment, { children: [" \u00B7 Proton ", SP_JSX.jsx("b", { children: entry.compatTool })] }) : SP_JSX.jsxs(SP_JSX.Fragment, { children: [" \u00B7 Proton ", SP_JSX.jsx("i", { children: "default" })] }), entry.dlcFiles ? SP_JSX.jsxs(SP_JSX.Fragment, { children: [" \u00B7 ", SP_JSX.jsx("b", { children: entry.dlcFiles }), " DLC file(s)"] }) : null, entry.updatedOn ? SP_JSX.jsxs(SP_JSX.Fragment, { children: [" \u00B7 updated ", entry.updatedOn] }) : null, entry.launchOptions
+                            ? SP_JSX.jsxs("div", { style: { marginTop: 3, wordBreak: "break-all" }, children: ["Launch args: ", SP_JSX.jsx("code", { children: entry.launchOptions })] })
+                            : null] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, fontWeight: 600, paddingTop: 4 }, children: ["Archived builds (", entry.buildCount, ")"] }) }), entry.builds.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6 }, children: "None kept for this game." }) })), entry.builds.map((b) => {
+                const incomplete = (b.missingManifests?.length || 0) > 0;
+                return (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", alignItems: "center", gap: 8, width: "100%" }, children: [SP_JSX.jsxs("div", { style: { flex: 1, fontSize: 11 }, children: [SP_JSX.jsxs("div", { children: ["Build ", SP_JSX.jsx("b", { children: b.buildid }), " ", b.date ? `· ${b.date}` : ""] }), SP_JSX.jsxs("div", { style: { opacity: 0.65 }, children: [incomplete
+                                                ? SP_JSX.jsx(Pill, { text: `${b.missingManifests.length} manifest(s) missing`, tone: "warn" })
+                                                : SP_JSX.jsx(Pill, { text: "complete", tone: "on" }), Object.keys(b.gids || {}).length, " depot(s)", b.archivedOn ? ` · archived ${b.archivedOn}` : ""] })] }), SP_JSX.jsx(DFL.DialogButton, { style: { width: 104, minWidth: 104, fontSize: 11, padding: "4px 6px" }, disabled: !!busy, onClick: () => toggleActive(b.buildid), children: busy === `act-${b.buildid}` ? "…"
+                                    : entry.activeBuild === b.buildid ? "Deactivate" : "Activate" }), SP_JSX.jsx(DFL.DialogButton, { style: { width: 90, minWidth: 90, fontSize: 11, padding: "4px 6px" }, disabled: !!busy, onClick: () => dropBuild(b.buildid), children: busy === b.buildid ? "…" : "Unarchive" })] }) }, b.buildid));
+            }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, fontWeight: 600, paddingTop: 8 }, children: ["Fixes (", entry.wantedFixes, "/", entry.fixCount, " flagged)"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: 0.6, lineHeight: 1.45 }, children: "Flagged fixes are re-applied after a build restore. Toggling here changes nothing on disk \u2014 it only records what this game should have." }) }), entry.fixes.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6 }, children: "No fixes recorded." }) })), entry.fixes.map((f) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", alignItems: "center", gap: 6, width: "100%" }, children: [SP_JSX.jsxs("div", { style: { flex: 1, fontSize: 11 }, children: [SP_JSX.jsxs("div", { children: [SP_JSX.jsx("b", { children: f.fixType || "fix" }), " ", f.files ? `· ${f.files} file(s)` : ""] }), SP_JSX.jsxs("div", { style: { opacity: 0.65 }, children: [f.wanted ? SP_JSX.jsx(Pill, { text: "re-apply", tone: "on" }) : SP_JSX.jsx(Pill, { text: "ignored" }), f.missing ? SP_JSX.jsx(Pill, { text: "not applied now", tone: "warn" }) : null, f.appliedAt || f.date || ""] })] }), SP_JSX.jsx(DFL.DialogButton, { style: { width: 76, minWidth: 76, fontSize: 11, padding: "4px 6px" }, disabled: !!busy, onClick: () => toggleFix(f), children: busy === f.key ? "…" : f.wanted ? "Unflag" : "Flag" }), SP_JSX.jsx(DFL.DialogButton, { style: { width: 76, minWidth: 76, fontSize: 11, padding: "4px 6px" }, disabled: !!busy, onClick: () => forgetFix(f), children: "Forget" })] }) }, f.key))), entry.dlcFiles > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: dropDlc, children: busy === "dlc" ? "Working…" : `Remove ${entry.dlcFiles} downloaded DLC file(s)` }) })), note ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8 }, children: note }) })) : null] }));
+}
+function ArchiveSection() {
+    const [entries, setEntries] = SP_REACT.useState([]);
+    const [sel, setSel] = SP_REACT.useState(null);
+    const [loading, setLoading] = SP_REACT.useState(true);
+    const [note, setNote] = SP_REACT.useState("");
+    const load = async () => {
+        try {
+            const r = await archiveEntries();
+            setEntries(r.success ? (r.entries || []) : []);
+            if (!r.success)
+                setNote(r.error || "Could not read the archive");
+        }
+        catch (e) {
+            setNote(`Failed: ${e}`);
+        }
+        finally {
+            setLoading(false);
+        }
+    };
+    SP_REACT.useEffect(() => { load(); }, []);
+    const snapshotCurrent = async () => {
+        // Launch options live in Steam, not in our backend, so read them here and
+        // hand them over — otherwise the entry would silently lose them.
+        setNote("Recording current state…");
+        try {
+            let saved = 0;
+            for (const e of entries) {
+                let opts = "";
+                try {
+                    const SC = window.SteamClient;
+                    const details = SC?.Apps?.GetLaunchOptionsForApp?.(e.appid);
+                    opts = typeof details === "string" ? details : "";
+                }
+                catch { /* Steam may not expose it; the backend keeps the prior value */ }
+                const r = await archiveSnapshotGame(e.appid, opts, "", e.name);
+                if (r.success)
+                    saved += 1;
+            }
+            setNote(`Updated ${saved} entr${saved === 1 ? "y" : "ies"}.`);
+            await load();
+        }
+        catch (e) {
+            setNote(`Failed: ${e}`);
+        }
+    };
+    if (loading) {
+        return SP_JSX.jsx(DFL.PanelSection, { title: "Archive", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7 }, children: "Reading the archive\u2026" }) }) });
+    }
+    const current = entries.find((e) => e.appid === sel) || null;
+    if (current) {
+        return SP_JSX.jsx(GameDetail, { entry: current, onBack: () => setSel(null), onChanged: load });
+    }
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Archive", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7, lineHeight: 1.5 }, children: "What SLSDeck keeps for each game: archived builds (gids, manifests and depot keys), which fixes it should have, its launch arguments and Proton tool. All of it rides along in the uninstall archive, so it survives removing the plugin." }) }), entries.length === 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.65 }, children: "Nothing archived yet. Use \u201CAdd this build to archive\u2026\u201D on a game's page to keep a build." }) })), entries.map((e) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => setSel(e.appid), children: SP_JSX.jsxs("div", { style: { textAlign: "left" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13 }, children: e.name || `App ${e.appid}` }), SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: 0.65, marginTop: 2 }, children: [e.buildCount ? SP_JSX.jsx(Pill, { text: `${e.buildCount} build${e.buildCount === 1 ? "" : "s"}` }) : null, e.fixCount ? SP_JSX.jsx(Pill, { text: `${e.wantedFixes}/${e.fixCount} fixes`, tone: e.wantedFixes ? "on" : "dim" }) : null, e.dlcFiles ? SP_JSX.jsx(Pill, { text: `${e.dlcFiles} DLC files` }) : null, e.compatTool ? SP_JSX.jsx(Pill, { text: e.compatTool }) : null] })] }) }) }, e.appid))), entries.length > 0 && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: snapshotCurrent, children: "Refresh recorded fixes / launch args" }) })), note ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.8 }, children: note }) })) : null] }));
+}
+
 // Auto-maintained Steam collection for SLS-added games.
 //
 // Steam has no native filter for "added by SLSDeck" — to Steam these games look
@@ -9388,7 +9943,23 @@ function DlcCloudToggles() {
         getDisableCloud().then((r) => setNoCloud(!!r.enabled)).catch(() => { });
         getDisableDlcUnlockOwned().then((r) => setNoOwnedDlc(!!r.enabled)).catch(() => { });
     }, []);
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "DLC & cloud", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Add DLC automatically", description: "When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. Off by default.", checked: autoDlc, onChange: async (v) => { setAutoDlc(v); await setAutoAddDlc(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Disable DLC unlock on owned games", description: "Stop moon from auto-unlocking (unowned) DLC on games you legit own. Scans your library's owned games, resolves their DLC, and blacklists them in the engine. Can be slow on a big library. Off by default.", checked: noOwnedDlc, onChange: async (v) => {
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "DLC & cloud", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Add DLC automatically", description: "When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. Off by default.", checked: autoDlc, onChange: async (v) => {
+                        setAutoDlc(v);
+                        // The engine half of this toggle can fail (no config / unwritable).
+                        // Revert and say so rather than showing ON over a config that was
+                        // never written.
+                        try {
+                            const r = await setAutoAddDlc(v);
+                            if (!r?.success) {
+                                setAutoDlc(!v);
+                                toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the SLSsteam config" });
+                            }
+                        }
+                        catch (e) {
+                            setAutoDlc(!v);
+                            toaster.toast({ title: "SLSDeck", body: `Error: ${e}` });
+                        }
+                    } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Disable DLC unlock on owned games", description: "Stop moon from auto-unlocking (unowned) DLC on games you legit own. Scans your library's owned games, resolves their DLC, and blacklists them in the engine. Can be slow on a big library. Off by default.", checked: noOwnedDlc, onChange: async (v) => {
                         setNoOwnedDlc(v);
                         setBusy(true);
                         try {
@@ -9612,6 +10183,11 @@ function AdvancedPage() {
                     icon: SP_JSX.jsx(FaShieldAlt, {}),
                     content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(TokeerSection, {}) }),
                 }] : []),
+            {
+                title: "Archive",
+                icon: SP_JSX.jsx(FaArchive, {}),
+                content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(ArchiveSection, {}) }),
+            },
             {
                 title: "Dependencies",
                 icon: SP_JSX.jsx(FaBoxOpen, {}),
@@ -10483,6 +11059,35 @@ function cefLooksStable(token) {
         return false;
     return Date.now() - token.stableSince >= DEPENDENCY_STABLE_WINDOW_MS;
 }
+/**
+ * Re-assert activated build templates on boot.
+ *
+ * The backend already reconciles the parts it owns (pin, fixes, DLC) during its
+ * own warmup. This pass exists for the one piece it CANNOT touch: launch
+ * arguments live in Steam (SetAppLaunchOptions) and are only reachable from
+ * here. Reporting-only on the backend side, so it does no work twice.
+ */
+async function applyArchiveTemplatesOnBoot() {
+    try {
+        const r = await archiveReconcileAll(false);
+        for (const t of r.results || []) {
+            if (!t.installed || !t.wantLaunchOptions)
+                continue;
+            try {
+                const SC = window.SteamClient;
+                const current = SC?.Apps?.GetLaunchOptionsForApp?.(t.appid);
+                if (typeof current === "string" && current === t.wantLaunchOptions)
+                    continue;
+                SC?.Apps?.SetAppLaunchOptions?.(t.appid, t.wantLaunchOptions);
+                console.info(`SLSDeck: restored launch args for ${t.appid} from its active build template`);
+            }
+            catch { /* Steam may not expose it on this build */ }
+        }
+    }
+    catch (e) {
+        console.warn("SLSDeck: archive template boot pass failed", e);
+    }
+}
 async function repairMissingDependenciesFromPluginLifecycle(token) {
     if (!cefLooksStable(token)) {
         console.info("SLSDeck: dependency repair deferred until Steam CEF is stable");
@@ -10741,7 +11346,7 @@ function Content() {
         scroller.addEventListener("scroll", onScroll, { passive: true });
         return () => scroller.removeEventListener("scroll", onScroll);
     }, []);
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: anchor, style: { height: 0 } }), SP_JSX.jsx(RepairBanner, {}), SP_JSX.jsx(SlsSteamCompact, {}), installed && actionsFixesQam && SP_JSX.jsx(GameControlsSection, { onChanged: bump }), installed && gamesInQam && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: bump }), installed && SP_JSX.jsx(GameToolsSection, {}), installed && !hideToolsQam && SP_JSX.jsx(ToolsSection, {})] }));
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx("div", { ref: anchor, style: { height: 0 } }), SP_JSX.jsx(RepairBanner, {}), SP_JSX.jsx(SlsSteamCompact, {}), installed && actionsFixesQam && SP_JSX.jsx(GameControlsSection, { onChanged: bump }), installed && SP_JSX.jsx(GameToolsSection, {}), installed && gamesInQam && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: bump }), installed && !hideToolsQam && SP_JSX.jsx(ToolsSection, {})] }));
 }
 var index = definePlugin(() => {
     console.log("SLSDeck (Decky) initializing");
@@ -10862,6 +11467,10 @@ var index = definePlugin(() => {
     // is off or nothing changed). Boot once, then slowly to catch removals/purges
     // that don't go through the add-notifier above.
     setTimeout(() => { syncSlsCollection().catch(() => { }); }, 6000);
+    // Re-assert activated build templates once Steam has settled. Deliberately
+    // late: SetAppLaunchOptions needs a live SteamClient, and the backend has
+    // already done its half during warmup.
+    setTimeout(() => { applyArchiveTemplatesOnBoot().catch(() => { }); }, 12000);
     const collectionSync = setInterval(() => { syncSlsCollection().catch(() => { }); }, 60000);
     return {
         name: "SLSDeck",

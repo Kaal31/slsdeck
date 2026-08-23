@@ -22,8 +22,8 @@ from typing import Any, Dict, List
 
 import decky
 
-from lt import (apis, art, audit, backup, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
-                dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
+from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
+                dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
                 opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
                 updates, watchdog, workshop, multiplayer, tokeer,
 )
@@ -252,10 +252,27 @@ class Plugin:
         self._warmup_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="slsdeck-warmup")
 
+        def _boot_archive_templates():
+            """Re-assert every activated build template.
+
+            Activation is meant to be persistent, not a one-shot: a Steam client
+            update can drop a pin, a game update can replace fixed files, and a
+            verify can wipe DLC content we placed. Re-checking on each boot is
+            what makes an activated build actually hold. Idempotent -- a game
+            that already matches produces no actions and no work."""
+            try:
+                r = buildarchive.reconcile_all(apply=True)
+                if r.get("results"):
+                    decky.logger.info(
+                        f"SLSDeck: archive templates re-asserted for {len(r['results'])} game(s)")
+            except Exception as exc:
+                decky.logger.warning(f"SLSDeck: archive boot reconcile failed: {exc}")
+
         warmups = (apis.init_apis, downloads.init_applist, downloads.init_games_db,
                    fixes.init_fixes_index, ryuu.init, slssteam.ensure_launch_wrapper,
                    slssteam.boot_desktop_icon_guard, slssteam.boot_injection_watchdog,
-                   _provision_if_steam_down, _boot_cloud_and_updates)
+                   _provision_if_steam_down, _boot_cloud_and_updates,
+                   _boot_archive_templates)
 
         # HV (cpuid_fault_emulation) per-game lifecycle: start the HV-Decky
         # watcher so flagged games get the module automatically.
@@ -1093,6 +1110,99 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+    async def build_archive_add(self, appid: int, buildid: str, gids_json: str = "{}",
+                                date: str = "", name: str = "") -> Dict[str, Any]:
+        """Keep a build: its gids, manifest binaries and depot keys, stored so it
+        can still be rebuilt after the sources stop serving it."""
+        import json as _json
+        try:
+            gids = _json.loads(gids_json or "{}") or {}
+        except Exception:
+            gids = {}
+        return await self._run(buildarchive.add_build, int(appid), str(buildid), gids, date, name)
+
+    async def archive_is_build(self, appid: int, buildid: str) -> Dict[str, Any]:
+        """Is this build archived, and is it the active template?"""
+        return await self._run(buildarchive.is_build_archived, int(appid), str(buildid))
+
+    async def archive_activate(self, appid: int, buildid: str,
+                               launch_options_before: str = "") -> Dict[str, Any]:
+        """Make an archived build the template this game should match.
+        launch_options_before is what the game had BEFORE activation, captured
+        by the frontend so deactivate can restore it rather than blanking."""
+        return await self._run(buildarchive.activate, int(appid), str(buildid),
+                               str(launch_options_before or ""))
+
+    async def archive_deactivate(self, appid: int, reset: bool = True) -> Dict[str, Any]:
+        """Stop trailing and undo the pin. The caller clears launch args and
+        triggers the file reset, both of which are Steam-side."""
+        return await self._run(buildarchive.deactivate, int(appid), bool(reset))
+
+    async def archive_reconcile(self, appid: int, apply: bool = True) -> Dict[str, Any]:
+        """Close the gaps between the game and its active template."""
+        return await self._run(buildarchive.reconcile, int(appid), bool(apply))
+
+    async def archive_remove_game(self, appid: int) -> Dict[str, Any]:
+        """Unarchive a whole game (every build + its fixes/args), deactivating
+        first so nothing is left half-applied."""
+        return await self._run(buildarchive.remove_game, int(appid))
+
+    async def archive_activate_game(self, appid: int,
+                                    launch_options_before: str = "") -> Dict[str, Any]:
+        """Activate a game's archived build without naming one (newest wins)."""
+        return await self._run(buildarchive.activate_game, int(appid),
+                               str(launch_options_before or ""))
+
+    async def archive_reconcile_all(self, apply: bool = True) -> Dict[str, Any]:
+        """Re-assert every activated build template. Run on boot."""
+        return await self._run(buildarchive.reconcile_all, bool(apply))
+
+    async def archive_entries(self) -> Dict[str, Any]:
+        """Every archived game: builds, flagged fixes, launch args, compat tool."""
+        return await self._run(buildarchive.entries)
+
+    async def archive_snapshot_game(self, appid: int, launch_options: str = "",
+                                    compat_tool: str = "", name: str = "") -> Dict[str, Any]:
+        """Record this game's current fix/launch/compat state into the archive.
+        launch_options is passed in because Steam owns it (SetAppLaunchOptions)."""
+        return await self._run(buildarchive.snapshot_game, int(appid),
+                               launch_options, compat_tool, name)
+
+    async def archive_set_fix_wanted(self, appid: int, key: str, wanted: bool) -> Dict[str, Any]:
+        """Flag/unflag a fix for re-application. Changes no files."""
+        return await self._run(buildarchive.set_fix_wanted, int(appid), str(key), bool(wanted))
+
+    async def archive_forget_fix(self, appid: int, key: str) -> Dict[str, Any]:
+        return await self._run(buildarchive.forget_fix, int(appid), str(key))
+
+    async def archive_pending_reapply(self, appid: int) -> Dict[str, Any]:
+        return await self._run(buildarchive.pending_reapply, int(appid))
+
+    async def build_archive_list(self, appid: int = 0) -> Dict[str, Any]:
+        return await self._run(buildarchive.list_builds, int(appid))
+
+    async def build_archive_remove(self, appid: int, buildid: str) -> Dict[str, Any]:
+        return await self._run(buildarchive.remove_build, int(appid), str(buildid))
+
+    async def dlc_depot_plan(self, appid: int) -> Dict[str, Any]:
+        """Which DLC actually have downloadable content for THIS install.
+
+        Detects the installed platform and unlocker from disk rather than
+        assuming Proton, and reports every exclusion (wrong platform, missing
+        depot key, already installed) instead of silently dropping it."""
+        return await self._run(dlcdepot.plan, int(appid))
+
+    async def dlc_depot_start(self, appid: int, dlc_appids: List[int] = None) -> Dict[str, Any]:
+        """Download the chosen DLC's depots into the game's install folder."""
+        return await self._run(dlcdepot.start, int(appid), dlc_appids or [])
+
+    async def dlc_depot_remove(self, appid: int, also_unlock: bool = True) -> Dict[str, Any]:
+        """Delete the files a DLC fetch brought in, and remove the unlocker.
+
+        Only files the download NEWLY CREATED are removed (recorded at download
+        time); anything it overwrote belonged to the base game and is left."""
+        return await self._run(dlcdepot.remove_downloaded, int(appid), bool(also_unlock))
+
     async def dlc_unlocker_remove(self, appid: int, kind: str) -> Dict[str, Any]:
         try:
             res = steam.get_game_install_path_response(int(appid))
@@ -1596,11 +1706,20 @@ class Plugin:
         # Native path on newer engines: flip InjectAllAdvertisedDlc so ALL
         # advertised DLC show owned in the store/library view (not just in-game).
         # Harmless no-op on older engines, where per-add DlcData is the fallback.
-        try:
-            await self._run(slssteam.set_inject_all_advertised_dlc, bool(enabled))
-        except Exception:
-            pass
-        return {"success": True}
+        #
+        # This toggle has two halves: the settings mirror above drives OUR
+        # behaviour (registering DLC depot keys at add time), the config key
+        # below drives the ENGINE's. The engine half used to be wrapped in a bare
+        # try/except whose result was discarded -- and since _run traps its own
+        # exceptions and returns {"success": False, ...} rather than raising, that
+        # except could never fire. A failed write ("no config", "write failed")
+        # left the toggle reading ON with nothing in config.yaml. Report it.
+        engine = await self._run(slssteam.set_inject_all_advertised_dlc, bool(enabled))
+        if not (engine or {}).get("success"):
+            return {"success": False, "enabled": bool(enabled), "settingSaved": True,
+                    "error": (engine or {}).get("error") or
+                             "could not write InjectAllAdvertisedDlc to the SLSsteam config"}
+        return {"success": True, "enabled": bool(enabled)}
 
     async def get_disable_cloud(self) -> Dict[str, Any]:
         return {"success": True, "enabled": settings.get_disable_cloud()}

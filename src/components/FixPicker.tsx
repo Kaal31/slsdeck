@@ -32,6 +32,14 @@ import {
   dlcUnlockersStatus,
   dlcUnlockerInstall,
   dlcUnlockerRemove,
+  dlcDepotPlan,
+  dlcDepotStart,
+  dlcDepotRemove,
+  creamyDeploy,
+  buildArchiveAdd,
+  buildArchiveRemove,
+  archiveIsBuild,
+  archiveSnapshotGame,
   UnlockerKind,
   hvAutoStatus,
   hvAutoApply,
@@ -114,6 +122,8 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   // own. When this pref is on (default), hide them on SLS-added games.
   const [dlcOwnedOnly, setDlcOwnedOnly] = useState(true);
   const [smoke, setSmoke] = useState<{ installed: boolean; supported: boolean } | null>(null);
+  // Whether the build this game is currently pinned to is in the Archive.
+  const [archived, setArchived] = useState(false);
   const [dlcU, setDlcU] = useState<Partial<Record<UnlockerKind, { installed: boolean; supported: boolean }>>>({});
   // Set when a crack/HV host blocks auto-download and we hand off to the browser.
   // Surfaces an "Apply from Downloads" button so the user finishes with the file
@@ -219,9 +229,18 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       const p = await getPinStatus(appid);
       setPinned(!!p.pinned);
       setPinInfo({ buildid: p.buildid, depots: p.depots });
+      // Ask about THIS build specifically: the same game can have several
+      // builds archived, so "is this game archived" is the wrong question.
+      if (p.buildid) {
+        const a = await archiveIsBuild(appid, p.buildid).catch(() => null);
+        setArchived(!!a?.archived);
+      } else {
+        setArchived(false);
+      }
     } catch {
       setPinned(false);
       setPinInfo({});
+      setArchived(false);
     }
     try {
       const r = await getInstalledApps();
@@ -507,6 +526,142 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         ),
       () => pinForLuatoolsFix(appid, fix.id)
     );
+  };
+
+  // Archive the build this game is actually on right now. `pinInfo` already
+  // holds the pinned build + its depot gids, which is exactly what the archive
+  // needs — so no SteamDB scrape is required here, unlike the Archive-a-build
+  // picker in QAM which archives an arbitrary OLD build.
+  const currentBuildId = pinInfo?.buildid || "";
+  const doArchiveToggle = async () => {
+    if (!currentBuildId) { setMsg("No pinned build to archive — pin or install a build first."); return; }
+    setBusy("archive");
+    try {
+      if (archived) {
+        const r = await buildArchiveRemove(appid, currentBuildId);
+        setMsg(r.success
+          ? `Unarchived build ${currentBuildId} (${r.removedManifests ?? 0} manifest(s) freed).`
+          : (r.error || "Could not unarchive"));
+        if (r.success) setArchived(false);
+      } else {
+        const gids = pinInfo?.depots || {};
+        const r = await buildArchiveAdd(appid, currentBuildId, JSON.stringify(gids), "", check?.gameName || "");
+        if (r.success) {
+          setArchived(true);
+          // Record the fixes/launch args/Proton alongside the build, so the
+          // entry is a complete template rather than just depot material.
+          let opts = "";
+          try {
+            const SC: any = (window as any).SteamClient;
+            const v = SC?.Apps?.GetLaunchOptionsForApp?.(appid);
+            opts = typeof v === "string" ? v : "";
+          } catch { /* Steam may not expose it */ }
+          await archiveSnapshotGame(appid, opts, "", check?.gameName || "").catch(() => null);
+          setMsg(r.complete
+            ? `Archived build ${currentBuildId} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s).`
+            : `Archived build ${currentBuildId}, but ${r.missingManifests?.length || 0} manifest(s) are unavailable (a Hubcap key usually fixes this).`);
+        } else {
+          setMsg(r.error || "Could not archive that build");
+        }
+      }
+    } catch (e) { setMsg(`Failed: ${e}`); } finally { setBusy(""); }
+  };
+
+  // Apply whichever unlocker plan() detected for THIS install, rather than
+  // assuming SmokeAPI. Returns a short sentence for the status line.
+  const applyUnlockFor = async (unlocker?: string): Promise<string> => {
+    try {
+      if (unlocker === "creamysteamy") {
+        const r = await creamyDeploy(appid);
+        return r?.success ? "DLC unlock applied (CreamySteamy)." : `Unlock failed: ${r?.error || "CreamySteamy"}`;
+      }
+      if (unlocker === "uplay_r1" || unlocker === "uplay_r2") {
+        const kind: UnlockerKind = unlocker === "uplay_r1" ? "uplayr1" : "uplayr2";
+        const r = await dlcUnlockerInstall(appid, kind);
+        return r?.success ? `DLC unlock applied (${kind}).` : `Unlock failed: ${r?.error || kind}`;
+      }
+      if (unlocker === "smokeapi") {
+        const r = await smokeapiInstall(appid);
+        if (r?.success) {
+          if (r.overrides) applyFixRuntime(appid, r.overrides);
+          setSmoke({ installed: true, supported: true });
+          return `DLC unlock applied (SmokeAPI ${r.tag || ""}).`;
+        }
+        return r?.skippedLauncher
+          ? "Unlock skipped — publisher-launcher game (SmokeAPI won't help)."
+          : `Unlock failed: ${r?.error || "SmokeAPI"}`;
+      }
+      return "No DLC unlocker matched this install — apply one manually.";
+    } catch (e) {
+      return `Unlock failed: ${e}`;
+    }
+  };
+
+  const doDlcRemove = async () => {
+    setBusy("dlcdepot");
+    setMsg("Removing downloaded DLC files and the DLC unlock…");
+    try {
+      const r = await dlcDepotRemove(appid, true);
+      if (!r?.success) {
+        setMsg(r?.noLog
+          ? "No record of DLC files for this game — nothing was downloaded by SLSDeck."
+          : r?.error || "Could not remove the DLC files");
+        return;
+      }
+      setSmoke((s) => (s ? { ...s, installed: false } : s));
+      setMsg(`Removed ${r.removed ?? 0} DLC file(s) and the DLC unlock` +
+        (r.failed?.length ? ` — ${r.failed.length} could not be deleted.` : "."));
+    } catch (e) {
+      setMsg(`Remove failed: ${e}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // Two-step on purpose: plan (reads only), show what it found, then download.
+  // The plan reports its exclusions, so the common "this DLC is entitlement-only,
+  // there is nothing to download" outcome reads as an answer rather than as a
+  // button that did nothing.
+  const doDlcContent = async () => {
+    setBusy("dlcdepot");
+    setMsg("Checking which DLC have downloadable files…");
+    try {
+      const p = await dlcDepotPlan(appid);
+      if (!p?.success) { setMsg(p?.error || "Could not check DLC content"); return; }
+      const t = p.target || {};
+      const where = `${t.platform || "unknown platform"}${t.unlocker ? ` · ${t.unlocker}` : ""}`;
+      const fetchCount = (p.fetch || []).length;
+      if (!fetchCount) {
+        const ent = (p.entitlement || []).length;
+        const skipped = p.skipped || [];
+        // Four distinct "nothing to download" outcomes, each said plainly —
+        // an empty result should read as an answer, not as a dead button.
+        const detail =
+          p.outcome === "no-dlc"
+            ? "This game has no DLC."
+            : p.outcome === "up-to-date"
+            ? `All DLC content is already installed and up to date (${skipped.length} depot${skipped.length === 1 ? "" : "s"}).`
+            : p.outcome === "entitlement-only"
+            ? `All ${ent} DLC are entitlement-only — there are no files to fetch, the DLC unlock alone covers them.`
+            : `${skipped.length} depot(s) can't be fetched: ${skipped[0]?.reason}.`;
+        // Still apply the unlock unless the game genuinely has no DLC — for the
+        // entitlement-only case (the common one) the unlocker IS the whole fix,
+        // and for up-to-date/blocked the entitlement half is still wanted.
+        const unlock = p.outcome === "no-dlc" ? "" : await applyUnlockFor(p.target?.unlocker);
+        setMsg(`${detail} (${where}) ${unlock} ${(p.warnings || [])[0] || ""}`.trim());
+        return;
+      }
+      const mb = Math.round((p.bytes || 0) / 1048576);
+      setMsg(`Downloading ${fetchCount} DLC (~${mb} MB, ${where})…`);
+      const r = await dlcDepotStart(appid, (p.fetch || []).map((f) => f.appid));
+      if (!r?.success) { setMsg(r?.error || "Could not start the DLC download"); return; }
+      const unlock = await applyUnlockFor(p.target?.unlocker);
+      setMsg(`DLC download started — ${fetchCount} DLC (~${mb} MB). ${unlock}`);
+    } catch (e) {
+      setMsg(`DLC content check failed: ${e}`);
+    } finally {
+      setBusy("");
+    }
   };
 
   const doSmoke = async (enable: boolean) => {
@@ -1264,6 +1419,43 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           </>
         );
       })()}
+
+      {/* DLC *content*, as opposed to DLC entitlement. The unlockers above only
+          make the game believe it owns the DLC; Steam is never told, so it never
+          downloads anything. For DLC that ships real files, the bytes have to
+          come from DepotDownloader. This plans that first and shows what it
+          would (and would not) fetch, rather than starting a silent download. */}
+      <DialogButton
+        style={{ fontSize: 12, padding: "5px 8px" }}
+        disabled={working || !!awaiting || !currentBuildId}
+        onClick={doArchiveToggle}
+      >
+        {busy === "archive"
+          ? "Working…"
+          : archived
+          ? `Unarchive build ${currentBuildId}`
+          : currentBuildId ? `Archive this build (${currentBuildId})` : "Archive this build"}
+      </DialogButton>
+
+      {(!dlcOwnedOnly || (!added && isInLibrary(appid))) && (
+        <DialogButton
+          style={{ fontSize: 12, padding: "5px 8px" }}
+          disabled={working || !!awaiting}
+          onClick={doDlcContent}
+        >
+          {busy === "dlcdepot" ? "Working…" : "Get DLC files + unlock"}
+        </DialogButton>
+      )}
+
+      {(!dlcOwnedOnly || (!added && isInLibrary(appid))) && (
+        <DialogButton
+          style={{ fontSize: 12, padding: "5px 8px" }}
+          disabled={working || !!awaiting}
+          onClick={doDlcRemove}
+        >
+          {busy === "dlcdepot" ? "Working…" : "Unfix + remove DLC files"}
+        </DialogButton>
+      )}
 
       {(!dlcOwnedOnly || (!added && isInLibrary(appid))) && smoke?.supported && (
         <DialogButton

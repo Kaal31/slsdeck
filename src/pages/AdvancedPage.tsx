@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
 import {
   FaBoxOpen, FaDownload, FaWrench,
-  FaCloud, FaSlidersH, FaKey, FaInfoCircle, FaShieldAlt, FaPuzzlePiece,
+  FaCloud, FaSlidersH, FaKey, FaInfoCircle, FaShieldAlt, FaPuzzlePiece, FaArchive,
 } from "react-icons/fa";
 
 import { AddGameSection } from "../sections/AddGame";
@@ -17,6 +17,7 @@ import { HypervisorSection } from "../sections/Hypervisor";
 import { TokeerSection } from "../sections/Tokeer";
 import { ModsSection } from "../sections/Mods";
 import { BackupSection } from "../sections/Backup";
+import { ArchiveSection } from "../sections/Archive";
 import {
   getDlcOption, setDlcOption,
   getDlcOwnedOnly, setDlcOwnedOnly,
@@ -106,7 +107,22 @@ function DlcCloudToggles() {
           label="Add DLC automatically"
           description="When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. Off by default."
           checked={autoDlc}
-          onChange={async (v) => { setAutoDlc(v); await setAutoAddDlc(v); }}
+          onChange={async (v) => {
+            setAutoDlc(v);
+            // The engine half of this toggle can fail (no config / unwritable).
+            // Revert and say so rather than showing ON over a config that was
+            // never written.
+            try {
+              const r = await setAutoAddDlc(v);
+              if (!r?.success) {
+                setAutoDlc(!v);
+                toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the SLSsteam config" });
+              }
+            } catch (e) {
+              setAutoDlc(!v);
+              toaster.toast({ title: "SLSDeck", body: `Error: ${e}` });
+            }
+          }}
         />
       </PanelSectionRow>
       <PanelSectionRow>
@@ -693,6 +709,11 @@ export function AdvancedPage() {
           icon: <FaShieldAlt />,
           content: <Body><TokeerSection /></Body>,
         }] : []),
+        {
+          title: "Archive",
+          icon: <FaArchive />,
+          content: <Body><ArchiveSection /></Body>,
+        },
         {
           title: "Dependencies",
           icon: <FaBoxOpen />,
