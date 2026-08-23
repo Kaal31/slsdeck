@@ -11,15 +11,15 @@ import { Navigation } from "@decky/ui";
 // so it's the PRIMARY source for the per-depot picker with the archive as
 // fallback. Kept user-triggered + one depot at a time to be gentle on SteamDB.
 
-interface CdpTab { id?: string; url: string; webSocketDebuggerUrl?: string }
+interface CdpTab { id?: string; url: string; webSocketDebuggerUrl?: string; cdpPort?: number }
 export interface ScrapedGid { gid: string; date: string }
 export type SteamdbScrapeCancelled = () => boolean;
 
 /** Close a CEF tab by its target id (so we don't leave a SteamDB page open per
  *  depot). Best-effort over the same debugger endpoint we list tabs from. */
-async function closeTab(id?: string): Promise<void> {
+async function closeTab(id?: string, port = 8080): Promise<void> {
   if (!id) return;
-  try { await fetchNoCors("http://localhost:8080/json/close/" + id); } catch { /* */ }
+  try { await fetchNoCors(`http://localhost:${port}/json/close/` + id); } catch { /* */ }
 }
 
 // Table has headers Seen Date / Relative Date / ManifestID. Pull gid (19-ish
@@ -48,11 +48,19 @@ const SCRAPE_EXPR = `(function(){try{
 }catch(e){return '';}})()`;
 
 async function findTab(urlPart: string): Promise<CdpTab | null> {
-  try {
-    const res = await fetchNoCors("http://localhost:8080/json");
-    const tabs: CdpTab[] = await res.json();
-    return tabs.find((t) => t.url && t.url.includes(urlPart) && t.webSocketDebuggerUrl) || null;
-  } catch { return null; }
+  const candidates: CdpTab[] = [];
+  await Promise.all([8080, 8081].map(async (port) => {
+    try {
+      const res = await fetchNoCors(`http://localhost:${port}/json`);
+      const tabs: CdpTab[] = await res.json();
+      tabs.filter((tab) => !!tab.webSocketDebuggerUrl).forEach((tab) => candidates.push({ ...tab, cdpPort: port }));
+    } catch { /* port is optional */ }
+  }));
+  for (const tab of candidates) {
+    const live = await evalOnTab(tab.webSocketDebuggerUrl!, "String(location.href||'')", 2500);
+    if ((live || tab.url || "").includes(urlPart)) return { ...tab, url: live || tab.url };
+  }
+  return null;
 }
 
 function evalOnTab(wsUrl: string, expr: string, timeoutMs = 6000): Promise<string> {
@@ -90,6 +98,7 @@ export async function scrapeDepotManifests(
   try { Navigation.NavigateToExternalWeb(`https://${urlPart}/manifests/`); } catch { /* */ }
   const deadline = Date.now() + maxMs;
   let lastId: string | undefined;
+  let lastPort = 8080;
   try {
     while (Date.now() < deadline) {
       if (isCancelled?.()) return [];
@@ -97,6 +106,7 @@ export async function scrapeDepotManifests(
       if (isCancelled?.()) return [];
       if (tab?.webSocketDebuggerUrl) {
         lastId = tab.id;
+        lastPort = tab.cdpPort || 8080;
         const raw = await evalOnTab(tab.webSocketDebuggerUrl, SCRAPE_EXPR);
         if (isCancelled?.()) return [];
         if (raw) {
@@ -118,6 +128,6 @@ export async function scrapeDepotManifests(
   } finally {
     // Always close the depot page we opened — success, timeout, or cancellation —
     // so a multi-depot game doesn't leave a stack of SteamDB tabs behind.
-    await closeTab(lastId);
+    await closeTab(lastId, lastPort);
   }
 }
