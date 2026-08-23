@@ -37,6 +37,7 @@ FIX_STATE: Dict[int, Dict[str, Any]] = {}
 FIX_LOCK = threading.Lock()
 UNFIX_STATE: Dict[int, Dict[str, Any]] = {}
 UNFIX_LOCK = threading.Lock()
+UNFIX_JOB_LOCK = threading.Lock()
 
 
 def init_fixes_index() -> None:
@@ -198,6 +199,16 @@ def _set_unfix_state(appid: int, update: dict) -> None:
 def _get_unfix_state(appid: int) -> dict:
     with UNFIX_LOCK:
         return UNFIX_STATE.get(appid, {}).copy()
+
+
+def _reserve_unfix(appid: int) -> bool:
+    """Atomically reserve the one un-fix job allowed for an app."""
+    with UNFIX_JOB_LOCK:
+        state = _get_unfix_state(appid)
+        if state.get("status") in {"queued", "removing"}:
+            return False
+        _set_unfix_state(appid, {"status": "queued", "progress": "", "error": None})
+        return True
 
 
 def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
@@ -1410,7 +1421,8 @@ def _parse_fix_log(log_content: str, appid: int, game_name: str, install_path: s
     return fixes
 
 
-def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str]):
+def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
+                  preserve_unlockers: bool = False):
     try:
         log_path = os.path.join(install_path, f"luatools-fix-log-{appid}.log")
         if not os.path.exists(log_path):
@@ -1522,19 +1534,20 @@ def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str]):
             except Exception:
                 pass
 
-        # Also strip any SmokeAPI DLC-unlock proxy (restore the original
-        # steam_api dll) so un-fix fully reverts the game. Best-effort.
-        try:
-            from . import smokeapi
-            smokeapi.remove(install_path)
-        except Exception as exc:
-            logger.warn(f"SLSDeck: SmokeAPI removal on unfix failed: {exc}")
-        # Also strip any CreamAPI / Uplay R1 / R2 DLC unlocker (restore originals).
-        try:
-            from . import dlcunlockers
-            dlcunlockers.remove_all(install_path)
-        except Exception as exc:
-            logger.warn(f"SLSDeck: DLC unlocker removal on unfix failed: {exc}")
+        if not preserve_unlockers:
+            # Also strip any SmokeAPI DLC-unlock proxy (restore the original
+            # steam_api dll) so normal un-fix fully reverts the game.
+            try:
+                from . import smokeapi
+                smokeapi.remove(install_path)
+            except Exception as exc:
+                logger.warn(f"SLSDeck: SmokeAPI removal on unfix failed: {exc}")
+            # Also strip any CreamAPI / Uplay R1 / R2 DLC unlocker.
+            try:
+                from . import dlcunlockers
+                dlcunlockers.remove_all(install_path)
+            except Exception as exc:
+                logger.warn(f"SLSDeck: DLC unlocker removal on unfix failed: {exc}")
 
         # Version-unlock: un-fix ALWAYS unpins the game's manifest so Steam can
         # update it again (the button is "Un-fix and unpin"). Best-effort.
@@ -1564,9 +1577,38 @@ def unfix_game(appid, install_path="", fix_date="") -> Dict[str, Any]:
         resolved = result["installPath"]
     if not os.path.exists(resolved):
         return {"success": False, "error": "Install path does not exist"}
-    _set_unfix_state(appid, {"status": "queued", "progress": "", "error": None})
+    if not _reserve_unfix(appid):
+        return {"success": False, "busy": True, "error": "An un-fix is already running"}
     threading.Thread(target=_unfix_worker, args=(appid, resolved, fix_date or None), daemon=True).start()
     return {"success": True}
+
+
+def unfix_game_sync(appid, install_path="", fix_date="",
+                    preserve_unlockers: bool = False) -> Dict[str, Any]:
+    """Serialized synchronous un-fix for an already-backgrounded lifecycle RPC.
+
+    Snapshot transitions run in their own dedicated executor. This entry point
+    shares the same reservation gate and state reporting as the user-facing
+    asynchronous operation, so the two can never restore/delete files at once.
+    """
+    try:
+        appid = int(appid)
+    except Exception:
+        return {"success": False, "error": "Invalid appid"}
+    resolved = install_path
+    if not resolved:
+        result = get_game_install_path_response(appid)
+        if not result.get("success") or not result.get("installPath"):
+            return {"success": False, "error": "Could not find game install path"}
+        resolved = result["installPath"]
+    if not os.path.exists(resolved):
+        return {"success": False, "error": "Install path does not exist"}
+    if not _reserve_unfix(appid):
+        return {"success": False, "busy": True, "error": "An un-fix is already running"}
+    _unfix_worker(appid, resolved, fix_date or None, bool(preserve_unlockers))
+    state = _get_unfix_state(appid)
+    return {"success": state.get("status") == "done", "state": state,
+            "error": state.get("error")}
 
 
 def get_unfix_status(appid: int) -> Dict[str, Any]:

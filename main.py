@@ -173,6 +173,9 @@ class Plugin:
         # Dedicated pool for long blocking work (see _run_slow). Deliberately
         # small: its job is to CONTAIN slow calls, not to run many at once.
         self._slow_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slsdeck-slow")
+        # Snapshot transitions may synchronously restore many files. Keep them
+        # serialized and away from Decky's shared RPC executor.
+        self._archive_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="slsdeck-archive")
         self._dependency_install_lock = asyncio.Lock()
         decky.logger.info("SLSDeck: bootstrapping")
         try:
@@ -372,6 +375,12 @@ class Plugin:
         except Exception:
             pass
         try:
+            pool = getattr(self, "_archive_pool", None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        try:
             close_http_client("unload")
         except Exception:
             pass
@@ -441,6 +450,12 @@ class Plugin:
         except Exception:
             pass
         try:
+            pool = getattr(self, "_archive_pool", None)
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        try:
             close_http_client("uninstall")
         except Exception:
             pass
@@ -495,6 +510,16 @@ class Plugin:
             return await self._run_slow(fn, *args)
         async with lock:
             return await self._run_slow(fn, *args)
+
+    async def _run_archive(self, fn, *args):
+        """Serialize slow snapshot mutations outside the shared RPC pool."""
+        try:
+            return await self.loop.run_in_executor(
+                getattr(self, "_archive_pool", None), functools.partial(fn, *args))
+        except Exception as exc:
+            decky.logger.warning(
+                f"SLSDeck: archive RPC {getattr(fn, '__name__', str(fn))} failed: {exc}")
+            return {"success": False, "error": str(exc)}
 
     # ── environment / status ──────────────────────────────────────────────
     async def get_steam_status(self) -> Dict[str, Any]:
@@ -1130,13 +1155,13 @@ class Plugin:
         """Make an archived build the template this game should match.
         launch_options_before is what the game had BEFORE activation, captured
         by the frontend so deactivate can restore it rather than blanking."""
-        return await self._run(buildarchive.activate, int(appid), str(buildid),
-                               launch_options_before)
+        return await self._run_archive(buildarchive.activate, int(appid), str(buildid),
+                                       launch_options_before)
 
     async def archive_deactivate(self, appid: int, reset: bool = True) -> Dict[str, Any]:
         """Stop trailing and undo the pin. The caller clears launch args and
         triggers the file reset, both of which are Steam-side."""
-        return await self._run(buildarchive.deactivate, int(appid), bool(reset))
+        return await self._run_archive(buildarchive.deactivate, int(appid), bool(reset))
 
     async def archive_reconcile(self, appid: int, apply: bool = True) -> Dict[str, Any]:
         """Close the gaps between the game and its active template."""
@@ -1145,13 +1170,13 @@ class Plugin:
     async def archive_remove_game(self, appid: int) -> Dict[str, Any]:
         """Unarchive a whole game (every build + its fixes/args), deactivating
         first so nothing is left half-applied."""
-        return await self._run(buildarchive.remove_game, int(appid))
+        return await self._run_archive(buildarchive.remove_game, int(appid))
 
     async def archive_activate_game(self, appid: int,
                                     launch_options_before: Optional[str] = None) -> Dict[str, Any]:
         """Activate a game's archived build without naming one (newest wins)."""
-        return await self._run(buildarchive.activate_game, int(appid),
-                               launch_options_before)
+        return await self._run_archive(buildarchive.activate_game, int(appid),
+                                       launch_options_before)
 
     async def archive_reconcile_all(self, apply: bool = True) -> Dict[str, Any]:
         """Re-assert every activated build template. Run on boot."""
@@ -1188,7 +1213,7 @@ class Plugin:
         return await self._run(buildarchive.list_builds, int(appid))
 
     async def build_archive_remove(self, appid: int, buildid: str) -> Dict[str, Any]:
-        return await self._run(buildarchive.remove_build, int(appid), str(buildid))
+        return await self._run_archive(buildarchive.remove_build, int(appid), str(buildid))
 
     async def dlc_depot_plan(self, appid: int) -> Dict[str, Any]:
         """Which DLC actually have downloadable content for THIS install.

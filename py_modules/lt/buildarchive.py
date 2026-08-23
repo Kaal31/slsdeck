@@ -122,7 +122,7 @@ def _migrate_legacy_entry(entry: Dict[str, Any]) -> None:
     it belongs to the active snapshot, or the newest snapshot when none is
     active. Other snapshots correctly remain ``not captured``.
     """
-    legacy = ("fixes", "launchOptions", "compatTool", "dlcFiles", "updatedOn")
+    legacy = ("fixes", "launchOptions", "compatTool", "dlcFiles", "dlcCreated", "updatedOn")
     present = [key for key in legacy if key in entry]
     if not present:
         return
@@ -429,6 +429,7 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
             compat_known = False
 
     dlc_files = 0
+    dlc_created: List[str] = []
     dlc_known = False
     try:
         from . import depotdl
@@ -439,7 +440,8 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
             p = depotdl.dlc_log_path(appid, ip)
             if os.path.isfile(p):
                 with open(p, "r", encoding="utf-8") as fh:
-                    dlc_files = len(json.load(fh).get("created") or [])
+                    dlc_created = [str(v) for v in (json.load(fh).get("created") or [])]
+                    dlc_files = len(dlc_created)
     except Exception:
         dlc_files = 0
 
@@ -479,6 +481,7 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
         bundle["compatTool"] = str(compat_tool or "")
     if dlc_known:
         bundle["dlcFiles"] = dlc_files
+        bundle["dlcCreated"] = sorted(set(dlc_created))
     bundle["updatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
     data["version"] = 2
     if not _write(data):
@@ -617,7 +620,8 @@ def _start_fix_reapply_queue(appid: int, install_path: str, name: str,
 # Activating restores the entire game snapshot. The mandatory build is pinned;
 # every optional captured component is then reconciled when present.
 
-def _cleanup_snapshot_components(appid: int, bundle: Dict[str, Any]) -> Dict[str, Any]:
+def _cleanup_snapshot_components(appid: int, bundle: Dict[str, Any],
+                                 preserve_dlc: bool = False) -> Dict[str, Any]:
     """Synchronously remove live components owned by an active snapshot.
 
     Build pinning, Proton and launch arguments are handled by activation /
@@ -642,11 +646,12 @@ def _cleanup_snapshot_components(appid: int, bundle: Dict[str, Any]) -> Dict[str
             from . import fixes
             log_path = os.path.join(install_path, f"luatools-fix-log-{int(appid)}.log")
             if os.path.isfile(log_path):
-                # The public function is asynchronous; transitions must finish
-                # cleanup before the next snapshot is reconciled.
-                fixes._unfix_worker(int(appid), install_path, None)
-                state = (fixes.get_unfix_status(int(appid)) or {}).get("state") or {}
-                if state.get("status") == "done":
+                # Lifecycle transitions use the serialized synchronous entry
+                # point and must finish before the next snapshot is reconciled.
+                unfix = fixes.unfix_game_sync(
+                    int(appid), install_path, "", preserve_unlockers=preserve_dlc) or {}
+                state = unfix.get("state") or {}
+                if unfix.get("success"):
                     result["fixes"] = "removed"
                 else:
                     error = str(state.get("error") or "fix cleanup failed")
@@ -656,7 +661,9 @@ def _cleanup_snapshot_components(appid: int, bundle: Dict[str, Any]) -> Dict[str
             result["errors"].append(f"fixes: {exc}")
             result["fixes"] = "failed"
 
-    if int(bundle.get("dlcFiles") or 0) > 0:
+    if int(bundle.get("dlcFiles") or 0) > 0 and preserve_dlc:
+        result["dlc"] = "preserved"
+    elif int(bundle.get("dlcFiles") or 0) > 0:
         result["dlc"] = "none"
         try:
             from . import depotdl, dlcdepot
@@ -674,6 +681,14 @@ def _cleanup_snapshot_components(appid: int, bundle: Dict[str, Any]) -> Dict[str
             result["errors"].append(f"DLC: {exc}")
             result["dlc"] = "failed"
     return result
+
+
+def _same_captured_dlc(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """True only when both snapshots captured the same concrete DLC files."""
+    if "dlcCreated" not in left or "dlcCreated" not in right:
+        return False
+    return sorted(set(str(v) for v in (left.get("dlcCreated") or []))) == sorted(
+        set(str(v) for v in (right.get("dlcCreated") or [])))
 
 def is_build_archived(appid: int, buildid: str) -> Dict[str, Any]:
     entry = (_read().get("apps", {}) or {}).get(str(int(appid))) or {}
@@ -730,8 +745,11 @@ def activate(appid: int, buildid: str,
         # Remove every component applied by the previous snapshot before the
         # next snapshot is allowed to reconcile. Preserve the original
         # pre-activation baseline across the switch.
+        previous_bundle = _bundle(entry, previous)
+        incoming_bundle = _bundle(entry, str(buildid))
         switched_cleanup = _cleanup_snapshot_components(
-            int(appid), _bundle(entry, previous))
+            int(appid), previous_bundle,
+            preserve_dlc=_same_captured_dlc(previous_bundle, incoming_bundle))
         if switched_cleanup.get("errors"):
             return {"success": False,
                     "error": "could not cleanly deactivate the current snapshot",
