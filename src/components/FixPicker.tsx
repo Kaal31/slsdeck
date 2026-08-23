@@ -142,6 +142,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
   const [tokeerLookup, setTokeerLookup] = useState<{ name: string; cachedGames: number; updatedAt?: number }>({ name: "", cachedGames: 0 });
+  const [tokeerProgress, setTokeerProgress] = useState(0);
+  const [tokeerPhase, setTokeerPhase] = useState("");
+  const [tokeerFailed, setTokeerFailed] = useState(false);
   const [dlcDownload, setDlcDownload] = useState<DepotDownloadJob | null>(null);
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
@@ -1078,20 +1081,41 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   const doTokeer = async () => {
     setBusy("tokeer");
+    setTokeerFailed(false);
+    setTokeerProgress(3);
+    setTokeerPhase("Checking game installation");
     try {
       setMsg("Confirming that the game is installed…");
       const preflight = await tokeerPreflight(appid, "");
       if (!preflight.success || !preflight.installed) {
         const failure = preflight.error || "Game is not installed. Install it completely before using Tokeer.";
+        setTokeerFailed(true);
+        setTokeerPhase("Installation check failed");
         setMsg(failure);
         toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
         return;
       }
+      setTokeerProgress(10);
+      setTokeerPhase("Checking dependencies");
       setMsg("Installing/checking Tokeer runtime and GE-Proton10-34…");
       toaster.toast({ title: "SLSDeck · Tokeer", body: "Installation confirmed. Dependency setup started." });
-      const r = await setupAndVerifyTokeer(appid, setMsg);
+      const r = await setupAndVerifyTokeer(appid, (status) => {
+        setMsg(status);
+        const lower = status.toLowerCase();
+        let percent = 10;
+        let phase = status.replace(/…+$/, "");
+        if (lower.includes("runtime version")) percent = 18;
+        else if (lower.includes("checking required proton")) percent = 38;
+        else if (lower.includes("merging steam launch options")) percent = 62;
+        else if (lower.includes("checking the game setup")) percent = 76;
+        else if (lower.includes("creating the proton prefix")) percent = 84;
+        setTokeerProgress((current) => Math.max(current, percent));
+        setTokeerPhase(phase);
+      });
       if (!r.success) {
         const failure = describeTokeerFailure(r);
+        setTokeerFailed(true);
+        setTokeerPhase("Setup or validation failed");
         setMsg(failure);
         toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
         return;
@@ -1104,10 +1128,14 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         try { await navigator.clipboard.writeText(r.code); } catch {}
       }
       const ready = `Tokeer ready — ${summary}.${r.code ? " TLX1 copied to clipboard." : ""}`;
+      setTokeerProgress(100);
+      setTokeerPhase("Setup and validation complete");
       setMsg(ready);
       toaster.toast({ title: "SLSDeck · Tokeer", body: "Setup and local validation completed." });
     } catch (e) {
       const failure = `Tokeer failed: ${e}`;
+      setTokeerFailed(true);
+      setTokeerPhase("Unexpected setup failure");
       setMsg(failure);
       toaster.toast({ title: "SLSDeck · Tokeer", body: failure.slice(0, 220) });
     } finally {
@@ -1265,8 +1293,28 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID {appid}.
         </div>
         <DialogButton style={bs} disabled={working || !!awaiting} onClick={doTokeer}>
-          {busy === "tokeer" ? "Setting up and validating…" : `Tokeer · ${tokeerGame.remaining ?? "?"} keys`}
+          {busy === "tokeer" ? `${tokeerPhase || "Setting up and validating"} · ${tokeerProgress}%` : `Tokeer · ${tokeerGame.remaining ?? "?"} keys`}
         </DialogButton>
+        {(busy === "tokeer" || tokeerProgress > 0) && (
+          <div style={{ marginTop: 7 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, marginBottom: 4 }}>
+              <span style={{ opacity: 0.78 }}>{tokeerPhase || "Tokeer setup"}</span>
+              <span>{tokeerProgress}%</span>
+            </div>
+            <div style={{ height: 8, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,.14)" }}>
+              <div style={{
+                height: "100%",
+                width: `${Math.max(0, Math.min(100, tokeerProgress))}%`,
+                background: tokeerFailed
+                  ? "#d9534f"
+                  : tokeerProgress >= 100
+                  ? "#5cb85c"
+                  : "linear-gradient(90deg,#4a90d9,#9c74df)",
+                transition: "width .35s ease, background .2s ease",
+              }} />
+            </div>
+          </div>
+        )}
       </div>}
       {!tokeerGame && (
         <div style={{ fontSize: 11, opacity: 0.65, padding: "5px 2px" }}>
