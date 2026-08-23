@@ -124,8 +124,7 @@ export function GameActionButtons() {
     }
   };
 
-  // Genuinely-owned games (in library, not added by us) get no plugin controls.
-  if (appid == null || hiddenForOwned || !barEnabled) return null;
+  if (appid == null || !barEnabled) return null;
 
   const working = busy !== "";
   const big: CSSProperties = { flex: 1, minWidth: 0, padding: "10px 16px", fontSize: 15 };
@@ -133,7 +132,7 @@ export function GameActionButtons() {
   return (
     <div style={{ margin: "20px 24px 8px" }}>
       <Focusable style={{ display: "flex", gap: 12 }} flow-children="row">
-        {installed ? (
+        {!hiddenForOwned && (installed ? (
           <DialogButton style={big} disabled={working} onClick={doRemove}>
             {busy === "removing" ? "Removing…" : "🗑 Remove"}
           </DialogButton>
@@ -141,7 +140,7 @@ export function GameActionButtons() {
           <DialogButton style={big} disabled={working} onClick={doAdd}>
             {busy === "adding" ? progress || "Adding…" : "＋ Add with SLSsteam"}
           </DialogButton>
-        )}
+        ))}
         <DialogButton
           style={big}
           disabled={working}
