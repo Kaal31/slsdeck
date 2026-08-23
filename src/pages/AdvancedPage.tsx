@@ -1,4 +1,4 @@
-import { SidebarNavigation, PanelSection, PanelSectionRow, ToggleField, TextField, ButtonItem } from "@decky/ui";
+import { SidebarNavigation, PanelSection, PanelSectionRow, ToggleField, TextField, ButtonItem, staticClasses } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
 import {
@@ -196,11 +196,49 @@ function InjectionRecovery() {
 /** Scrollable page body — SidebarNavigation panes don't scroll on their own. */
 function Body({ children }: { children: any }) {
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "6px 12px 40px 12px" }}>
+    <div className="slsdeck-themed-page" style={{ height: "100%", overflowY: "auto", padding: "12px 14px 44px" }}>
       {children}
     </div>
   );
 }
+
+const ADVANCED_PAGE_THEME = `
+  .slsdeck-themed-page {
+    box-sizing: border-box;
+    background:
+      radial-gradient(circle at 92% 2%, rgba(113, 82, 180, .18), transparent 31%),
+      radial-gradient(circle at 2% 18%, rgba(55, 151, 207, .12), transparent 28%),
+      linear-gradient(180deg, rgba(15, 22, 33, .35), rgba(12, 16, 25, .12));
+  }
+  .slsdeck-themed-page .${staticClasses.PanelSection} {
+    box-sizing: border-box;
+    margin: 0 0 14px;
+    padding: 11px 12px 13px;
+    border: 1px solid rgba(157, 198, 255, .20);
+    border-radius: 12px;
+    background: linear-gradient(145deg, rgba(28, 43, 66, .91), rgba(38, 25, 58, .86));
+    box-shadow: 0 7px 22px rgba(0, 0, 0, .24), inset 0 1px rgba(255, 255, 255, .025);
+    overflow: hidden;
+  }
+  .slsdeck-themed-page .${staticClasses.PanelSectionTitle} {
+    margin: 0 0 8px;
+    color: #f7f9ff;
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: .35px;
+    text-shadow: 0 0 14px rgba(114, 199, 255, .18);
+  }
+  .slsdeck-themed-page .${staticClasses.PanelSectionRow} {
+    margin-top: 7px;
+  }
+  .slsdeck-themed-page .${staticClasses.PanelSectionRow}:first-child {
+    margin-top: 0;
+  }
+  .slsdeck-themed-page::-webkit-scrollbar-thumb {
+    border-radius: 8px;
+    background: linear-gradient(#72c7ff, #a885e8);
+  }
+`;
 
 /* ── Online-fix username (lives on the Game fixes tab) ─────────────────── */
 function OnlineFixUsername() {
@@ -700,6 +738,8 @@ export function AdvancedPage() {
   };
 
   return (
+    <>
+    <style>{ADVANCED_PAGE_THEME}</style>
     <SidebarNavigation
       title="SLSDeck"
       showTitle
@@ -766,5 +806,6 @@ export function AdvancedPage() {
         },
       ]}
     />
+    </>
   );
 }
