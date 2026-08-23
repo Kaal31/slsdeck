@@ -14,15 +14,20 @@ export type TokeerSetupResult = TokeerVerifyResult & {
 };
 
 export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupResult): string {
-  if (result.error) return result.error;
   const checks = result.checks;
-  if (!checks) return "Tokeer validation failed.";
-  const failed: string[] = [];
-  if (!checks.installed) failed.push("game installation");
-  if (!checks.prefix) failed.push("Proton prefix");
-  if (!checks.hook) failed.push("native hook");
-  if (!checks.launchOpt) failed.push("launch option");
-  return failed.length ? `Tokeer validation failed: ${failed.join(", ")}.` : "Tokeer validation failed.";
+  if (checks) {
+    const failed: string[] = [];
+    if (!checks.installed) failed.push("game installation");
+    if (!checks.prefix) failed.push("Proton prefix");
+    if (!checks.hook) failed.push("native hook");
+    if (!checks.launchOpt) failed.push("launch option");
+    if (failed.length) {
+      const detected = checks.proton ? ` Detected compatibility layer: ${checks.proton}.` : "";
+      return `Tokeer validation failed: ${failed.join(", ")}.${detected}`;
+    }
+    if (!result.code) return "Tokeer setup checks passed, but no TLX1 verification code was generated.";
+  }
+  return result.error || "Tokeer validation failed.";
 }
 
 /**
