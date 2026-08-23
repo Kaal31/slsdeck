@@ -15,6 +15,12 @@ export type TokeerSetupResult = TokeerVerifyResult & {
 
 export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupResult): string {
   const checks = result.checks;
+  // Dependency/preflight failures sometimes carry an all-false placeholder
+  // check object because no verifier ran. Keep their actionable error (for
+  // example a missing appmanifest) instead of misreporting four check failures.
+  if (result.error && !/^Tokeer setup checks failed:/i.test(result.error)) {
+    return result.error;
+  }
   if (checks) {
     const failed: string[] = [];
     if (!checks.installed) failed.push("game installation");

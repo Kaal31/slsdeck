@@ -411,12 +411,42 @@ export function TokeerSection() {
     finally{setBusy("");}
   };
 
+  const resolveTicketAppid=async():Promise<number>=>{
+    const current=Number(ticket?.appid||0);
+    let expected=0;
+    if(selectedGame){
+      const installed=await tokeerPreflight(0,selectedGame).catch(()=>null);
+      if(!installed?.success||!installed.installed||!installed.appid){
+        setMessage(installed?.error||"Could not resolve the selected installed game's Steam AppID.");
+        return 0;
+      }
+      expected=Number(installed.appid);
+    }
+    if(current&&(!expected||current===expected))return current;
+
+    // Repair sessions saved by the old broad parser (for example a year such
+    // as 2026 mistaken for an AppID) before either manual action can touch it.
+    if(ticket?.url&&expected){
+      setMessage(`Saved ticket AppID ${current||"is missing"}; re-scanning its setup commands for AppID ${expected}…`);
+      const rescanned=await waitForTicketContext(ticket.url,20000,expected);
+      if(rescanned.found&&Number(rescanned.appid)===expected){
+        setTicket(old=>({...old,...rescanned,appid:expected,url:rescanned.url||old?.url,opened:true}));
+        return expected;
+      }
+      setMessage(rescanned.error||`The ticket does not contain setup commands for ${selectedGame} (Steam AppID ${expected}). Cancel it and open a new ticket.`);
+      return 0;
+    }
+    setMessage("Open or resume the Tokeer ticket so SLSDeck can read and validate its Steam AppID.");
+    return 0;
+  };
+
   const prepare=async()=>{
-    if(!appid)return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
+    const resolvedAppid=await resolveTicketAppid();
+    if(!resolvedAppid)return;
     setBusy("Preparing Tokeer…");
-    setMessage(`Preparing ${selectedGame||`AppID ${appid}`} using the AppID supplied by the Tokeer ticket. Steam will stay open.`);
+    setMessage(`Preparing ${selectedGame||`AppID ${resolvedAppid}`} using the validated AppID supplied by the Tokeer ticket. Steam will stay open.`);
     try{
-      const r=await setupAndVerifyTokeer(appid,setMessage);
+      const r=await setupAndVerifyTokeer(resolvedAppid,setMessage);
       if(r.success){
         setVerify(r);
         setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
@@ -432,17 +462,18 @@ export function TokeerSection() {
   };
 
   const runVerify=async()=>{
-    if(!appid)return setMessage("Open the Tokeer ticket first so SLSDeck can read its AppID.");
+    const resolvedAppid=await resolveTicketAppid();
+    if(!resolvedAppid)return;
     setBusy("Verifying setup…");
     try{
-      const preflight=await tokeerPreflight(appid,"");
+      const preflight=await tokeerPreflight(resolvedAppid,"");
       if(!preflight.success||!preflight.installed){
         const failure=preflight.error||"Game is not installed.";
         setVerify(null);setMessage(failure);
         toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
         return;
       }
-      const r=await tokeerVerify(appid);
+      const r=await tokeerVerify(resolvedAppid);
       if(r.success){
         setVerify(r);
         setMessage("Setup verified. Copy the TLX1 and paste it into the open Discord ticket.");
