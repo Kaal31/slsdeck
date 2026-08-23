@@ -205,7 +205,16 @@ def _run(appid: int, app: int, depot_gid: Dict[str, str], keys: Dict[str, str],
         if tok:
             args += ["-apptoken", tok]
         args += ["-depotkeys", kf, "-max-downloads", "8", "-dir", dest_dir, "-validate"]
-        code, out_tail, _mid = assella._run_depot(dotnet, args, appid)
+        # DepotDownloader reports progress within each depot. Translate that
+        # into one aggregate 1..100 job percentage instead of updating only
+        # when an entire depot finishes (which looked stuck at 0% for one-depot
+        # DLC downloads).
+        def _progress(depot_percent: int, depot_index: int = i) -> None:
+            overall = int(((depot_index + max(0, min(100, depot_percent)) / 100.0)
+                           * 100) / max(1, len(depot_gid)))
+            _set(appid, {"percent": max(1, min(99, overall))})
+
+        code, out_tail, _mid = assella._run_depot(dotnet, args, appid, _progress)
         if code != 0:
             fail += 1
             last = out_tail or last
@@ -289,7 +298,7 @@ def download_build(appid: int, buildid: str) -> Dict[str, Any]:
     if not r.get("success") or not r.get("gids"):
         return {"success": False, "error": r.get("message", "Could not resolve that build")}
     depot_gid = {str(k): str(v) for k, v in r["gids"].items()}
-    _set(appid, {"status": "downloading", "op": "build", "percent": 0, "error": ""})
+    _set(appid, {"status": "downloading", "op": "build", "percent": 1, "error": ""})
     threading.Thread(target=_build_worker, args=(appid, depot_gid, str(buildid)),
                      name=f"depotdl-build-{appid}", daemon=True).start()
     return {"success": True}
@@ -306,7 +315,7 @@ def download_build_with_gids(appid: int, buildid: str, depot_gid: Dict[str, str]
              if str(d).isdigit() and str(g).isdigit()}
     if not clean:
         return {"success": False, "error": "no depot:gid pairs supplied"}
-    _set(appid, {"status": "resolving", "op": "build", "percent": 0, "error": ""})
+    _set(appid, {"status": "resolving", "op": "build", "percent": 1, "error": ""})
     threading.Thread(target=_build_worker, args=(appid, clean, str(buildid)),
                      name=f"depotdl-build-{appid}", daemon=True).start()
     return {"success": True}
@@ -375,7 +384,7 @@ def download_dlc(appid: int) -> Dict[str, Any]:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "Invalid appid"}
-    _set(appid, {"status": "resolving", "op": "dlc", "percent": 0, "error": ""})
+    _set(appid, {"status": "resolving", "op": "dlc", "percent": 1, "error": ""})
     threading.Thread(target=_dlc_worker, args=(appid,),
                      name=f"depotdl-dlc-{appid}", daemon=True).start()
     return {"success": True}
@@ -403,7 +412,7 @@ def download_dlc_with_gids(appid: int, depot_gid: Dict[str, str]) -> Dict[str, A
              if str(d).isdigit() and str(g).isdigit()}
     if not clean:
         return {"success": False, "error": "no depot:gid pairs supplied"}
-    _set(appid, {"status": "resolving", "op": "dlc", "percent": 0, "error": ""})
+    _set(appid, {"status": "resolving", "op": "dlc", "percent": 1, "error": ""})
     threading.Thread(target=_dlc_gids_worker, args=(appid, clean),
                      name=f"depotdl-dlc-{appid}", daemon=True).start()
     return {"success": True}
