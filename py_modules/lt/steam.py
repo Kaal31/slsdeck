@@ -254,6 +254,34 @@ def get_installed_depots(appid: int) -> Dict[str, str]:
     return {}
 
 
+def get_installed_buildid(appid: int) -> str:
+    """Return the BuildID recorded by Steam for the installed game.
+
+    This is independent of SLSDeck pinning: an ordinary current installation
+    still has a buildid in appmanifest_<appid>.acf and can therefore be archived
+    as a complete snapshot together with its InstalledDepots.
+    """
+    try:
+        appid = int(appid)
+    except Exception:
+        return ""
+    for lib_path in _all_library_paths():
+        manifest = os.path.join(lib_path, "steamapps", f"appmanifest_{appid}.acf")
+        if not os.path.exists(manifest):
+            continue
+        try:
+            with open(manifest, "r", encoding="utf-8") as handle:
+                data = _parse_vdf_simple(handle.read())
+        except Exception:
+            continue
+        state = data.get("AppState", {}) if isinstance(data, dict) else {}
+        if isinstance(state, list):
+            state = state[0] if state and isinstance(state[0], dict) else {}
+        if isinstance(state, dict):
+            return str(state.get("buildid") or state.get("BuildID") or "")
+    return ""
+
+
 _GENERIC_DIRS = {
     "bin", "bin64", "binaries", "win64", "win32", "x64", "x86", "x86_64",
     "game", "games", "app", "apps", "release", "retail", "redist", "current",
