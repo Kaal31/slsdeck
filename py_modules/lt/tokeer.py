@@ -601,9 +601,24 @@ def verify(appid: int) -> Dict[str, Any]:
             "proton": report.get("proton"),
         }
         passed = bool(code and checks["installed"] and checks["prefix"] and checks["hook"] and checks["launchOpt"])
+        failed = []
+        if not checks["installed"]:
+            failed.append("game installation")
+        if not checks["prefix"]:
+            failed.append("Proton prefix")
+        if not checks["hook"]:
+            failed.append("native hook")
+        if not checks["launchOpt"]:
+            failed.append("launch option")
+        if failed:
+            detail = "Tokeer setup checks failed: " + ", ".join(failed) + "."
+        elif not code:
+            detail = "Tokeer setup checks passed, but the verifier did not generate a TLX1 code."
+        else:
+            detail = ""
         return {"success": passed, "code": code, "report": report, "checks": checks,
                 "output": out[-24000:], "returnCode": p.returncode,
-                "error": "" if passed else "One or more Tokeer setup checks failed."}
+                "failedChecks": failed, "error": "" if passed else detail}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
