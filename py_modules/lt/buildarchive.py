@@ -276,7 +276,7 @@ def _fix_key(fix: Dict[str, Any]) -> str:
     return f"{fix.get('fixType') or ''}|{fix.get('downloadUrl') or ''}"
 
 
-def snapshot_game(appid: int, launch_options: str = "", compat_tool: str = "",
+def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool: str = "",
                   name: str = "") -> Dict[str, Any]:
     """Record a game's current fix/launch/compat state into its archive entry.
 
@@ -349,9 +349,11 @@ def snapshot_game(appid: int, launch_options: str = "", compat_tool: str = "",
             merged.append(was)
 
     entry["fixes"] = merged
-    # Empty is meaningful: it records that arguments / a Proton override were
-    # deliberately cleared rather than resurrecting an older snapshot.
-    entry["launchOptions"] = str(launch_options or "")
+    # Tri-state: "" means Steam positively reported no launch arguments; None
+    # means this Steam build could not expose them, so retain the last known
+    # game-level value rather than replacing it with invented information.
+    if launch_options is not None:
+        entry["launchOptions"] = str(launch_options)
     entry["compatTool"] = str(compat_tool or "")
     entry["dlcFiles"] = dlc_files
     entry["updatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
@@ -359,7 +361,7 @@ def snapshot_game(appid: int, launch_options: str = "", compat_tool: str = "",
     if not _write(data):
         return {"success": False, "error": "could not write the archive index"}
     return {"success": True, "appid": appid, "fixes": len(merged),
-            "launchOptions": entry["launchOptions"], "compatTool": entry["compatTool"],
+            "launchOptions": entry.get("launchOptions") or "", "compatTool": entry["compatTool"],
             "dlcFiles": dlc_files}
 
 
@@ -473,7 +475,7 @@ def _start_fix_reapply_queue(appid: int, install_path: str, name: str,
     try:
         from . import fixes as _fixes
         state = (_fixes.get_apply_fix_status(int(appid)) or {}).get("state") or {}
-        if state.get("status") in ("queued", "resolving", "downloading", "extracting", "applying"):
+        if state.get("status") in ("queued", "downloading", "extracting"):
             return False
     except Exception:
         pass
@@ -506,7 +508,8 @@ def is_build_archived(appid: int, buildid: str) -> Dict[str, Any]:
             "activeBuild": str(entry.get("activeBuild") or "")}
 
 
-def activate(appid: int, buildid: str, launch_options_before: str = "") -> Dict[str, Any]:
+def activate(appid: int, buildid: str,
+             launch_options_before: Optional[str] = None) -> Dict[str, Any]:
     """Mark an archived build as the template this game should match.
 
     Captures what the game looked like BEFORE activation -- its launch arguments
@@ -538,7 +541,8 @@ def activate(appid: int, buildid: str, launch_options_before: str = "") -> Dict[
         except Exception:
             before_tool = ""
         entry["compatToolBefore"] = before_tool
-        entry["launchOptionsBefore"] = str(launch_options_before or "")
+        if launch_options_before is not None:
+            entry["launchOptionsBefore"] = str(launch_options_before)
     # One active build per appid. Two archived builds of the same game are
     # ALTERNATIVES, not layers -- holding a game to both is incoherent, so
     # activating one displaces the other rather than stacking.
@@ -571,6 +575,7 @@ def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
     if not entry:
         return {"success": False, "error": "no archive entry for that game"}
     was = str(entry.get("activeBuild") or "")
+    launch_before_known = "launchOptionsBefore" in entry
     restore_args = str(entry.get("launchOptionsBefore") or "")
     restore_tool = str(entry.get("compatToolBefore") or "")
     entry["activeBuild"] = ""
@@ -604,7 +609,7 @@ def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
             # restoreLaunchOptions is what the game had BEFORE activation -- an
             # empty string legitimately means "it had none", so the frontend
             # always writes this value rather than treating "" as "skip".
-            "clearLaunchOptions": True,
+            "clearLaunchOptions": launch_before_known,
             "restoreLaunchOptions": restore_args,
             "restoredCompatTool": restore_tool,
             "resetFiles": bool(reset)}
@@ -797,7 +802,8 @@ def remove_game(appid: int) -> Dict[str, Any]:
             "deactivated": deactivated}
 
 
-def activate_game(appid: int, launch_options_before: str = "") -> Dict[str, Any]:
+def activate_game(appid: int,
+                  launch_options_before: Optional[str] = None) -> Dict[str, Any]:
     """Activate a game's archived build without naming one.
 
     With a single archived build the choice is obvious; with several the newest

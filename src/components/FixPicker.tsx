@@ -550,11 +550,11 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           setArchived(true);
           // Record the fixes/launch args/Proton alongside the build, so the
           // entry is a complete template rather than just depot material.
-          let opts = "";
+          let opts: string | null = null;
           try {
             const SC: any = (window as any).SteamClient;
             const v = SC?.Apps?.GetLaunchOptionsForApp?.(appid);
-            opts = typeof v === "string" ? v : "";
+            if (typeof v === "string") opts = v;
           } catch { /* Steam may not expose it */ }
           await archiveSnapshotGame(appid, opts, "", check?.gameName || "").catch(() => null);
           setMsg(r.complete

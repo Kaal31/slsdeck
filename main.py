@@ -18,7 +18,7 @@ import asyncio
 import functools
 import os
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import decky
 
@@ -1126,12 +1126,12 @@ class Plugin:
         return await self._run(buildarchive.is_build_archived, int(appid), str(buildid))
 
     async def archive_activate(self, appid: int, buildid: str,
-                               launch_options_before: str = "") -> Dict[str, Any]:
+                               launch_options_before: Optional[str] = None) -> Dict[str, Any]:
         """Make an archived build the template this game should match.
         launch_options_before is what the game had BEFORE activation, captured
         by the frontend so deactivate can restore it rather than blanking."""
         return await self._run(buildarchive.activate, int(appid), str(buildid),
-                               str(launch_options_before or ""))
+                               launch_options_before)
 
     async def archive_deactivate(self, appid: int, reset: bool = True) -> Dict[str, Any]:
         """Stop trailing and undo the pin. The caller clears launch args and
@@ -1148,10 +1148,10 @@ class Plugin:
         return await self._run(buildarchive.remove_game, int(appid))
 
     async def archive_activate_game(self, appid: int,
-                                    launch_options_before: str = "") -> Dict[str, Any]:
+                                    launch_options_before: Optional[str] = None) -> Dict[str, Any]:
         """Activate a game's archived build without naming one (newest wins)."""
         return await self._run(buildarchive.activate_game, int(appid),
-                               str(launch_options_before or ""))
+                               launch_options_before)
 
     async def archive_reconcile_all(self, apply: bool = True) -> Dict[str, Any]:
         """Re-assert every activated build template. Run on boot."""
@@ -1161,7 +1161,7 @@ class Plugin:
         """Every archived game: builds, flagged fixes, launch args, compat tool."""
         return await self._run(buildarchive.entries)
 
-    async def archive_snapshot_game(self, appid: int, launch_options: str = "",
+    async def archive_snapshot_game(self, appid: int, launch_options: Optional[str] = None,
                                     compat_tool: str = "", name: str = "") -> Dict[str, Any]:
         """Record this game's current fix/launch/compat state into the archive.
         launch_options is passed in because Steam owns it (SetAppLaunchOptions)."""

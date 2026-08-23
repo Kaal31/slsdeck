@@ -147,12 +147,12 @@ function GameDetail({ entry, onBack, onChanged }: {
   // as the "before" state. Deactivate then RESTORES this instead of blanking —
   // which is what keeps Proton and native-Linux games symmetric: each is put
   // back exactly as it was, rather than into a state the template invented.
-  const readLaunchArgs = (): string => {
+  const readLaunchArgs = (): string | null => {
     try {
       const SC: any = (window as any).SteamClient;
       const v = SC?.Apps?.GetLaunchOptionsForApp?.(entry.appid);
-      return typeof v === "string" ? v : "";
-    } catch { return ""; }
+      return typeof v === "string" ? v : null;
+    } catch { return null; }
   };
 
   // Shared Steam-side cleanup: the backend deactivates and reports what it
@@ -436,11 +436,11 @@ export function ArchiveSection() {
     try {
       let saved = 0;
       for (const e of entries) {
-        let opts = "";
+        let opts: string | null = null;
         try {
           const SC: any = (window as any).SteamClient;
           const details = SC?.Apps?.GetLaunchOptionsForApp?.(e.appid);
-          opts = typeof details === "string" ? details : "";
+          if (typeof details === "string") opts = details;
         } catch { /* Steam may not expose it; the backend keeps the prior value */ }
         const r = await archiveSnapshotGame(e.appid, opts, "", e.name);
         if (r.success) saved += 1;
