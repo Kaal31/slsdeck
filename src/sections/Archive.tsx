@@ -98,10 +98,13 @@ function GameDetail({ entry, onBack, onChanged }: {
             const a = await archiveActivate(entry.appid, buildid, readLaunchArgs());
             if (!a.success) { setNote(a.error || "Could not activate"); return; }
             const r = await archiveReconcile(entry.appid, true);
-            if (r.success && r.wantLaunchOptions !== undefined) {
+            if (r.success && (r.hasLaunchOptions || a.restoreLaunchOptionsKnown)) {
               try {
                 const SC: any = (window as any).SteamClient;
-                SC?.Apps?.SetAppLaunchOptions?.(entry.appid, r.wantLaunchOptions || "");
+                SC?.Apps?.SetAppLaunchOptions?.(
+                  entry.appid,
+                  r.hasLaunchOptions ? (r.wantLaunchOptions || "") : (a.restoreLaunchOptions || ""),
+                );
               } catch { /* ignore */ }
             }
             if (r.success && r.installed) {
@@ -372,8 +375,9 @@ export function ArchiveSection() {
     <PanelSection title="Archive">
       <PanelSectionRow>
         <div style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.5 }}>
-          One game record per title: a required complete build (gids, manifests and depot
-          keys) plus fixes, launch arguments, Proton tool and DLC state when available.
+          Each game contains independent snapshots. Every snapshot has a required complete
+          build (gids, manifests and depot keys) plus fixes, launch arguments, Proton tool
+          and DLC state when available.
           All of it rides along in the uninstall archive, so it survives removing the plugin.
         </div>
       </PanelSectionRow>

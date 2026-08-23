@@ -104,23 +104,37 @@ def _bundle(entry: Dict[str, Any], buildid: str) -> Dict[str, Any]:
     DLC count, so several snapshots of the same game coexist without sharing --
     an old build and a new one usually want different fixes.
 
-    Migrates transparently: entries written when this state lived on the game
-    are folded into their (then only) build the first time they are read.
+    Legacy migration is performed once by ``_read``. This helper deliberately
+    does not invent absent optional fields: key presence distinguishes a
+    captured empty value from state that could not be captured.
     """
     build = (entry.get("builds") or {}).get(str(buildid))
     if build is None:
         return {}
-    if "fixes" not in build and (entry.get("fixes") or entry.get("launchOptions") is not None
-                                 or entry.get("compatTool") or entry.get("dlcFiles")):
-        build["fixes"] = list(entry.get("fixes") or [])
-        if entry.get("launchOptions") is not None:
-            build["launchOptions"] = entry.get("launchOptions")
-        build["compatTool"] = entry.get("compatTool") or ""
-        build["dlcFiles"] = int(entry.get("dlcFiles") or 0)
-    build.setdefault("fixes", [])
-    build.setdefault("compatTool", "")
-    build.setdefault("dlcFiles", 0)
     return build
+
+
+def _migrate_legacy_entry(entry: Dict[str, Any]) -> None:
+    """Move old game-level optional state into exactly one snapshot.
+
+    Older indexes could contain several builds but only one shared component
+    bundle. There is no honest way to assign that bundle to every snapshot, so
+    it belongs to the active snapshot, or the newest snapshot when none is
+    active. Other snapshots correctly remain ``not captured``.
+    """
+    legacy = ("fixes", "launchOptions", "compatTool", "dlcFiles", "updatedOn")
+    present = [key for key in legacy if key in entry]
+    if not present:
+        return
+    target = _target_build(entry)
+    build = (entry.get("builds") or {}).get(target)
+    if build is not None:
+        for key in present:
+            if key not in build:
+                value = entry.get(key)
+                build[key] = list(value or []) if key == "fixes" else value
+    for key in present:
+        entry.pop(key, None)
 
 
 def _target_build(entry: Dict[str, Any], buildid: str = "") -> str:
@@ -156,11 +170,11 @@ def _read() -> Dict[str, Any]:
             active = str(entry.get("activeBuild") or "")
             if active and active not in builds:
                 entry["activeBuild"] = ""
-            for fix in entry.get("fixes") or []:
-                fix["wanted"] = True
+            _migrate_legacy_entry(entry)
             for build in builds.values():
                 for fix in build.get("fixes") or []:
                     fix["wanted"] = True
+        v["version"] = 2
         return v
     except Exception:
         return {}
@@ -335,6 +349,10 @@ def remove_build(appid: int, buildid: str) -> Dict[str, Any]:
     deactivated: Dict[str, Any] = {}
     if str(pre.get("activeBuild") or "") == str(buildid):
         deactivated = deactivate(appid, reset=True)
+        if not deactivated.get("success"):
+            return {"success": False,
+                    "error": deactivated.get("error") or "could not deactivate snapshot",
+                    "deactivated": deactivated}
 
     data = _read()
     apps = data.get("apps", {}) or {}
@@ -446,12 +464,12 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
             "appliedAt": time.strftime("%Y-%m-%d %H:%M", time.localtime()),
         })
 
-    if fixes_known:
-        target = _target_build(entry, buildid)
+    target = _target_build(entry, buildid)
     if not target:
         return {"success": False, "error": "that game has no archived build to attach state to"}
     bundle = _bundle(entry, target)
-    bundle["fixes"] = merged
+    if fixes_known:
+        bundle["fixes"] = merged
     # Tri-state: "" means Steam positively reported no launch arguments; None
     # means this Steam build could not expose them, so retain the last known
     # game-level value rather than replacing it with invented information.
@@ -466,6 +484,7 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
     if not _write(data):
         return {"success": False, "error": "could not write the archive index"}
     return {"success": True, "appid": appid, "buildid": target, "fixes": len(merged),
+            "hasFixState": "fixes" in bundle,
             "launchOptions": bundle.get("launchOptions") or "",
             "hasLaunchOptions": "launchOptions" in bundle,
             "compatTool": bundle.get("compatTool") or "",
@@ -598,6 +617,64 @@ def _start_fix_reapply_queue(appid: int, install_path: str, name: str,
 # Activating restores the entire game snapshot. The mandatory build is pinned;
 # every optional captured component is then reconciled when present.
 
+def _cleanup_snapshot_components(appid: int, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    """Synchronously remove live components owned by an active snapshot.
+
+    Build pinning, Proton and launch arguments are handled by activation /
+    deactivation themselves. Fix and DLC cleanup lives here so switching or
+    removing a snapshot cannot leave its files layered under the next one.
+    Missing logs mean that component was not applied and are harmless.
+    """
+    result: Dict[str, Any] = {"fixes": "not-captured", "dlc": "not-captured",
+                              "errors": []}
+    install_path = ""
+    try:
+        from . import dlcdepot
+        install_path = dlcdepot._install_path(int(appid)) or ""
+    except Exception as exc:
+        result["errors"].append(f"install path: {exc}")
+    if not install_path:
+        return result
+
+    if bundle.get("fixes"):
+        result["fixes"] = "none"
+        try:
+            from . import fixes
+            log_path = os.path.join(install_path, f"luatools-fix-log-{int(appid)}.log")
+            if os.path.isfile(log_path):
+                # The public function is asynchronous; transitions must finish
+                # cleanup before the next snapshot is reconciled.
+                fixes._unfix_worker(int(appid), install_path, None)
+                state = (fixes.get_unfix_status(int(appid)) or {}).get("state") or {}
+                if state.get("status") == "done":
+                    result["fixes"] = "removed"
+                else:
+                    error = str(state.get("error") or "fix cleanup failed")
+                    result["errors"].append(error)
+                    result["fixes"] = "failed"
+        except Exception as exc:
+            result["errors"].append(f"fixes: {exc}")
+            result["fixes"] = "failed"
+
+    if int(bundle.get("dlcFiles") or 0) > 0:
+        result["dlc"] = "none"
+        try:
+            from . import depotdl, dlcdepot
+            log_path = depotdl.dlc_log_path(int(appid), install_path)
+            if os.path.isfile(log_path):
+                removed = dlcdepot.remove_downloaded(int(appid), True) or {}
+                if removed.get("success"):
+                    result["dlc"] = "removed"
+                    result["dlcFilesRemoved"] = int(removed.get("removed") or 0)
+                else:
+                    error = str(removed.get("error") or "DLC cleanup failed")
+                    result["errors"].append(error)
+                    result["dlc"] = "failed"
+        except Exception as exc:
+            result["errors"].append(f"DLC: {exc}")
+            result["dlc"] = "failed"
+    return result
+
 def is_build_archived(appid: int, buildid: str) -> Dict[str, Any]:
     entry = (_read().get("apps", {}) or {}).get(str(int(appid))) or {}
     builds = entry.get("builds") or {}
@@ -630,7 +707,11 @@ def activate(appid: int, buildid: str,
         return {"success": False, "error": material.get("error", "archive material unavailable"),
                 "missingManifests": material.get("missingManifests", []),
                 "missingKeys": material.get("missingKeys", [])}
-    if not entry.get("activeBuild"):
+    previous = str(entry.get("activeBuild") or "")
+    switched_cleanup: Dict[str, Any] = {}
+    restore_args_known = False
+    restore_args = ""
+    if not previous:
         # Only snapshot the "before" state on a fresh activation -- switching
         # between two archived builds must not overwrite the original.
         before_tool = ""
@@ -645,8 +726,33 @@ def activate(appid: int, buildid: str,
             entry["compatToolBefore"] = before_tool
         if launch_options_before is not None:
             entry["launchOptionsBefore"] = str(launch_options_before)
+    elif previous != str(buildid):
+        # Remove every component applied by the previous snapshot before the
+        # next snapshot is allowed to reconcile. Preserve the original
+        # pre-activation baseline across the switch.
+        switched_cleanup = _cleanup_snapshot_components(
+            int(appid), _bundle(entry, previous))
+        if switched_cleanup.get("errors"):
+            return {"success": False,
+                    "error": "could not cleanly deactivate the current snapshot",
+                    "activeBuild": previous, "cleanup": switched_cleanup}
+        restore_args_known = "launchOptionsBefore" in entry
+        restore_args = str(entry.get("launchOptionsBefore") or "")
+        if "compatToolBefore" in entry:
+            try:
+                from . import compat
+                before_tool = str(entry.get("compatToolBefore") or "")
+                if before_tool:
+                    compat.set_proton_mapping(int(appid), before_tool)
+                else:
+                    compat.remove_proton_mapping(int(appid))
+            except Exception as exc:
+                switched_cleanup.setdefault("errors", []).append(f"Proton: {exc}")
+        if switched_cleanup.get("errors"):
+            return {"success": False,
+                    "error": "could not restore the pre-activation baseline",
+                    "activeBuild": previous, "cleanup": switched_cleanup}
     # activeBuild doubles as the activation marker for backward compatibility.
-    previous = str(entry.get("activeBuild") or "")
     if previous and previous != str(buildid):
         try:
             from . import slssteam
@@ -658,33 +764,34 @@ def activate(appid: int, buildid: str,
     _write(data)
     logger.log(f"buildarchive: activated build {buildid} for {appid}"
                + (f" (replacing {previous})" if previous and previous != str(buildid) else ""))
-    return {"success": True, "activeBuild": str(buildid), "replaced": previous}
+    return {"success": True, "activeBuild": str(buildid), "replaced": previous,
+            "cleanup": switched_cleanup,
+            "restoreLaunchOptionsKnown": restore_args_known,
+            "restoreLaunchOptions": restore_args}
 
 
 def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
     """Stop trailing, and undo what activation put in place.
 
-    Unpins the manifest and clears the recorded launch arguments/target path.
-    ``reset`` additionally asks Steam to restore the game's files (the "Reset
-    files" flow) -- the caller triggers that, since it is Steam-side work.
-    Fix files are NOT deleted here: use the Fixes tab's un-fix for that, which
-    knows how to restore the originals it replaced.
+    Removes fixes and downloaded DLC owned by the active snapshot, unpins its
+    build, restores the previous Proton mapping, and reports the previous
+    launch arguments to the frontend. ``reset`` additionally asks Steam to
+    restore the game's files (the caller triggers that Steam-side operation).
     """
     data = _read()
     entry = (data.get("apps", {}) or {}).get(str(int(appid)))
     if not entry:
         return {"success": False, "error": "no archive entry for that game"}
     was = str(entry.get("activeBuild") or "")
+    bundle = _bundle(entry, was) if was else {}
+    cleanup = _cleanup_snapshot_components(int(appid), bundle) if was else {}
+    if cleanup.get("errors"):
+        return {"success": False, "error": "snapshot component cleanup failed",
+                "was": was, "cleanup": cleanup}
     launch_before_known = "launchOptionsBefore" in entry
     restore_args = str(entry.get("launchOptionsBefore") or "")
     compat_before_known = "compatToolBefore" in entry
     restore_tool = str(entry.get("compatToolBefore") or "")
-    entry["activeBuild"] = ""
-    entry["deactivatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
-    entry.pop("compatToolBefore", None)
-    entry.pop("launchOptionsBefore", None)
-    _write(data)
-
     # Put the compat tool back exactly as it was before activation. Restoring an
     # EMPTY tool means removing the override, which is the correct end state for
     # a native Linux game -- the same code path serves both.
@@ -697,6 +804,16 @@ def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
                 compat.remove_proton_mapping(int(appid))
         except Exception as exc:
             logger.warn(f"buildarchive: compat tool restore failed for {appid}: {exc}")
+            return {"success": False, "error": f"could not restore Proton mapping: {exc}",
+                    "was": was, "cleanup": cleanup}
+
+    entry["activeBuild"] = ""
+    entry["deactivatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+    entry.pop("compatToolBefore", None)
+    entry.pop("launchOptionsBefore", None)
+    if not _write(data):
+        return {"success": False, "error": "could not persist snapshot deactivation",
+                "was": was, "cleanup": cleanup}
 
     unpinned = False
     try:
@@ -714,7 +831,8 @@ def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
             "clearLaunchOptions": launch_before_known,
             "restoreLaunchOptions": restore_args,
             "restoredCompatTool": restore_tool,
-            "resetFiles": bool(reset)}
+            "resetFiles": bool(reset),
+            "cleanup": cleanup}
 
 
 def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
@@ -882,6 +1000,10 @@ def remove_game(appid: int) -> Dict[str, Any]:
         return {"success": False, "error": "that game is not archived"}
     if str(pre.get("activeBuild") or ""):
         deactivated = deactivate(appid, reset=True)
+        if not deactivated.get("success"):
+            return {"success": False,
+                    "error": deactivated.get("error") or "could not deactivate snapshot",
+                    "deactivated": deactivated}
 
     data = _read()
     apps = data.get("apps", {}) or {}
