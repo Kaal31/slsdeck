@@ -1063,7 +1063,19 @@ class Plugin:
                     buildid = settings.get_pinned_build(int(appid))
                 except Exception:
                     buildid = ""
-            return {"success": True, "pinned": bool(pinned), "buildid": buildid, "depots": depots}
+            # Snapshot creation is not limited to already-pinned games. Steam's
+            # appmanifest records the installed BuildID and exact depot GIDs,
+            # which are sufficient mandatory material for a game snapshot.
+            try:
+                installed_depots = await self._run(steam.get_installed_depots, int(appid))
+            except Exception:
+                installed_depots = {}
+            try:
+                installed_buildid = await self._run(steam.get_installed_buildid, int(appid))
+            except Exception:
+                installed_buildid = ""
+            return {"success": True, "pinned": bool(pinned), "buildid": buildid, "depots": depots,
+                    "installedBuildid": installed_buildid, "installedDepots": installed_depots}
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
