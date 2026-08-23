@@ -556,7 +556,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             const v = SC?.Apps?.GetLaunchOptionsForApp?.(appid);
             if (typeof v === "string") opts = v;
           } catch { /* Steam may not expose it */ }
-          await archiveSnapshotGame(appid, opts, "", check?.gameName || "").catch(() => null);
+          await archiveSnapshotGame(appid, opts, "", check?.gameName || "", currentBuildId).catch(() => null);
           setMsg(r.complete
             ? `Archived game snapshot on build ${currentBuildId} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s).`
             : `Archived build ${currentBuildId}, but ${r.missingManifests?.length || 0} manifest(s) are unavailable (a Hubcap key usually fixes this).`);

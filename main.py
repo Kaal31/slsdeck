@@ -1162,11 +1162,17 @@ class Plugin:
         return await self._run(buildarchive.entries)
 
     async def archive_snapshot_game(self, appid: int, launch_options: Optional[str] = None,
-                                    compat_tool: str = "", name: str = "") -> Dict[str, Any]:
-        """Record this game's current fix/launch/compat state into the archive.
-        launch_options is passed in because Steam owns it (SetAppLaunchOptions)."""
+                                    compat_tool: str = "", name: str = "",
+                                    buildid: str = "") -> Dict[str, Any]:
+        """Record fix/launch/compat state into ONE snapshot.
+
+        buildid names which snapshot to attach it to; snapshots of the same game
+        are independent, so writing into the wrong one would leak an old build's
+        configuration into a new one. Omitted means the active snapshot, else
+        the most recently archived."""
         return await self._run(buildarchive.snapshot_game, int(appid),
-                               launch_options, compat_tool, name)
+                               launch_options, compat_tool, name, str(buildid or ""))
+
 
     async def archive_set_fix_wanted(self, appid: int, key: str, wanted: bool) -> Dict[str, Any]:
         """Flag/unflag a fix for re-application. Changes no files."""

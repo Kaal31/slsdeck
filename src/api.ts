@@ -390,28 +390,32 @@ export const dlcDepotStart = callable<[appid: number, dlcAppids?: number[]], { s
 // in the survival archive, so it survives plugin removal.
 export const buildArchiveAdd = callable<[appid: number, buildid: string, gidsJson?: string, date?: string, name?: string], { success: boolean; incomplete?: boolean; depots?: number; manifests?: number; keys?: number; missingManifests?: string[]; missingKeys?: string[]; complete?: boolean; error?: string }>("build_archive_add");
 export const buildArchiveList = callable<[appid?: number], { success: boolean; builds?: any[]; count?: number; error?: string }>("build_archive_list");
-export const buildArchiveRemove = callable<[appid: number, buildid: string], { success: boolean; removedManifests?: number; deactivated?: { was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; resetFiles?: boolean }; error?: string }>("build_archive_remove");
+export const buildArchiveRemove = callable<[appid: number, buildid: string], { success: boolean; removedManifests?: number; remaining?: number; deactivated?: { was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; resetFiles?: boolean }; error?: string }>("build_archive_remove");
 
 // Per-game archive entry. Declarative: it records what a game is SUPPOSED to
 // look like (which builds are kept, which fixes it wants, its launch args and
 // Proton tool) — never copies of the payloads. Toggling a fix flag here changes
 // no files; it decides what a restore should try to re-apply.
-export interface ArchivedBuild {
-  buildid: string; date?: string; gids?: Record<string, string>; keys?: Record<string, string>;
-  manifests?: string[]; missingManifests?: string[]; archivedOn?: string; archivedAt?: number;
-}
 export interface ArchivedFix {
   key: string; fixType: string; downloadUrl: string; date?: string;
   files?: number; wanted?: boolean; missing?: boolean; appliedAt?: string;
 }
+/** One snapshot: a build PLUS the components captured with it. Snapshots of the
+ *  same game share nothing except the appid they are filed under. */
+export interface ArchivedBuild {
+  buildid: string; date?: string; gids?: Record<string, string>; keys?: Record<string, string>;
+  manifests?: string[]; missingManifests?: string[]; archivedOn?: string; archivedAt?: number;
+  fixes?: ArchivedFix[]; fixCount?: number; wantedFixes?: number; hasFixState?: boolean;
+  launchOptions?: string; hasLaunchOptions?: boolean;
+  compatTool?: string; hasCompatTool?: boolean;
+  dlcFiles?: number; hasDlcState?: boolean;
+  updatedOn?: string;
+}
+/** A game is only a container for its snapshots. The single piece of game-level
+ *  state is which one is active, because activation is exclusive. */
 export interface ArchiveEntry {
   appid: number; name: string;
   builds: ArchivedBuild[]; buildCount: number;
-  fixes: ArchivedFix[]; fixCount: number; wantedFixes: number; hasFixState?: boolean;
-  launchOptions: string; hasLaunchOptions?: boolean;
-  compatTool: string; hasCompatTool?: boolean;
-  dlcFiles: number; hasDlcState?: boolean; updatedOn: string;
-  // Which archived build this game is currently held to ("" = none).
   activeBuild: string;
 }
 export const archiveIsBuild = callable<[appid: number, buildid: string], { success: boolean; archived?: boolean; active?: boolean; activeBuild?: string }>("archive_is_build");
@@ -422,7 +426,7 @@ export const archiveRemoveGame = callable<[appid: number], { success: boolean; b
 export const archiveActivateGame = callable<[appid: number, launchOptionsBefore?: string | null], { success: boolean; activeBuild?: string; chosen?: string; ofBuilds?: number; replaced?: string; error?: string }>("archive_activate_game");
 export const archiveReconcileAll = callable<[apply?: boolean], { success: boolean; checked?: number; results?: Array<{ success?: boolean; appid: number; active?: string; installed?: boolean; waiting?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string; hasLaunchOptions?: boolean }>; error?: string }>("archive_reconcile_all");
 export const archiveEntries = callable<[], { success: boolean; entries?: ArchiveEntry[]; count?: number; error?: string }>("archive_entries");
-export const archiveSnapshotGame = callable<[appid: number, launchOptions?: string | null, compatTool?: string, name?: string], { success: boolean; fixes?: number; dlcFiles?: number; error?: string }>("archive_snapshot_game");
+export const archiveSnapshotGame = callable<[appid: number, launchOptions?: string | null, compatTool?: string, name?: string, buildid?: string], { success: boolean; fixes?: number; dlcFiles?: number; error?: string }>("archive_snapshot_game");
 export const archiveSetFixWanted = callable<[appid: number, key: string, wanted: boolean], { success: boolean; wanted?: boolean; error?: string }>("archive_set_fix_wanted");
 export const archiveForgetFix = callable<[appid: number, key: string], { success: boolean; removed?: number; error?: string }>("archive_forget_fix");
 export const archivePendingReapply = callable<[appid: number], { success: boolean; pending?: ArchivedFix[]; count?: number; error?: string }>("archive_pending_reapply");

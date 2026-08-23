@@ -1,10 +1,12 @@
-import { PanelSection, PanelSectionRow, ButtonItem, ConfirmModal, showModal } from "@decky/ui";
+import { PanelSection, PanelSectionRow, ButtonItem, DialogButton, Focusable, ConfirmModal, showModal } from "@decky/ui";
 import { useEffect, useState } from "react";
 import {
   ArchiveEntry,
   archiveEntries,
   archiveActivateGame,
+  archiveActivate,
   archiveRemoveGame,
+  buildArchiveRemove,
   archiveDeactivate,
   archiveReconcile,
   triggerSteamInstall,
@@ -76,27 +78,96 @@ function GameDetail({ entry, onBack, onChanged }: {
     }
   };
 
+  /** Activate ONE snapshot, or deactivate it if it is the active one. Only one
+   *  snapshot per game may be active, so activating another displaces it. */
+  const toggleSnapshot = (buildid: string) => {
+    if (entry.activeBuild === buildid) { deactivateSnapshot(); return; }
+    showModal(
+      <ConfirmModal
+        strTitle={`Activate snapshot ${buildid}?`}
+        strDescription={
+          (entry.activeBuild
+            ? `This replaces the currently active snapshot ${entry.activeBuild}. `
+            : "") +
+          "The game is pinned to this build and downloaded, and this snapshot's own captured fixes, launch arguments and Proton tool are restored. Re-checked on every boot."
+        }
+        strOKButtonText="Activate"
+        onOK={async () => {
+          setBusy(`snap-${buildid}`);
+          try {
+            const a = await archiveActivate(entry.appid, buildid, readLaunchArgs());
+            if (!a.success) { setNote(a.error || "Could not activate"); return; }
+            const r = await archiveReconcile(entry.appid, true);
+            if (r.success && r.wantLaunchOptions !== undefined) {
+              try {
+                const SC: any = (window as any).SteamClient;
+                SC?.Apps?.SetAppLaunchOptions?.(entry.appid, r.wantLaunchOptions || "");
+              } catch { /* ignore */ }
+            }
+            if (r.success && r.installed) {
+              triggerSteamInstall(entry.appid).catch(() => {});
+              validateSteamApp(entry.appid).catch(() => {});
+            }
+            const did = (r.actions || []).join(", ");
+            setNote(!r.success ? (r.error || "Activated, but reconcile failed")
+              : !r.installed ? `Activated snapshot ${buildid}. ${r.waiting || ""}`
+              : did ? `Activated snapshot ${buildid} — ${did}.` : `Activated snapshot ${buildid} — already matching.`);
+            onChanged();
+          } catch (e) { setNote(`Failed: ${e}`); } finally { setBusy(""); }
+        }}
+      />,
+    );
+  };
+
+  /** Unarchive ONE snapshot. The backend deactivates it first when it is the
+   *  active one, so this always leaves the game clean; other snapshots of the
+   *  same game are untouched. */
+  const unarchiveSnapshot = (buildid: string) => showModal(
+    <ConfirmModal
+      strTitle={`Unarchive snapshot ${buildid}?`}
+      strDescription={
+        (entry.activeBuild === buildid
+          ? "This snapshot is ACTIVE. It is deactivated first — unpinned, Proton tool and launch arguments restored, files reset — and then removed. "
+          : "") +
+        "Deletes this snapshot's build material and its captured fixes, launch arguments and Proton tool. Other snapshots of this game are kept."
+      }
+      strOKButtonText="Unarchive"
+      onOK={async () => {
+        setBusy(`rm-${buildid}`);
+        try {
+          const r = await buildArchiveRemove(entry.appid, buildid);
+          if (!r.success) { setNote(r.error || "Failed"); return; }
+          runSteamSideCleanup(r.deactivated);
+          setNote(`Unarchived snapshot ${buildid} — ${r.removedManifests ?? 0} manifest(s) freed.`);
+          onChanged();
+          if (!r.remaining) onBack();
+        } catch (e) { setNote(`Failed: ${e}`); } finally { setBusy(""); }
+      }}
+    />,
+  );
+
+  /** Shared by the game-level button and the per-snapshot one: only one
+   *  snapshot is ever active, so there is only one thing to deactivate. */
+  const deactivateSnapshot = () => showModal(
+    <ConfirmModal
+      strTitle="Deactivate this snapshot?"
+      strDescription="Stops restoring the archived configuration, unpins its build, restores the pre-activation Proton tool and launch arguments and asks Steam to reset the game files. The archived snapshot is kept."
+      strOKButtonText="Deactivate"
+      onOK={async () => {
+        setBusy(entry.activeBuild ? `snap-${entry.activeBuild}` : "game-active");
+        try {
+          const r = await archiveDeactivate(entry.appid, true);
+          if (!r.success) { setNote(r.error || "Could not deactivate"); return; }
+          runSteamSideCleanup(r);
+          setNote(`Snapshot deactivated${r.unpinned ? " and unpinned" : ""}.`);
+          onChanged();
+        } catch (e) { setNote(`Failed: ${e}`); } finally { setBusy(""); }
+      }}
+    />,
+  );
+
   const toggleGameActive = () => {
-    if (entry.activeBuild) {
-      showModal(
-        <ConfirmModal
-          strTitle="Deactivate this game snapshot?"
-          strDescription="Stops restoring the archived configuration, unpins its build, restores the pre-activation launch arguments and asks Steam to reset the game files. The archived game record is kept."
-          strOKButtonText="Deactivate"
-          onOK={async () => {
-            setBusy("game-active");
-            try {
-              const r = await archiveDeactivate(entry.appid, true);
-              if (!r.success) { setNote(r.error || "Could not deactivate"); return; }
-              runSteamSideCleanup(r);
-              setNote(`Snapshot deactivated${r.unpinned ? " and unpinned" : ""}.`);
-              onChanged();
-            } catch (e) { setNote(`Failed: ${e}`); } finally { setBusy(""); }
-          }}
-        />,
-      );
-      return;
-    }
+    if (entry.activeBuild) { deactivateSnapshot(); return; }
     showModal(
       <ConfirmModal
         strTitle="Activate this game snapshot?"
@@ -136,7 +207,7 @@ function GameDetail({ entry, onBack, onChanged }: {
         (entry.activeBuild
           ? "This game is ACTIVE. It will be deactivated first — unpinned, launch arguments cleared and its files reset — and then removed. "
           : "") +
-        `Deletes the whole snapshot: ${entry.buildCount} archived build(s), ${entry.fixCount} fix record(s), the launch arguments and the Proton tool. The installed game's files are otherwise untouched.`
+        `Deletes ALL ${entry.buildCount} snapshot(s) of this game and everything captured with them. The installed game's files are otherwise untouched.`
       }
       strOKButtonText="Unarchive"
       onOK={async () => {
@@ -179,82 +250,90 @@ function GameDetail({ entry, onBack, onChanged }: {
       </PanelSectionRow>
 
       <PanelSectionRow>
-        <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.6 }}>
-          AppID <b>{entry.appid}</b>
-          {entry.hasCompatTool
-            ? entry.compatTool ? <> · Proton <b>{entry.compatTool}</b></> : <> · Proton <i>default</i></>
-            : <> · Proton <i>not captured</i></>}
-          {entry.hasDlcState
-            ? <> · <b>{entry.dlcFiles}</b> DLC file(s)</>
-            : <> · DLC <i>not captured</i></>}
-          {entry.updatedOn ? <> · updated {entry.updatedOn}</> : null}
-          {entry.hasLaunchOptions
-            ? <div style={{ marginTop: 3, wordBreak: "break-all" }}>Launch args: {entry.launchOptions ? <code>{entry.launchOptions}</code> : <i>none</i>}</div>
-            : <div style={{ marginTop: 3 }}>Launch args: <i>not captured</i></div>}
-        </div>
+        <div style={{ fontSize: 11, opacity: 0.75 }}>AppID <b>{entry.appid}</b></div>
       </PanelSectionRow>
 
-      {/* Mandatory build component — informational only. The archive record is
-          restored or removed as one game snapshot. */}
+      {/* Snapshots. Several coexist per game and share NOTHING except the appid
+          they are filed under — each carries its own build material, fixes,
+          launch arguments, Proton tool and DLC state. Removing one leaves the
+          others untouched. Only one may be ACTIVE at a time, so activating one
+          displaces whichever was active. */}
       <PanelSectionRow>
-        <div style={{ fontSize: 12, fontWeight: 600, paddingTop: 4 }}>Archived build</div>
+        <div style={{ fontSize: 12, fontWeight: 600, paddingTop: 4 }}>
+          Archived snapshots ({entry.buildCount})
+        </div>
       </PanelSectionRow>
       {entry.builds.length === 0 && (
         <PanelSectionRow><div style={{ fontSize: 11, opacity: 0.6 }}>None kept for this game.</div></PanelSectionRow>
       )}
+
       {entry.builds.map((b) => {
         const incomplete = !buildIsComplete(b);
         const missingMaterial = (b.missingManifests?.length || 0)
           + Math.max(0, Object.keys(b.gids || {}).length - Object.keys(b.keys || {}).length);
+        const isActive = entry.activeBuild === b.buildid;
+        const fixes = b.fixes || [];
         return (
           <PanelSectionRow key={b.buildid}>
-            <div style={{ width: "100%" }}>
-              <div style={{ flex: 1, fontSize: 11 }}>
-                <div>Build <b>{b.buildid}</b> {b.date ? `· ${b.date}` : ""}</div>
-                <div style={{ opacity: 0.65 }}>
-                  {incomplete
-                    ? <Pill text={`${missingMaterial} required item(s) missing`} tone="warn" />
-                    : <Pill text="complete" tone="on" />}
-                  {Object.keys(b.gids || {}).length} depot(s)
-                  {b.archivedOn ? ` · archived ${b.archivedOn}` : ""}
-                </div>
+            <div style={{
+              width: "100%", padding: "6px 8px", marginBottom: 6, borderRadius: 6,
+              background: isActive ? "rgba(47,168,92,0.10)" : "rgba(255,255,255,0.04)",
+              border: isActive ? "1px solid rgba(47,168,92,0.35)" : "1px solid rgba(255,255,255,0.08)",
+            }}>
+              <div style={{ fontSize: 12 }}>
+                Build <b>{b.buildid}</b> {b.date ? `· ${b.date}` : ""}
+                {isActive ? <> <Pill text="active" tone="on" /></> : null}
               </div>
+              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>
+                {incomplete
+                  ? <Pill text={`${missingMaterial} required item(s) missing`} tone="warn" />
+                  : <Pill text="complete" tone="on" />}
+                {Object.keys(b.gids || {}).length} depot(s)
+                {b.archivedOn ? ` · archived ${b.archivedOn}` : ""}
+              </div>
+
+              {/* This snapshot's own captured components. */}
+              <div style={{ fontSize: 10, opacity: 0.75, marginTop: 4, lineHeight: 1.5 }}>
+                {b.hasCompatTool
+                  ? b.compatTool ? <>Proton <b>{b.compatTool}</b></> : <>Proton <i>default</i></>
+                  : <>Proton <i>not captured</i></>}
+                {" · "}
+                {b.hasDlcState ? <><b>{b.dlcFiles}</b> DLC file(s)</> : <>DLC <i>not captured</i></>}
+                {" · "}
+                {b.hasFixState ? <><b>{b.fixCount}</b> fix(es)</> : <>fixes <i>not captured</i></>}
+                <div style={{ marginTop: 2, wordBreak: "break-all" }}>
+                  {b.hasLaunchOptions
+                    ? <>Launch args: {b.launchOptions ? <code>{b.launchOptions}</code> : <i>none</i>}</>
+                    : <>Launch args: <i>not captured</i></>}
+                </div>
+                {fixes.map((f) => (
+                  <div key={f.key} style={{ marginTop: 2 }}>
+                    · <b>{f.fixType || "fix"}</b>{f.files ? ` (${f.files} file(s))` : ""}
+                    {f.missing ? <> <Pill text="not applied now" tone="warn" /></> : null}
+                  </div>
+                ))}
+              </div>
+
+              <Focusable style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <DialogButton
+                  style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
+                  disabled={!!busy || (incomplete && !isActive)}
+                  onClick={() => toggleSnapshot(b.buildid)}
+                >
+                  {busy === `snap-${b.buildid}` ? "…" : isActive ? "Deactivate" : "Activate"}
+                </DialogButton>
+                <DialogButton
+                  style={{ flex: 1, fontSize: 11, padding: "4px 6px" }}
+                  disabled={!!busy}
+                  onClick={() => unarchiveSnapshot(b.buildid)}
+                >
+                  {busy === `rm-${b.buildid}` ? "…" : "Unarchive"}
+                </DialogButton>
+              </Focusable>
             </div>
           </PanelSectionRow>
         );
       })}
-
-      {/* Fixes */}
-      <PanelSectionRow>
-        <div style={{ fontSize: 12, fontWeight: 600, paddingTop: 8 }}>
-          Captured fixes ({entry.hasFixState ? entry.fixCount : "not captured"})
-        </div>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <div style={{ fontSize: 10, opacity: 0.6, lineHeight: 1.45 }}>
-          These fix records belong to this game snapshot and are restored with it.
-        </div>
-      </PanelSectionRow>
-      {entry.hasFixState && entry.fixes.length === 0 && (
-        <PanelSectionRow><div style={{ fontSize: 11, opacity: 0.6 }}>No fixes recorded.</div></PanelSectionRow>
-      )}
-      {!entry.hasFixState && (
-        <PanelSectionRow><div style={{ fontSize: 11, opacity: 0.6 }}>Fix state was not available when this snapshot was captured.</div></PanelSectionRow>
-      )}
-      {entry.fixes.map((f) => (
-        <PanelSectionRow key={f.key}>
-          <div style={{ width: "100%" }}>
-            <div style={{ flex: 1, fontSize: 11 }}>
-              <div><b>{f.fixType || "fix"}</b> {f.files ? `· ${f.files} file(s)` : ""}</div>
-              <div style={{ opacity: 0.65 }}>
-                {f.wanted ? <Pill text="re-apply" tone="on" /> : <Pill text="ignored" />}
-                {f.missing ? <Pill text="not applied now" tone="warn" /> : null}
-                {f.appliedAt || f.date || ""}
-              </div>
-            </div>
-          </div>
-        </PanelSectionRow>
-      ))}
 
       {note ? (
         <PanelSectionRow><div style={{ fontSize: 11, opacity: 0.8 }}>{note}</div></PanelSectionRow>
@@ -313,10 +392,10 @@ export function ArchiveSection() {
             <div style={{ textAlign: "left" }}>
               <div style={{ fontSize: 13 }}>{e.name || `App ${e.appid}`}</div>
               <div style={{ fontSize: 10, opacity: 0.65, marginTop: 2 }}>
-                {e.buildCount ? <Pill text="build captured" /> : null}
-                {e.fixCount ? <Pill text={`${e.fixCount} fixes`} tone="on" /> : null}
-                {e.dlcFiles ? <Pill text={`${e.dlcFiles} DLC files`} /> : null}
-                {e.compatTool ? <Pill text={e.compatTool} /> : null}
+                {e.buildCount
+                  ? <Pill text={`${e.buildCount} snapshot${e.buildCount === 1 ? "" : "s"}`} />
+                  : null}
+                {e.activeBuild ? <Pill text={`active: ${e.activeBuild}`} tone="on" /> : null}
               </div>
             </div>
           </ButtonItem>

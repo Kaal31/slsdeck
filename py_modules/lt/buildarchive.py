@@ -97,28 +97,70 @@ def _deploy_material(appid: int, build: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, **status, "copied": copied, "cachedKeys": cached}
 
 
+def _bundle(entry: Dict[str, Any], buildid: str) -> Dict[str, Any]:
+    """The optional captured state belonging to ONE snapshot.
+
+    Each archived build carries its own fixes / launch arguments / compat tool /
+    DLC count, so several snapshots of the same game coexist without sharing --
+    an old build and a new one usually want different fixes.
+
+    Migrates transparently: entries written when this state lived on the game
+    are folded into their (then only) build the first time they are read.
+    """
+    build = (entry.get("builds") or {}).get(str(buildid))
+    if build is None:
+        return {}
+    if "fixes" not in build and (entry.get("fixes") or entry.get("launchOptions") is not None
+                                 or entry.get("compatTool") or entry.get("dlcFiles")):
+        build["fixes"] = list(entry.get("fixes") or [])
+        if entry.get("launchOptions") is not None:
+            build["launchOptions"] = entry.get("launchOptions")
+        build["compatTool"] = entry.get("compatTool") or ""
+        build["dlcFiles"] = int(entry.get("dlcFiles") or 0)
+    build.setdefault("fixes", [])
+    build.setdefault("compatTool", "")
+    build.setdefault("dlcFiles", 0)
+    return build
+
+
+def _target_build(entry: Dict[str, Any], buildid: str = "") -> str:
+    """Which snapshot a game-level call means: the named one, else the active
+    one, else the most recently archived."""
+    builds = entry.get("builds") or {}
+    if buildid and str(buildid) in builds:
+        return str(buildid)
+    active = str(entry.get("activeBuild") or "")
+    if active and active in builds:
+        return active
+    if not builds:
+        return ""
+    return sorted(builds.values(), key=lambda b: float(b.get("archivedAt") or 0),
+                  reverse=True)[0].get("buildid", "")
+
+
 def _read() -> Dict[str, Any]:
     try:
         with open(index_path(), "r", encoding="utf-8") as fh:
             v = json.load(fh)
         if not isinstance(v, dict):
             return {}
-        # v1 briefly allowed several independently-managed builds per game.
-        # A record is now one game snapshot, so collapse legacy records to the
-        # active build, or otherwise the most recently archived build.
+        # Several snapshots of one game are supported and must be preserved:
+        # each is a build PLUS its own captured components, so an old build can
+        # keep the fixes it needed while a newer one keeps different ones. Only
+        # ONE may be active at a time -- that is a property of activation, not a
+        # reason to discard the others.
         for entry in (v.get("apps", {}) or {}).values():
             builds = entry.get("builds") or {}
-            if len(builds) > 1:
-                active = str(entry.get("activeBuild") or "")
-                chosen = builds.get(active)
-                if not chosen:
-                    chosen = max(builds.values(),
-                                 key=lambda b: float(b.get("archivedAt") or 0))
-                entry["builds"] = {str(chosen.get("buildid")): chosen}
-                if active and active != str(chosen.get("buildid")):
-                    entry["activeBuild"] = str(chosen.get("buildid"))
+            # An activeBuild pointing at a snapshot that no longer exists would
+            # leave the game held to nothing; drop the stale pointer.
+            active = str(entry.get("activeBuild") or "")
+            if active and active not in builds:
+                entry["activeBuild"] = ""
             for fix in entry.get("fixes") or []:
                 fix["wanted"] = True
+            for build in builds.values():
+                for fix in build.get("fixes") or []:
+                    fix["wanted"] = True
         return v
     except Exception:
         return {}
@@ -160,11 +202,6 @@ def add_build(appid: int, buildid: str, gids: Dict[str, str],
              if str(d).isdigit() and str(g).isdigit()}
     if not clean:
         return {"success": False, "error": "no depot:gid pairs to archive"}
-    previous_data = _read()
-    previous_entry = (previous_data.get("apps", {}) or {}).get(str(appid)) or {}
-    if previous_entry.get("activeBuild"):
-        return {"success": False,
-                "error": "deactivate this game snapshot before replacing its recorded build"}
 
     # Depot keys: build-independent, so one copy per depot is enough forever.
     keys: Dict[str, str] = {}
@@ -209,8 +246,9 @@ def add_build(appid: int, buildid: str, gids: Dict[str, str],
     entry = apps.setdefault(str(appid), {"name": name or "", "builds": {}})
     if name:
         entry["name"] = name
-    old_manifests = {m for b in (entry.get("builds") or {}).values()
-                     for m in (b.get("manifests") or [])}
+    # Only THIS snapshot's old material is a candidate for cleanup -- other
+    # snapshots of the same game keep theirs.
+    old_manifests = set(((entry.get("builds") or {}).get(str(buildid)) or {}).get("manifests") or [])
     new_build = {
         "buildid": str(buildid),
         "date": str(date or ""),
@@ -225,13 +263,17 @@ def add_build(appid: int, buildid: str, gids: Dict[str, str],
         "archivedAt": time.time(),
         "archivedOn": time.strftime("%Y-%m-%d %H:%M", time.localtime()),
     }
-    # A game record has one build component. Re-archiving starts a fresh game
-    # snapshot: optional components are cleared, then snapshot_game captures
-    # whichever of them are available now. This prevents mixing a new build
-    # with fixes or arguments retained from the previous snapshot.
-    entry["builds"] = {str(buildid): new_build}
-    for optional in ("fixes", "launchOptions", "compatTool", "dlcFiles", "updatedOn"):
-        entry.pop(optional, None)
+    # Several snapshots of one game coexist: each is a build PLUS its own
+    # optional components, so an old build can keep the fixes it needed while a
+    # newer one keeps different ones. Re-archiving the SAME buildid replaces
+    # only that snapshot; its optional state is cleared so a fresh capture
+    # cannot inherit stale fixes or arguments.
+    entry.setdefault("builds", {})[str(buildid)] = new_build
+    # Legacy game-level fields are folded into their build by _bundle() on the
+    # next read; drop them here once every build carries its own.
+    if len(entry["builds"]) == 1:
+        for legacy in ("fixes", "launchOptions", "compatTool", "dlcFiles", "updatedOn"):
+            entry.pop(legacy, None)
     data["version"] = 2
     if not _write(data):
         return {"success": False, "error": "could not write the archive index"}
@@ -273,14 +315,53 @@ def list_builds(appid: int = 0) -> Dict[str, Any]:
 
 
 def remove_build(appid: int, buildid: str) -> Dict[str, Any]:
-    """Compatibility endpoint: removing the build removes the game snapshot."""
-    entry = (_read().get("apps", {}) or {}).get(str(int(appid))) or {}
-    if str(buildid) not in (entry.get("builds") or {}):
-        return {"success": False, "error": "that build is not in the game snapshot"}
-    if entry.get("activeBuild"):
-        return {"success": False,
-                "error": "deactivate the game snapshot in Archive before unarchiving it"}
-    return remove_game(int(appid))
+    """Unarchive ONE snapshot: its build material and its captured state.
+
+    If that snapshot is the active one it is deactivated first -- unpinned, with
+    the pre-activation compat tool restored and the launch arguments/file reset
+    reported for the caller -- so unarchiving always leaves the game clean
+    rather than held to a template that no longer exists. Other snapshots of the
+    same game are untouched; the game record disappears only once its last
+    snapshot is gone.
+    """
+    try:
+        appid = int(appid)
+    except Exception:
+        return {"success": False, "error": "invalid appid"}
+    pre = (_read().get("apps", {}) or {}).get(str(appid)) or {}
+    if str(buildid) not in (pre.get("builds") or {}):
+        return {"success": False, "error": "that build is not archived"}
+
+    deactivated: Dict[str, Any] = {}
+    if str(pre.get("activeBuild") or "") == str(buildid):
+        deactivated = deactivate(appid, reset=True)
+
+    data = _read()
+    apps = data.get("apps", {}) or {}
+    entry = apps.get(str(appid)) or {}
+    dropped = (entry.get("builds") or {}).pop(str(buildid), None) or {}
+    if not (entry.get("builds") or {}):
+        apps.pop(str(appid), None)
+    doomed = set(dropped.get("manifests") or [])
+    still_used = {
+        m
+        for e in apps.values()
+        for b in (e.get("builds") or {}).values()
+        for m in (b.get("manifests") or [])
+    }
+    removed = 0
+    for fname in doomed - still_used:
+        try:
+            os.remove(os.path.join(archive_dir(), fname))
+            removed += 1
+        except Exception:
+            pass
+    _write(data)
+    logger.log(f"buildarchive: unarchived snapshot {buildid} for {appid} "
+               f"({removed} manifest(s) freed)")
+    return {"success": True, "appid": appid, "buildid": str(buildid),
+            "removedManifests": removed, "deactivated": deactivated,
+            "remaining": len((entry.get("builds") or {}))}
 
 
 # ── per-game snapshot: required build + optional captured state ──────────────
@@ -294,7 +375,7 @@ def _fix_key(fix: Dict[str, Any]) -> str:
 
 
 def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool: str = "",
-                  name: str = "") -> Dict[str, Any]:
+                  name: str = "", buildid: str = "") -> Dict[str, Any]:
     """Record a game's current fix/launch/compat state into its archive entry.
 
     ``launch_options`` comes from the frontend: Steam owns it (SetAppLaunchOptions)
@@ -366,67 +447,83 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
         })
 
     if fixes_known:
-        entry["fixes"] = merged
+        target = _target_build(entry, buildid)
+    if not target:
+        return {"success": False, "error": "that game has no archived build to attach state to"}
+    bundle = _bundle(entry, target)
+    bundle["fixes"] = merged
     # Tri-state: "" means Steam positively reported no launch arguments; None
     # means this Steam build could not expose them, so retain the last known
     # game-level value rather than replacing it with invented information.
     if launch_options is not None:
-        entry["launchOptions"] = str(launch_options)
+        bundle["launchOptions"] = str(launch_options)
     if compat_known:
-        entry["compatTool"] = str(compat_tool or "")
+        bundle["compatTool"] = str(compat_tool or "")
     if dlc_known:
-        entry["dlcFiles"] = dlc_files
-    entry["updatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+        bundle["dlcFiles"] = dlc_files
+    bundle["updatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
     data["version"] = 2
     if not _write(data):
         return {"success": False, "error": "could not write the archive index"}
-    return {"success": True, "appid": appid, "fixes": len(merged),
-            "launchOptions": entry.get("launchOptions") or "",
-            "hasLaunchOptions": "launchOptions" in entry,
-            "compatTool": entry.get("compatTool") or "",
-            "hasCompatTool": "compatTool" in entry,
+    return {"success": True, "appid": appid, "buildid": target, "fixes": len(merged),
+            "launchOptions": bundle.get("launchOptions") or "",
+            "hasLaunchOptions": "launchOptions" in bundle,
+            "compatTool": bundle.get("compatTool") or "",
+            "hasCompatTool": "compatTool" in bundle,
             "dlcFiles": dlc_files}
 
 
-def set_fix_wanted(appid: int, key: str, wanted: bool) -> Dict[str, Any]:
+def set_fix_wanted(appid: int, key: str, wanted: bool, buildid: str = "") -> Dict[str, Any]:
     return {"success": False,
             "error": "fixes belong to the game snapshot and cannot be changed separately"}
 
 
-def forget_fix(appid: int, key: str) -> Dict[str, Any]:
+def forget_fix(appid: int, key: str, buildid: str = "") -> Dict[str, Any]:
     return {"success": False,
             "error": "fixes belong to the game snapshot and cannot be removed separately"}
 
 
 def entries() -> Dict[str, Any]:
-    """Every archived game, for the Archive page."""
+    """Every archived game, for the Archive page.
+
+    A game is only a CONTAINER: its snapshots share nothing but the appid they
+    are filed under. Each snapshot carries its own build material, fixes, launch
+    arguments, Proton tool and DLC state, so removing one leaves the others
+    untouched. The only game-level state is which single snapshot is active --
+    activation is exclusive, so that cannot live on a snapshot.
+    """
     data = _read()
     out = []
     for aid, entry in (data.get("apps", {}) or {}).items():
-        builds = sorted((entry.get("builds") or {}).values(),
-                        key=lambda b: float(b.get("archivedAt") or 0), reverse=True)
-        fixes = entry.get("fixes") or []
+        # Fold any legacy game-level state into its build, then report each
+        # snapshot purely from its own bundle.
+        for bid in list((entry.get("builds") or {}).keys()):
+            _bundle(entry, bid)
+        builds = []
+        for b in sorted((entry.get("builds") or {}).values(),
+                        key=lambda x: float(x.get("archivedAt") or 0), reverse=True):
+            fixes = b.get("fixes") or []
+            builds.append({
+                **b,
+                "fixCount": len(fixes),
+                "wantedFixes": sum(1 for f in fixes if f.get("wanted")),
+                "hasFixState": "fixes" in b,
+                "hasLaunchOptions": "launchOptions" in b,
+                "hasCompatTool": "compatTool" in b,
+                "hasDlcState": "dlcFiles" in b,
+            })
         out.append({
             "appid": int(aid),
             "name": entry.get("name") or "",
             "builds": builds,
             "buildCount": len(builds),
-            "fixes": fixes,
-            "hasFixState": "fixes" in entry,
-            "fixCount": len(fixes),
-            "wantedFixes": sum(1 for f in fixes if f.get("wanted")),
-            "launchOptions": entry.get("launchOptions") or "",
-            "compatTool": entry.get("compatTool") or "",
-            "dlcFiles": int(entry.get("dlcFiles") or 0),
-            "hasDlcState": "dlcFiles" in entry,
-            "updatedOn": entry.get("updatedOn") or "",
             "activeBuild": str(entry.get("activeBuild") or ""),
         })
     out.sort(key=lambda e: (e["name"] or str(e["appid"])).lower())
     return {"success": True, "entries": out, "count": len(out)}
 
 
-def pending_reapply(appid: int) -> Dict[str, Any]:
+def pending_reapply(appid: int, buildid: str = "") -> Dict[str, Any]:
     """Fixes this game is flagged to want but does not currently have.
 
     What a restore should act on. Reporting only -- applying stays with the
@@ -444,7 +541,8 @@ def pending_reapply(appid: int) -> Dict[str, Any]:
                          if int(f.get("appid") or 0) == int(appid)}
     except Exception:
         pass
-    pending = [f for f in (entry.get("fixes") or [])
+    bundle = _bundle(entry, _target_build(entry, buildid))
+    pending = [f for f in (bundle.get("fixes") or [])
                if f.get("wanted") and f.get("key") not in live_keys]
     return {"success": True, "pending": pending, "count": len(pending)}
 
@@ -634,6 +732,9 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
     if not active:
         return {"success": True, "active": "", "skipped": "no active build"}
     build = (entry.get("builds") or {}).get(active) or {}
+    # Every optional component belongs to THIS snapshot, so an older archived
+    # build keeps the fixes/arguments it needed while a newer one keeps its own.
+    bundle = _bundle(entry, active)
     actions: List[str] = []
     todo: List[str] = []
 
@@ -688,7 +789,7 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
                         "actions": actions, "todo": todo, "pinnedOk": False}
 
     # 3) Flagged fixes that are not currently applied.
-    pend = pending_reapply(appid).get("pending") or []
+    pend = pending_reapply(appid, active).get("pending") or []
     for f in pend:
         url = f.get("downloadUrl") or ""
         if not url:
@@ -704,7 +805,7 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
 
     # 4) DLC content: fetch once, only if the archive recorded some and the
     #    game has no DLC log yet. Re-running would be wasted bandwidth.
-    dlc_wanted = int(entry.get("dlcFiles") or 0)
+    dlc_wanted = int(bundle.get("dlcFiles") or 0)
     dlc_have = 0
     try:
         from . import depotdl
@@ -728,8 +829,8 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
     #    Linux games behave identically: a recorded tool is forced, and a
     #    recorded EMPTY tool means "no override" -- which is what a native Linux
     #    game needs, and what a Proton game reverts to if its template says so.
-    has_tool = "compatTool" in entry
-    want_tool = str(entry.get("compatTool") or "")
+    has_tool = "compatTool" in bundle
+    want_tool = str(bundle.get("compatTool") or "")
     if has_tool:
         try:
             from . import compat
@@ -752,9 +853,9 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
     return {
         "success": True, "active": active, "installed": True,
         "actions": actions, "todo": todo,
-        "wantLaunchOptions": entry.get("launchOptions") or "",
-        "hasLaunchOptions": "launchOptions" in entry,
-        "wantCompatTool": entry.get("compatTool") or "",
+        "wantLaunchOptions": bundle.get("launchOptions") or "",
+        "hasLaunchOptions": "launchOptions" in bundle,
+        "wantCompatTool": bundle.get("compatTool") or "",
         "hasCompatTool": has_tool,
         "pinnedOk": not mismatched,
         "dlcPending": bool(dlc_wanted and not dlc_have),

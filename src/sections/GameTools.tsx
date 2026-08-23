@@ -909,7 +909,7 @@ export function GameToolsSection() {
                       // component. Capture fixes, launch args, Proton and DLC
                       // opportunistically; an unavailable optional source must
                       // not turn a valid archive into a reported failure.
-                      await archiveSnapshotGame(appid, opts, "", "").catch(() => null);
+                      await archiveSnapshotGame(appid, opts, "", "", it.key).catch(() => null);
                       return archived;
                     }, (r) => {
                       if (!r.success) return r.error || "Could not archive that build";
