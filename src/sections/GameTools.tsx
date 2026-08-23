@@ -474,14 +474,15 @@ export function GameToolsSection() {
     // only the "latest" pseudo-entry. Fetch the full history through the Steam
     // browser instead (cached per game; needs SteamDB open once to clear Cloudflare).
     const realBuilds = builds.filter((b) => !b.isCurrent && b.buildid && b.buildid !== "latest");
+    let historyFailed = false;
     if (!realBuilds.length) {
       try {
         const rows = await fetchSteamdbBuilds(appid, (s) => setNote(s));
         if (rows.length) {
           const latest = builds.find((b) => b.isCurrent) || { buildid: "latest", date: "current", isCurrent: true };
           builds = [latest, ...rows.map((r) => ({ buildid: r.buildid, date: r.date }))];
-        }
-      } catch { /* */ }
+        } else historyFailed = true;
+      } catch { historyFailed = true; }
     }
     // Which builds a crack actually targets — exact buildids from the HV / CrakFiles
     // catalogs, so we can highlight the builds that are known-good with a fix.
@@ -495,6 +496,10 @@ export function GameToolsSection() {
       if (crak?.found && crak.buildid) compat.set(String(crak.buildid), compat.has(String(crak.buildid)) ? "HV+Crack" : "Crack");
     } catch { /* */ }
     setBusy(""); setNote("");
+    if (historyFailed && !builds.some((b) => !b.isCurrent && b.buildid && b.buildid !== "latest")) {
+      setNote("SteamDB opened, but SLSDeck could not read any public BuildIDs. Check that the page finished loading, then retry; Latest remains unchanged.");
+      return;
+    }
     if (!builds.some((b) => b.buildid)) {
       setNote("Couldn't load build history — open SteamDB once (and sign in for full history), then retry.");
       return;
