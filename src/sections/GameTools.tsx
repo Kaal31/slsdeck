@@ -955,13 +955,13 @@ export function GameToolsSection() {
             <div style={{ fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
               <span>{ddl.op === "dlc" ? "DLC-candidate depots" : "Build depots"} · {ddl.status}</span>
               <span style={{ opacity: 0.8 }}>
-                {ddl.status === "downloading" ? `${ddl.percent || 0}%` : ddl.status === "done" ? "100%" : ""}
+                {ddl.status === "downloading" || ddl.status === "resolving" ? `${Math.max(1, Math.min(99, Math.round(ddl.percent || 1)))}%` : ddl.status === "done" ? "100%" : ""}
               </span>
             </div>
             <div style={{ height: 6, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }}>
               <div style={{
                 height: "100%",
-                width: `${ddl.status === "done" ? 100 : ddl.status === "failed" ? 100 : (ddl.percent || 0)}%`,
+                width: `${ddl.status === "done" ? 100 : Math.max(1, Math.min(99, Math.round(ddl.percent || 1)))}%`,
                 background: ddl.status === "failed" ? "#d9534f" : ddl.status === "done" ? "#5cb85c" : "#4a90d9",
                 transition: "width 0.3s",
               }} />
