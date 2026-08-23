@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .logger import logger
 from .paths import get_user_home, settings_path
@@ -467,7 +467,8 @@ def _write_appmanifest(lib: str, appid: int, installdir: str, name: str,
 _RE_PCT = re.compile(rb"(\d{1,3}(?:\.\d{1,2})?)%")
 
 
-def _run_depot(dotnet: str, args: List[str], appid: int) -> int:
+def _run_depot(dotnet: str, args: List[str], appid: int,
+               progress_cb: Optional[Callable[[int], None]] = None) -> int:
     """Run one DepotDownloader invocation, streaming percent into state. Honors
     pause/resume/cancel through the process handle. Returns exit code."""
     env = _clean_env()
@@ -495,7 +496,10 @@ def _run_depot(dotnet: str, args: List[str], appid: int) -> int:
             for m in _RE_PCT.finditer(chunk):
                 try:
                     pct = int(float(m.group(1)))
-                    _set_state(appid, {"percent": max(0, min(100, pct))})
+                    pct = max(0, min(100, pct))
+                    _set_state(appid, {"percent": pct})
+                    if progress_cb:
+                        progress_cb(pct)
                 except ValueError:
                     pass
             # Keep a bounded tail for diagnostics + manifest-id parsing.
