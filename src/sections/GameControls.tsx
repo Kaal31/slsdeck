@@ -166,8 +166,8 @@ export function GameControlsSection({ onChanged }: Props) {
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.65, padding: "0 2px 4px" }}>
             {appid != null && isNonSteamShortcut(appid)
-              ? "Non-Steam shortcut — SLSsteam can't add this. Fixes can still be applied manually from Advanced ▸ Game fixes."
-              : "You already own this game — plugin actions are hidden. Turn this off in Advanced ▸ Options, or apply a fix manually from Advanced ▸ Game fixes."}
+              ? "Non-Steam shortcut — SLSsteam can't add this. Fixes remain available below when compatible."
+              : "You already own this game — Add/Remove is hidden, but Fixes remain available below."}
           </div>
         </PanelSectionRow>
       )}
@@ -190,7 +190,6 @@ export function GameControlsSection({ onChanged }: Props) {
       </PanelSectionRow>
       )}
 
-      {!ownedElsewhere && (
       <PanelSectionRow>
         <ButtonItem
           layout="below"
@@ -200,7 +199,6 @@ export function GameControlsSection({ onChanged }: Props) {
           {showFixes ? "Hide fixes" : "Fixes…"}
         </ButtonItem>
       </PanelSectionRow>
-      )}
 
       {showFixes && appid != null && (
         <PanelSectionRow>
