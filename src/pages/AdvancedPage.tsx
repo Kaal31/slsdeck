@@ -418,8 +418,8 @@ function OptionsPane({
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
-            label={libButtons ? "Hide actions on owned games" : "Hide actions on owned games (Quick Access)"}
-            description="On game pages, hide Add with SLSsteam and Fixes for titles you already own (anything in your library that wasn't added by SLSsteam)."
+            label="Hide Add/Remove on owned games"
+            description="Hide Add/Remove for legitimately owned games. Fixes remains available in Quick Access and, when library buttons are enabled, on the game page."
             checked={hideOwned}
             onChange={async (v) => { setHideOwned(v); await setHideOnOwned(v); }}
           />
@@ -503,8 +503,8 @@ function OptionsPane({
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
-            label="Show Actions & fixes in Quick Access"
-            description="Show the per-game Actions & fixes section in Quick Access, above the installed-games list. Applies immediately and when the panel is reopened."
+            label="Show This game in Quick Access"
+            description="Show the per-game Add/Remove and always-available Fixes section in Quick Access, above Actions. Applies immediately and when the panel is reopened."
             checked={actionsFixesQam}
             onChange={(v) => {
               setActionsFixesQam(v);
