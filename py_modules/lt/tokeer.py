@@ -135,8 +135,34 @@ def _normal_game_name(value: str) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = re.sub(r"\b\d+\s+of\s+\d+\s+remaining(?:\s*\(\d+%\))?.*$", "", text,
                   flags=re.IGNORECASE)
+    # Discord's vault titles commonly append a marketing/availability suffix
+    # which is not part of Steam's installed app name (e.g. Assassin's Creed
+    # Shadows Free). Apostrophes also vary between straight, curly and absent;
+    # removing them keeps "Assassin's" and "Assassins" equivalent.
+    text = re.sub(r"['’‘`´]", "", text)
     text = text.replace("®", "").replace("™", "").replace("©", "")
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return re.sub(
+        r"\s+(?:(?:standard|deluxe|ultimate|complete) edition|free(?: trial)?|trial)$",
+        "", text, flags=re.IGNORECASE,
+    ).strip()
+
+
+def _game_name_variants(value: str):
+    """Conservative aliases shared by Discord-title installation preflight.
+
+    Only known presentation differences are expanded; matching remains exact
+    after normalization so similarly named installed games do not collide.
+    """
+    name = _normal_game_name(value)
+    if not name:
+        return set()
+    variants = {name}
+    if re.match(r"^assassins? creed\s+", name):
+        variants.add(re.sub(r"^assassins? creed\s+", "ac ", name))
+    if name.startswith("ac "):
+        variants.add("assassins creed " + name[3:])
+    return variants
 
 
 def preflight(appid: int = 0, game_name: str = "") -> Dict[str, Any]:
@@ -160,7 +186,7 @@ def preflight(appid: int = 0, game_name: str = "") -> Dict[str, Any]:
                 "failedCheck": "installed",
                 "error": "Game is not installed: Steam appmanifest or installation directory is missing."}
 
-    wanted = _normal_game_name(game_name)
+    wanted = _game_name_variants(game_name)
     if not wanted:
         return {"success": False, "installed": False, "failedCheck": "installed",
                 "error": "Could not identify the selected game before opening Tokeer."}
@@ -169,7 +195,7 @@ def preflight(appid: int = 0, game_name: str = "") -> Dict[str, Any]:
         path = str(item.get("installPath") or "")
         if not os.path.isdir(path):
             continue
-        if _normal_game_name(item.get("name", "")) == wanted:
+        if wanted.intersection(_game_name_variants(item.get("name", ""))):
             matches.append(item)
     if len(matches) == 1:
         item = matches[0]
