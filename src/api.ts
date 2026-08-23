@@ -388,7 +388,7 @@ export const dlcDepotStart = callable<[appid: number, dlcAppids?: number[]], { s
 // A keepable library of builds: gids + manifest binaries + depot keys, stored
 // so a build stays rebuildable after Hubcap/mirrors stop serving it. Rides along
 // in the survival archive, so it survives plugin removal.
-export const buildArchiveAdd = callable<[appid: number, buildid: string, gidsJson?: string, date?: string, name?: string], { success: boolean; depots?: number; manifests?: number; keys?: number; missingManifests?: string[]; complete?: boolean; error?: string }>("build_archive_add");
+export const buildArchiveAdd = callable<[appid: number, buildid: string, gidsJson?: string, date?: string, name?: string], { success: boolean; incomplete?: boolean; depots?: number; manifests?: number; keys?: number; missingManifests?: string[]; missingKeys?: string[]; complete?: boolean; error?: string }>("build_archive_add");
 export const buildArchiveList = callable<[appid?: number], { success: boolean; builds?: any[]; count?: number; error?: string }>("build_archive_list");
 export const buildArchiveRemove = callable<[appid: number, buildid: string], { success: boolean; removedManifests?: number; deactivated?: { was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; resetFiles?: boolean }; error?: string }>("build_archive_remove");
 
@@ -407,18 +407,20 @@ export interface ArchivedFix {
 export interface ArchiveEntry {
   appid: number; name: string;
   builds: ArchivedBuild[]; buildCount: number;
-  fixes: ArchivedFix[]; fixCount: number; wantedFixes: number;
-  launchOptions: string; compatTool: string; dlcFiles: number; updatedOn: string;
+  fixes: ArchivedFix[]; fixCount: number; wantedFixes: number; hasFixState?: boolean;
+  launchOptions: string; hasLaunchOptions?: boolean;
+  compatTool: string; hasCompatTool?: boolean;
+  dlcFiles: number; hasDlcState?: boolean; updatedOn: string;
   // Which archived build this game is currently held to ("" = none).
   activeBuild: string;
 }
 export const archiveIsBuild = callable<[appid: number, buildid: string], { success: boolean; archived?: boolean; active?: boolean; activeBuild?: string }>("archive_is_build");
 export const archiveActivate = callable<[appid: number, buildid: string, launchOptionsBefore?: string | null], { success: boolean; activeBuild?: string; error?: string }>("archive_activate");
 export const archiveDeactivate = callable<[appid: number, reset?: boolean], { success: boolean; was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; restoredCompatTool?: string; resetFiles?: boolean; error?: string }>("archive_deactivate");
-export const archiveReconcile = callable<[appid: number, apply?: boolean], { success: boolean; active?: string; installed?: boolean; waiting?: string; skipped?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string; wantCompatTool?: string; pinnedOk?: boolean; dlcPending?: boolean; error?: string }>("archive_reconcile");
+export const archiveReconcile = callable<[appid: number, apply?: boolean], { success: boolean; active?: string; installed?: boolean; waiting?: string; skipped?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string; hasLaunchOptions?: boolean; wantCompatTool?: string; hasCompatTool?: boolean; pinnedOk?: boolean; dlcPending?: boolean; error?: string }>("archive_reconcile");
 export const archiveRemoveGame = callable<[appid: number], { success: boolean; builds?: number; removedManifests?: number; deactivated?: { was?: string; unpinned?: boolean; clearLaunchOptions?: boolean; restoreLaunchOptions?: string; resetFiles?: boolean }; error?: string }>("archive_remove_game");
 export const archiveActivateGame = callable<[appid: number, launchOptionsBefore?: string | null], { success: boolean; activeBuild?: string; chosen?: string; ofBuilds?: number; replaced?: string; error?: string }>("archive_activate_game");
-export const archiveReconcileAll = callable<[apply?: boolean], { success: boolean; checked?: number; results?: Array<{ success?: boolean; appid: number; active?: string; installed?: boolean; waiting?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string }>; error?: string }>("archive_reconcile_all");
+export const archiveReconcileAll = callable<[apply?: boolean], { success: boolean; checked?: number; results?: Array<{ success?: boolean; appid: number; active?: string; installed?: boolean; waiting?: string; actions?: string[]; todo?: string[]; wantLaunchOptions?: string; hasLaunchOptions?: boolean }>; error?: string }>("archive_reconcile_all");
 export const archiveEntries = callable<[], { success: boolean; entries?: ArchiveEntry[]; count?: number; error?: string }>("archive_entries");
 export const archiveSnapshotGame = callable<[appid: number, launchOptions?: string | null, compatTool?: string, name?: string], { success: boolean; fixes?: number; dlcFiles?: number; error?: string }>("archive_snapshot_game");
 export const archiveSetFixWanted = callable<[appid: number, key: string, wanted: boolean], { success: boolean; wanted?: boolean; error?: string }>("archive_set_fix_wanted");

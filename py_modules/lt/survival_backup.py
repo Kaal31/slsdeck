@@ -291,7 +291,7 @@ def restore() -> Dict[str, Any]:
                             builds_merged.update(entry.get("builds") or {})
                             restored["builds"] = builds_merged
                             merged[aid] = restored
-                        buildarchive._write({"version": 1, "apps": merged})
+                        buildarchive._write({"version": 2, "apps": merged})
             except Exception as exc:
                 logger.warn(f"survival_backup: build archive restore failed: {exc}")
             pins = state.get("pins") or {}

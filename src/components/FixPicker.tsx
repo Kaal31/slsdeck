@@ -540,7 +540,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       if (archived) {
         const r = await buildArchiveRemove(appid, currentBuildId);
         setMsg(r.success
-          ? `Unarchived build ${currentBuildId} (${r.removedManifests ?? 0} manifest(s) freed).`
+          ? `Unarchived the game snapshot (${r.removedManifests ?? 0} manifest(s) freed).`
           : (r.error || "Could not unarchive"));
         if (r.success) setArchived(false);
       } else {
@@ -558,7 +558,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           } catch { /* Steam may not expose it */ }
           await archiveSnapshotGame(appid, opts, "", check?.gameName || "").catch(() => null);
           setMsg(r.complete
-            ? `Archived build ${currentBuildId} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s).`
+            ? `Archived game snapshot on build ${currentBuildId} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s).`
             : `Archived build ${currentBuildId}, but ${r.missingManifests?.length || 0} manifest(s) are unavailable (a Hubcap key usually fixes this).`);
         } else {
           setMsg(r.error || "Could not archive that build");
@@ -1433,8 +1433,8 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         {busy === "archive"
           ? "Working…"
           : archived
-          ? `Unarchive build ${currentBuildId}`
-          : currentBuildId ? `Archive this build (${currentBuildId})` : "Archive this build"}
+          ? "Unarchive game snapshot"
+          : currentBuildId ? `Archive game snapshot (${currentBuildId})` : "Archive game snapshot"}
       </DialogButton>
 
       {(!dlcOwnedOnly || (!added && isInLibrary(appid))) && (

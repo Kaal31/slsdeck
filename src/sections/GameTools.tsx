@@ -49,6 +49,7 @@ import {
   crakStatus,
   depotdlStatus,
   buildArchiveAdd,
+  archiveSnapshotGame,
   depotdlDownloadBuildGids,
   depotdlDownloadDlc,
   depotdlQueue,
@@ -880,8 +881,8 @@ export function GameToolsSection() {
               if (!builds.length) { setNote("No older builds on SteamDB for this game."); return; }
               showModal(
                 <PickerModal
-                  title="Add a build to the archive"
-                  subtitle="Keeps this build's gids, manifests and depot keys so it stays rebuildable later. Downloads no game files."
+                  title="Archive a game snapshot"
+                  subtitle="Choose the required build. Its gids, manifests and keys are stored with every optional game setting SLSDeck can capture."
                   items={builds.map((b) => ({ key: b.buildid, label: `Build ${b.buildid}`, sublabel: b.date }))}
                   onPick={async (it) => {
                     const dt = builds.find((b) => b.buildid === it.key)?.date || "";
@@ -897,12 +898,24 @@ export function GameToolsSection() {
                         return { success: false, error: "Could not resolve this build's depot manifests (SteamDB sign-in needed)." };
                       }
                       setNote(`Archiving build ${it.key} (${Object.keys(map).length} depots)…`);
-                      return buildArchiveAdd(appid, it.key, JSON.stringify(map), dt, "");
+                      const archived = await buildArchiveAdd(appid, it.key, JSON.stringify(map), dt, "");
+                      if (!archived.success) return archived;
+                      let opts: string | null = null;
+                      try {
+                        const v = (window as any).SteamClient?.Apps?.GetLaunchOptionsForApp?.(appid);
+                        if (typeof v === "string") opts = v;
+                      } catch { /* optional field stays unset */ }
+                      // The complete build is the snapshot's only mandatory
+                      // component. Capture fixes, launch args, Proton and DLC
+                      // opportunistically; an unavailable optional source must
+                      // not turn a valid archive into a reported failure.
+                      await archiveSnapshotGame(appid, opts, "", "").catch(() => null);
+                      return archived;
                     }, (r) => {
                       if (!r.success) return r.error || "Could not archive that build";
                       const miss = r.missingManifests?.length || 0;
                       return r.complete
-                        ? `Archived build ${it.key} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s). Kept across plugin removal.`
+                        ? `Archived game snapshot on build ${it.key} — ${r.depots} depot(s), ${r.manifests} manifest(s), ${r.keys} key(s).`
                         : `Archived build ${it.key} incomplete — ${miss} manifest(s) unavailable${r.keys !== r.depots ? ` and ${(r.depots || 0) - (r.keys || 0)} depot key(s) missing` : ""}. A Hubcap key usually fixes this.`;
                     });
                   }}
@@ -910,7 +923,7 @@ export function GameToolsSection() {
               );
             }}
           >
-            {busy === "archive" ? "Archiving…" : "Add this build to archive…"}
+            {busy === "archive" ? "Archiving…" : "Archive game snapshot…"}
           </ButtonItem>
         </PanelSectionRow>
       )}

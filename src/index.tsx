@@ -62,7 +62,7 @@ async function applyArchiveTemplatesOnBoot(): Promise<void> {
   try {
     const r = await archiveReconcileAll(false);
     for (const t of r.results || []) {
-      if (!t.success || !t.installed) continue;
+      if (!t.success || !t.installed || !t.hasLaunchOptions) continue;
       try {
         const SC: any = (window as any).SteamClient;
         const current = SC?.Apps?.GetLaunchOptionsForApp?.(t.appid);

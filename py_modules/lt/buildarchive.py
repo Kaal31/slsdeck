@@ -101,7 +101,25 @@ def _read() -> Dict[str, Any]:
     try:
         with open(index_path(), "r", encoding="utf-8") as fh:
             v = json.load(fh)
-        return v if isinstance(v, dict) else {}
+        if not isinstance(v, dict):
+            return {}
+        # v1 briefly allowed several independently-managed builds per game.
+        # A record is now one game snapshot, so collapse legacy records to the
+        # active build, or otherwise the most recently archived build.
+        for entry in (v.get("apps", {}) or {}).values():
+            builds = entry.get("builds") or {}
+            if len(builds) > 1:
+                active = str(entry.get("activeBuild") or "")
+                chosen = builds.get(active)
+                if not chosen:
+                    chosen = max(builds.values(),
+                                 key=lambda b: float(b.get("archivedAt") or 0))
+                entry["builds"] = {str(chosen.get("buildid")): chosen}
+                if active and active != str(chosen.get("buildid")):
+                    entry["activeBuild"] = str(chosen.get("buildid"))
+            for fix in entry.get("fixes") or []:
+                fix["wanted"] = True
+        return v
     except Exception:
         return {}
 
@@ -142,12 +160,19 @@ def add_build(appid: int, buildid: str, gids: Dict[str, str],
              if str(d).isdigit() and str(g).isdigit()}
     if not clean:
         return {"success": False, "error": "no depot:gid pairs to archive"}
+    previous_data = _read()
+    previous_entry = (previous_data.get("apps", {}) or {}).get(str(appid)) or {}
+    if previous_entry.get("activeBuild"):
+        return {"success": False,
+                "error": "deactivate this game snapshot before replacing its recorded build"}
 
     # Depot keys: build-independent, so one copy per depot is enough forever.
     keys: Dict[str, str] = {}
     try:
         from . import depotdl
-        keys = {d: k for d, k in (depotdl._keys_for(appid) or {}).items() if d in clean}
+        keys = {d: k for d, k in (depotdl._keys_for(appid) or {}).items()
+                if d in clean and len(str(k)) == 64
+                and all(c in "0123456789abcdefABCDEF" for c in str(k))}
     except Exception as exc:
         logger.warn(f"buildarchive: key lookup failed for {appid}: {exc}")
 
@@ -170,12 +195,23 @@ def add_build(appid: int, buildid: str, gids: Dict[str, str],
         else:
             missing.append(fname)
 
+    missing_keys = sorted(set(clean) - set(keys))
+    if missing or missing_keys:
+        return {"success": False, "incomplete": True,
+                "error": "a game snapshot requires every manifest and depot key",
+                "appid": appid, "buildid": str(buildid), "depots": len(clean),
+                "manifests": len(stored), "keys": len(keys),
+                "missingManifests": sorted(set(missing)),
+                "missingKeys": missing_keys, "complete": False}
+
     data = _read()
     apps = data.setdefault("apps", {})
     entry = apps.setdefault(str(appid), {"name": name or "", "builds": {}})
     if name:
         entry["name"] = name
-    entry["builds"][str(buildid)] = {
+    old_manifests = {m for b in (entry.get("builds") or {}).values()
+                     for m in (b.get("manifests") or [])}
+    new_build = {
         "buildid": str(buildid),
         "date": str(date or ""),
         "gids": clean,
@@ -189,9 +225,22 @@ def add_build(appid: int, buildid: str, gids: Dict[str, str],
         "archivedAt": time.time(),
         "archivedOn": time.strftime("%Y-%m-%d %H:%M", time.localtime()),
     }
-    data["version"] = 1
+    # A game record has one build component. Re-archiving starts a fresh game
+    # snapshot: optional components are cleared, then snapshot_game captures
+    # whichever of them are available now. This prevents mixing a new build
+    # with fixes or arguments retained from the previous snapshot.
+    entry["builds"] = {str(buildid): new_build}
+    for optional in ("fixes", "launchOptions", "compatTool", "dlcFiles", "updatedOn"):
+        entry.pop(optional, None)
+    data["version"] = 2
     if not _write(data):
         return {"success": False, "error": "could not write the archive index"}
+    still_used = wanted_manifest_names()
+    for fname in old_manifests - still_used:
+        try:
+            os.remove(os.path.join(archive_dir(), fname))
+        except Exception:
+            pass
 
     logger.log(f"buildarchive: archived build {buildid} for {appid} "
                f"({len(clean)} depot(s), {len(stored)} manifest(s), {len(missing)} missing)")
@@ -224,53 +273,21 @@ def list_builds(appid: int = 0) -> Dict[str, Any]:
 
 
 def remove_build(appid: int, buildid: str) -> Dict[str, Any]:
-    """Forget one build. Manifests shared with another archived build are kept.
-
-    If the build being removed is the ACTIVE template, it is deactivated first:
-    leaving a game pinned to a build whose archive entry no longer exists would
-    strand it with no way back through this UI. The caller gets the deactivate
-    result so it can still clear launch args and reset files Steam-side.
-    """
-    deactivated: Dict[str, Any] = {}
-    pre = _read()
-    pre_entry = (pre.get("apps", {}) or {}).get(str(int(appid))) or {}
-    if str(pre_entry.get("activeBuild") or "") == str(buildid):
-        deactivated = deactivate(int(appid), reset=True)
-
-    data = _read()
-    apps = data.get("apps", {}) or {}
-    entry = apps.get(str(int(appid)))
-    if not entry or str(buildid) not in (entry.get("builds") or {}):
-        return {"success": False, "error": "that build is not archived",
-                "deactivated": deactivated}
-    doomed = set(entry["builds"].pop(str(buildid)).get("manifests") or [])
-    if not entry["builds"]:
-        apps.pop(str(int(appid)), None)
-    still_used = {
-        m
-        for e in apps.values()
-        for b in (e.get("builds") or {}).values()
-        for m in (b.get("manifests") or [])
-    }
-    removed = 0
-    for fname in doomed - still_used:
-        try:
-            os.remove(os.path.join(archive_dir(), fname))
-            removed += 1
-        except Exception:
-            pass
-    _write(data)
-    return {"success": True, "removedManifests": removed, "deactivated": deactivated}
+    """Compatibility endpoint: removing the build removes the game snapshot."""
+    entry = (_read().get("apps", {}) or {}).get(str(int(appid))) or {}
+    if str(buildid) not in (entry.get("builds") or {}):
+        return {"success": False, "error": "that build is not in the game snapshot"}
+    if entry.get("activeBuild"):
+        return {"success": False,
+                "error": "deactivate the game snapshot in Archive before unarchiving it"}
+    return remove_game(int(appid))
 
 
-# ── per-game entry: builds + fixes + launch args + compat tool ───────────────
+# ── per-game snapshot: required build + optional captured state ──────────────
 #
-# The archive is DECLARATIVE. It records what a game is supposed to look like,
-# not a copy of the payloads. For fixes that matters: a fix is stored as a flag
-# ("this game wants this fix") plus the metadata needed to fetch it again --
-# never the fix's files. So re-applying after a restore means re-running the
-# normal fix path, and toggling a flag here is cheap and reversible. Nothing in
-# this module applies or removes a fix by itself.
+# The build material is mandatory; fixes, launch arguments, compatibility tool
+# and DLC state are optional fields captured at the same moment. Components are
+# never independently archived or removed.
 
 def _fix_key(fix: Dict[str, Any]) -> str:
     return f"{fix.get('fixType') or ''}|{fix.get('downloadUrl') or ''}"
@@ -282,8 +299,8 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
 
     ``launch_options`` comes from the frontend: Steam owns it (SetAppLaunchOptions)
     and there is no backend read for it, so it is passed in rather than guessed.
-    Existing ``wanted`` flags are preserved -- a re-snapshot must not silently
-    re-enable a fix the user turned off.
+    This finalizes the optional fields immediately after add_build establishes
+    the mandatory build component.
     """
     try:
         appid = int(appid)
@@ -291,28 +308,35 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
         return {"success": False, "error": "invalid appid"}
 
     live: List[Dict[str, Any]] = []
+    fixes_known = False
     try:
         from . import fixes as _fixes
         r = _fixes.get_installed_fixes()
         if r.get("success"):
+            fixes_known = True
             live = [f for f in r.get("fixes", []) if int(f.get("appid") or 0) == appid]
     except Exception as exc:
         logger.warn(f"buildarchive: fix scan failed for {appid}: {exc}")
 
+    compat_known = bool(compat_tool)
     if not compat_tool:
         try:
             from . import compat
             cm = compat.get_proton_mapping(appid) or {}
             compat_tool = str(cm.get("toolName") or "")
+            compat_known = True
         except Exception:
             compat_tool = ""
+            compat_known = False
 
     dlc_files = 0
+    dlc_known = False
     try:
         from . import depotdl
         from . import dlcdepot
         ip = dlcdepot._install_path(appid)
         if ip:
+            dlc_known = True
             p = depotdl.dlc_log_path(appid, ip)
             if os.path.isfile(p):
                 with open(p, "r", encoding="utf-8") as fh:
@@ -322,76 +346,56 @@ def snapshot_game(appid: int, launch_options: Optional[str] = None, compat_tool:
 
     data = _read()
     apps = data.setdefault("apps", {})
-    entry = apps.setdefault(str(appid), {"name": name or "", "builds": {}})
+    entry = apps.get(str(appid))
+    if not entry or not (entry.get("builds") or {}):
+        return {"success": False,
+                "error": "archive the complete game build before recording optional snapshot fields"}
     if name:
         entry["name"] = name
-    prior = {f.get("key"): f for f in (entry.get("fixes") or [])}
     merged: List[Dict[str, Any]] = []
     for f in live:
         key = _fix_key(f)
-        was = prior.get(key) or {}
         merged.append({
             "key": key,
             "fixType": f.get("fixType") or "",
             "downloadUrl": f.get("downloadUrl") or "",
             "date": f.get("date") or "",
             "files": int(f.get("filesCount") or 0),
-            # Default on for a newly-seen fix; never override a user's choice.
-            "wanted": bool(was.get("wanted", True)),
-            "appliedAt": was.get("appliedAt") or time.strftime("%Y-%m-%d %H:%M", time.localtime()),
+            "wanted": True,
+            "appliedAt": time.strftime("%Y-%m-%d %H:%M", time.localtime()),
         })
-    # Keep flags for fixes that are no longer applied: that is exactly the
-    # "wants it back after a restore" case.
-    for key, was in prior.items():
-        if key not in {f["key"] for f in merged}:
-            was["wanted"] = bool(was.get("wanted", True))
-            was["missing"] = True
-            merged.append(was)
 
-    entry["fixes"] = merged
+    if fixes_known:
+        entry["fixes"] = merged
     # Tri-state: "" means Steam positively reported no launch arguments; None
     # means this Steam build could not expose them, so retain the last known
     # game-level value rather than replacing it with invented information.
     if launch_options is not None:
         entry["launchOptions"] = str(launch_options)
-    entry["compatTool"] = str(compat_tool or "")
-    entry["dlcFiles"] = dlc_files
+    if compat_known:
+        entry["compatTool"] = str(compat_tool or "")
+    if dlc_known:
+        entry["dlcFiles"] = dlc_files
     entry["updatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
-    data["version"] = 1
+    data["version"] = 2
     if not _write(data):
         return {"success": False, "error": "could not write the archive index"}
     return {"success": True, "appid": appid, "fixes": len(merged),
-            "launchOptions": entry.get("launchOptions") or "", "compatTool": entry["compatTool"],
+            "launchOptions": entry.get("launchOptions") or "",
+            "hasLaunchOptions": "launchOptions" in entry,
+            "compatTool": entry.get("compatTool") or "",
+            "hasCompatTool": "compatTool" in entry,
             "dlcFiles": dlc_files}
 
 
 def set_fix_wanted(appid: int, key: str, wanted: bool) -> Dict[str, Any]:
-    """Flag/unflag a fix for re-application. Touches no files."""
-    data = _read()
-    entry = (data.get("apps", {}) or {}).get(str(int(appid)))
-    if not entry:
-        return {"success": False, "error": "no archive entry for that game"}
-    hit = False
-    for f in entry.get("fixes") or []:
-        if f.get("key") == key:
-            f["wanted"] = bool(wanted)
-            hit = True
-    if not hit:
-        return {"success": False, "error": "that fix is not recorded"}
-    _write(data)
-    return {"success": True, "wanted": bool(wanted)}
+    return {"success": False,
+            "error": "fixes belong to the game snapshot and cannot be changed separately"}
 
 
 def forget_fix(appid: int, key: str) -> Dict[str, Any]:
-    """Drop a fix record entirely. Does not un-apply it from the game."""
-    data = _read()
-    entry = (data.get("apps", {}) or {}).get(str(int(appid)))
-    if not entry:
-        return {"success": False, "error": "no archive entry for that game"}
-    before = len(entry.get("fixes") or [])
-    entry["fixes"] = [f for f in (entry.get("fixes") or []) if f.get("key") != key]
-    _write(data)
-    return {"success": True, "removed": before - len(entry["fixes"])}
+    return {"success": False,
+            "error": "fixes belong to the game snapshot and cannot be removed separately"}
 
 
 def entries() -> Dict[str, Any]:
@@ -408,11 +412,13 @@ def entries() -> Dict[str, Any]:
             "builds": builds,
             "buildCount": len(builds),
             "fixes": fixes,
+            "hasFixState": "fixes" in entry,
             "fixCount": len(fixes),
             "wantedFixes": sum(1 for f in fixes if f.get("wanted")),
             "launchOptions": entry.get("launchOptions") or "",
             "compatTool": entry.get("compatTool") or "",
             "dlcFiles": int(entry.get("dlcFiles") or 0),
+            "hasDlcState": "dlcFiles" in entry,
             "updatedOn": entry.get("updatedOn") or "",
             "activeBuild": str(entry.get("activeBuild") or ""),
         })
@@ -491,14 +497,8 @@ def _start_fix_reapply_queue(appid: int, install_path: str, name: str,
 
 # ── activation: an archived build as a live template ─────────────────────────
 #
-# Activating a build makes the archive entry AUTHORITATIVE for that game: the
-# pinned build, the launch arguments, the flagged fixes and the DLC content are
-# all supposed to match it. ``reconcile`` is the trailing check -- it looks at
-# what Steam currently has and closes the gaps, so it is safe to run repeatedly
-# and does nothing once the game already matches.
-#
-# Only one build per game can be active: two archived builds of the same game
-# are alternatives, not layers.
+# Activating restores the entire game snapshot. The mandatory build is pinned;
+# every optional captured component is then reconciled when present.
 
 def is_build_archived(appid: int, buildid: str) -> Dict[str, Any]:
     entry = (_read().get("apps", {}) or {}).get(str(int(appid))) or {}
@@ -521,10 +521,11 @@ def activate(appid: int, buildid: str,
     """
     data = _read()
     entry = (data.get("apps", {}) or {}).get(str(int(appid)))
-    if not entry or str(buildid) not in (entry.get("builds") or {}):
-        return {"success": False, "error": "that build is not archived"}
+    builds = (entry or {}).get("builds") or {}
+    if not entry or str(buildid) not in builds:
+        return {"success": False, "error": "that game snapshot is not archived"}
     try:
-        material = _deploy_material(int(appid), entry["builds"][str(buildid)])
+        material = _deploy_material(int(appid), builds[str(buildid)])
     except Exception as exc:
         material = {"success": False, "error": str(exc)}
     if not material.get("success"):
@@ -535,17 +536,18 @@ def activate(appid: int, buildid: str,
         # Only snapshot the "before" state on a fresh activation -- switching
         # between two archived builds must not overwrite the original.
         before_tool = ""
+        before_tool_known = False
         try:
             from . import compat
             before_tool = str((compat.get_proton_mapping(int(appid)) or {}).get("toolName") or "")
+            before_tool_known = True
         except Exception:
             before_tool = ""
-        entry["compatToolBefore"] = before_tool
+        if before_tool_known:
+            entry["compatToolBefore"] = before_tool
         if launch_options_before is not None:
             entry["launchOptionsBefore"] = str(launch_options_before)
-    # One active build per appid. Two archived builds of the same game are
-    # ALTERNATIVES, not layers -- holding a game to both is incoherent, so
-    # activating one displaces the other rather than stacking.
+    # activeBuild doubles as the activation marker for backward compatibility.
     previous = str(entry.get("activeBuild") or "")
     if previous and previous != str(buildid):
         try:
@@ -577,6 +579,7 @@ def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
     was = str(entry.get("activeBuild") or "")
     launch_before_known = "launchOptionsBefore" in entry
     restore_args = str(entry.get("launchOptionsBefore") or "")
+    compat_before_known = "compatToolBefore" in entry
     restore_tool = str(entry.get("compatToolBefore") or "")
     entry["activeBuild"] = ""
     entry["deactivatedOn"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
@@ -587,14 +590,15 @@ def deactivate(appid: int, reset: bool = True) -> Dict[str, Any]:
     # Put the compat tool back exactly as it was before activation. Restoring an
     # EMPTY tool means removing the override, which is the correct end state for
     # a native Linux game -- the same code path serves both.
-    try:
-        from . import compat
-        if restore_tool:
-            compat.set_proton_mapping(int(appid), restore_tool)
-        else:
-            compat.remove_proton_mapping(int(appid))
-    except Exception as exc:
-        logger.warn(f"buildarchive: compat tool restore failed for {appid}: {exc}")
+    if compat_before_known:
+        try:
+            from . import compat
+            if restore_tool:
+                compat.set_proton_mapping(int(appid), restore_tool)
+            else:
+                compat.remove_proton_mapping(int(appid))
+        except Exception as exc:
+            logger.warn(f"buildarchive: compat tool restore failed for {appid}: {exc}")
 
     unpinned = False
     try:
@@ -646,20 +650,19 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
                 "waiting": "game is not installed — the template will apply once it is",
                 "actions": actions, "todo": todo}
 
-    if apply:
+    # 2) Correct build pinned?
+    want_gids = {str(d): str(g) for d, g in (build.get("gids") or {}).items()}
+    if want_gids and apply:
         try:
             material = _deploy_material(appid, build)
         except Exception as exc:
             material = {"success": False, "error": str(exc)}
         if not material.get("success"):
             return {"success": False, "active": active, "installed": True,
-                    "error": material.get("error", "could not deploy archived material"),
+                    "error": material.get("error", "could not deploy archived build"),
                     "missingManifests": material.get("missingManifests", []),
                     "missingKeys": material.get("missingKeys", []),
                     "actions": actions, "todo": todo}
-
-    # 2) Correct build pinned?
-    want_gids = {str(d): str(g) for d, g in (build.get("gids") or {}).items()}
     have = {}
     try:
         from . import steam
@@ -725,22 +728,24 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
     #    Linux games behave identically: a recorded tool is forced, and a
     #    recorded EMPTY tool means "no override" -- which is what a native Linux
     #    game needs, and what a Proton game reverts to if its template says so.
+    has_tool = "compatTool" in entry
     want_tool = str(entry.get("compatTool") or "")
-    try:
-        from . import compat
-        have_tool = str((compat.get_proton_mapping(appid) or {}).get("toolName") or "")
-        if want_tool and have_tool != want_tool:
-            todo.append(f"Proton tool is {have_tool or 'default'}, template wants {want_tool}")
-            if apply:
-                compat.set_proton_mapping(appid, want_tool)
-                actions.append(f"set Proton to {want_tool}")
-        elif not want_tool and have_tool:
-            todo.append(f"Proton tool {have_tool} set, template wants the default (native)")
-            if apply:
-                compat.remove_proton_mapping(appid)
-                actions.append("cleared the Proton override")
-    except Exception as exc:
-        logger.warn(f"buildarchive: compat tool reconcile failed for {appid}: {exc}")
+    if has_tool:
+        try:
+            from . import compat
+            have_tool = str((compat.get_proton_mapping(appid) or {}).get("toolName") or "")
+            if want_tool and have_tool != want_tool:
+                todo.append(f"Proton tool is {have_tool or 'default'}, template wants {want_tool}")
+                if apply:
+                    compat.set_proton_mapping(appid, want_tool)
+                    actions.append(f"set Proton to {want_tool}")
+            elif not want_tool and have_tool:
+                todo.append(f"Proton tool {have_tool} set, template wants the default (native)")
+                if apply:
+                    compat.remove_proton_mapping(appid)
+                    actions.append("cleared the Proton override")
+        except Exception as exc:
+            logger.warn(f"buildarchive: compat tool reconcile failed for {appid}: {exc}")
 
     # 6) Launch arguments are Steam-owned (SetAppLaunchOptions); report what
     #    they should be and let the frontend set them.
@@ -748,7 +753,9 @@ def reconcile(appid: int, apply: bool = True) -> Dict[str, Any]:
         "success": True, "active": active, "installed": True,
         "actions": actions, "todo": todo,
         "wantLaunchOptions": entry.get("launchOptions") or "",
+        "hasLaunchOptions": "launchOptions" in entry,
         "wantCompatTool": entry.get("compatTool") or "",
+        "hasCompatTool": has_tool,
         "pinnedOk": not mismatched,
         "dlcPending": bool(dlc_wanted and not dlc_have),
     }
@@ -813,7 +820,7 @@ def activate_game(appid: int,
     entry = (_read().get("apps", {}) or {}).get(str(int(appid))) or {}
     builds = entry.get("builds") or {}
     if not builds:
-        return {"success": False, "error": "that game has no archived builds"}
+        return {"success": False, "error": "that game snapshot has no complete archived build"}
     newest = sorted(builds.values(), key=lambda b: float(b.get("archivedAt") or 0),
                     reverse=True)[0]
     r = activate(int(appid), str(newest.get("buildid")), launch_options_before)
