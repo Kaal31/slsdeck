@@ -65,7 +65,14 @@ export function parseTokeerGameLabel(label: string): TokeerAvailableGame | null 
   if (!availability) return null;
   const rawName = availability[1].trim();
   const appidMatch = text.match(/(?:app\s*id|appid)\s*[:#-]?\s*(\d{3,10})/i);
-  const name = rawName.replace(/\s*[-–—(]*\s*(?:app\s*id|appid)\s*[:#-]?\s*\d{3,10}\)?\s*$/i, "").trim();
+  const name = rawName
+    .replace(/\s*[-–—(]*\s*(?:app\s*id|appid)\s*[:#-]?\s*\d{3,10}\)?\s*$/i, "")
+    // Availability labels append the access tier before the bullet/count
+    // (for example "Assassin's Creed Shadows Free • 6 of 10 remaining").
+    // It is not part of the Discord ticket's game title.
+    .replace(/\s+(?:Free|Donator|Premium|Elite)\s*[•·|/-]*\s*$/i, "")
+    .replace(/[•·|]\s*$/g, "")
+    .trim();
   return {
     label: text,
     name,

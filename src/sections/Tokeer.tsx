@@ -681,7 +681,7 @@ export function TokeerSection() {
         </div>
       </div></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
-      <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
+      <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45,paddingTop:8}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:"#65e69b",fontWeight:800}}>● LIVE</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}

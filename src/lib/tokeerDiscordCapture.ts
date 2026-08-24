@@ -579,7 +579,21 @@ async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
 export async function openSelectorAndReadOptions(index: number, timeoutMs = 5000): Promise<string[]> {
   const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return [];
-  const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var arts=[].slice.call(document.querySelectorAll('[role="article"]'));var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];var e=xs[${Number(index)}];if(!e)return false;var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;}catch(e){return false;}})()`;
+  const clickExpr = `(function(){try{
+    var id=${JSON.stringify(TARGET_MESSAGE)},arts=[].slice.call(document.querySelectorAll('[role="article"]'));
+    var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});
+    var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];
+    var e=xs[${Number(index)}];if(!e)return false;
+    var visible=function(x){var r=x.getBoundingClientRect();return r.width>0&&r.height>0;};
+    var open=e.getAttribute('aria-expanded')==='true';
+    var visibleOptions=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).filter(visible);
+    // Closing SLSDeck's copied menu does not close Discord's hidden popup.
+    // Reuse that matching open popup; clicking the combobox again would toggle
+    // it shut and make every second SLSDeck opening appear empty.
+    if(open&&visibleOptions.length)return true;
+    var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};
+    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;
+  }catch(e){return false;}})()`;
   const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr, Math.min(timeoutMs, 3000));
   if (!ok) return [];
   await new Promise((r) => setTimeout(r, 450));
