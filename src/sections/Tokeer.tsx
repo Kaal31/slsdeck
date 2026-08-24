@@ -7,6 +7,7 @@ import {
   chooseSelectorOption,
   clickLatestTicketGate,
   cancelTokeerTicket,
+  checkTokeerTicketState,
   connectTokeerDiscordHidden,
   getDiscordSignInState,
   waitForDiscordSignIn,
@@ -48,7 +49,7 @@ type SavedTokeerSession = {
   automationError?: string;
 };
 
-type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"done"|"failed";
+type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"done"|"failed"|"aborted";
 
 function readSavedSession(): SavedTokeerSession|null {
   try {
@@ -92,6 +93,7 @@ export function TokeerSection() {
   const [submittedTlx,setSubmittedTlx]=useState(savedRef.current?.submittedTlx||"");
   const [automationError,setAutomationError]=useState(savedRef.current?.automationError||"");
   const automationRunningRef=useRef(false);
+  const ticketAbortedRef=useRef(false);
   const loginPendingRef=useRef(false);
 
   const checkpoint=(patch:Partial<SavedTokeerSession>)=>{
@@ -282,9 +284,39 @@ export function TokeerSection() {
     setBusy("");
   };
 
+  const abortTicketChain=(reason:string)=>{
+    ticketAbortedRef.current=true;
+    automationRunningRef.current=false;
+    try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+    setTicket(null);setGate(null);setVerify(null);setActivation("");
+    setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");
+    setAutomationStage("aborted");setAutomationError(reason);setMessage(reason);
+    codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
+    setBusy("");
+    toaster.toast({title:"SLSDeck · Tokeer",body:reason.slice(0,220)});
+  };
+
+  useEffect(()=>{
+    if(!ticket?.url||automationStage==="done"||automationStage==="aborted")return;
+    let stopped=false,checking=false;
+    const inspect=async()=>{
+      if(stopped||checking)return;
+      checking=true;
+      try{
+        const state=await checkTokeerTicketState(ticket.url!);
+        if(!stopped&&state.closed)abortTicketChain(`${state.reason||"The Discord ticket was closed."} Tokeer automation was aborted and its saved ticket state was cleared.`);
+      }catch{}
+      finally{checking=false;}
+    };
+    void inspect();
+    const timer=setInterval(inspect,3000);
+    return()=>{stopped=true;clearInterval(timer);};
+  },[ticket?.url,automationStage]);
+
   const runAutomation=async(ctx:TokeerTicketContext,resume?:SavedTokeerSession)=>{
     if(automationRunningRef.current||!ctx.appid||!ctx.url)return;
     automationRunningRef.current=true;
+    ticketAbortedRef.current=false;
     const fail=(body:string)=>{
       setAutomationStage("failed");setAutomationError(body);setMessage(body);
       checkpoint({automationStage:"failed",automationError:body,ticket:ctx});
@@ -295,6 +327,7 @@ export function TokeerSection() {
       // AppID when it disagrees with the installed game the user selected.
       if(selectedGame){
         const expected=await tokeerPreflight(0,selectedGame);
+        if(ticketAbortedRef.current)return;
         if(expected.success&&expected.installed&&expected.appid&&Number(expected.appid)!==Number(ctx.appid)){
           fail(`Ignored mismatched ticket AppID ${ctx.appid}; ${selectedGame} is installed as Steam AppID ${expected.appid}. Re-scan the ticket commands.`);
           return;
@@ -308,6 +341,7 @@ export function TokeerSection() {
         updateActivation(resume.activation);
         setBusy("Redeeming saved Tokeer activation…");
         const redeemed=await tokeerRedeem(resume.activation);
+        if(ticketAbortedRef.current)return;
         if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed.");return;}
         setAutomationStage("done");setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
@@ -318,14 +352,18 @@ export function TokeerSection() {
         setAutomationStage("preparing");setAutomationError("");setBusy("Preparing and verifying Tokeer locally…");
         checkpoint({automationStage:"preparing",automationError:"",ticket:ctx});
         const preflight=await tokeerPreflight(ctx.appid,"");
+        if(ticketAbortedRef.current)return;
         if(!preflight.success||!preflight.installed){fail(preflight.error||"Game is not installed; Discord was not sent a verification result.");return;}
         const prepared=await setupAndVerifyTokeer(ctx.appid,setMessage);
+        if(ticketAbortedRef.current)return;
         if(!prepared.success||!prepared.code){fail(describeTokeerFailure(prepared));return;}
         tlx=prepared.code;setVerify(prepared);setSubmittedTlx(tlx);
         checkpoint({automationStage:"submitting",verify:prepared,submittedTlx:tlx,ticket:ctx});
 
         setAutomationStage("submitting");setBusy("Submitting verified TLX1 to the Discord ticket…");
         const sent=await sendTokeerTicketMessage(ctx.url,tlx);
+        if(ticketAbortedRef.current)return;
+        if(sent.cancelled){abortTicketChain(`${sent.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
         if(!sent.success){fail(sent.error||"Could not submit TLX1 to Discord.");return;}
         wasSubmitted=true;setTlxSubmitted(true);setAutomationStage("waiting-code");
         checkpoint({automationStage:"waiting-code",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:ctx});
@@ -334,17 +372,20 @@ export function TokeerSection() {
       setAutomationStage("waiting-code");setBusy("Waiting for Discord activation code…");
       setMessage("Local verification passed and TLX1 was submitted. Waiting for Tokeer's six-character activation code…");
       const received=await waitForTokeerActivationCode(ctx.url);
+      if(ticketAbortedRef.current)return;
+      if(received.cancelled){abortTicketChain(`${received.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
       if(!received.success||!received.code){fail(received.error||"No activation code was detected.");return;}
       updateActivation(received.code);setAutomationStage("redeeming");setBusy("Redeeming Tokeer activation locally…");
       checkpoint({automationStage:"redeeming",activation:received.code,codeReceivedAt:Date.now(),expiresAt:Date.now()+TOKEER_SESSION_MS,ticket:ctx,tlxSubmitted:true,submittedTlx:tlx});
       const redeemed=await tokeerRedeem(received.code);
+      if(ticketAbortedRef.current)return;
       if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}
       setAutomationStage("done");setMessage("Tokeer activation was received and redeemed automatically. Launch the game from Steam.");
       toaster.toast({title:"SLSDeck · Tokeer",body:"Activation received and redeemed successfully."});
       try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
       setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");setCodeExpiresAt(undefined);
       codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
-    }catch(e){fail(String(e));}
+    }catch(e){if(!ticketAbortedRef.current)fail(String(e));}
     finally{automationRunningRef.current=false;setBusy("");}
   };
 

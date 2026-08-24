@@ -49,6 +49,12 @@ export type TokeerTicketContext = {
   error?: string;
 };
 
+export type TokeerTicketState = {
+  open: boolean;
+  closed: boolean;
+  reason?: string;
+};
+
 async function listCdpTabs(): Promise<CdpTab[]> {
   const merged: CdpTab[] = [];
   const seen = new Set<string>();
@@ -685,7 +691,31 @@ async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
   return tab;
 }
 
-export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; error?: string }> {
+/** Inspect an already-visible private ticket without navigating Discord.
+ * Returning closed=false/open=false means the user merely navigated elsewhere;
+ * only explicit Discord/Tokeer closure evidence aborts the saved chain. */
+export async function checkTokeerTicketState(ticketUrl: string): Promise<TokeerTicketState> {
+  if (!looksLikeDiscordUrl(ticketUrl)) return { open: false, closed: false };
+  const wanted = String(ticketUrl).split(/[?#]/)[0];
+  const tabs = await listCdpTabs();
+  for (const raw of tabs.filter((item) => !!item.webSocketDebuggerUrl)) {
+    const resolved = await resolveTabUrl(raw);
+    if (String(resolved || "").split(/[?#]/)[0] !== wanted || !raw.webSocketDebuggerUrl) continue;
+    const expr = `(function(){try{
+      var body=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
+      var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\n');
+      var explicit=/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent);
+      var unavailable=/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(body);
+      var composer=!!document.querySelector('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"]');
+      return JSON.stringify({open:composer&&!explicit&&!unavailable,closed:explicit||unavailable,reason:explicit?'Tokeer reports that the ticket was cancelled or closed.':unavailable?'The Discord ticket channel no longer exists or is inaccessible.':''});
+    }catch(e){return JSON.stringify({open:false,closed:false,reason:String(e)});}})()`;
+    const result = await evalJson(raw.webSocketDebuggerUrl, expr, 3500);
+    try { return JSON.parse(String(result || "")); } catch { return { open: false, closed: false }; }
+  }
+  return { open: false, closed: false };
+}
+
+export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; cancelled?: boolean; error?: string }> {
   const text = String(message || "").trim();
   if (!/^TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
     return { success: false, error: "The generated verification value is not a valid TLX1 code; nothing was sent to Discord." };
@@ -694,6 +724,9 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view is not connected." };
 
   const focusExpr = `(function(){try{
+    var page=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
+    var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\n');
+    if(/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent)||/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(page))return JSON.stringify({ok:false,cancelled:true,error:'The Discord ticket was cancelled, closed, or deleted.'});
     var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
     var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
     var box=boxes[boxes.length-1];
@@ -703,7 +736,7 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   const focusedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 4000);
   let focused: any;
   try { focused = JSON.parse(String(focusedRaw || "")); } catch { focused = null; }
-  if (!focused?.ok) return { success: false, error: focused?.error || "Could not focus the Discord ticket message box." };
+  if (!focused?.ok) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not focus the Discord ticket message box." };
 
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.insertText", { text }, 3000);
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
@@ -718,13 +751,17 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   return appeared ? { success: true } : { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
 }
 
-export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000): Promise<{ success: boolean; code?: string; error?: string }> {
+export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000): Promise<{ success: boolean; code?: string; cancelled?: boolean; error?: string }> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const tab = await ticketTab(ticketUrl);
     if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected while waiting for the activation code." };
     const expr = `(function(){try{
       var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
+      var page=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
+      var recent=arts.slice(0,12).map(function(a){return String(a.innerText||'');}).join('\n');
+      if(/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket was cancelled or closed.'});
+      if(/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(page))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket channel no longer exists or is inaccessible.'});
       var common=/^(?:verify|setup|ticket|cancel|close|valid|code|redeem|tokeer|linux|steam|proton)$/i;
       for(var i=0;i<arts.length;i++){
         var a=arts[i], text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
@@ -743,6 +780,7 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
     try {
       const found = JSON.parse(String(raw || ""));
       if (found?.found && /^[A-Za-z0-9_-]{6}$/.test(String(found.code || ""))) return { success: true, code: String(found.code) };
+      if (found?.cancelled) return { success: false, cancelled: true, error: found.error || "The Discord ticket was cancelled." };
       if (found?.error) return { success: false, error: found.error };
     } catch {}
     await new Promise((r) => setTimeout(r, 1500));
@@ -765,12 +803,24 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
 
   const clickCancel = `(function(){try{
     var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
-    var label=function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();};
+    var label=function(e){return String(e.innerText||e.textContent||e.getAttribute('aria-label')||e.getAttribute('title')||'').replace(/\\s+/g,' ').trim();};
+    var danger=function(e){
+      var meta=String(e.className||'')+' '+String(e.getAttribute('data-look')||'')+' '+String(e.getAttribute('data-variant')||'')+' '+String(e.getAttribute('aria-label')||'');
+      if(/danger|red|negative|critical|destructive/i.test(meta))return true;
+      var s=getComputedStyle(e), colors=[s.color,s.backgroundColor,s.borderColor].join(' '), nums=colors.match(/\\d+/g)||[];
+      for(var i=0;i+2<nums.length;i+=3){var r=+nums[i],g=+nums[i+1],b=+nums[i+2];if(r>140&&r>g*1.35&&r>b*1.25)return true;}
+      return false;
+    };
     var click=function(e){var r=e.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,p));});};
     var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible);
-    var exact=buttons.filter(function(b){return /(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(label(b));});
-    var danger=exact.find(function(b){return /danger|red|negative|critical/i.test(String(b.className||'')+' '+String(b.getAttribute('data-look')||'')+' '+String(b.getAttribute('aria-label')||''));});
-    var target=danger||exact[exact.length-1];
+    var strong=buttons.filter(function(b){var t=label(b);return /(?:^|\\b)(?:(?:cancel|close|delete|abort)\\s+(?:this\\s+)?ticket|ticket\\s+(?:cancel|close|delete|abort))(?:\\b|$)/i.test(t);});
+    var short=buttons.filter(function(b){
+      var t=label(b);if(!/^(?:cancel|close|delete|abort)$/i.test(t)||!danger(b))return false;
+      var a=b.closest('[role="article"]'),p=b.parentElement&&b.parentElement.parentElement;
+      var context=String(a&&a.innerText||p&&p.innerText||'');
+      return /ticket|activation|tokeer/i.test(context);
+    });
+    var target=strong.find(danger)||strong[strong.length-1]||short[short.length-1];
     if(!target)return JSON.stringify({ok:false,error:'The red Cancel Ticket button was not found in the open ticket.'});
     click(target);
     return JSON.stringify({ok:true,label:label(target)});
@@ -786,7 +836,8 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     var d=[].slice.call(document.querySelectorAll('[role="dialog"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
     if(!d)return false;
     var bs=[].slice.call(d.querySelectorAll('button,[role="button"]'));
-    var b=bs.find(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return /^(?:confirm|yes)$/i.test(t)||/(?:^|\\b)(?:cancel|close)\\s+(?:this\\s+)?ticket(?:\\b|$)/i.test(t);});
+    var danger=function(e){var m=String(e.className||'')+' '+String(e.getAttribute('data-look')||'')+' '+String(e.getAttribute('data-variant')||'');return /danger|red|negative|critical|destructive/i.test(m);};
+    var b=bs.find(function(e){var t=String(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();return /^(?:confirm|yes)$/i.test(t)||/(?:^|\\b)(?:(?:cancel|close|delete|abort)\\s+(?:this\\s+)?ticket|ticket\\s+(?:cancel|close|delete|abort))(?:\\b|$)/i.test(t)||(danger(e)&&/^(?:close|delete|abort)$/i.test(t));});
     if(!b)return false;
     var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};
     ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});
