@@ -154,7 +154,7 @@ export function TokeerSection() {
     return()=>clearInterval(timer);
   },[codeExpiresAt]);
 
-  const rememberDiscord=(state:TokeerDiscordState)=>{
+  const rememberDiscord=(state:TokeerDiscordState,markRestoringOnMiss=false)=>{
     if(state.found&&(state.selectors||[]).length){
       selectorLayoutRef.current=state;
       try{window.localStorage.setItem(TOKEER_SELECTOR_CACHE_KEY,JSON.stringify(state));}catch{}
@@ -163,8 +163,14 @@ export function TokeerSection() {
       return;
     }
     // A ticket route or temporarily unmounted Discord message must not erase
-    // the last confirmed selector layout. It remains visible but disabled.
-    if(selectorLayoutRef.current){setDiscord(selectorLayoutRef.current);setRestoringSelectors(true);}
+    // the last confirmed selector layout. Explicit restoration callers may
+    // keep it disabled; passive health checks leave working buttons enabled.
+    if(selectorLayoutRef.current){
+      setDiscord(selectorLayoutRef.current);
+      // Passive 15-second health checks frequently miss Discord's virtualized
+      // message for one frame. Such a miss must not disable working buttons.
+      if(markRestoringOnMiss)setRestoringSelectors(true);
+    }
     else setDiscord(state);
   };
   const refreshDiscord=async()=>{ try{
@@ -337,7 +343,7 @@ export function TokeerSection() {
         await sleep(500);
         state=await readTokeerDiscord(true);
       }
-      rememberDiscord(state);
+      rememberDiscord(state,true);
       if(state.found){
         const auth=await getDiscordSignInState();
         const signedIn=auth.signedIn||state.found;
