@@ -52,7 +52,8 @@ export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupRe
  */
 export async function setupAndVerifyTokeer(
   appid: number,
-  onStatus?: (message: string) => void
+  onStatus?: (message: string) => void,
+  ubisoft = false
 ): Promise<TokeerSetupResult> {
   onStatus?.("Confirming that the game is installed…");
   const preflight = await tokeerPreflight(appid, "");
@@ -103,13 +104,13 @@ export async function setupAndVerifyTokeer(
   }
 
   onStatus?.("Checking the game setup…");
-  let verified = await tokeerVerify(appid);
+  let verified = await tokeerVerify(appid, ubisoft);
   if (!verified.success && !verified.checks?.prefix) {
     onStatus?.("Creating the Proton prefix with one game launch—Steam will stay open…");
     launchGame(appid);
     for (let attempt = 0; attempt < 30; attempt++) {
       await sleep(2000);
-      verified = await tokeerVerify(appid);
+      verified = await tokeerVerify(appid, ubisoft);
       if (verified.success || verified.checks?.prefix) break;
     }
   }

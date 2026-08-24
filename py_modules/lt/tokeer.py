@@ -589,7 +589,7 @@ def prepare(appid: int) -> Dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-def prepare_and_verify(appid: int) -> Dict[str, Any]:
+def prepare_and_verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
     """Run upstream Step 1 and then its local verifier as one backend job.
 
     Keeping both commands in one Decky-side call matters because Step 1 may
@@ -604,7 +604,7 @@ def prepare_and_verify(appid: int) -> Dict[str, Any]:
             "output": prepared.get("output", ""),
             "error": prepared.get("error") or "Tokeer setup failed.",
         }
-    checked = verify(appid)
+    checked = verify(appid, ubisoft)
     return {
         **checked,
         "phase": "verified" if checked.get("success") else "verify",
@@ -624,14 +624,16 @@ def _decode_tlx(code: str) -> Dict[str, Any]:
         return {}
 
 
-def verify(appid: int) -> Dict[str, Any]:
+def verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
     if not str(appid).isdigit() or int(appid) <= 0:
         return {"success": False, "error": "Invalid Steam AppID."}
     cmd = os.path.join(_tdir(), "tokeer")
     if not os.path.isfile(cmd):
         return {"success": False, "needsPrepare": True, "error": "Tokeer is not prepared yet."}
     try:
-        p = _run_as_user([cmd, "verify", str(int(appid))], timeout=120)
+        args = ([cmd, "verify-ubi", str(int(appid)), "--ubi"]
+                if ubisoft else [cmd, "verify", str(int(appid))])
+        p = _run_as_user(args, timeout=120)
         out = p.stdout or ""
         m = re.search(r"TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", out)
         code = m.group(0) if m else ""

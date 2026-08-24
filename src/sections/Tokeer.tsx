@@ -149,6 +149,8 @@ export function TokeerSection() {
     return {state,signedIn,authFound:auth.found};
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
+  const ticketUsesUbisoftVerifier=(ctx?:TokeerTicketContext|null)=>
+    /(?:tokeer\s+verify-ubi\b|(?:^|\s)--ubi\b|\bUbiTokeer\b)/i.test(String(ctx?.rawText||""));
   // Tokeer appends the access tier to some Ubisoft dropdown options (for
   // example "Assassin's Creed Shadows Free • 6 of 10 remaining"). Keep the
   // original value as the Discord click target, but do not present the tier as
@@ -456,7 +458,7 @@ export function TokeerSection() {
         const preflight=await tokeerPreflight(ctx.appid,"");
         if(ticketAbortedRef.current)return;
         if(!preflight.success||!preflight.installed){fail(preflight.error||"Game is not installed; Discord was not sent a verification result.");return;}
-        const prepared=await setupAndVerifyTokeer(ctx.appid,setMessage);
+        const prepared=await setupAndVerifyTokeer(ctx.appid,setMessage,ticketUsesUbisoftVerifier(ctx));
         if(ticketAbortedRef.current)return;
         if(!prepared.success||!prepared.code){fail(describeTokeerFailure(prepared));return;}
         tlx=prepared.code;setVerify(prepared);setSubmittedTlx(tlx);
@@ -610,7 +612,7 @@ export function TokeerSection() {
     setBusy("Preparing Tokeer…");
     setMessage(`Preparing ${selectedGame||`AppID ${resolvedAppid}`} using the validated AppID supplied by the Tokeer ticket. Steam will stay open.`);
     try{
-      const r=await setupAndVerifyTokeer(resolvedAppid,setMessage);
+      const r=await setupAndVerifyTokeer(resolvedAppid,setMessage,ticketUsesUbisoftVerifier(ticket));
       if(r.success){
         setVerify(r);
         setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
@@ -637,7 +639,7 @@ export function TokeerSection() {
         toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
         return;
       }
-      const r=await tokeerVerify(resolvedAppid);
+      const r=await tokeerVerify(resolvedAppid,ticketUsesUbisoftVerifier(ticket));
       if(r.success){
         setVerify(r);
         setMessage("Setup verified. Copy the TLX1 and paste it into the open Discord ticket.");
