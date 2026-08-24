@@ -345,9 +345,11 @@ export function TokeerSection() {
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
     try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
-    setTicket(null);setGate(null);setVerify(null);setActivation("");
+    setSelectedGame("");setSelectedMenus({});setTicket(null);setGate(null);setVerify(null);setActivation("");
     setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");
-    setAutomationStage("aborted");setAutomationError(reason);setMessage(reason);
+    // The chain is gone, so do not leave the old game/gate or an "aborted"
+    // workflow card on screen. Keep only a concise Status explanation.
+    setAutomationStage("idle");setAutomationError("");setMessage(reason);
     codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
     setBusy("");
     toaster.toast({title:"SLSDeck · Tokeer",body:reason.slice(0,220)});

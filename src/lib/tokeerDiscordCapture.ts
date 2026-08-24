@@ -279,7 +279,6 @@ export async function getDiscordSignInState(): Promise<{ signedIn: boolean; sign
         if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return 'signed-out';
         var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
         if(response.status===200)return 'signed-in';
-        if(response.status===401)return 'signed-out';
         var shell=/\\/channels\\//i.test(u)&&!!document.querySelector('[data-list-item-id^="channels___"],nav,[class*="sidebar"]');
         return shell?'signed-in':'unknown';
       }catch(e){
