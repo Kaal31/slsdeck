@@ -53,15 +53,6 @@ import { getEmojiBadgesEnabled, setEmojiBadgesEnabled } from "../lib/emojiBadges
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 const DECKY_HV_VISIBLE_KEY = "slsdeck.showDeckyHv";
-const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
-
-function hasActiveTokeerSession(): boolean {
-  try {
-    const session=JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY)||"null");
-    return !!session && (!session.expiresAt||Number(session.expiresAt)>Date.now()) && !!(session.selectedGame||session.ticket||session.gate);
-  } catch { return false; }
-}
-
 function readDeckyHvVisible(): boolean {
   try {
     return window.localStorage.getItem(DECKY_HV_VISIBLE_KEY) === "1";
@@ -749,7 +740,6 @@ export function AdvancedPage() {
   const bump = () => setTok((t) => t + 1);
   const [gamesInQam, setGamesInQam2] = useState(false);
   const [showDeckyHv, setShowDeckyHv] = useState(readDeckyHvVisible);
-  const [resumeTokeer] = useState(hasActiveTokeerSession);
 
   useEffect(() => {
     getGamesInQam().then((r) => setGamesInQam2(!!r.enabled)).catch(() => {});
@@ -771,11 +761,6 @@ export function AdvancedPage() {
       title="SLSDeck"
       showTitle
       pages={[
-        ...(resumeTokeer ? [{
-          title: "Anti-Denuvo",
-          icon: <FaShieldAlt />,
-          content: <Body><TokeerSection /></Body>,
-        }] : []),
         {
           title: "Archive",
           icon: <FaArchive />,
@@ -811,11 +796,11 @@ export function AdvancedPage() {
           icon: <FaCloud />,
           content: <Body><CloudRedirectSection /></Body>,
         },
-        ...(!resumeTokeer ? [{
+        {
           title: "Anti-Denuvo",
           icon: <FaShieldAlt />,
           content: <Body><TokeerSection /></Body>,
-        }] : []),
+        },
         ...(showDeckyHv ? [{
           title: "Hypervisor Bypass Module",
           icon: <FaShieldAlt />,

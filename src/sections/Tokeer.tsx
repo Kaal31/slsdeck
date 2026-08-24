@@ -136,7 +136,10 @@ export function TokeerSection() {
     // A successfully parsed activation panel is stronger evidence than the
     // users/@me probe: Steam's Discord webview can block that API request even
     // while its authenticated channel DOM is fully available.
-    const signedIn=auth.signedIn||state.found;
+    // A network-blocked users/@me probe is "unknown", not "logged out".
+    // Preserve a previously enabled silent connection unless Discord renders
+    // an actual login route/form or returns an authentication rejection.
+    const signedIn=auth.signedIn||state.found||(!auth.signedOut&&readAutoConnect());
     setDiscord(state);setDiscordSignedIn(signedIn);
     return {state,signedIn,authFound:auth.found};
   }catch{return null;} };

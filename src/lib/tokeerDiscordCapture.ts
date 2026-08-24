@@ -264,30 +264,39 @@ async function findDiscordTab(): Promise<CdpTab | null> {
  * broadcast so UI showing a "sign in" affordance can drop it the moment the
  * session actually becomes authenticated, rather than waiting for whatever
  * long-running check happens to finish next. */
-let signInInFlight: Promise<{ signedIn: boolean; found: boolean }> | null = null;
+let signInInFlight: Promise<{ signedIn: boolean; signedOut: boolean; found: boolean }> | null = null;
 let lastSignedIn: boolean | null = null;
 
-export async function getDiscordSignInState(): Promise<{ signedIn: boolean; found: boolean }> {
+export async function getDiscordSignInState(): Promise<{ signedIn: boolean; signedOut: boolean; found: boolean }> {
   if (signInInFlight) return signInInFlight;
   signInInFlight = (async () => {
     try {
       const tab = await findDiscordTab();
-      if (!tab?.webSocketDebuggerUrl) return { signedIn: false, found: false };
+      if (!tab?.webSocketDebuggerUrl) return { signedIn: false, signedOut: false, found: false };
       const expression = `(async function(){try{
         var u=String(location.href||document.URL||'');
-        if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return false;
-        if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return false;
+        if(/\\/(?:login|register)(?:[/?#]|$)/i.test(u))return 'signed-out';
+        if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return 'signed-out';
         var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
-        return response.status===200;
-      }catch(e){return false;}})()`;
-      const signedIn = !!(await evalJson(tab.webSocketDebuggerUrl, expression, 2500));
+        if(response.status===200)return 'signed-in';
+        if(response.status===401||response.status===403)return 'signed-out';
+        var shell=/\\/channels\\//i.test(u)&&!!document.querySelector('[data-list-item-id^="channels___"],nav,[class*="sidebar"]');
+        return shell?'signed-in':'unknown';
+      }catch(e){
+        var u=String(location.href||document.URL||'');
+        var shell=/\\/channels\\//i.test(u)&&!!document.querySelector('[data-list-item-id^="channels___"],nav,[class*="sidebar"]');
+        return shell?'signed-in':'unknown';
+      }})()`;
+      const result = String(await evalJson(tab.webSocketDebuggerUrl, expression, 2500) || "unknown");
+      const signedIn = result === "signed-in";
+      const signedOut = result === "signed-out";
       if (signedIn !== lastSignedIn) {
         lastSignedIn = signedIn;
         try {
           window.dispatchEvent(new CustomEvent("slsdeck-tokeer-signin", { detail: signedIn }));
         } catch { /* ignore */ }
       }
-      return { signedIn, found: true };
+      return { signedIn, signedOut, found: true };
     } finally {
       signInInFlight = null;
     }
@@ -1006,10 +1015,9 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
       if (focused?.found && Number.isFinite(Number(focused.x)) && Number.isFinite(Number(focused.y))) {
         // A synthetic HTMLElement.focus()/click() does not grant keyboard focus
         // inside Steam's parked BrowserView. Send trusted browser-level input at
-        // the exact Slate editor coordinates, with focus emulation enabled. Do
-        // not call Page.bringToFront: Steam would expose/reorder this hidden
-        // target in its recent-tabs list.
+        // the exact Slate editor coordinates, with focus emulation enabled.
         await cdpCommand(tab.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+        await cdpCommand(tab.webSocketDebuggerUrl, "Page.bringToFront", {}, 2000);
         const point = { x: Number(focused.x), y: Number(focused.y) };
         await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, 2000);
         await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, 2000);
