@@ -32,6 +32,7 @@ const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:
 const sleep = (ms:number)=>new Promise((r)=>setTimeout(r,ms));
 const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
 const TOKEER_AUTO_CONNECT_KEY = "slsdeck.tokeerAutoConnect.v1";
+const TOKEER_SELECTOR_CACHE_KEY = "slsdeck.tokeerSelectorLayout.v1";
 const TOKEER_VAULT_REFRESH_MS = 10 * 60 * 1000;
 const TOKEER_SESSION_MS = 30 * 60 * 1000;
 
@@ -80,12 +81,20 @@ function readAutoConnect(): boolean {
   catch { return false; }
 }
 
+function readSelectorLayout(): TokeerDiscordState|null {
+  try {
+    const parsed=JSON.parse(window.localStorage.getItem(TOKEER_SELECTOR_CACHE_KEY)||"null");
+    return parsed?.found&&Array.isArray(parsed.selectors)&&parsed.selectors.length?parsed:null;
+  } catch { return null; }
+}
+
 export function TokeerSection() {
   useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
+  const selectorLayoutRef=useRef<TokeerDiscordState|null>(readSelectorLayout());
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
   const codeReceivedAtRef=useRef<number|undefined>(savedRef.current?.codeReceivedAt);
-  const [discord,setDiscord]=useState<TokeerDiscordState|null>(null);
+  const [discord,setDiscord]=useState<TokeerDiscordState|null>(selectorLayoutRef.current);
   const [availability,setAvailability]=useState<TokeerAvailabilityCache|null>(readTokeerAvailabilityCache());
   const [runtime,setRuntime]=useState<any>(null);
   const [verify,setVerify]=useState<TokeerVerifyResult|null>(savedRef.current?.verify||null);
@@ -107,7 +116,7 @@ export function TokeerSection() {
   const [tlxSubmitted,setTlxSubmitted]=useState(!!savedRef.current?.tlxSubmitted);
   const [submittedTlx,setSubmittedTlx]=useState(savedRef.current?.submittedTlx||"");
   const [automationError,setAutomationError]=useState(savedRef.current?.automationError||"");
-  const [restoringSelectors,setRestoringSelectors]=useState(false);
+  const [restoringSelectors,setRestoringSelectors]=useState(!!selectorLayoutRef.current);
   const automationRunningRef=useRef(false);
   const ticketAbortedRef=useRef(false);
   const ticketGenerationRef=useRef(0);
@@ -145,6 +154,19 @@ export function TokeerSection() {
     return()=>clearInterval(timer);
   },[codeExpiresAt]);
 
+  const rememberDiscord=(state:TokeerDiscordState)=>{
+    if(state.found&&(state.selectors||[]).length){
+      selectorLayoutRef.current=state;
+      try{window.localStorage.setItem(TOKEER_SELECTOR_CACHE_KEY,JSON.stringify(state));}catch{}
+      setDiscord(state);
+      setRestoringSelectors(false);
+      return;
+    }
+    // A ticket route or temporarily unmounted Discord message must not erase
+    // the last confirmed selector layout. It remains visible but disabled.
+    if(selectorLayoutRef.current){setDiscord(selectorLayoutRef.current);setRestoringSelectors(true);}
+    else setDiscord(state);
+  };
   const refreshDiscord=async()=>{ try{
     const [state,auth]=await Promise.all([readTokeerDiscord(),getDiscordSignInState()]);
     // A successfully parsed activation panel is stronger evidence than the
@@ -154,7 +176,12 @@ export function TokeerSection() {
     // Preserve a previously enabled silent connection unless Discord renders
     // an actual login route/form or returns an authentication rejection.
     const signedIn=auth.signedIn||state.found||(!auth.signedOut&&readAutoConnect());
-    setDiscord(state);setDiscordSignedIn(signedIn);
+    if(auth.signedOut){
+      selectorLayoutRef.current=null;
+      try{window.localStorage.removeItem(TOKEER_SELECTOR_CACHE_KEY);}catch{}
+      setDiscord(state);setRestoringSelectors(false);
+    }else rememberDiscord(state);
+    setDiscordSignedIn(signedIn);
     return {state,signedIn,authFound:auth.found};
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
@@ -224,7 +251,12 @@ export function TokeerSection() {
       }
       if(readAutoConnect()){
         const ok=await connectTokeerDiscordHidden();
-        const observed=await refreshDiscord();
+        let observed=await refreshDiscord();
+        const deadline=Date.now()+20000;
+        while(ok&&(!observed?.state.found||!(observed.state.selectors||[]).length)&&Date.now()<deadline){
+          await sleep(500);
+          observed=await refreshDiscord();
+        }
         if(ok){
           if(observed?.signedIn){
             const cached=await refreshTokeerAvailabilityCache(true);
@@ -301,11 +333,11 @@ export function TokeerSection() {
       // and the panel had no way out of it.
       const deadline=Date.now()+25000;
       let state=await readTokeerDiscord(true);
-      while(!state.found&&Date.now()<deadline){
+      while((!state.found||!(state.selectors||[]).length)&&Date.now()<deadline){
         await sleep(500);
         state=await readTokeerDiscord(true);
       }
-      setDiscord(state);
+      rememberDiscord(state);
       if(state.found){
         const auth=await getDiscordSignInState();
         const signedIn=auth.signedIn||state.found;
@@ -365,6 +397,7 @@ export function TokeerSection() {
 
   const restoreActivationPanel=async(generation=ticketGenerationRef.current)=>{
     setRestoringSelectors(true);
+    let restored=false;
     try{
       if(!(await connectTokeerDiscordHidden()))return;
       const deadline=Date.now()+20000;
@@ -374,13 +407,16 @@ export function TokeerSection() {
         state=await readTokeerDiscord(true);
       }
       if(generation!==ticketGenerationRef.current)return;
-      setDiscord(state);
-      if(state.found){
+      if(state.found&&(state.selectors||[]).length){
+        rememberDiscord(state);
+        restored=true;
         setDiscordSignedIn(true);
         setDiscordAuthChecked(true);
       }
     }catch{}
-    finally{if(generation===ticketGenerationRef.current)setRestoringSelectors(false);}
+    finally{
+      if(generation===ticketGenerationRef.current)setRestoringSelectors(!restored&&!!selectorLayoutRef.current);
+    }
   };
 
   const abortTicketChain=(reason:string)=>{
@@ -761,7 +797,7 @@ export function TokeerSection() {
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Returning to the Linux activation panel…":"Live game list from the Tokeer Discord panel"}
-        disabled={s.disabled||!!busy||restoringSelectors}
+        disabled={s.disabled||!!busy||restoringSelectors||ticketChainActive()}
         rgOptions={(options[s.index]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
         selectedOption={selectedMenus[s.index]||null}
         strDefaultLabel={s.label||"Choose a game"}
