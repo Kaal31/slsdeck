@@ -1122,10 +1122,12 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   return appeared ? { success: true } : { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
 }
 
-export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000, afterMessageId = ""): Promise<{ success: boolean; code?: string; lastMessageId?: string; cancelled?: boolean; error?: string }> {
+export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000, afterMessageId = "", shouldAbort?: () => boolean): Promise<{ success: boolean; code?: string; lastMessageId?: string; cancelled?: boolean; error?: string }> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (shouldAbort?.()) return { success: false, cancelled: true, error: "Activation-code waiting was cancelled locally." };
     const tab = await ticketTab(ticketUrl);
+    if (shouldAbort?.()) return { success: false, cancelled: true, error: "Activation-code waiting was cancelled locally." };
     if (!tab?.webSocketDebuggerUrl) {
       const state = await probeTokeerTicketState(ticketUrl);
       if (state.closed) return { success: false, cancelled: true, error: state.reason || "The Discord ticket was closed." };
@@ -1162,6 +1164,7 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
       if (found?.cancelled) return { success: false, cancelled: true, error: found.error || "The Discord ticket was cancelled." };
       if (found?.error) return { success: false, error: found.error };
     } catch {}
+    if (shouldAbort?.()) return { success: false, cancelled: true, error: "Activation-code waiting was cancelled locally." };
     await new Promise((r) => setTimeout(r, 1500));
   }
   return { success: false, error: "Timed out waiting for the six-character activation code. The ticket is still saved and can be resumed." };
@@ -1199,8 +1202,24 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
   const tab = await ticketTab(ticketUrl);
   let first: any = null;
   if (!tab?.webSocketDebuggerUrl) return { success: false, unavailable: true, error: "The exact saved Discord ticket thread could not be opened; no other channel was touched." };
-  const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
+  let raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
   try { first = JSON.parse(String(raw || "")); } catch { first = null; }
+  // Discord virtualizes older thread messages. Start at the newest rendered
+  // messages, then walk upward until the newest available Cancel Ticket control
+  // is found or the full thread has been checked.
+  for (let attempt = 0; !first?.ok && attempt < 18; attempt++) {
+    const moved = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var a=document.querySelector('[role="article"]'),s=a;
+      while(s&&!(s.scrollHeight>s.clientHeight+20))s=s.parentElement;
+      if(!s)return false;var before=s.scrollTop;
+      s.scrollTop=Math.max(0,before-Math.max(280,Math.floor(s.clientHeight*.8)));
+      return s.scrollTop!==before;
+    }catch(e){return false;}})()`, 2000);
+    if (!moved) break;
+    await new Promise((r) => setTimeout(r, 350));
+    raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
+    try { first = JSON.parse(String(raw || "")); } catch { first = null; }
+  }
   if (!first?.ok || !tab?.webSocketDebuggerUrl) return { success: false, error: first?.error || "Could not press Cancel Ticket." };
 
   // Some ticket bots ask for a second confirmation in a modal.

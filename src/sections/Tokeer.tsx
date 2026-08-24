@@ -475,7 +475,7 @@ export function TokeerSection() {
 
       setAutomationStage("waiting-code");setBusy("Waiting for Discord activation code…");
       setMessage("Local verification passed and TLX1 was submitted. Waiting for Tokeer's six-character activation code…");
-      const received=await waitForTokeerActivationCode(ctx.url,15*60*1000,ctx.lastMessageId||"");
+      const received=await waitForTokeerActivationCode(ctx.url,15*60*1000,ctx.lastMessageId||"",()=>ticketAbortedRef.current);
       if(ticketAbortedRef.current)return;
       if(received.cancelled){abortTicketChain(`${received.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
       if(!received.success||!received.code){fail(received.error||"No activation code was detected.");return;}
@@ -554,6 +554,10 @@ export function TokeerSection() {
 
   const cancelTicket=async()=>{
     if(!ticket?.url)return setMessage("No saved private ticket URL is available.");
+    // Stop the long-running activation-code poll before it can navigate the
+    // managed Discord view back to this ticket during cleanup.
+    ticketAbortedRef.current=true;
+    automationRunningRef.current=false;
     setBusy("Cancelling Tokeer ticket…");
     try{
       const r=await cancelTokeerTicket(ticket.url);
@@ -564,15 +568,15 @@ export function TokeerSection() {
           abortTicketChain("The exact saved Discord ticket no longer opens. The stale local Tokeer chain was cleared; no other Discord channel was touched. If the ticket still exists in Discord, close it there manually.");
           return;
         }
-        setMessage(r.error||"Could not press Discord's Close Ticket button.");return;
+        abortTicketChain(state.open
+          ? "The Discord ticket is still open, but no cancellation button was found after scanning the thread. Close it manually in Discord. The local Tokeer chain and cache were cleared."
+          : "SLSDeck could not find a cancellation button or confirm that the Discord ticket closed. Check Discord and close it manually if it remains. The local Tokeer chain and cache were cleared.");
+        return;
       }
-      try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
-      setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);
-      setVerify(null);setActivation("");setCodeExpiresAt(undefined);
-      codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
-      setMessage("Ticket cancelled in Discord. The saved Tokeer session was cleared.");
-      await restoreActivationPanel();
-    }catch(e){setMessage(String(e));}
+      abortTicketChain("Ticket cancelled in Discord. The saved Tokeer session was cleared.");
+    }catch(e){
+      abortTicketChain(`Discord cancellation failed unexpectedly (${String(e)}). Check the ticket and close it manually if it remains. The local Tokeer chain and cache were cleared.`);
+    }
     finally{setBusy("");}
   };
 
@@ -735,7 +739,7 @@ export function TokeerSection() {
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
-      {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
+      {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&busy!=="Waiting for Discord activation code…"} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
       {automationStage!=="idle"&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>Automation: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}{automationError?<div style={{color:"#ff7b72",marginTop:3}}>{automationError}</div>:null}</div></PanelSectionRow>}
     </PanelSection>}
