@@ -1028,6 +1028,7 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   const focusDeadline = Date.now() + 15000;
   let tab: CdpTab | null = null;
   let focused: any = null;
+  let axTextboxCount = 0;
   while (Date.now() < focusDeadline && !focused?.ok) {
     tab = await ticketTab(ticketUrl);
     if (tab?.webSocketDebuggerUrl) {
@@ -1049,11 +1050,31 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
       }
     }
     if (!focused?.ok) {
+      // Steam CEF can expose Discord's Slate composer to accessibility and
+      // controller input without exposing a matching contenteditable element
+      // to Runtime.evaluate. Focus the lowest/current textbox by its backing
+      // DOM node in that case. This also works with localized names such as
+      // Russian "Написать…".
+      if (tab?.webSocketDebuggerUrl) {
+        const ax = await cdpCommand(tab.webSocketDebuggerUrl, "Accessibility.getFullAXTree", {}, 3500);
+        const boxes = (Array.isArray(ax?.nodes) ? ax.nodes : []).filter((node: any) =>
+          !node?.ignored && String(node?.role?.value || "").toLowerCase() === "textbox" && Number(node?.backendDOMNodeId) > 0,
+        );
+        axTextboxCount = boxes.length;
+        const named = boxes.filter((node: any) => /(?:message|write|send|нап(?:исать|ишите)|nachricht|mensaje|écrire|scrivi|escrever|wiadomo)/i.test(String(node?.name?.value || "")));
+        const composer = named[named.length - 1] || boxes[boxes.length - 1];
+        if (composer?.backendDOMNodeId) {
+          const didFocus = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.focus", { backendNodeId: composer.backendDOMNodeId }, 2500);
+          if (didFocus !== null) focused = { ok: true, found: true, accessibility: true };
+        }
+      }
+    }
+    if (!focused?.ok) {
       invalidateDiscordTabCache();
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  if (!focused?.ok && !focused?.found) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not find the Discord ticket message box after trusted mouse input." };
+  if (!focused?.ok && !focused?.found) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || `Discord ticket loaded, but exposed no editable composer (accessibility textboxes: ${axTextboxCount}).` };
   if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected before TLX1 could be entered." };
 
   // Steam's parked BrowserView can keep document.activeElement on the page
@@ -1070,6 +1091,12 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
     return !!box&&String(box.value||box.innerText||box.textContent||'').indexOf(expected)>=0;
   }catch(e){return false;}})()`;
   let draftEntered = !!(await evalJson(tab.webSocketDebuggerUrl, draftExpr, 2500));
+  if (!draftEntered) {
+    const ax = await cdpCommand(tab.webSocketDebuggerUrl, "Accessibility.getFullAXTree", {}, 3000);
+    draftEntered = (Array.isArray(ax?.nodes) ? ax.nodes : []).some((node: any) =>
+      String(node?.role?.value || "").toLowerCase() === "textbox" && String(node?.value?.value || "").indexOf(text) >= 0,
+    );
+  }
   if (!draftEntered) {
     // execCommand fires the beforeinput/input path used by Discord's Slate
     // editor and is a safe fallback when the parked view ignores insertText.
