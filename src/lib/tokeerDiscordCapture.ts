@@ -933,7 +933,8 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
     try{box.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}
     try{box.click();}catch(e){}
     box.focus();
-    return JSON.stringify({ok:document.activeElement===box,error:document.activeElement===box?'':'Discord rendered the message box but did not focus it yet.'});
+    var r=box.getBoundingClientRect(),active=document.activeElement===box;
+    return JSON.stringify({ok:active,found:true,x:r.left+r.width/2,y:r.top+r.height/2,error:active?'':'Discord rendered the message box but did not focus it yet.'});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
   // Page.navigate returns before Discord's SPA has mounted the child thread's
   // Slate editor. Re-resolve the CDP target and retry instead of treating that
@@ -947,13 +948,26 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
       const focusedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 4000);
       try { focused = JSON.parse(String(focusedRaw || "")); } catch { focused = null; }
       if (focused?.cancelled) break;
+      if (focused?.found && Number.isFinite(Number(focused.x)) && Number.isFinite(Number(focused.y))) {
+        // A synthetic HTMLElement.focus()/click() does not grant keyboard focus
+        // inside Steam's parked BrowserView. Send trusted browser-level input at
+        // the exact Slate editor coordinates, with focus emulation enabled.
+        await cdpCommand(tab.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+        await cdpCommand(tab.webSocketDebuggerUrl, "Page.bringToFront", {}, 2000);
+        const point = { x: Number(focused.x), y: Number(focused.y) };
+        await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, 2000);
+        await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, 2000);
+        await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 }, 2000);
+        const trustedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 2500);
+        try { focused = JSON.parse(String(trustedRaw || "")); } catch { /* retry */ }
+      }
     }
     if (!focused?.ok) {
       invalidateDiscordTabCache();
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  if (!focused?.ok) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not focus the Discord ticket message box." };
+  if (!focused?.ok) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not focus the Discord ticket message box after trusted mouse input." };
   if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected before TLX1 could be entered." };
 
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.insertText", { text }, 3000);
