@@ -48,6 +48,7 @@ export type TokeerTicketContext = {
   found: boolean;
   opened?: boolean;
   appid?: number;
+  ubisoft?: boolean;
   gameName?: string;
   incompatiblePlatform?: boolean;
   url?: string;
@@ -701,6 +702,7 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   // use the end of the page as fallback because new ticket content is last.
   var text=(recent||body.slice(-50000)).replace(/\\u00a0/g,' ');
   var hay=(code+'\\n'+text).slice(-70000);
+  var ubisoft=/(?:tokeer\\s+verify-ubi\\b|(?:^|\\s)--ubi\\b|\\bUbiTokeer\\b)/i.test(hay);
   var gameMatch=opening.match(/(?:Ubi|Steam|EA)?Tokeer\\s*[-–—:]\\s*([^\\n\\r]+)/i)||opening.match(/(?:Game|Title)\\s*:\\s*([^\\n\\r]+)/i);
   var gameName=gameMatch?String(gameMatch[1]||'').replace(/\\s+(?:Ticket|User|Payment|Status)\\s*:.*$/i,'').trim():'';
   var incompatiblePlatform=/(?:\\bPowerShell\\b|LuaTools\\s+Validator)/i.test(body);
@@ -719,7 +721,7 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   }
   var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
   var identity={guildId:route[1]||'',ticketChannelId:(newest&&newest.channelId)||route[2]||'',lastMessageId:(newest&&newest.messageId)||route[3]||''};
-  var common={opened:true,gameName:gameName,incompatiblePlatform:incompatiblePlatform,rawText:text.slice(0,20000)};
+  var common={opened:true,gameName:gameName,ubisoft:ubisoft,incompatiblePlatform:incompatiblePlatform,rawText:hay.slice(-20000)};
   if(incompatiblePlatform)return JSON.stringify(Object.assign({found:false,error:'This is a Windows activation ticket (PowerShell/LuaTools Validator instructions); Linux automation ignored it.'},common,identity));
   return JSON.stringify(ids.length?Object.assign({found:true,appid:ids[0],appids:ids},common,identity):Object.assign({found:false,error:'Ticket opened, waiting for the setup commands…'},common,identity));
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
@@ -835,7 +837,7 @@ export async function waitForTicketContext(
             const recovered = JSON.parse(String(expectedRaw || ""));
             if (recovered?.match && gameMatches && !parsed?.incompatiblePlatform) {
               if (!isPrivateTicket) continue;
-              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", ...currentIdentity, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: currentChannel } as TokeerTicketContext;
+              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], ubisoft: !!parsed?.ubisoft, rawText: parsed?.rawText || "", ...currentIdentity, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: currentChannel } as TokeerTicketContext;
             }
           } catch {}
         }

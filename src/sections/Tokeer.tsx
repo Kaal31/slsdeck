@@ -40,6 +40,7 @@ type SavedTokeerSession = {
   codeReceivedAt?: number;
   expiresAt?: number;
   selectedGame?: string;
+  selectedUbisoft?: boolean;
   selectedMenus?: Record<number,string>;
   ticket?: TokeerTicketContext|null;
   gate?: TokeerTicketGate|null;
@@ -96,6 +97,7 @@ export function TokeerSection() {
   const [options,setOptions]=useState<Record<number,string[]>>({});
   const [selectedMenus,setSelectedMenus]=useState<Record<number,string>>(savedRef.current?.selectedMenus||{});
   const [selectedGame,setSelectedGame]=useState(savedRef.current?.selectedGame||"");
+  const [selectedUbisoft,setSelectedUbisoft]=useState(!!savedRef.current?.selectedUbisoft);
   const [gate,setGate]=useState<TokeerTicketGate|null>(savedRef.current?.gate||null);
   const [ticket,setTicket]=useState<TokeerTicketContext|null>(savedRef.current?.ticket||null);
   const [discordSignedIn,setDiscordSignedIn]=useState(false);
@@ -105,6 +107,7 @@ export function TokeerSection() {
   const [tlxSubmitted,setTlxSubmitted]=useState(!!savedRef.current?.tlxSubmitted);
   const [submittedTlx,setSubmittedTlx]=useState(savedRef.current?.submittedTlx||"");
   const [automationError,setAutomationError]=useState(savedRef.current?.automationError||"");
+  const [restoringSelectors,setRestoringSelectors]=useState(false);
   const automationRunningRef=useRef(false);
   const ticketAbortedRef=useRef(false);
   const ticketGenerationRef=useRef(0);
@@ -127,11 +130,11 @@ export function TokeerSection() {
     const data:SavedTokeerSession={
       startedAt,codeReceivedAt,
       expiresAt:codeExpiresAt,
-      selectedGame,selectedMenus,ticket,gate,activation,verify,message,
+      selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,
       automationStage,tlxSubmitted,submittedTlx,automationError,
     };
     try{window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
-  },[selectedGame,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError]);
+  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError]);
 
   useEffect(()=>{
     if(!codeExpiresAt)return;
@@ -155,7 +158,7 @@ export function TokeerSection() {
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
   const ticketUsesUbisoftVerifier=(ctx?:TokeerTicketContext|null)=>
-    /(?:tokeer\s+verify-ubi\b|(?:^|\s)--ubi\b|\bUbiTokeer\b)/i.test(String(ctx?.rawText||""));
+    selectedUbisoft||!!ctx?.ubisoft||/(?:tokeer\s+verify-ubi\b|(?:^|\s)--ubi\b|\bUbiTokeer\b)/i.test(String(ctx?.rawText||""));
   // Tokeer appends the access tier to some Ubisoft dropdown options (for
   // example "Assassin's Creed Shadows Free • 6 of 10 remaining"). Keep the
   // original value as the Discord click target, but do not present the tier as
@@ -344,6 +347,8 @@ export function TokeerSection() {
       return;
     }
     setBusy(`Selecting ${label} in Discord…`);
+    const selectorLabel=discord?.selectors.find((selector)=>selector.index===index)?.label||"";
+    setSelectedUbisoft(/\bubi(?:soft)?\b/i.test(selectorLabel));
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
     setAutomationStage("idle");setTlxSubmitted(false);setSubmittedTlx("");setAutomationError("");
     setSelectedMenus((old)=>({...old,[index]:label}));
@@ -356,6 +361,7 @@ export function TokeerSection() {
   };
 
   const restoreActivationPanel=async(generation=ticketGenerationRef.current)=>{
+    setRestoringSelectors(true);
     try{
       if(!(await connectTokeerDiscordHidden()))return;
       const deadline=Date.now()+20000;
@@ -371,6 +377,7 @@ export function TokeerSection() {
         setDiscordAuthChecked(true);
       }
     }catch{}
+    finally{if(generation===ticketGenerationRef.current)setRestoringSelectors(false);}
   };
 
   const abortTicketChain=(reason:string)=>{
@@ -378,8 +385,7 @@ export function TokeerSection() {
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
     try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
-    setSelectedGame("");setSelectedMenus({});setOptions({});setTicket(null);setGate(null);setVerify(null);setActivation("");
-    setDiscord(null);
+    setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setOptions({});setTicket(null);setGate(null);setVerify(null);setActivation("");
     setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");
     // The chain is gone, so do not leave the old game/gate or an "aborted"
     // workflow card on screen. Keep only a concise Status explanation.
@@ -499,7 +505,7 @@ export function TokeerSection() {
       setAutomationStage("done");setMessage("Tokeer activation was received and redeemed automatically. Launch the game from Steam.");
       toaster.toast({title:"SLSDeck · Tokeer",body:"Activation received and redeemed successfully."});
       try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
-      setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");setCodeExpiresAt(undefined);
+      setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");setCodeExpiresAt(undefined);
       codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
     }catch(e){if(!stale())fail(String(e));}
     finally{
@@ -695,7 +701,7 @@ export function TokeerSection() {
       setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
       if(r.success){
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
-        setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);
+        setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);
         setVerify(null);setActivation("");setCodeExpiresAt(undefined);
         sessionStartedRef.current=Date.now();
         codeReceivedAtRef.current=undefined;
@@ -742,11 +748,11 @@ export function TokeerSection() {
       </div></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
       <PanelSectionRow><div style={{fontSize:11,opacity:.75,lineHeight:1.45,paddingTop:8}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID.</div></PanelSectionRow>
-      {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:"#65e69b",fontWeight:800}}>● LIVE</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
+      {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
-        description="Live game list from the Tokeer Discord panel"
-        disabled={s.disabled||!!busy}
+        description={restoringSelectors?"Returning to the Linux activation panel…":"Live game list from the Tokeer Discord panel"}
+        disabled={s.disabled||!!busy||restoringSelectors}
         rgOptions={(options[s.index]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
         selectedOption={selectedMenus[s.index]||null}
         strDefaultLabel={s.label||"Choose a game"}
