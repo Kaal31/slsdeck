@@ -434,7 +434,12 @@ export function TokeerSection() {
       const expectedAppid=Number(installed?.appid||0);
       const r=await clickLatestTicketGate();
       if(!r.success){setMessage(r.error||"Could not press the Tokeer confirmation button.");return;}
-      const ctx=await waitForTicketContext(r.fromUrl||"",25000,expectedAppid);
+      const ctx=await waitForTicketContext(r.fromUrl||"",25000,expectedAppid,r.existingChannelIds||[],(discovered)=>{
+        // Cancellation should become available as soon as the thread exists;
+        // Tokeer's AppID/setup commands can arrive a little later.
+        setTicket(discovered);
+        checkpoint({ticket:discovered});
+      });
       setTicket(ctx);
       if(ctx.found&&ctx.appid){
         setMessage(`Ticket opened for ${selectedGame||"selected game"}. Starting local preparation and automatic verification.`);

@@ -4,7 +4,11 @@ import { Navigation } from "@decky/ui";
 export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
 export const DEDEVISION_INVITE_URL = "https://discord.gg/denuvo";
 const GUILD_ID = "1464130182364270696";
-const TOKEER_CHANNEL = `/channels/${GUILD_ID}/1534460498446127175`;
+// Tokeer's Linux game picker lives in this channel, but tickets are created as
+// private threads beneath the separate, general #activation-point channel.
+const TOKEER_PANEL_CHANNEL_ID = "1534460498446127175";
+const TOKEER_TICKET_PARENT_CHANNEL_ID = "1465275824075833477";
+const TOKEER_CHANNEL = `/channels/${GUILD_ID}/${TOKEER_PANEL_CHANNEL_ID}`;
 const TARGET_MESSAGE = "1535685399265935422";
 const CDP_PORTS = [8080, 8081];
 const TOKEER_VIEW_NAME = "slsdeck_tokeer";
@@ -144,14 +148,37 @@ function canonicalDiscordChannelUrl(url: string): string {
 function ticketIdentity(url: string, lastMessageId?: string): Partial<TokeerTicketContext> {
   const identity = discordRouteIdentity(url);
   if (!identity.guildId || !identity.channelId) return {};
-  const activationChannel = TOKEER_CHANNEL.split("/").pop();
   return {
     guildId: identity.guildId,
-    parentChannelId: identity.channelId === activationChannel ? undefined : activationChannel,
+    parentChannelId: identity.channelId === TOKEER_TICKET_PARENT_CHANNEL_ID ? undefined : TOKEER_TICKET_PARENT_CHANNEL_ID,
     ticketChannelId: identity.channelId,
     lastMessageId: lastMessageId || identity.messageId,
     url: canonicalDiscordChannelUrl(url),
   };
+}
+
+type DiscordSidebarChannel = { id: string; label: string; role: string };
+
+const SIDEBAR_CHANNELS_EXPR = `(function(){try{
+  var seen={},rows=[];
+  [].slice.call(document.querySelectorAll('[data-list-item-id^="channels___"]')).forEach(function(e){
+    var raw=String(e.getAttribute('data-list-item-id')||'');
+    var m=raw.match(/^channels___(\\d+)$/);if(!m||seen[m[1]])return;
+    seen[m[1]]=true;
+    rows.push({id:m[1],label:String(e.getAttribute('aria-label')||e.innerText||e.textContent||'').trim(),role:String(e.getAttribute('role')||'')});
+  });
+  return JSON.stringify(rows);
+}catch(e){return '[]';}})()`;
+
+async function readSidebarChannels(tab: CdpTab): Promise<DiscordSidebarChannel[]> {
+  if (!tab.webSocketDebuggerUrl) return [];
+  try {
+    const raw = await evalJson(tab.webSocketDebuggerUrl, SIDEBAR_CHANNELS_EXPR, 2500);
+    const parsed = JSON.parse(String(raw || "[]"));
+    return Array.isArray(parsed) ? parsed.filter((item) => /^\d+$/.test(String(item?.id || ""))) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
@@ -590,9 +617,11 @@ export async function readLatestTicketGate(): Promise<TokeerTicketGate> {
   try { return JSON.parse(String(raw || "")); } catch { return { found: false, error: "Could not read the ticket confirmation button." }; }
 }
 
-export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; error?: string }> {
+export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; existingChannelIds?: string[]; error?: string }> {
   const tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return { success: false, error: "Tokeer activation channel is not open." };
+  // Snapshot the sidebar before Discord inserts the private ticket thread.
+  const existingChannelIds = (await readSidebarChannels(tab)).map((item) => item.id);
   const expr = `(function(){try{
     var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
     for(var i=0;i<arts.length;i++){
@@ -606,7 +635,7 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
   }catch(e){return false;}})()`;
   const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
   if (ok) invalidateDiscordCaptureCaches();
-  return ok ? { success: true, fromUrl: tab.url } : { success: false, error: "The green ticket confirmation button is not ready yet." };
+  return ok ? { success: true, fromUrl: tab.url, existingChannelIds } : { success: false, error: "The green ticket confirmation button is not ready yet." };
 }
 
 const TICKET_CONTEXT_EXPR = `(function(){try{
@@ -643,7 +672,8 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 const TICKET_LINK_EXPR = `(function(){try{
-  var channel=${JSON.stringify(TOKEER_CHANNEL)};
+  var panel=${JSON.stringify(TOKEER_CHANNEL)};
+  var parent=${JSON.stringify(`/channels/${GUILD_ID}/${TOKEER_TICKET_PARENT_CHANNEL_ID}`)};
   var guild=${JSON.stringify(`/channels/${GUILD_ID}/`)};
   var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
   for(var i=0;i<Math.min(arts.length,30);i++){
@@ -652,18 +682,25 @@ const TICKET_LINK_EXPR = `(function(){try{
     var links=[].slice.call(a.querySelectorAll('a[href*="/channels/"]'));
     for(var j=0;j<links.length;j++){
       var href=String(links[j].href||links[j].getAttribute('href')||'');
-      if(href.indexOf(guild)>=0 && href.indexOf(channel)<0)return JSON.stringify({found:true,url:href,text:text.slice(0,3000)});
+      if(href.indexOf(guild)>=0 && href.indexOf(panel)<0 && href.indexOf(parent)<0)return JSON.stringify({found:true,url:href,text:text.slice(0,3000)});
     }
   }
   return JSON.stringify({found:false});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
-export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expectedAppid = 0): Promise<TokeerTicketContext> {
+export async function waitForTicketContext(
+  fromUrl = "",
+  timeoutMs = 20000,
+  expectedAppid = 0,
+  existingChannelIds: string[] = [],
+  onTicketDiscovered?: (ticket: TokeerTicketContext) => void,
+): Promise<TokeerTicketContext> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "Waiting for Tokeer ticket…";
   const startingIdentity = discordRouteIdentity(fromUrl);
-  const activationChannel = TOKEER_CHANNEL.split("/").pop();
-  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && startingIdentity.guildId === GUILD_ID && startingIdentity.channelId !== activationChannel
+  const excludedChannels = new Set([TOKEER_PANEL_CHANNEL_ID, TOKEER_TICKET_PARENT_CHANNEL_ID]);
+  const sidebarBefore = new Set(existingChannelIds);
+  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && startingIdentity.guildId === GUILD_ID && !!startingIdentity.channelId && !excludedChannels.has(startingIdentity.channelId)
     ? canonicalDiscordChannelUrl(fromUrl) : "";
 
   if (lastTicketUrl) {
@@ -694,7 +731,7 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
     candidates.sort((a, b) => {
       const score = (url: string) => {
         const channel = discordRouteIdentity(url).channelId;
-        return Number(!!wantedChannel && channel === wantedChannel) * 4 + Number(!!channel && channel !== activationChannel) * 2;
+        return Number(!!wantedChannel && channel === wantedChannel) * 4 + Number(!!channel && !excludedChannels.has(String(channel))) * 2;
       };
       return score(String(b.url || "")) - score(String(a.url || ""));
     });
@@ -705,12 +742,12 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
         const parsed = JSON.parse(String(raw || ""));
         const currentIdentity = ticketIdentity(String(tab.url || ""), parsed?.lastMessageId);
         const currentChannel = parsed?.ticketChannelId || currentIdentity.ticketChannelId;
-        const isPrivateTicket = !!currentChannel && currentChannel !== activationChannel;
+        const isPrivateTicket = !!currentChannel && !excludedChannels.has(currentChannel);
         if (parsed?.found && parsed?.appid) {
           const candidates = (Array.isArray(parsed.appids) ? parsed.appids : [parsed.appid])
             .map(Number).filter((value: number) => Number.isFinite(value) && value > 0);
           if ((!expectedAppid || candidates.includes(expectedAppid)) && isPrivateTicket) {
-            return { ...parsed, ...currentIdentity, parentChannelId: activationChannel, ticketChannelId: currentChannel, appid: expectedAppid || parsed.appid, opened: true };
+            return { ...parsed, ...currentIdentity, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: currentChannel, appid: expectedAppid || parsed.appid, opened: true };
           }
           lastError = `Ticket commands contained AppID ${candidates.join(", ")}, but the selected installed game is AppID ${expectedAppid}. Waiting for the correct setup command…`;
         }
@@ -733,13 +770,35 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
             const recovered = JSON.parse(String(expectedRaw || ""));
             if (recovered?.match) {
               if (!isPrivateTicket) continue;
-              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", ...currentIdentity, parentChannelId: activationChannel, ticketChannelId: currentChannel } as TokeerTicketContext;
+              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", ...currentIdentity, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: currentChannel } as TokeerTicketContext;
             }
           } catch {}
         }
         if (parsed?.opened && isPrivateTicket) lastTicketUrl = canonicalDiscordChannelUrl(String(tab.url || ""));
         if (parsed?.error) lastError = parsed.error;
       } catch {}
+
+      // #linux-activation-point stays open while Discord adds the ticket as a
+      // sidebar thread beneath #activation-point. Detect the new snowflake ID
+      // without depending on navigation or localized "thread" labels.
+      if (!lastTicketUrl && sidebarBefore.size) {
+        try {
+          const sidebarNow = await readSidebarChannels(tab);
+          const created = sidebarNow
+            .filter((item) => !sidebarBefore.has(item.id) && !excludedChannels.has(item.id))
+            .sort((a, b) => b.id.localeCompare(a.id))[0];
+          if (created) {
+            lastTicketUrl = `https://discord.com/channels/${GUILD_ID}/${created.id}`;
+            const discovered = { found: false, opened: true, ...ticketIdentity(lastTicketUrl), parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: created.id, error: "Ticket thread found; waiting for its setup commands…" } as TokeerTicketContext;
+            try { onTicketDiscovered?.(discovered); } catch {}
+            await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+              url: lastTicketUrl, transitionType: "link",
+            }, 4000);
+            invalidateDiscordCaptureCaches();
+            lastError = "Ticket thread found; waiting for its setup commands…";
+          }
+        } catch {}
+      }
 
       // Ticket bots often post a private-channel link instead of changing the
       // current SPA route. Discover that link from recent messages and move the
