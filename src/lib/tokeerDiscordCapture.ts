@@ -866,17 +866,23 @@ export async function waitForTicketContext(
 
 async function navigateTicketTab(ticketUrl: string): Promise<CdpTab | null> {
   const wanted = canonicalDiscordChannelUrl(ticketUrl);
-  let tab: CdpTab | null = null;
-  // Reuse the target already rendering this exact child ticket before touching
-  // the managed parent view. This keeps parallel/manual Discord views intact.
-  for (const raw of (await listCdpTabs()).filter((item) => !!item.webSocketDebuggerUrl)) {
-    const resolved = await resolveTabUrl(raw);
-    if (canonicalDiscordChannelUrl(resolved) === wanted) {
-      tab = { ...raw, url: resolved, resolvedUrl: resolved };
-      break;
+  // Steam suspends its external-web Discord page when the user returns from
+  // Manual view. That target can retain the ticket messages while unmounting
+  // the composer, so it is safe for reading but not for keyboard automation.
+  // Always prefer SLSDeck's rendered, parked BrowserView for ticket actions.
+  let tab: CdpTab | null = await findManagedTokeerTab();
+  // Older sessions may not have a managed view yet. Only then reuse an exact
+  // Discord target, preserving compatibility without stealing a manual tab
+  // whenever the managed automation surface is available.
+  if (!tab?.webSocketDebuggerUrl) {
+    for (const raw of (await listCdpTabs()).filter((item) => !!item.webSocketDebuggerUrl)) {
+      const resolved = await resolveTabUrl(raw);
+      if (canonicalDiscordChannelUrl(resolved) === wanted) {
+        tab = { ...raw, url: resolved, resolvedUrl: resolved };
+        break;
+      }
     }
   }
-  if (!tab?.webSocketDebuggerUrl) tab = await findManagedTokeerTab();
   if (!tab?.webSocketDebuggerUrl) tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl) return null;
   if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && canonicalDiscordChannelUrl(String(tab.url || "")) !== wanted) {
