@@ -279,7 +279,7 @@ export async function getDiscordSignInState(): Promise<{ signedIn: boolean; sign
         if(document.querySelector('input[name="email"],input[name="password"],form[class*="authBox"]'))return 'signed-out';
         var response=await fetch('/api/v9/users/@me',{credentials:'include',cache:'no-store'});
         if(response.status===200)return 'signed-in';
-        if(response.status===401||response.status===403)return 'signed-out';
+        if(response.status===401)return 'signed-out';
         var shell=/\\/channels\\//i.test(u)&&!!document.querySelector('[data-list-item-id^="channels___"],nav,[class*="sidebar"]');
         return shell?'signed-in':'unknown';
       }catch(e){
@@ -1092,7 +1092,7 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
   return { success: false, error: "Timed out waiting for the six-character activation code. The ticket is still saved and can be resumed." };
 }
 
-export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boolean; error?: string }> {
+export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boolean; unavailable?: boolean; error?: string }> {
   const clickCancel = `(function(){try{
     var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
     var label=function(e){return String(e.innerText||e.textContent||e.getAttribute('aria-label')||e.getAttribute('title')||'').replace(/\\s+/g,' ').trim();};
@@ -1123,7 +1123,7 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
 
   const tab = await ticketTab(ticketUrl);
   let first: any = null;
-  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The exact saved Discord ticket thread could not be opened; no other channel was touched." };
+  if (!tab?.webSocketDebuggerUrl) return { success: false, unavailable: true, error: "The exact saved Discord ticket thread could not be opened; no other channel was touched." };
   const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
   try { first = JSON.parse(String(raw || "")); } catch { first = null; }
   if (!first?.ok || !tab?.webSocketDebuggerUrl) return { success: false, error: first?.error || "Could not press Cancel Ticket." };

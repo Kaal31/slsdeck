@@ -66,7 +66,12 @@ function readSavedSession(): SavedTokeerSession|null {
 }
 
 function readAutoConnect(): boolean {
-  try { return window.localStorage.getItem(TOKEER_AUTO_CONNECT_KEY) === "1"; }
+  try {
+    // Existing vault data could only have been obtained through a successful
+    // Discord connection. Older builds did not always persist the separate
+    // auto-connect flag, so migrate that established state after an update.
+    return window.localStorage.getItem(TOKEER_AUTO_CONNECT_KEY) === "1" || !!readTokeerAvailabilityCache();
+  }
   catch { return false; }
 }
 
@@ -178,6 +183,9 @@ export function TokeerSection() {
     return ()=>window.removeEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
   },[]);
   useEffect(()=>{
+    if(readAutoConnect()){
+      try{window.localStorage.setItem(TOKEER_AUTO_CONNECT_KEY,"1");}catch{}
+    }
     tokeerRuntimeStatus().then(setRuntime).catch(()=>{});
     const openInBackground=async()=>{
       // Preserve the managed target when resuming an unfinished ticket.
@@ -520,6 +528,10 @@ export function TokeerSection() {
       if(!r.success){
         const state=await probeTokeerTicketState(ticket.url);
         if(state.closed){abortTicketChain(`${state.reason||"The Discord ticket was already closed."} Its stale Tokeer session was cleared.`);return;}
+        if(r.unavailable){
+          abortTicketChain("The exact saved Discord ticket no longer opens. The stale local Tokeer chain was cleared; no other Discord channel was touched. If the ticket still exists in Discord, close it there manually.");
+          return;
+        }
         setMessage(r.error||"Could not press Discord's Close Ticket button.");return;
       }
       try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
