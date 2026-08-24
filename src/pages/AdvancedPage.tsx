@@ -410,7 +410,7 @@ function OptionsPane({
         <PanelSectionRow>
           <ToggleField
             label="Hide Add/Remove on owned games"
-            description="Hide Add/Remove for legitimately owned games. Fixes remains available in Quick Access and, when library buttons are enabled, on the game page."
+            description="Hide the injected Library-page Add/Remove and Fixes bar for legitimately owned games. Fixes remains available through SLSDeck's Quick Access menu."
             checked={hideOwned}
             onChange={async (v) => { setHideOwned(v); await setHideOnOwned(v); }}
           />
