@@ -453,12 +453,13 @@ export function TokeerSection() {
       const expectedAppid=Number(installed?.appid||0);
       const r=await clickLatestTicketGate();
       if(!r.success){setMessage(r.error||"Could not press the Tokeer confirmation button.");return;}
+      const expectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
       const ctx=await waitForTicketContext(r.fromUrl||"",25000,expectedAppid,r.existingChannelIds||[],(discovered)=>{
         // Cancellation should become available as soon as the thread exists;
         // Tokeer's AppID/setup commands can arrive a little later.
         setTicket(discovered);
         checkpoint({ticket:discovered});
-      });
+      },expectedName);
       setTicket(ctx);
       if(ctx.found&&ctx.appid){
         setMessage(`Ticket opened for ${selectedGame||"selected game"}. Starting local preparation and automatic verification.`);
@@ -479,7 +480,8 @@ export function TokeerSection() {
       if(state.closed){abortTicketChain(`${state.reason||"The saved Discord ticket no longer exists."} Its stale Tokeer session was cleared.`);return;}
       const installed=selectedGame?await tokeerPreflight(0,selectedGame):null;
       const expectedAppid=Number(installed?.success&&installed.installed?installed.appid||0:0);
-      const ctx=await waitForTicketContext(ticket.url,35000,expectedAppid);
+      const expectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
+      const ctx=await waitForTicketContext(ticket.url,35000,expectedAppid,[],undefined,expectedName);
       setTicket((old)=>({...old,...ctx,url:ctx.url||old?.url,opened:true}));
       if(ctx.found&&ctx.appid){setMessage(`Commands detected. Resuming Tokeer automation for Steam AppID ${ctx.appid}.`);await runAutomation({...ticket,...ctx,url:ctx.url||ticket.url,opened:true},savedRef.current||undefined);}
       else setMessage(ctx.error||"Ticket is open, but its AppID still was not found.");
@@ -531,7 +533,8 @@ export function TokeerSection() {
     // as 2026 mistaken for an AppID) before either manual action can touch it.
     if(ticket?.url&&expected){
       setMessage(`Saved ticket AppID ${current||"is missing"}; re-scanning its setup commands for AppID ${expected}…`);
-      const rescanned=await waitForTicketContext(ticket.url,20000,expected);
+      const expectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
+      const rescanned=await waitForTicketContext(ticket.url,20000,expected,[],undefined,expectedName);
       if(rescanned.found&&Number(rescanned.appid)===expected){
         setTicket(old=>({...old,...rescanned,appid:expected,url:rescanned.url||old?.url,opened:true}));
         return expected;

@@ -48,6 +48,8 @@ export type TokeerTicketContext = {
   found: boolean;
   opened?: boolean;
   appid?: number;
+  gameName?: string;
+  incompatiblePlatform?: boolean;
   url?: string;
   guildId?: string;
   parentChannelId?: string;
@@ -148,6 +150,9 @@ function canonicalDiscordChannelUrl(url: string): string {
 function ticketIdentity(url: string, lastMessageId?: string): Partial<TokeerTicketContext> {
   const identity = discordRouteIdentity(url);
   if (!identity.guildId || !identity.channelId) return {};
+  if (identity.channelId === TOKEER_PANEL_CHANNEL_ID || identity.channelId === TOKEER_TICKET_PARENT_CHANNEL_ID) {
+    return { guildId: identity.guildId, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID };
+  }
   return {
     guildId: identity.guildId,
     parentChannelId: identity.channelId === TOKEER_TICKET_PARENT_CHANNEL_ID ? undefined : TOKEER_TICKET_PARENT_CHANNEL_ID,
@@ -157,7 +162,7 @@ function ticketIdentity(url: string, lastMessageId?: string): Partial<TokeerTick
   };
 }
 
-type DiscordSidebarChannel = { id: string; label: string; role: string };
+type DiscordSidebarChannel = { id: string; label: string; role: string; thread: boolean };
 
 const SIDEBAR_CHANNELS_EXPR = `(function(){try{
   var seen={},rows=[];
@@ -165,7 +170,7 @@ const SIDEBAR_CHANNELS_EXPR = `(function(){try{
     var raw=String(e.getAttribute('data-list-item-id')||'');
     var m=raw.match(/^channels___(\\d+)$/);if(!m||seen[m[1]])return;
     seen[m[1]]=true;
-    rows.push({id:m[1],label:String(e.getAttribute('aria-label')||e.innerText||e.textContent||'').trim(),role:String(e.getAttribute('role')||'')});
+    rows.push({id:m[1],label:String(e.getAttribute('aria-label')||e.innerText||e.textContent||'').trim(),role:String(e.getAttribute('role')||''),thread:!!e.closest('[class*="typeThread"]')});
   });
   return JSON.stringify(rows);
 }catch(e){return '[]';}})()`;
@@ -640,6 +645,7 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
 
 const TICKET_CONTEXT_EXPR = `(function(){try{
   var articles=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40);
+  var opening=articles.slice(0,6).map(function(a){return String(a.innerText||a.textContent||'');}).join('\\n').replace(/\\u00a0/g,' ');
   var recent=articles.map(function(a){return String(a.innerText||a.textContent||'');}).join('\\n');
   var code=articles.reduce(function(all,a){return all.concat([].slice.call(a.querySelectorAll('pre,code,[class*="codeBlock"]')).map(function(e){return e.innerText||e.textContent||'';}));},[]).join('\\n');
   var body=(document.body.innerText||'').replace(/\\u00a0/g,' ');
@@ -653,6 +659,9 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   // use the end of the page as fallback because new ticket content is last.
   var text=(recent||body.slice(-50000)).replace(/\\u00a0/g,' ');
   var hay=(code+'\\n'+text).slice(-70000);
+  var gameMatch=opening.match(/(?:Ubi|Steam|EA)?Tokeer\\s*[-–—:]\\s*([^\\n\\r]+)/i)||opening.match(/(?:Game|Title)\\s*:\\s*([^\\n\\r]+)/i);
+  var gameName=gameMatch?String(gameMatch[1]||'').replace(/\\s+(?:Ticket|User|Payment|Status)\\s*:.*$/i,'').trim():'';
+  var incompatiblePlatform=/(?:\\bPowerShell\\b|LuaTools\\s+Validator)/i.test(body);
   var patterns=[
     /tokeer\\s+verify(?:-[a-z][a-z0-9_-]*)?(?:\\s+--?appid(?:=|\\s+)|\\s+)(\\d{3,10})/i,
     /install_linux\\.sh[^\\n\\r|]*\\|\\s*(?:bash|sh)\\s+-s\\s+--\\s*(\\d{3,10})(?:\\s+[a-z][a-z0-9_-]*)?/i,
@@ -668,7 +677,9 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   }
   var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
   var identity={guildId:route[1]||'',ticketChannelId:(newest&&newest.channelId)||route[2]||'',lastMessageId:(newest&&newest.messageId)||route[3]||''};
-  return JSON.stringify(ids.length?Object.assign({found:true,opened:true,appid:ids[0],appids:ids,rawText:text.slice(0,20000)},identity):Object.assign({found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'},identity));
+  var common={opened:true,gameName:gameName,incompatiblePlatform:incompatiblePlatform,rawText:text.slice(0,20000)};
+  if(incompatiblePlatform)return JSON.stringify(Object.assign({found:false,error:'This is a Windows activation ticket (PowerShell/LuaTools Validator instructions); Linux automation ignored it.'},common,identity));
+  return JSON.stringify(ids.length?Object.assign({found:true,appid:ids[0],appids:ids},common,identity):Object.assign({found:false,error:'Ticket opened, waiting for the setup commands…'},common,identity));
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 const TICKET_LINK_EXPR = `(function(){try{
@@ -694,12 +705,15 @@ export async function waitForTicketContext(
   expectedAppid = 0,
   existingChannelIds: string[] = [],
   onTicketDiscovered?: (ticket: TokeerTicketContext) => void,
+  expectedGameName = "",
 ): Promise<TokeerTicketContext> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "Waiting for Tokeer ticket…";
   const startingIdentity = discordRouteIdentity(fromUrl);
   const excludedChannels = new Set([TOKEER_PANEL_CHANNEL_ID, TOKEER_TICKET_PARENT_CHANNEL_ID]);
   const sidebarBefore = new Set(existingChannelIds);
+  const normalizeGame = (value: string) => String(value || "").normalize("NFKD").replace(/[®™©'’‘`´]/g, "").replace(/[^a-z0-9]+/gi, " ").trim().toLowerCase();
+  const wantedGame = normalizeGame(expectedGameName);
   let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && startingIdentity.guildId === GUILD_ID && !!startingIdentity.channelId && !excludedChannels.has(startingIdentity.channelId)
     ? canonicalDiscordChannelUrl(fromUrl) : "";
 
@@ -737,19 +751,25 @@ export async function waitForTicketContext(
     });
     for (const tab of candidates) {
       if (!tab.webSocketDebuggerUrl) continue;
+      const sidebarNow = await readSidebarChannels(tab).catch(() => [] as DiscordSidebarChannel[]);
+      const knownThreads = new Set(sidebarNow.filter((item) => item.thread).map((item) => item.id));
       const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
       try {
         const parsed = JSON.parse(String(raw || ""));
         const currentIdentity = ticketIdentity(String(tab.url || ""), parsed?.lastMessageId);
         const currentChannel = parsed?.ticketChannelId || currentIdentity.ticketChannelId;
-        const isPrivateTicket = !!currentChannel && !excludedChannels.has(currentChannel);
+        const isPrivateTicket = !!currentChannel && !excludedChannels.has(currentChannel) && (currentChannel === wantedChannel || knownThreads.has(currentChannel));
+        const foundGame = normalizeGame(String(parsed?.gameName || ""));
+        const gameMatches = !wantedGame || !foundGame || wantedGame === foundGame;
         if (parsed?.found && parsed?.appid) {
           const candidates = (Array.isArray(parsed.appids) ? parsed.appids : [parsed.appid])
             .map(Number).filter((value: number) => Number.isFinite(value) && value > 0);
-          if ((!expectedAppid || candidates.includes(expectedAppid)) && isPrivateTicket) {
+          if ((!expectedAppid || candidates.includes(expectedAppid)) && gameMatches && isPrivateTicket) {
             return { ...parsed, ...currentIdentity, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: currentChannel, appid: expectedAppid || parsed.appid, opened: true };
           }
-          lastError = `Ticket commands contained AppID ${candidates.join(", ")}, but the selected installed game is AppID ${expectedAppid}. Waiting for the correct setup command…`;
+          lastError = !gameMatches
+            ? `Ignored ticket for ${parsed.gameName}; the selected Linux game is ${expectedGameName}. Waiting for the correct ticket…`
+            : `Ticket commands contained AppID ${candidates.join(", ")}, but the selected installed game is AppID ${expectedAppid}. Waiting for the correct setup command…`;
         }
         // Discord changes its message wrappers frequently. If the structured
         // parser cannot see code blocks, recover only the already locally
@@ -768,7 +788,7 @@ export async function waitForTicketContext(
           const expectedRaw = await evalJson(tab.webSocketDebuggerUrl, expectedExpr, 3500);
           try {
             const recovered = JSON.parse(String(expectedRaw || ""));
-            if (recovered?.match) {
+            if (recovered?.match && gameMatches && !parsed?.incompatiblePlatform) {
               if (!isPrivateTicket) continue;
               return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", ...currentIdentity, parentChannelId: TOKEER_TICKET_PARENT_CHANNEL_ID, ticketChannelId: currentChannel } as TokeerTicketContext;
             }
@@ -783,9 +803,8 @@ export async function waitForTicketContext(
       // without depending on navigation or localized "thread" labels.
       if (!lastTicketUrl && sidebarBefore.size) {
         try {
-          const sidebarNow = await readSidebarChannels(tab);
           const created = sidebarNow
-            .filter((item) => !sidebarBefore.has(item.id) && !excludedChannels.has(item.id))
+            .filter((item) => item.thread && !sidebarBefore.has(item.id) && !excludedChannels.has(item.id))
             .sort((a, b) => b.id.localeCompare(a.id))[0];
           if (created) {
             lastTicketUrl = `https://discord.com/channels/${GUILD_ID}/${created.id}`;
@@ -823,7 +842,7 @@ export async function waitForTicketContext(
   return { found: false, opened: !!lastTicketUrl, ...(lastTicketUrl ? ticketIdentity(lastTicketUrl) : {}), error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
-async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
+async function navigateTicketTab(ticketUrl: string): Promise<CdpTab | null> {
   const wanted = canonicalDiscordChannelUrl(ticketUrl);
   let tab: CdpTab | null = null;
   // Reuse the target already rendering this exact child ticket before touching
@@ -844,6 +863,28 @@ async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
     await new Promise((r) => setTimeout(r, 1000));
   }
   return tab;
+}
+
+async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
+  const wanted = canonicalDiscordChannelUrl(ticketUrl);
+  const wantedId = discordRouteIdentity(wanted).channelId;
+  if (!wantedId || wantedId === TOKEER_PANEL_CHANNEL_ID || wantedId === TOKEER_TICKET_PARENT_CHANNEL_ID) return null;
+  const tab = await navigateTicketTab(ticketUrl);
+  if (!tab?.webSocketDebuggerUrl) return null;
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const resolved = await resolveTabUrl(tab);
+    if (canonicalDiscordChannelUrl(resolved) === wanted) {
+      const rendered = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+        var want=${JSON.stringify(wantedId)};
+        var nodes=[].slice.call(document.querySelectorAll('[id*="chat-messages-"],[data-list-item-id*="chat-messages-"]'));
+        return nodes.some(function(e){return new RegExp('chat-messages-'+want+'-\\\\d+').test(String(e.id||e.getAttribute('data-list-item-id')||''));});
+      }catch(e){return false;}})()`, 2500);
+      if (rendered) return { ...tab, url: resolved, resolvedUrl: resolved };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return null;
 }
 
 /** Return the managed Discord view to a saved private ticket after a temporary
@@ -885,8 +926,10 @@ export async function checkTokeerTicketState(ticketUrl: string): Promise<TokeerT
 export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerTicketState> {
   if (!looksLikeDiscordUrl(ticketUrl)) return { open: false, closed: false };
   const wanted = canonicalDiscordChannelUrl(ticketUrl);
-  const tab = await ticketTab(ticketUrl);
+  const wantedId = discordRouteIdentity(wanted).channelId;
+  const tab = await navigateTicketTab(ticketUrl);
   if (!tab?.webSocketDebuggerUrl) return { open: false, closed: false, reason: "Discord is not connected." };
+  let missingAtParent = 0;
   for (let attempt = 0; attempt < 12; attempt++) {
     const expr = `(function(){try{
       var route=String(location.href||'').match(/\\/channels\\/(\\d+)\\/(\\d+)/i)||[];
@@ -898,7 +941,9 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
       var active=/(?:tokeer\\s+verify(?:-[a-z0-9_-]+)?|install_linux\\.sh|close\\s+ticket|paste\\s+that\\s+whole\\s+TLX1|TLX1\\.[A-Za-z0-9_-]+|activation\\s+(?:code|token|window)|private\\s+ticket\\s+saved)/i.test(body);
       var composer=!!document.querySelector('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"]');
       var loaded=document.readyState==='complete'&&!!document.querySelector('[role="main"],[data-list-id="chat-messages"],ol[class*="scrollerInner"]');
-      return JSON.stringify({href:href,explicit:explicit,unavailable:unavailable,active:active,composer:composer,loaded:loaded});
+      var sidebarReady=!!document.querySelector('[data-list-item-id="channels___${TOKEER_TICKET_PARENT_CHANNEL_ID}"],[data-list-item-id^="channels___"]');
+      var sidebarHasTicket=!!document.querySelector('[data-list-item-id="channels___${wantedId}"]');
+      return JSON.stringify({href:href,explicit:explicit,unavailable:unavailable,active:active,composer:composer,loaded:loaded,sidebarReady:sidebarReady,sidebarHasTicket:sidebarHasTicket});
     }catch(e){return JSON.stringify({error:String(e)});}})()`;
     const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 3500);
     try {
@@ -911,6 +956,10 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
         return { open: false, closed: true, reason: state.explicit ? "Tokeer reports that the ticket was closed." : "The Discord ticket channel no longer exists or is inaccessible." };
       }
       if (String(state?.href || "") === wanted && (state?.active || state?.composer)) return { open: true, closed: false };
+      const parent = `https://discord.com/channels/${GUILD_ID}/${TOKEER_TICKET_PARENT_CHANNEL_ID}`;
+      if (String(state?.href || "") === parent && state?.loaded && state?.sidebarReady && !state?.sidebarHasTicket) missingAtParent += 1;
+      else missingAtParent = 0;
+      if (missingAtParent >= 3) return { open: false, closed: true, reason: "Discord returned to #activation-point and the saved ticket thread is no longer present." };
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -987,7 +1036,12 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const tab = await ticketTab(ticketUrl);
-    if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected while waiting for the activation code." };
+    if (!tab?.webSocketDebuggerUrl) {
+      const state = await probeTokeerTicketState(ticketUrl);
+      if (state.closed) return { success: false, cancelled: true, error: state.reason || "The Discord ticket was closed." };
+      await new Promise((r) => setTimeout(r, 1500));
+      continue;
+    }
     const expr = `(function(){try{
       var after=${JSON.stringify(afterMessageId)};
       var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
@@ -1035,60 +1089,28 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
       return false;
     };
     var click=function(e){var r=e.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,p));});};
-    var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible);
-    var strong=buttons.filter(function(b){var t=label(b);return /(?:^|\\b)(?:(?:cancel|close|delete|abort)\\s+(?:this\\s+)?ticket|ticket\\s+(?:cancel|close|delete|abort))(?:\\b|$)/i.test(t);});
-    var short=buttons.filter(function(b){
+    var match=function(b){var t=label(b);return /(?:^|\\b)(?:(?:cancel|close|delete|abort)\\s+(?:this\\s+)?ticket|ticket\\s+(?:cancel|close|delete|abort))(?:\\b|$)/i.test(t);};
+    var articles=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
+    var target=null;
+    for(var i=0;i<articles.length&&!target;i++){
+      var inMessage=[].slice.call(articles[i].querySelectorAll('button,[role="button"]')).filter(visible);
+      var strong=inMessage.filter(match), short=inMessage.filter(function(b){
       var t=label(b);if(!/^(?:cancel|close|delete|abort)$/i.test(t)||!danger(b))return false;
-      var a=b.closest('[role="article"]'),p=b.parentElement&&b.parentElement.parentElement;
-      var context=String(a&&a.innerText||p&&p.innerText||'');
+      var context=String(articles[i].innerText||'');
       return /ticket|activation|tokeer/i.test(context);
-    });
-    var target=strong.find(danger)||strong[strong.length-1]||short[short.length-1];
+      });
+      target=strong.filter(danger).slice(-1)[0]||strong.slice(-1)[0]||short.slice(-1)[0]||null;
+    }
     if(!target)return JSON.stringify({ok:false,error:'The red Cancel Ticket button was not found in the open ticket.'});
     click(target);
     return JSON.stringify({ok:true,label:label(target)});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
 
-  // A private ticket is a Discord child channel/thread and can be rendered in
-  // a different CEF target from the parent activation panel. Search every live
-  // DeDevision target before navigating anything, otherwise following a stale
-  // parent URL destroys the only target that actually contains Close Ticket.
-  const tabs = await listCdpTabs();
-  const candidates: CdpTab[] = [];
-  for (const rawTab of tabs.filter((item) => !!item.webSocketDebuggerUrl)) {
-    const resolved = await resolveTabUrl(rawTab);
-    if (!looksLikeDiscordUrl(resolved) || !resolved.includes(`/channels/${GUILD_ID}/`)) continue;
-    candidates.push({ ...rawTab, resolvedUrl: resolved, url: resolved });
-  }
-  const wanted = canonicalDiscordChannelUrl(ticketUrl);
-  candidates.sort((a, b) => Number(canonicalDiscordChannelUrl(String(b.url || "")) === wanted) - Number(canonicalDiscordChannelUrl(String(a.url || "")) === wanted));
-
-  let tab: CdpTab | null = null;
+  const tab = await ticketTab(ticketUrl);
   let first: any = null;
-  for (const candidate of candidates) {
-    if (!candidate.webSocketDebuggerUrl) continue;
-    const raw = await evalJson(candidate.webSocketDebuggerUrl, clickCancel, 4000);
-    try { first = JSON.parse(String(raw || "")); } catch { first = null; }
-    if (first?.ok) { tab = candidate; break; }
-  }
-
-  // If no currently-rendered child target contains the button, try the saved
-  // URL once as a fallback. This covers a valid ticket whose view was parked.
-  if (!first?.ok && ticketUrl && looksLikeDiscordUrl(ticketUrl)) {
-    let fallback = await findManagedTokeerTab();
-    if (!fallback?.webSocketDebuggerUrl) fallback = await findDiscordTab();
-    if (fallback?.webSocketDebuggerUrl) {
-      if (canonicalDiscordChannelUrl(String(fallback.url || "")) !== wanted) {
-        await cdpCommand(fallback.webSocketDebuggerUrl, "Page.navigate", { url: wanted, transitionType: "address_bar" }, 4000);
-        invalidateDiscordCaptureCaches();
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-      }
-      const raw = await evalJson(fallback.webSocketDebuggerUrl, clickCancel, 4000);
-      try { first = JSON.parse(String(raw || "")); } catch { first = null; }
-      if (first?.ok) tab = fallback;
-    }
-  }
-  if (!tab?.webSocketDebuggerUrl && !candidates.length) return { success: false, error: "No DeDevision Discord view is connected in Steam CDP." };
+  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The exact saved Discord ticket thread could not be opened; no other channel was touched." };
+  const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
+  try { first = JSON.parse(String(raw || "")); } catch { first = null; }
   if (!first?.ok || !tab?.webSocketDebuggerUrl) return { success: false, error: first?.error || "Could not press Cancel Ticket." };
 
   // Some ticket bots ask for a second confirmation in a modal.

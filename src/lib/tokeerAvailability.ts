@@ -152,9 +152,9 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
   // started even though the six-hour cache remains usable as a fallback.
   if (!force && current && Date.now() - current.updatedAt < TOKEER_FIX_FRESH_MS) return current;
   const savedTicketUrl = activeTicketUrl();
-  // Background refreshes never disturb a private ticket. An explicit user
-  // refresh may briefly visit the vault, but restores this exact URL below.
-  if (savedTicketUrl && !force) return current;
+  // No vault scrape, including a forced caller refresh, may navigate Discord
+  // away from an active private ticket.
+  if (savedTicketUrl) return current;
   if (refreshPromise) return refreshPromise;
   const generation = ++refreshGeneration;
   const run = (async () => {
