@@ -31,6 +31,7 @@ const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:
 const sleep = (ms:number)=>new Promise((r)=>setTimeout(r,ms));
 const TOKEER_SESSION_KEY = "slsdeck.tokeerSession.v1";
 const TOKEER_AUTO_CONNECT_KEY = "slsdeck.tokeerAutoConnect.v1";
+const TOKEER_VAULT_REFRESH_MS = 10 * 60 * 1000;
 const TOKEER_SESSION_MS = 30 * 60 * 1000;
 
 type SavedTokeerSession = {
@@ -88,6 +89,7 @@ export function TokeerSection() {
   const [gate,setGate]=useState<TokeerTicketGate|null>(savedRef.current?.gate||null);
   const [ticket,setTicket]=useState<TokeerTicketContext|null>(savedRef.current?.ticket||null);
   const [discordSignedIn,setDiscordSignedIn]=useState(false);
+  const [discordAuthChecked,setDiscordAuthChecked]=useState(false);
   const [autoConnect,setAutoConnect]=useState(readAutoConnect);
   const [automationStage,setAutomationStage]=useState<AutomationStage>(savedRef.current?.automationStage||"idle");
   const [tlxSubmitted,setTlxSubmitted]=useState(!!savedRef.current?.tlxSubmitted);
@@ -138,8 +140,8 @@ export function TokeerSection() {
     return {state,signedIn};
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
-  const refreshAvailability=async(force=false)=>{
-    if(force)setMessage(ticketChainActive()?"Refreshing the live vault, then restoring your private ticket…":"Refreshing live vault and game availability…");
+  const refreshAvailability=async(force=false,announce=force)=>{
+    if(announce)setMessage(ticketChainActive()?"Refreshing the live vault, then restoring your private ticket…":"Refreshing live vault and game availability…");
     const value=await refreshTokeerAvailabilityCache(force);
     if(value){
       setAvailability(value);
@@ -157,8 +159,8 @@ export function TokeerSection() {
           ])));
         }
       }
-      if(force)setMessage(`Vault refreshed from Discord at ${new Date(value.updatedAt).toLocaleTimeString()}.`);
-    }else if(force)setMessage("Live Discord refresh failed; the previous cached values were left unchanged.");
+      if(announce)setMessage(`Vault refreshed from Discord at ${new Date(value.updatedAt).toLocaleTimeString()}.`);
+    }else if(announce)setMessage("Live Discord refresh failed; the previous cached values were left unchanged.");
     return value;
   };
   // Any sign-in transition detected anywhere (this panel, a background poll)
@@ -167,7 +169,7 @@ export function TokeerSection() {
     // Positive transitions can be trusted immediately. A negative users/@me
     // probe is reconciled by refreshDiscord with the live panel DOM before the
     // button is shown again.
-    const onSignIn=(e:any)=>{if(e?.detail)setDiscordSignedIn(true);};
+    const onSignIn=(e:any)=>{if(e?.detail){setDiscordSignedIn(true);setDiscordAuthChecked(true);}};
     window.addEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
     return ()=>window.removeEventListener("slsdeck-tokeer-signin",onSignIn as EventListener);
   },[]);
@@ -190,16 +192,33 @@ export function TokeerSection() {
           }
         }
       }else{
-        await refreshDiscord();
-        await refreshAvailability(false);
+        const observed=await refreshDiscord();
+        if(observed?.signedIn)await refreshAvailability(true,false);
       }
     };
-    openInBackground().catch(()=>{});
+    openInBackground().catch(()=>{}).finally(()=>setDiscordAuthChecked(true));
     const onCache=(event:any)=>setAvailability(event?.detail||readTokeerAvailabilityCache());
     window.addEventListener("slsdeck-tokeer-cache",onCache as EventListener);
     const t=setInterval(refreshDiscord,15000);
     return()=>{clearInterval(t);window.removeEventListener("slsdeck-tokeer-cache",onCache as EventListener);};
   },[]);
+  useEffect(()=>{
+    // The mount path above performs the first live refresh. Continue only while
+    // this Tokeer page is mounted, Discord is confirmed authenticated, and no
+    // private ticket can be disrupted by a vault navigation.
+    if(!discordAuthChecked||!discordSignedIn||ticketChainActive())return;
+    let stopped=false,running=false;
+    const refresh=async()=>{
+      if(stopped||running||ticketChainActive())return;
+      running=true;
+      try{
+        const cached=await refreshTokeerAvailabilityCache(true);
+        if(!stopped&&cached)setAvailability(cached);
+      }finally{running=false;}
+    };
+    const timer=setInterval(()=>{void refresh();},TOKEER_VAULT_REFRESH_MS);
+    return()=>{stopped=true;clearInterval(timer);};
+  },[discordAuthChecked,discordSignedIn,ticket?.opened,ticket?.url,gate?.found]);
   const appid=Number(ticket?.appid||0);
   const remainingMs=codeExpiresAt?Math.max(0,codeExpiresAt-clockNow):0;
   const remainingSeconds=Math.ceil(remainingMs/1000);
@@ -597,20 +616,20 @@ export function TokeerSection() {
 
   return <>
     <PanelSection title="Choose game in Tokeer">
-      {!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
+      {!discordAuthChecked&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>Checking Discord connection…</div></PanelSectionRow>}
+      {discordAuthChecked&&!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
         if(loginPendingRef.current)return;
         loginPendingRef.current=true;setBusy("Waiting for Discord sign-in…");
         setMessage("Opening DeDevision Discord. Sign in and accept the server invite, then press B to return.");
         try{
           await openDedevisionDiscordLogin();
           if(await waitForDiscordSignIn()){
-            setDiscordSignedIn(true);
+            setDiscordSignedIn(true);setDiscordAuthChecked(true);
             setMessage("Discord signed in. You can connect Tokeer silently now.");
           }else setMessage("Discord sign-in was not detected. You can retry without opening duplicate login pages.");
         }finally{loginPendingRef.current=false;setBusy("");}
       }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
-      {(!discordSignedIn||!autoConnect)&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
-      <PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={()=>refreshAvailability(true)}>Refresh vault & available games</ButtonItem></PanelSectionRow>
+      {discordAuthChecked&&discordSignedIn&&!autoConnect&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
       {availability&&<PanelSectionRow><div style={{width:"100%",padding:10,borderRadius:9,background:"linear-gradient(145deg,rgba(28,43,66,.96),rgba(38,25,58,.92))",border:"1px solid rgba(157,198,255,.28)",boxShadow:"0 5px 18px rgba(0,0,0,.22)",fontSize:11,lineHeight:1.55,color:"#f7f9ff"}}>
         <div style={{fontSize:14,fontWeight:800,letterSpacing:.4,marginBottom:8,color:"#fff"}}>Tokeer Vault</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7}}>
