@@ -17,6 +17,7 @@ import {
   openTokeerDiscord,
   readLatestTicketGate,
   readTokeerDiscord,
+  restoreTokeerTicketView,
   sendTokeerTicketMessage,
   TokeerDiscordState,
   TokeerTicketGate,
@@ -137,7 +138,7 @@ export function TokeerSection() {
     // while its authenticated channel DOM is fully available.
     const signedIn=auth.signedIn||state.found;
     setDiscord(state);setDiscordSignedIn(signedIn);
-    return {state,signedIn};
+    return {state,signedIn,authFound:auth.found};
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
   const refreshAvailability=async(force=false,announce=force)=>{
@@ -178,7 +179,18 @@ export function TokeerSection() {
     const openInBackground=async()=>{
       // Preserve the managed target when resuming an unfinished ticket.
       if(savedRef.current?.ticket?.opened||savedRef.current?.ticket?.url||savedRef.current?.gate){
-        await refreshDiscord();
+        let observed=await refreshDiscord();
+        // Decky/plugin updates can destroy the managed BrowserView without
+        // clearing Discord's shared login cookies. "No CDP target" is not a
+        // signed-out result: recreate the hidden view, then return it to the
+        // exact saved ticket before the ticket probe runs.
+        if(!observed?.authFound){
+          const ok=await connectTokeerDiscordHidden();
+          if(ok&&savedRef.current?.ticket?.url){
+            try{await restoreTokeerTicketView(savedRef.current.ticket.url);}catch{}
+          }
+          observed=await refreshDiscord();
+        }
         return;
       }
       if(readAutoConnect()){
