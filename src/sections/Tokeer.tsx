@@ -24,7 +24,7 @@ import {
   waitForTicketContext,
   waitForTokeerActivationCode,
 } from "../lib/tokeerDiscordCapture";
-import { cancelTokeerAvailabilityRefresh, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
+import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
@@ -139,12 +139,26 @@ export function TokeerSection() {
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
   const refreshAvailability=async(force=false)=>{
-    if(force&&ticketChainActive()){
-      setMessage("Vault refresh is paused while the private Discord ticket is open, so its command chain is not disturbed.");
-      return null;
-    }
+    if(force)setMessage(ticketChainActive()?"Refreshing the live vault, then restoring your private ticket…":"Refreshing live vault and game availability…");
     const value=await refreshTokeerAvailabilityCache(force);
-    if(value)setAvailability(value);
+    if(value){
+      setAvailability(value);
+      // A selected dropdown label contains the availability count. Replace
+      // that copied label from the same newly-written cache so the ticket card,
+      // vault panel and Fixes surfaces no longer disagree.
+      if(selectedGame){
+        const selectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
+        const fresh=value.games.find((game)=>normalizeTokeerGameName(game.name)===normalizeTokeerGameName(selectedName));
+        if(fresh){
+          const oldLabel=selectedGame;
+          setSelectedGame(fresh.label);
+          setSelectedMenus((menus)=>Object.fromEntries(Object.entries(menus).map(([key,label])=>[
+            key, label===oldLabel||normalizeTokeerGameName(parseTokeerGameLabel(label)?.name||label)===normalizeTokeerGameName(selectedName)?fresh.label:label,
+          ])));
+        }
+      }
+      if(force)setMessage(`Vault refreshed from Discord at ${new Date(value.updatedAt).toLocaleTimeString()}.`);
+    }else if(force)setMessage("Live Discord refresh failed; the previous cached values were left unchanged.");
     return value;
   };
   // Any sign-in transition detected anywhere (this panel, a background poll)

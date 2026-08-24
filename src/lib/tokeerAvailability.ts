@@ -3,6 +3,7 @@ import {
   connectTokeerDiscordHidden,
   openSelectorAndReadOptions,
   readTokeerDiscord,
+  restoreTokeerTicketView,
   TokeerDiscordState,
 } from "./tokeerDiscordCapture";
 
@@ -136,12 +137,12 @@ export function cancelTokeerAvailabilityRefresh(): void {
   refreshPromise = null;
 }
 
-function hasActiveTicketSession(): boolean {
+function activeTicketUrl(): string {
   try {
     const session = JSON.parse(window.localStorage.getItem(SESSION_KEY) || "null");
-    return !!session && (!session.expiresAt || Number(session.expiresAt) > Date.now()) &&
-      !!(session.ticket?.opened || session.ticket?.url || session.gate);
-  } catch { return false; }
+    if (!session || (session.expiresAt && Number(session.expiresAt) <= Date.now())) return "";
+    return String(session.ticket?.url || "");
+  } catch { return ""; }
 }
 
 export async function refreshTokeerAvailabilityCache(force = false): Promise<TokeerAvailabilityCache | null> {
@@ -150,9 +151,10 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
   // callers still receive the cache immediately, but one background refresh is
   // started even though the six-hour cache remains usable as a fallback.
   if (!force && current && Date.now() - current.updatedAt < TOKEER_FIX_FRESH_MS) return current;
-  // Never navigate the managed Discord target away from a live private ticket.
-  // A forced caller gets null so it cannot mistake stale cache for a live check.
-  if (hasActiveTicketSession()) return force ? null : current;
+  const savedTicketUrl = activeTicketUrl();
+  // Background refreshes never disturb a private ticket. An explicit user
+  // refresh may briefly visit the vault, but restores this exact URL below.
+  if (savedTicketUrl && !force) return current;
   if (refreshPromise) return refreshPromise;
   const generation = ++refreshGeneration;
   const run = (async () => {
@@ -191,6 +193,9 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
     } catch {
       return force ? null : current;
     } finally {
+      if (savedTicketUrl) {
+        try { await restoreTokeerTicketView(savedTicketUrl); } catch {}
+      }
       if (generation === refreshGeneration) refreshPromise = null;
     }
   })();

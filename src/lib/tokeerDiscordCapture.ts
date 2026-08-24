@@ -478,7 +478,10 @@ export async function readTokeerDiscord(force = false): Promise<TokeerDiscordSta
 }
 
 async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
-  const tab = await findDiscordTab();
+  // Availability refresh deliberately navigates the managed hidden view. A
+  // separately-open manual ticket may also be a Discord CDP target; choosing
+  // that target here returns ticket text instead of the live vault panel.
+  const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
   if (!tab?.webSocketDebuggerUrl) {
     const diag = await cdpDiagnostic();
     return { found: false, selectors: [], error: `No Discord page found in Steam CDP. ${diag}` };
@@ -502,7 +505,7 @@ async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
 }
 
 export async function openSelectorAndReadOptions(index: number, timeoutMs = 5000): Promise<string[]> {
-  const tab = await findDiscordTab();
+  const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return [];
   const clickExpr = `(function(){try{var id=${JSON.stringify(TARGET_MESSAGE)};var arts=[].slice.call(document.querySelectorAll('[role="article"]'));var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];var e=xs[${Number(index)}];if(!e)return false;var r=e.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;e.dispatchEvent(new C(n,o));});return true;}catch(e){return false;}})()`;
   const ok = await evalJson(tab.webSocketDebuggerUrl, clickExpr, Math.min(timeoutMs, 3000));
@@ -717,6 +720,15 @@ async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
     await new Promise((r) => setTimeout(r, 1000));
   }
   return tab;
+}
+
+/** Return the managed Discord view to a saved private ticket after a temporary
+ * background vault scrape. */
+export async function restoreTokeerTicketView(ticketUrl: string): Promise<boolean> {
+  const tab = await ticketTab(ticketUrl);
+  if (!tab?.webSocketDebuggerUrl) return false;
+  const live = await resolveTabUrl(tab);
+  return String(live || "").split(/[?#]/)[0] === String(ticketUrl || "").split(/[?#]/)[0];
 }
 
 /** Inspect an already-visible private ticket without navigating Discord.
