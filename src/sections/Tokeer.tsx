@@ -8,6 +8,7 @@ import {
   clickLatestTicketGate,
   cancelTokeerTicket,
   checkTokeerTicketState,
+  probeTokeerTicketState,
   connectTokeerDiscordHidden,
   getDiscordSignInState,
   waitForDiscordSignIn,
@@ -313,6 +314,21 @@ export function TokeerSection() {
     return()=>{stopped=true;clearInterval(timer);};
   },[ticket?.url,automationStage]);
 
+  // On opening/restoring this tab, actively validate the saved private channel
+  // once. Passive polling cannot classify a deleted ticket after Discord has
+  // redirected its tab elsewhere.
+  useEffect(()=>{
+    if(!ticket?.url||automationStage==="done"||automationStage==="aborted")return;
+    let stopped=false;
+    const timer=setTimeout(async()=>{
+      try{
+        const state=await probeTokeerTicketState(ticket.url!);
+        if(!stopped&&state.closed)abortTicketChain(`${state.reason||"The saved Discord ticket no longer exists."} Its stale Tokeer session was cleared.`);
+      }catch{}
+    },600);
+    return()=>{stopped=true;clearTimeout(timer);};
+  },[ticket?.url]);
+
   const runAutomation=async(ctx:TokeerTicketContext,resume?:SavedTokeerSession)=>{
     if(automationRunningRef.current||!ctx.appid||!ctx.url)return;
     automationRunningRef.current=true;
@@ -419,6 +435,8 @@ export function TokeerSection() {
     setBusy("Resuming Tokeer ticket…");
     setMessage("Reopening the existing private ticket and scanning its generated commands…");
     try{
+      const state=await probeTokeerTicketState(ticket.url);
+      if(state.closed){abortTicketChain(`${state.reason||"The saved Discord ticket no longer exists."} Its stale Tokeer session was cleared.`);return;}
       const installed=selectedGame?await tokeerPreflight(0,selectedGame):null;
       const expectedAppid=Number(installed?.success&&installed.installed?installed.appid||0:0);
       const ctx=await waitForTicketContext(ticket.url,35000,expectedAppid);
@@ -442,7 +460,11 @@ export function TokeerSection() {
     setBusy("Cancelling Tokeer ticket…");
     try{
       const r=await cancelTokeerTicket(ticket.url);
-      if(!r.success){setMessage(r.error||"Could not press Discord's Cancel Ticket button.");return;}
+      if(!r.success){
+        const state=await probeTokeerTicketState(ticket.url);
+        if(state.closed){abortTicketChain(`${state.reason||"The Discord ticket was already closed."} Its stale Tokeer session was cleared.`);return;}
+        setMessage(r.error||"Could not press Discord's Close Ticket button.");return;
+      }
       try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
       setSelectedGame("");setSelectedMenus({});setGate(null);setTicket(null);
       setVerify(null);setActivation("");setCodeExpiresAt(undefined);

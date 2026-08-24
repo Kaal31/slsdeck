@@ -743,6 +743,41 @@ export async function checkTokeerTicketState(ticketUrl: string): Promise<TokeerT
   return { open: false, closed: false };
 }
 
+/** Actively reopen a saved ticket once and distinguish a deleted channel from
+ * a temporarily absent CDP target. This is intentionally not used by the
+ * frequent passive poller because navigation would disrupt Manual view. */
+export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerTicketState> {
+  if (!looksLikeDiscordUrl(ticketUrl)) return { open: false, closed: false };
+  const wanted = String(ticketUrl).split(/[?#]/)[0];
+  const tab = await ticketTab(ticketUrl);
+  if (!tab?.webSocketDebuggerUrl) return { open: false, closed: false, reason: "Discord is not connected." };
+  let redirected = 0;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const expr = `(function(){try{
+      var href=String(location.href||'').split(/[?#]/)[0];
+      var body=String(document.body&&document.body.innerText||'').replace(/\\u00a0/g,' ');
+      var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\\n');
+      var explicit=/(?:ticket\\s+(?:has\\s+been|was|is(?:\\s+now)?)?\\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\\s+(?:this\\s+)?ticket)/i.test(recent);
+      var unavailable=/(?:unknown\\s+channel|channel\\s+(?:is\\s+)?unavailable|you\\s+(?:do\\s+not|don't)\\s+have\\s+access|no\\s+access\\s+to\\s+this\\s+channel)/i.test(body);
+      var active=/(?:tokeer\\s+verify(?:-[a-z0-9_-]+)?|install_linux\\.sh|close\\s+ticket|paste\\s+that\\s+whole\\s+TLX1)/i.test(body);
+      var composer=!!document.querySelector('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"]');
+      return JSON.stringify({href:href,explicit:explicit,unavailable:unavailable,active:active,composer:composer});
+    }catch(e){return JSON.stringify({error:String(e)});}})()`;
+    const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 3500);
+    try {
+      const state = JSON.parse(String(raw || ""));
+      if (state?.explicit || state?.unavailable) {
+        return { open: false, closed: true, reason: state.explicit ? "Tokeer reports that the ticket was closed." : "The Discord ticket channel no longer exists or is inaccessible." };
+      }
+      if (String(state?.href || "") === wanted && (state?.active || state?.composer)) return { open: true, closed: false };
+      if (attempt >= 3 && state?.href && String(state.href) !== wanted) redirected++;
+      if (redirected >= 3) return { open: false, closed: true, reason: "Discord redirected away from the saved ticket because its channel no longer exists." };
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return { open: false, closed: false, reason: "Discord did not finish loading the saved ticket." };
+}
+
 export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; cancelled?: boolean; error?: string }> {
   const text = String(message || "").trim();
   if (!/^TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
