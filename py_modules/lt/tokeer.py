@@ -631,7 +631,11 @@ def verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
     if not os.path.isfile(cmd):
         return {"success": False, "needsPrepare": True, "error": "Tokeer is not prepared yet."}
     try:
-        args = ([cmd, "verify-ubi", str(int(appid)), "--ubi"]
+        # The upstream `tokeer verify-ubi` wrapper appends the literal
+        # `ubisoft` argument for the validator itself. Passing `--ubi` here
+        # occupies that positional slot and makes the validator fall back to
+        # Steam mode, despite using the verify-ubi subcommand.
+        args = ([cmd, "verify-ubi", str(int(appid))]
                 if ubisoft else [cmd, "verify", str(int(appid))])
         p = _run_as_user(args, timeout=120)
         out = p.stdout or ""
@@ -662,6 +666,22 @@ def verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
                 "failedChecks": [],
                 "error": detail,
             }
+        expected_mode = "ubisoft" if ubisoft else "steam"
+        actual_mode = str(report.get("mode") or "steam").lower()
+        if actual_mode != expected_mode:
+            return {
+                "success": False,
+                "code": "",
+                "report": report,
+                "checks": None,
+                "output": out[-24000:],
+                "returnCode": p.returncode,
+                "failedChecks": [],
+                "error": (
+                    f"Tokeer generated a {actual_mode} setup code while "
+                    f"{expected_mode} verification was requested. The code was not submitted."
+                ),
+            }
         checks = {
             "installed": bool(report.get("installed")),
             "prefix": bool(report.get("prefix")),
@@ -669,15 +689,18 @@ def verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
             "launchOpt": bool(report.get("launch_opt")),
             "proton": report.get("proton"),
         }
-        passed = bool(code and checks["installed"] and checks["prefix"] and checks["hook"] and checks["launchOpt"])
+        passed = bool(
+            code and checks["installed"] and checks["prefix"]
+            and (ubisoft or (checks["hook"] and checks["launchOpt"]))
+        )
         failed = []
         if not checks["installed"]:
             failed.append("game installation")
         if not checks["prefix"]:
             failed.append("Proton prefix")
-        if not checks["hook"]:
+        if not ubisoft and not checks["hook"]:
             failed.append("native hook")
-        if not checks["launchOpt"]:
+        if not ubisoft and not checks["launchOpt"]:
             failed.append("launch option")
         if failed:
             detail = "Tokeer setup checks failed: " + ", ".join(failed) + "."
