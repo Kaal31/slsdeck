@@ -149,6 +149,13 @@ export function TokeerSection() {
     return {state,signedIn,authFound:auth.found};
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
+  // Tokeer appends the access tier to some Ubisoft dropdown options (for
+  // example "Assassin's Creed Shadows Free • 6 of 10 remaining"). Keep the
+  // original value as the Discord click target, but do not present the tier as
+  // though it were part of the game's name.
+  const displayGameLabel=(label:string)=>String(label||"")
+    .replace(/\s+Free(?=\s*[•·|/\-]*\s*\d+\s+of\s+\d+\s+remaining)/i,"")
+    .trim();
   const refreshAvailability=async(force=false,announce=force)=>{
     if(announce)setMessage(ticketChainActive()?"Refreshing the live vault, then restoring your private ticket…":"Refreshing live vault and game availability…");
     const value=await refreshTokeerAvailabilityCache(force);
@@ -341,6 +348,23 @@ export function TokeerSection() {
     setBusy("");
   };
 
+  const restoreActivationPanel=async()=>{
+    try{
+      if(!(await connectTokeerDiscordHidden()))return;
+      const deadline=Date.now()+15000;
+      let state=await readTokeerDiscord(true);
+      while(!state.found&&Date.now()<deadline){
+        await sleep(500);
+        state=await readTokeerDiscord(true);
+      }
+      setDiscord(state);
+      if(state.found){
+        setDiscordSignedIn(true);
+        setDiscordAuthChecked(true);
+      }
+    }catch{}
+  };
+
   const abortTicketChain=(reason:string)=>{
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
@@ -353,6 +377,10 @@ export function TokeerSection() {
     codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
     setBusy("");
     toaster.toast({title:"SLSDeck · Tokeer",body:reason.slice(0,220)});
+    // A deleted ticket leaves Discord parked on a dead child route. Reopen the
+    // real Linux activation panel so its live selector buttons return without
+    // requiring the user to leave and reopen SLSDeck.
+    void restoreActivationPanel();
   };
 
   useEffect(()=>{
@@ -541,6 +569,7 @@ export function TokeerSection() {
       setVerify(null);setActivation("");setCodeExpiresAt(undefined);
       codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
       setMessage("Ticket cancelled in Discord. The saved Tokeer session was cleared.");
+      await restoreActivationPanel();
     }catch(e){setMessage(String(e));}
     finally{setBusy("");}
   };
@@ -687,7 +716,7 @@ export function TokeerSection() {
         label={s.label||`Game menu ${s.index+1}`}
         description="Live game list from the Tokeer Discord panel"
         disabled={s.disabled||!!busy}
-        rgOptions={(options[s.index]||[]).map(x=>({data:x,label:x}))}
+        rgOptions={(options[s.index]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
         selectedOption={selectedMenus[s.index]||null}
         strDefaultLabel={s.label||"Choose a game"}
         onMenuWillOpen={(showMenu)=>openMenu(s.index,showMenu)}
@@ -697,7 +726,7 @@ export function TokeerSection() {
     </PanelSection>
 
     {(selectedGame||gate)&&<PanelSection title="Open activation ticket">
-      {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{selectedGame}</b></div></PanelSectionRow>}
+      {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{displayGameLabel(selectedGame)}</b></div></PanelSectionRow>}
       {ticket?.opened&&!ticket.appid
         ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
         :gate?.found

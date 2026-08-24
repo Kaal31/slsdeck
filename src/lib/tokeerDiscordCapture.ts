@@ -1044,10 +1044,32 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  if (!focused?.ok) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not focus the Discord ticket message box after trusted mouse input." };
+  if (!focused?.ok && !focused?.found) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not find the Discord ticket message box after trusted mouse input." };
   if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected before TLX1 could be entered." };
 
+  // Steam's parked BrowserView can keep document.activeElement on the page
+  // shell even though Chromium routes Input.insertText to Discord's visible
+  // Slate editor. Treat the actual draft contents as authoritative instead of
+  // rejecting a usable composer solely because activeElement is stale.
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.insertText", { text }, 3000);
+  const draftExpr = `(function(){try{
+    var expected=${JSON.stringify(text)};
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
+    var box=boxes[boxes.length-1];
+    return !!box&&String(box.innerText||box.textContent||'').indexOf(expected)>=0;
+  }catch(e){return false;}})()`;
+  let draftEntered = !!(await evalJson(tab.webSocketDebuggerUrl, draftExpr, 2500));
+  if (!draftEntered) {
+    // execCommand fires the beforeinput/input path used by Discord's Slate
+    // editor and is a safe fallback when the parked view ignores insertText.
+    await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';});
+      var box=boxes[boxes.length-1];if(!box)return false;box.focus();return document.execCommand('insertText',false,${JSON.stringify(text)});
+    }catch(e){return false;}})()`, 2500);
+    draftEntered = !!(await evalJson(tab.webSocketDebuggerUrl, draftExpr, 2500));
+  }
+  if (!draftEntered) return { success: false, error: "Discord displayed the ticket message box, but did not accept the TLX1 text. It remains available for manual copy." };
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
   await new Promise((r) => setTimeout(r, 700));
