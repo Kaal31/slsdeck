@@ -868,18 +868,6 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
 }
 
 export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boolean; error?: string }> {
-  let tab = await findManagedTokeerTab();
-  if (!tab?.webSocketDebuggerUrl) tab = await findDiscordTab();
-  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view is not connected." };
-
-  if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
-    await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
-      url: ticketUrl, transitionType: "address_bar",
-    }, 4000);
-    invalidateDiscordCaptureCaches();
-    await new Promise((r) => setTimeout(r, 900));
-  }
-
   const clickCancel = `(function(){try{
     var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
     var label=function(e){return String(e.innerText||e.textContent||e.getAttribute('aria-label')||e.getAttribute('title')||'').replace(/\\s+/g,' ').trim();};
@@ -904,10 +892,48 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     click(target);
     return JSON.stringify({ok:true,label:label(target)});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
-  const raw = await evalJson(tab.webSocketDebuggerUrl, clickCancel, 4000);
-  let first: any;
-  try { first = JSON.parse(String(raw || "")); } catch { first = null; }
-  if (!first?.ok) return { success: false, error: first?.error || "Could not press Cancel Ticket." };
+
+  // A private ticket is a Discord child channel/thread and can be rendered in
+  // a different CEF target from the parent activation panel. Search every live
+  // DeDevision target before navigating anything, otherwise following a stale
+  // parent URL destroys the only target that actually contains Close Ticket.
+  const tabs = await listCdpTabs();
+  const candidates: CdpTab[] = [];
+  for (const rawTab of tabs.filter((item) => !!item.webSocketDebuggerUrl)) {
+    const resolved = await resolveTabUrl(rawTab);
+    if (!looksLikeDiscordUrl(resolved) || !resolved.includes(`/channels/${GUILD_ID}/`)) continue;
+    candidates.push({ ...rawTab, resolvedUrl: resolved, url: resolved });
+  }
+  const wanted = String(ticketUrl || "").split(/[?#]/)[0];
+  candidates.sort((a, b) => Number(String(b.url || "").split(/[?#]/)[0] === wanted) - Number(String(a.url || "").split(/[?#]/)[0] === wanted));
+
+  let tab: CdpTab | null = null;
+  let first: any = null;
+  for (const candidate of candidates) {
+    if (!candidate.webSocketDebuggerUrl) continue;
+    const raw = await evalJson(candidate.webSocketDebuggerUrl, clickCancel, 4000);
+    try { first = JSON.parse(String(raw || "")); } catch { first = null; }
+    if (first?.ok) { tab = candidate; break; }
+  }
+
+  // If no currently-rendered child target contains the button, try the saved
+  // URL once as a fallback. This covers a valid ticket whose view was parked.
+  if (!first?.ok && ticketUrl && looksLikeDiscordUrl(ticketUrl)) {
+    let fallback = await findManagedTokeerTab();
+    if (!fallback?.webSocketDebuggerUrl) fallback = await findDiscordTab();
+    if (fallback?.webSocketDebuggerUrl) {
+      if (String(fallback.url || "").split(/[?#]/)[0] !== wanted) {
+        await cdpCommand(fallback.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+        invalidateDiscordCaptureCaches();
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
+      const raw = await evalJson(fallback.webSocketDebuggerUrl, clickCancel, 4000);
+      try { first = JSON.parse(String(raw || "")); } catch { first = null; }
+      if (first?.ok) tab = fallback;
+    }
+  }
+  if (!tab?.webSocketDebuggerUrl && !candidates.length) return { success: false, error: "No DeDevision Discord view is connected in Steam CDP." };
+  if (!first?.ok || !tab?.webSocketDebuggerUrl) return { success: false, error: first?.error || "Could not press Cancel Ticket." };
 
   // Some ticket bots ask for a second confirmation in a modal.
   await new Promise((r) => setTimeout(r, 650));
