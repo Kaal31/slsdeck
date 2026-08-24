@@ -828,8 +828,6 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
   const wanted = canonicalDiscordChannelUrl(ticketUrl);
   const tab = await ticketTab(ticketUrl);
   if (!tab?.webSocketDebuggerUrl) return { open: false, closed: false, reason: "Discord is not connected." };
-  let redirected = 0;
-  let loadedWithoutTicket = 0;
   for (let attempt = 0; attempt < 12; attempt++) {
     const expr = `(function(){try{
       var route=String(location.href||'').match(/\\/channels\\/(\\d+)\\/(\\d+)/i)||[];
@@ -846,18 +844,18 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
     const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 3500);
     try {
       const state = JSON.parse(String(raw || ""));
-      if (state?.explicit || state?.unavailable) {
+      // Discord renders the previous route and a partially virtualized message
+      // list while navigating. Never erase a saved chain from content observed
+      // on another channel; closure evidence is authoritative only on the
+      // exact child-channel identity we persisted.
+      if (String(state?.href || "") === wanted && (state?.explicit || state?.unavailable)) {
         return { open: false, closed: true, reason: state.explicit ? "Tokeer reports that the ticket was closed." : "The Discord ticket channel no longer exists or is inaccessible." };
       }
-      if (String(state?.href || "") === wanted && state?.active) return { open: true, closed: false };
-      if (attempt >= 3 && String(state?.href || "") === wanted && state?.loaded && !state?.active) loadedWithoutTicket++;
-      if (loadedWithoutTicket >= 3) return { open: false, closed: true, reason: "Discord loaded the saved channel, but its Tokeer ticket content no longer exists." };
-      if (attempt >= 3 && state?.href && String(state.href) !== wanted) redirected++;
-      if (redirected >= 3) return { open: false, closed: true, reason: "Discord redirected away from the saved ticket because its channel no longer exists." };
+      if (String(state?.href || "") === wanted && (state?.active || state?.composer)) return { open: true, closed: false };
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  return { open: false, closed: false, reason: "Discord did not finish loading the saved ticket." };
+  return { open: false, closed: false, reason: "Discord did not provide authoritative evidence that the saved ticket was closed; its session was preserved." };
 }
 
 export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; cancelled?: boolean; error?: string }> {
