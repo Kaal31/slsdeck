@@ -661,7 +661,10 @@ const TICKET_LINK_EXPR = `(function(){try{
 export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expectedAppid = 0): Promise<TokeerTicketContext> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "Waiting for Tokeer ticket…";
-  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? canonicalDiscordChannelUrl(fromUrl) : "";
+  const startingIdentity = discordRouteIdentity(fromUrl);
+  const activationChannel = TOKEER_CHANNEL.split("/").pop();
+  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && startingIdentity.guildId === GUILD_ID && startingIdentity.channelId !== activationChannel
+    ? canonicalDiscordChannelUrl(fromUrl) : "";
 
   if (lastTicketUrl) {
     try {
@@ -688,7 +691,6 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
       if (u.includes(`/channels/${GUILD_ID}/`)) candidates.push(tab);
     }
     const wantedChannel = discordRouteIdentity(lastTicketUrl).channelId;
-    const activationChannel = TOKEER_CHANNEL.split("/").pop();
     candidates.sort((a, b) => {
       const score = (url: string) => {
         const channel = discordRouteIdentity(url).channelId;
