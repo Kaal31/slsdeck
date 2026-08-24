@@ -764,6 +764,7 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
   const tab = await ticketTab(ticketUrl);
   if (!tab?.webSocketDebuggerUrl) return { open: false, closed: false, reason: "Discord is not connected." };
   let redirected = 0;
+  let loadedWithoutTicket = 0;
   for (let attempt = 0; attempt < 12; attempt++) {
     const expr = `(function(){try{
       var href=String(location.href||'').split(/[?#]/)[0];
@@ -771,9 +772,10 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
       var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\\n');
       var explicit=/(?:ticket\\s+(?:has\\s+been|was|is(?:\\s+now)?)?\\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\\s+(?:this\\s+)?ticket)/i.test(recent);
       var unavailable=/(?:unknown\\s+channel|channel\\s+(?:is\\s+)?unavailable|you\\s+(?:do\\s+not|don't)\\s+have\\s+access|no\\s+access\\s+to\\s+this\\s+channel)/i.test(body);
-      var active=/(?:tokeer\\s+verify(?:-[a-z0-9_-]+)?|install_linux\\.sh|close\\s+ticket|paste\\s+that\\s+whole\\s+TLX1)/i.test(body);
+      var active=/(?:tokeer\\s+verify(?:-[a-z0-9_-]+)?|install_linux\\.sh|close\\s+ticket|paste\\s+that\\s+whole\\s+TLX1|TLX1\\.[A-Za-z0-9_-]+|activation\\s+(?:code|token|window)|private\\s+ticket\\s+saved)/i.test(body);
       var composer=!!document.querySelector('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"]');
-      return JSON.stringify({href:href,explicit:explicit,unavailable:unavailable,active:active,composer:composer});
+      var loaded=document.readyState==='complete'&&!!document.querySelector('[role="main"],[data-list-id="chat-messages"],ol[class*="scrollerInner"]');
+      return JSON.stringify({href:href,explicit:explicit,unavailable:unavailable,active:active,composer:composer,loaded:loaded});
     }catch(e){return JSON.stringify({error:String(e)});}})()`;
     const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 3500);
     try {
@@ -781,7 +783,9 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
       if (state?.explicit || state?.unavailable) {
         return { open: false, closed: true, reason: state.explicit ? "Tokeer reports that the ticket was closed." : "The Discord ticket channel no longer exists or is inaccessible." };
       }
-      if (String(state?.href || "") === wanted && (state?.active || state?.composer)) return { open: true, closed: false };
+      if (String(state?.href || "") === wanted && state?.active) return { open: true, closed: false };
+      if (attempt >= 3 && String(state?.href || "") === wanted && state?.loaded && !state?.active) loadedWithoutTicket++;
+      if (loadedWithoutTicket >= 3) return { open: false, closed: true, reason: "Discord loaded the saved channel, but its Tokeer ticket content no longer exists." };
       if (attempt >= 3 && state?.href && String(state.href) !== wanted) redirected++;
       if (redirected >= 3) return { open: false, closed: true, reason: "Discord redirected away from the saved ticket because its channel no longer exists." };
     } catch {}
