@@ -658,6 +658,28 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
           }
           lastError = `Ticket commands contained AppID ${candidates.join(", ")}, but the selected installed game is AppID ${expectedAppid}. Waiting for the correct setup command…`;
         }
+        // Discord changes its message wrappers frequently. If the structured
+        // parser cannot see code blocks, recover only the already locally
+        // verified AppID from the rendered ticket text. Requiring both the
+        // exact numeric token and Tokeer command vocabulary prevents an old
+        // unrelated channel message from starting automation.
+        if (expectedAppid && !parsed?.found) {
+          const expectedExpr = `(function(){try{
+            var want=${JSON.stringify(String(expectedAppid))};
+            var roots=[document.body].concat([].slice.call(document.querySelectorAll('[role="article"],[data-list-item-id*="chat-messages"],pre,code')));
+            var text=roots.map(function(e){return String(e&&(e.innerText||e.textContent)||'');}).join('\\n').replace(/\\u00a0/g,' ');
+            var exact=new RegExp('(?:^|\\\\D)'+want+'(?:$|\\\\D)').test(text);
+            var command=/(?:tokeer\\s+verify(?:-[a-z0-9_-]+)?|install_linux\\.sh|bash\\s+-s\\s+--|setup\\s+code)/i.test(text);
+            return JSON.stringify({match:exact&&command,hasId:exact,hasCommand:command});
+          }catch(e){return JSON.stringify({match:false,error:String(e)});}})()`;
+          const expectedRaw = await evalJson(tab.webSocketDebuggerUrl, expectedExpr, 3500);
+          try {
+            const recovered = JSON.parse(String(expectedRaw || ""));
+            if (recovered?.match) {
+              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", url: tab.url };
+            }
+          } catch {}
+        }
         if (parsed?.opened && !String(tab.url || "").includes(TOKEER_CHANNEL)) lastTicketUrl = String(tab.url || "");
         if (parsed?.error) lastError = parsed.error;
       } catch {}
