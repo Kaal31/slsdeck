@@ -922,9 +922,6 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   if (!/^TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
     return { success: false, error: "The generated verification value is not a valid TLX1 code; nothing was sent to Discord." };
   }
-  const tab = await ticketTab(ticketUrl);
-  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view is not connected." };
-
   const focusExpr = `(function(){try{
     var page=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
     var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\n');
@@ -933,12 +930,31 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
     var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
     var box=boxes[boxes.length-1];
     if(!box)return JSON.stringify({ok:false,error:'Discord message box was not found in the ticket.'});
-    box.focus();return JSON.stringify({ok:true});
+    try{box.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}
+    try{box.click();}catch(e){}
+    box.focus();
+    return JSON.stringify({ok:document.activeElement===box,error:document.activeElement===box?'':'Discord rendered the message box but did not focus it yet.'});
   }catch(e){return JSON.stringify({ok:false,error:String(e)});}})()`;
-  const focusedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 4000);
-  let focused: any;
-  try { focused = JSON.parse(String(focusedRaw || "")); } catch { focused = null; }
+  // Page.navigate returns before Discord's SPA has mounted the child thread's
+  // Slate editor. Re-resolve the CDP target and retry instead of treating that
+  // normal transition window as a permanent inability to type.
+  const focusDeadline = Date.now() + 15000;
+  let tab: CdpTab | null = null;
+  let focused: any = null;
+  while (Date.now() < focusDeadline && !focused?.ok) {
+    tab = await ticketTab(ticketUrl);
+    if (tab?.webSocketDebuggerUrl) {
+      const focusedRaw = await evalJson(tab.webSocketDebuggerUrl, focusExpr, 4000);
+      try { focused = JSON.parse(String(focusedRaw || "")); } catch { focused = null; }
+      if (focused?.cancelled) break;
+    }
+    if (!focused?.ok) {
+      invalidateDiscordTabCache();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
   if (!focused?.ok) return { success: false, cancelled: !!focused?.cancelled, error: focused?.error || "Could not focus the Discord ticket message box." };
+  if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected before TLX1 could be entered." };
 
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.insertText", { text }, 3000);
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
