@@ -342,6 +342,25 @@ async function findManagedTokeerTab(): Promise<CdpTab | null> {
   return null;
 }
 
+/** Full Discord navigations replace the document and its page globals. Re-tag
+ * the same target after its requested channel is live so cleanup can always
+ * find SLSDeck's parked BrowserView and return it to the Linux panel. */
+async function retainManagedTokeerTab(tab: CdpTab, wantedUrl: string, timeoutMs = 10000): Promise<boolean> {
+  if (!tab.webSocketDebuggerUrl) return false;
+  const wanted = canonicalDiscordChannelUrl(wantedUrl);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const liveUrl = await resolveTabUrl(tab);
+    if (canonicalDiscordChannelUrl(liveUrl) === wanted) {
+      const tagged = await evalJson(tab.webSocketDebuggerUrl,
+        `(function(){try{if(document.readyState==='loading')return false;window.__SLSDECK_TOKEER_MANAGED=true;return true;}catch(e){return false;}})()`, 2000);
+      if (tagged) return true;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
 async function hideTokeerBrowserView(): Promise<void> {
   const shared = await findSharedJsContext();
   if (!shared?.webSocketDebuggerUrl) return;
@@ -493,13 +512,14 @@ async function cdpDiagnostic(): Promise<string> {
 async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
   if (!tab.webSocketDebuggerUrl) return false;
   const liveUrl = await resolveTabUrl(tab);
-  if (liveUrl.includes(TOKEER_CHANNEL)) return true;
+  if (liveUrl.includes(TOKEER_CHANNEL)) return retainManagedTokeerTab(tab, TOKEER_DISCORD_URL, 2500);
   const nav = await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
     url: TOKEER_DISCORD_URL,
     transitionType: "address_bar",
   }, 4000);
-  if (nav) invalidateDiscordCaptureCaches();
-  return !!nav;
+  if (!nav) return false;
+  invalidateDiscordCaptureCaches();
+  return retainManagedTokeerTab(tab, TOKEER_DISCORD_URL);
 }
 
 const SNAPSHOT_EXPR = `(function(){try{
@@ -747,6 +767,7 @@ export async function waitForTicketContext(
           url: lastTicketUrl, transitionType: "address_bar",
         }, 4000);
         invalidateDiscordCaptureCaches();
+        await retainManagedTokeerTab(managed, lastTicketUrl);
       }
     } catch {}
   }
@@ -773,6 +794,8 @@ export async function waitForTicketContext(
     });
     for (const tab of candidates) {
       if (!tab.webSocketDebuggerUrl) continue;
+      const isManagedTarget = !!(await evalJson(tab.webSocketDebuggerUrl,
+        `(function(){try{return window.__SLSDECK_TOKEER_MANAGED===true;}catch(e){return false;}})()`, 1200));
       const sidebarNow = await readSidebarChannels(tab).catch(() => [] as DiscordSidebarChannel[]);
       const knownThreads = new Set(sidebarNow.filter((item) => item.thread).map((item) => item.id));
       const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
@@ -836,6 +859,7 @@ export async function waitForTicketContext(
               url: lastTicketUrl, transitionType: "link",
             }, 4000);
             invalidateDiscordCaptureCaches();
+            if (isManagedTarget) await retainManagedTokeerTab(tab, lastTicketUrl);
             lastError = "Ticket thread found; waiting for its setup commands…";
           }
         } catch {}
@@ -854,6 +878,7 @@ export async function waitForTicketContext(
               url: lastTicketUrl, transitionType: "link",
             }, 4000);
             invalidateDiscordCaptureCaches();
+            if (isManagedTarget) await retainManagedTokeerTab(tab, lastTicketUrl);
           }
           lastError = "Ticket found; waiting for its setup commands…";
         }
@@ -871,6 +896,7 @@ async function navigateTicketTab(ticketUrl: string): Promise<CdpTab | null> {
   // the composer, so it is safe for reading but not for keyboard automation.
   // Always prefer SLSDeck's rendered, parked BrowserView for ticket actions.
   let tab: CdpTab | null = await findManagedTokeerTab();
+  const managedTarget = !!tab;
   // Older sessions may not have a managed view yet. Only then reuse an exact
   // Discord target, preserving compatibility without stealing a manual tab
   // whenever the managed automation surface is available.
@@ -888,7 +914,8 @@ async function navigateTicketTab(ticketUrl: string): Promise<CdpTab | null> {
   if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && canonicalDiscordChannelUrl(String(tab.url || "")) !== wanted) {
     await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: wanted, transitionType: "address_bar" }, 4000);
     invalidateDiscordCaptureCaches();
-    await new Promise((r) => setTimeout(r, 1000));
+    if (managedTarget) await retainManagedTokeerTab(tab, wanted);
+    else await new Promise((r) => setTimeout(r, 1000));
   }
   return tab;
 }
