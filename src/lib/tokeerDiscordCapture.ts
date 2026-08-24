@@ -935,7 +935,7 @@ export async function checkTokeerTicketState(ticketUrl: string): Promise<TokeerT
       var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\n');
       var explicit=/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent);
       var unavailable=/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(body);
-      var composer=!!document.querySelector('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"]');
+      var composer=!!document.querySelector('[role="textbox"][contenteditable]:not([contenteditable="false"]),[data-slate-editor="true"],textarea');
       var exact=[].slice.call(document.querySelectorAll('[id*="chat-messages-"],[data-list-item-id*="chat-messages-"]')).some(function(e){return new RegExp('chat-messages-'+want+'-\\\\d+').test(String(e.id||e.getAttribute('data-list-item-id')||''));});
       return JSON.stringify({open:exact&&composer&&!explicit&&!unavailable,closed:exact&&(explicit||unavailable),reason:explicit?'Tokeer reports that the ticket was cancelled or closed.':unavailable?'The Discord ticket channel no longer exists or is inaccessible.':''});
     }catch(e){return JSON.stringify({open:false,closed:false,reason:String(e)});}})()`;
@@ -964,7 +964,7 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
       var explicit=/(?:ticket\\s+(?:has\\s+been|was|is(?:\\s+now)?)?\\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\\s+(?:this\\s+)?ticket)/i.test(recent);
       var unavailable=/(?:unknown\\s+channel|channel\\s+(?:is\\s+)?unavailable|you\\s+(?:do\\s+not|don't)\\s+have\\s+access|no\\s+access\\s+to\\s+this\\s+channel)/i.test(body);
       var active=/(?:tokeer\\s+verify(?:-[a-z0-9_-]+)?|install_linux\\.sh|close\\s+ticket|paste\\s+that\\s+whole\\s+TLX1|TLX1\\.[A-Za-z0-9_-]+|activation\\s+(?:code|token|window)|private\\s+ticket\\s+saved)/i.test(body);
-      var composer=!!document.querySelector('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"]');
+      var composer=!!document.querySelector('[role="textbox"][contenteditable]:not([contenteditable="false"]),[data-slate-editor="true"],textarea');
       var loaded=document.readyState==='complete'&&!!document.querySelector('[role="main"],[data-list-id="chat-messages"],ol[class*="scrollerInner"]');
       var exact=[].slice.call(document.querySelectorAll('[id*="chat-messages-"],[data-list-item-id*="chat-messages-"]')).some(function(e){return new RegExp('chat-messages-${wantedId}-\\\\d+').test(String(e.id||e.getAttribute('data-list-item-id')||''));});
       var sidebarReady=!!document.querySelector('[data-list-item-id="channels___${TOKEER_TICKET_PARENT_CHANNEL_ID}"],[data-list-item-id^="channels___"]');
@@ -1004,8 +1004,11 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
     var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\n');
     if(/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent)||/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(page))return JSON.stringify({ok:false,cancelled:true,error:'The Discord ticket was cancelled, closed, or deleted.'});
     var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
-    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
-    var box=boxes[boxes.length-1];
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],textarea,[contenteditable]')).filter(function(e){return visible(e)&&e.getAttribute('contenteditable')!=='false'&&!e.disabled&&!e.readOnly;});
+    // Discord also has a search textbox in the header. The ticket composer is
+    // the lowest visible editable control in the channel viewport.
+    boxes.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+    var box=boxes[0];
     if(!box)return JSON.stringify({ok:false,error:'Discord message box was not found in the ticket.'});
     try{box.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}
     try{box.click();}catch(e){}
@@ -1055,17 +1058,21 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   const draftExpr = `(function(){try{
     var expected=${JSON.stringify(text)};
     var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
-    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(visible);
-    var box=boxes[boxes.length-1];
-    return !!box&&String(box.innerText||box.textContent||'').indexOf(expected)>=0;
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],textarea,[contenteditable]')).filter(function(e){return visible(e)&&e.getAttribute('contenteditable')!=='false'&&!e.disabled&&!e.readOnly;});
+    boxes.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+    var box=boxes[0];
+    return !!box&&String(box.value||box.innerText||box.textContent||'').indexOf(expected)>=0;
   }catch(e){return false;}})()`;
   let draftEntered = !!(await evalJson(tab.webSocketDebuggerUrl, draftExpr, 2500));
   if (!draftEntered) {
     // execCommand fires the beforeinput/input path used by Discord's Slate
     // editor and is a safe fallback when the parked view ignores insertText.
     await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
-      var boxes=[].slice.call(document.querySelectorAll('[role="textbox"][contenteditable="true"],div[contenteditable="true"][data-slate-editor="true"],div[contenteditable="true"]')).filter(function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';});
-      var box=boxes[boxes.length-1];if(!box)return false;box.focus();return document.execCommand('insertText',false,${JSON.stringify(text)});
+      var boxes=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],textarea,[contenteditable]')).filter(function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'&&e.getAttribute('contenteditable')!=='false'&&!e.disabled&&!e.readOnly;});
+      boxes.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+      var box=boxes[0];if(!box)return false;box.focus();
+      if('value' in box){var set=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box),'value');if(set&&set.set)set.set.call(box,${JSON.stringify(text)});else box.value=${JSON.stringify(text)};box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${JSON.stringify(text)}}));return true;}
+      return document.execCommand('insertText',false,${JSON.stringify(text)});
     }catch(e){return false;}})()`, 2500);
     draftEntered = !!(await evalJson(tab.webSocketDebuggerUrl, draftExpr, 2500));
   }
