@@ -401,12 +401,14 @@ export function TokeerSection() {
 
       setAutomationStage("waiting-code");setBusy("Waiting for Discord activation code…");
       setMessage("Local verification passed and TLX1 was submitted. Waiting for Tokeer's six-character activation code…");
-      const received=await waitForTokeerActivationCode(ctx.url);
+      const received=await waitForTokeerActivationCode(ctx.url,15*60*1000,ctx.lastMessageId||"");
       if(ticketAbortedRef.current)return;
       if(received.cancelled){abortTicketChain(`${received.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
       if(!received.success||!received.code){fail(received.error||"No activation code was detected.");return;}
+      const trackedTicket={...ctx,lastMessageId:received.lastMessageId||ctx.lastMessageId};
+      setTicket((old)=>({...old,...trackedTicket}));
       updateActivation(received.code);setAutomationStage("redeeming");setBusy("Redeeming Tokeer activation locally…");
-      checkpoint({automationStage:"redeeming",activation:received.code,codeReceivedAt:Date.now(),expiresAt:Date.now()+TOKEER_SESSION_MS,ticket:ctx,tlxSubmitted:true,submittedTlx:tlx});
+      checkpoint({automationStage:"redeeming",activation:received.code,codeReceivedAt:Date.now(),expiresAt:Date.now()+TOKEER_SESSION_MS,ticket:trackedTicket,tlxSubmitted:true,submittedTlx:tlx});
       const redeemed=await tokeerRedeem(received.code);
       if(ticketAbortedRef.current)return;
       if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}

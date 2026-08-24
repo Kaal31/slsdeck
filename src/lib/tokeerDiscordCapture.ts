@@ -45,6 +45,10 @@ export type TokeerTicketContext = {
   opened?: boolean;
   appid?: number;
   url?: string;
+  guildId?: string;
+  parentChannelId?: string;
+  ticketChannelId?: string;
+  lastMessageId?: string;
   rawText?: string;
   error?: string;
 };
@@ -120,6 +124,34 @@ async function evalDetailed(wsUrl: string, expression: string, timeoutMs = 5000)
 
 function looksLikeDiscordUrl(url: string): boolean {
   return /(^|\.)discord\.com(?:\/|$)/i.test(String(url || "").replace(/^https?:\/\//i, ""));
+}
+
+type DiscordRouteIdentity = { guildId?: string; channelId?: string; messageId?: string };
+
+function discordRouteIdentity(url: string): DiscordRouteIdentity {
+  const match = String(url || "").match(/\/channels\/(\d+)\/(\d+)(?:\/(\d+))?/i);
+  return match ? { guildId: match[1], channelId: match[2], messageId: match[3] } : {};
+}
+
+/** Message links append a message snowflake while Discord's live SPA often
+ * reports only /guild/channel. The child channel snowflake is the ticket. */
+function canonicalDiscordChannelUrl(url: string): string {
+  const identity = discordRouteIdentity(url);
+  if (!identity.guildId || !identity.channelId) return String(url || "").split(/[?#]/)[0];
+  return `https://discord.com/channels/${identity.guildId}/${identity.channelId}`;
+}
+
+function ticketIdentity(url: string, lastMessageId?: string): Partial<TokeerTicketContext> {
+  const identity = discordRouteIdentity(url);
+  if (!identity.guildId || !identity.channelId) return {};
+  const activationChannel = TOKEER_CHANNEL.split("/").pop();
+  return {
+    guildId: identity.guildId,
+    parentChannelId: identity.channelId === activationChannel ? undefined : activationChannel,
+    ticketChannelId: identity.channelId,
+    lastMessageId: lastMessageId || identity.messageId,
+    url: canonicalDiscordChannelUrl(url),
+  };
 }
 
 /** Steam external-web surfaces sometimes report a wrapper URL in /json. Ask the
@@ -582,6 +614,12 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   var recent=articles.map(function(a){return String(a.innerText||a.textContent||'');}).join('\\n');
   var code=articles.reduce(function(all,a){return all.concat([].slice.call(a.querySelectorAll('pre,code,[class*="codeBlock"]')).map(function(e){return e.innerText||e.textContent||'';}));},[]).join('\\n');
   var body=(document.body.innerText||'').replace(/\\u00a0/g,' ');
+  var route=String(location.href||'').match(/\\/channels\\/(\\d+)\\/(\\d+)(?:\\/(\\d+))?/i)||[];
+  var messageIds=[].slice.call(document.querySelectorAll('[id*="chat-messages-"],[data-list-item-id*="chat-messages-"]')).map(function(e){
+    var value=String(e.id||e.getAttribute('data-list-item-id')||'');
+    var match=value.match(/chat-messages-(\\d+)-(\\d+)/);return match?{channelId:match[1],messageId:match[2]}:null;
+  }).filter(Boolean);
+  var newest=messageIds.length?messageIds[messageIds.length-1]:null;
   // Discord is a long-lived SPA. Prefer code blocks and newest messages, and
   // use the end of the page as fallback because new ticket content is last.
   var text=(recent||body.slice(-50000)).replace(/\\u00a0/g,' ');
@@ -600,7 +638,8 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
     if(m&&ids.indexOf(Number(m[1]))<0)ids.push(Number(m[1]));
   }
   var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
-  return JSON.stringify(ids.length?{found:true,opened:true,appid:ids[0],appids:ids,rawText:text.slice(0,20000)}:{found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'});
+  var identity={guildId:route[1]||'',ticketChannelId:(newest&&newest.channelId)||route[2]||'',lastMessageId:(newest&&newest.messageId)||route[3]||''};
+  return JSON.stringify(ids.length?Object.assign({found:true,opened:true,appid:ids[0],appids:ids,rawText:text.slice(0,20000)},identity):Object.assign({found:false,opened:opened,rawText:text.slice(0,12000),error:'Ticket opened, waiting for the setup commands…'},identity));
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 const TICKET_LINK_EXPR = `(function(){try{
@@ -622,12 +661,12 @@ const TICKET_LINK_EXPR = `(function(){try{
 export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expectedAppid = 0): Promise<TokeerTicketContext> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "Waiting for Tokeer ticket…";
-  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? fromUrl : "";
+  let lastTicketUrl = looksLikeDiscordUrl(fromUrl) && fromUrl.includes(`/channels/${GUILD_ID}/`) ? canonicalDiscordChannelUrl(fromUrl) : "";
 
   if (lastTicketUrl) {
     try {
       const managed = await findManagedTokeerTab();
-      if (managed?.webSocketDebuggerUrl && String(managed.url || "") !== lastTicketUrl) {
+      if (managed?.webSocketDebuggerUrl && canonicalDiscordChannelUrl(String(managed.url || "")) !== lastTicketUrl) {
         await cdpCommand(managed.webSocketDebuggerUrl, "Page.navigate", {
           url: lastTicketUrl, transitionType: "address_bar",
         }, 4000);
@@ -648,16 +687,28 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
       // the activation target that initiated the interaction.
       if (u.includes(`/channels/${GUILD_ID}/`)) candidates.push(tab);
     }
+    const wantedChannel = discordRouteIdentity(lastTicketUrl).channelId;
+    const activationChannel = TOKEER_CHANNEL.split("/").pop();
+    candidates.sort((a, b) => {
+      const score = (url: string) => {
+        const channel = discordRouteIdentity(url).channelId;
+        return Number(!!wantedChannel && channel === wantedChannel) * 4 + Number(!!channel && channel !== activationChannel) * 2;
+      };
+      return score(String(b.url || "")) - score(String(a.url || ""));
+    });
     for (const tab of candidates) {
       if (!tab.webSocketDebuggerUrl) continue;
       const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
       try {
         const parsed = JSON.parse(String(raw || ""));
+        const currentIdentity = ticketIdentity(String(tab.url || ""), parsed?.lastMessageId);
+        const currentChannel = parsed?.ticketChannelId || currentIdentity.ticketChannelId;
+        const isPrivateTicket = !!currentChannel && currentChannel !== activationChannel;
         if (parsed?.found && parsed?.appid) {
           const candidates = (Array.isArray(parsed.appids) ? parsed.appids : [parsed.appid])
             .map(Number).filter((value: number) => Number.isFinite(value) && value > 0);
-          if (!expectedAppid || candidates.includes(expectedAppid)) {
-            return { ...parsed, appid: expectedAppid || parsed.appid, opened: true, url: tab.url };
+          if ((!expectedAppid || candidates.includes(expectedAppid)) && isPrivateTicket) {
+            return { ...parsed, ...currentIdentity, parentChannelId: activationChannel, ticketChannelId: currentChannel, appid: expectedAppid || parsed.appid, opened: true };
           }
           lastError = `Ticket commands contained AppID ${candidates.join(", ")}, but the selected installed game is AppID ${expectedAppid}. Waiting for the correct setup command…`;
         }
@@ -679,11 +730,12 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
           try {
             const recovered = JSON.parse(String(expectedRaw || ""));
             if (recovered?.match) {
-              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", url: tab.url };
+              if (!isPrivateTicket) continue;
+              return { found: true, opened: true, appid: expectedAppid, appids: [expectedAppid], rawText: parsed?.rawText || "", ...currentIdentity, parentChannelId: activationChannel, ticketChannelId: currentChannel } as TokeerTicketContext;
             }
           } catch {}
         }
-        if (parsed?.opened && !String(tab.url || "").includes(TOKEER_CHANNEL)) lastTicketUrl = String(tab.url || "");
+        if (parsed?.opened && isPrivateTicket) lastTicketUrl = canonicalDiscordChannelUrl(String(tab.url || ""));
         if (parsed?.error) lastError = parsed.error;
       } catch {}
 
@@ -694,8 +746,8 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
         const linkRaw = await evalJson(tab.webSocketDebuggerUrl, TICKET_LINK_EXPR);
         const link = JSON.parse(String(linkRaw || ""));
         if (link?.found && looksLikeDiscordUrl(link.url || "")) {
-          lastTicketUrl = String(link.url);
-          if (String(tab.url || "") !== lastTicketUrl) {
+          lastTicketUrl = canonicalDiscordChannelUrl(String(link.url));
+          if (canonicalDiscordChannelUrl(String(tab.url || "")) !== lastTicketUrl) {
             await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
               url: lastTicketUrl, transitionType: "link",
             }, 4000);
@@ -707,15 +759,26 @@ export async function waitForTicketContext(fromUrl = "", timeoutMs = 20000, expe
     }
     await new Promise((r) => setTimeout(r, 600));
   }
-  return { found: false, opened: !!lastTicketUrl, url: lastTicketUrl || undefined, error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
+  return { found: false, opened: !!lastTicketUrl, ...(lastTicketUrl ? ticketIdentity(lastTicketUrl) : {}), error: lastError || "Timed out waiting for the Tokeer ticket/thread." };
 }
 
 async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
-  let tab = await findManagedTokeerTab();
+  const wanted = canonicalDiscordChannelUrl(ticketUrl);
+  let tab: CdpTab | null = null;
+  // Reuse the target already rendering this exact child ticket before touching
+  // the managed parent view. This keeps parallel/manual Discord views intact.
+  for (const raw of (await listCdpTabs()).filter((item) => !!item.webSocketDebuggerUrl)) {
+    const resolved = await resolveTabUrl(raw);
+    if (canonicalDiscordChannelUrl(resolved) === wanted) {
+      tab = { ...raw, url: resolved, resolvedUrl: resolved };
+      break;
+    }
+  }
+  if (!tab?.webSocketDebuggerUrl) tab = await findManagedTokeerTab();
   if (!tab?.webSocketDebuggerUrl) tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl) return null;
-  if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && String(tab.url || "") !== ticketUrl) {
-    await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+  if (ticketUrl && looksLikeDiscordUrl(ticketUrl) && canonicalDiscordChannelUrl(String(tab.url || "")) !== wanted) {
+    await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: wanted, transitionType: "address_bar" }, 4000);
     invalidateDiscordCaptureCaches();
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -728,7 +791,7 @@ export async function restoreTokeerTicketView(ticketUrl: string): Promise<boolea
   const tab = await ticketTab(ticketUrl);
   if (!tab?.webSocketDebuggerUrl) return false;
   const live = await resolveTabUrl(tab);
-  return String(live || "").split(/[?#]/)[0] === String(ticketUrl || "").split(/[?#]/)[0];
+  return canonicalDiscordChannelUrl(String(live || "")) === canonicalDiscordChannelUrl(ticketUrl);
 }
 
 /** Inspect an already-visible private ticket without navigating Discord.
@@ -736,11 +799,11 @@ export async function restoreTokeerTicketView(ticketUrl: string): Promise<boolea
  * only explicit Discord/Tokeer closure evidence aborts the saved chain. */
 export async function checkTokeerTicketState(ticketUrl: string): Promise<TokeerTicketState> {
   if (!looksLikeDiscordUrl(ticketUrl)) return { open: false, closed: false };
-  const wanted = String(ticketUrl).split(/[?#]/)[0];
+  const wanted = canonicalDiscordChannelUrl(ticketUrl);
   const tabs = await listCdpTabs();
   for (const raw of tabs.filter((item) => !!item.webSocketDebuggerUrl)) {
     const resolved = await resolveTabUrl(raw);
-    if (String(resolved || "").split(/[?#]/)[0] !== wanted || !raw.webSocketDebuggerUrl) continue;
+    if (canonicalDiscordChannelUrl(String(resolved || "")) !== wanted || !raw.webSocketDebuggerUrl) continue;
     const expr = `(function(){try{
       var body=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
       var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\n');
@@ -760,14 +823,15 @@ export async function checkTokeerTicketState(ticketUrl: string): Promise<TokeerT
  * frequent passive poller because navigation would disrupt Manual view. */
 export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerTicketState> {
   if (!looksLikeDiscordUrl(ticketUrl)) return { open: false, closed: false };
-  const wanted = String(ticketUrl).split(/[?#]/)[0];
+  const wanted = canonicalDiscordChannelUrl(ticketUrl);
   const tab = await ticketTab(ticketUrl);
   if (!tab?.webSocketDebuggerUrl) return { open: false, closed: false, reason: "Discord is not connected." };
   let redirected = 0;
   let loadedWithoutTicket = 0;
   for (let attempt = 0; attempt < 12; attempt++) {
     const expr = `(function(){try{
-      var href=String(location.href||'').split(/[?#]/)[0];
+      var route=String(location.href||'').match(/\\/channels\\/(\\d+)\\/(\\d+)/i)||[];
+      var href=route[1]&&route[2]?'https://discord.com/channels/'+route[1]+'/'+route[2]:String(location.href||'').split(/[?#]/)[0];
       var body=String(document.body&&document.body.innerText||'').replace(/\\u00a0/g,' ');
       var recent=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12).map(function(a){return String(a.innerText||'');}).join('\\n');
       var explicit=/(?:ticket\\s+(?:has\\s+been|was|is(?:\\s+now)?)?\\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\\s+(?:this\\s+)?ticket)/i.test(recent);
@@ -830,12 +894,13 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   return appeared ? { success: true } : { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
 }
 
-export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000): Promise<{ success: boolean; code?: string; cancelled?: boolean; error?: string }> {
+export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000, afterMessageId = ""): Promise<{ success: boolean; code?: string; lastMessageId?: string; cancelled?: boolean; error?: string }> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const tab = await ticketTab(ticketUrl);
     if (!tab?.webSocketDebuggerUrl) return { success: false, error: "The Discord ticket view disconnected while waiting for the activation code." };
     const expr = `(function(){try{
+      var after=${JSON.stringify(afterMessageId)};
       var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
       var page=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
       var recent=arts.slice(0,12).map(function(a){return String(a.innerText||'');}).join('\n');
@@ -843,7 +908,9 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
       if(/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(page))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket channel no longer exists or is inaccessible.'});
       var common=/^(?:verify|setup|ticket|cancel|close|valid|code|redeem|tokeer|linux|steam|proton)$/i;
       for(var i=0;i<arts.length;i++){
-        var a=arts[i], text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
+        var a=arts[i], identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\d+)-(\d+)/), messageId=identity&&identity[2]||'';
+        if(after&&messageId&&BigInt(messageId)<=BigInt(after))continue;
+        var text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
         if(/TLX1\./i.test(text))continue;
         var nodes=[].slice.call(a.querySelectorAll('code,pre')).map(function(n){return String(n.textContent||'').trim();});
         var contextual=/(?:activation|redeem|single[- ]use|expires|30\s*minutes?|verification\s+(?:succeeded|complete))/i.test(text);
@@ -851,14 +918,14 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
         if(!matches.length&&contextual){
           matches=(text.match(/(?:^|\s|[:#])([A-Za-z0-9_-]{6})(?=$|\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
         }
-        if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0]});
+        if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0],lastMessageId:messageId});
       }
       return JSON.stringify({found:false});
     }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
     const raw = await evalJson(tab.webSocketDebuggerUrl, expr, 4000);
     try {
       const found = JSON.parse(String(raw || ""));
-      if (found?.found && /^[A-Za-z0-9_-]{6}$/.test(String(found.code || ""))) return { success: true, code: String(found.code) };
+      if (found?.found && /^[A-Za-z0-9_-]{6}$/.test(String(found.code || ""))) return { success: true, code: String(found.code), lastMessageId: String(found.lastMessageId || "") || undefined };
       if (found?.cancelled) return { success: false, cancelled: true, error: found.error || "The Discord ticket was cancelled." };
       if (found?.error) return { success: false, error: found.error };
     } catch {}
@@ -904,8 +971,8 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     if (!looksLikeDiscordUrl(resolved) || !resolved.includes(`/channels/${GUILD_ID}/`)) continue;
     candidates.push({ ...rawTab, resolvedUrl: resolved, url: resolved });
   }
-  const wanted = String(ticketUrl || "").split(/[?#]/)[0];
-  candidates.sort((a, b) => Number(String(b.url || "").split(/[?#]/)[0] === wanted) - Number(String(a.url || "").split(/[?#]/)[0] === wanted));
+  const wanted = canonicalDiscordChannelUrl(ticketUrl);
+  candidates.sort((a, b) => Number(canonicalDiscordChannelUrl(String(b.url || "")) === wanted) - Number(canonicalDiscordChannelUrl(String(a.url || "")) === wanted));
 
   let tab: CdpTab | null = null;
   let first: any = null;
@@ -922,8 +989,8 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
     let fallback = await findManagedTokeerTab();
     if (!fallback?.webSocketDebuggerUrl) fallback = await findDiscordTab();
     if (fallback?.webSocketDebuggerUrl) {
-      if (String(fallback.url || "").split(/[?#]/)[0] !== wanted) {
-        await cdpCommand(fallback.webSocketDebuggerUrl, "Page.navigate", { url: ticketUrl, transitionType: "address_bar" }, 4000);
+      if (canonicalDiscordChannelUrl(String(fallback.url || "")) !== wanted) {
+        await cdpCommand(fallback.webSocketDebuggerUrl, "Page.navigate", { url: wanted, transitionType: "address_bar" }, 4000);
         invalidateDiscordCaptureCaches();
         await new Promise((resolve) => setTimeout(resolve, 1200));
       }
