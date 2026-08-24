@@ -575,15 +575,21 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
 }
 
 const TICKET_CONTEXT_EXPR = `(function(){try{
-  var text=(document.body.innerText||'').replace(/\\u00a0/g,' ');
-  var code=[].slice.call(document.querySelectorAll('pre,code,[class*="codeBlock"],[class*="markup"]')).map(function(e){return e.innerText||e.textContent||'';}).join('\\n');
-  var hay=(code+'\\n'+text).slice(0,50000);
+  var articles=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40);
+  var recent=articles.map(function(a){return String(a.innerText||a.textContent||'');}).join('\\n');
+  var code=articles.reduce(function(all,a){return all.concat([].slice.call(a.querySelectorAll('pre,code,[class*="codeBlock"]')).map(function(e){return e.innerText||e.textContent||'';}));},[]).join('\\n');
+  var body=(document.body.innerText||'').replace(/\\u00a0/g,' ');
+  // Discord is a long-lived SPA. Prefer code blocks and newest messages, and
+  // use the end of the page as fallback because new ticket content is last.
+  var text=(recent||body.slice(-50000)).replace(/\\u00a0/g,' ');
+  var hay=(code+'\\n'+text).slice(-70000);
   var patterns=[
-    /tokeer\\s+verify(?:\\s+--?appid(?:=|\\s+)|\\s+)(\\d{3,10})/i,
+    /tokeer\\s+verify(?:-[a-z][a-z0-9_-]*)?(?:\\s+--?appid(?:=|\\s+)|\\s+)(\\d{3,10})/i,
+    /install_linux\\.sh[^\\n\\r|]*\\|\\s*(?:bash|sh)\\s+-s\\s+--\\s*(\\d{3,10})(?:\\s+[a-z][a-z0-9_-]*)?/i,
+    /bash\\s+-s\\s+--\\s*(\\d{3,10})(?:\\s+(?:ubisoft|steam|linux))?/i,
     /(?:--?appid|app[_ -]?id)(?:=|:|\\s+|["']+)(\\d{3,10})/i,
     /(?:store\\.steampowered\\.com\\/app|steam:\\/\\/(?:run|install)|steamdb\\.info\\/app)\\/(\\d{3,10})/i,
-    /\\/app\\/(\\d{3,10})(?:\\/|\\b)/i,
-    /bash\\s+-s\\s+--(?:[^\\n\\r\\d]{0,40})(\\d{3,10})/i
+    /\\/app\\/(\\d{3,10})(?:\\/|\\b)/i
   ];
   var ids=[];
   for(var i=0;i<patterns.length;i++){
