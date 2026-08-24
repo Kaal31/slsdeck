@@ -111,6 +111,7 @@ export function TokeerSection() {
   const automationRunningRef=useRef(false);
   const ticketAbortedRef=useRef(false);
   const ticketGenerationRef=useRef(0);
+  const selectedUbisoftRef=useRef(!!savedRef.current?.selectedUbisoft);
   const loginPendingRef=useRef(false);
 
   const checkpoint=(patch:Partial<SavedTokeerSession>)=>{
@@ -158,7 +159,7 @@ export function TokeerSection() {
   }catch{return null;} };
   const ticketChainActive=()=>!!(ticket?.opened||ticket?.url||gate?.found);
   const ticketUsesUbisoftVerifier=(ctx?:TokeerTicketContext|null)=>
-    selectedUbisoft||!!ctx?.ubisoft||/(?:tokeer\s+verify-ubi\b|(?:^|\s)--ubi\b|\bUbiTokeer\b)/i.test(String(ctx?.rawText||""));
+    selectedUbisoftRef.current||selectedUbisoft||!!ctx?.ubisoft||/(?:tokeer\s+verify-ubi\b|(?:^|\s)--ubi\b|\bUbiTokeer\b)/i.test(String(ctx?.rawText||""));
   // Tokeer appends the access tier to some Ubisoft dropdown options (for
   // example "Assassin's Creed Shadows Free • 6 of 10 remaining"). Keep the
   // original value as the Discord click target, but do not present the tier as
@@ -348,7 +349,9 @@ export function TokeerSection() {
     }
     setBusy(`Selecting ${label} in Discord…`);
     const selectorLabel=discord?.selectors.find((selector)=>selector.index===index)?.label||"";
-    setSelectedUbisoft(/\bubi(?:soft)?\b/i.test(selectorLabel));
+    const fromUbisoftList=/\bubi(?:soft)?\b/i.test(selectorLabel);
+    selectedUbisoftRef.current=fromUbisoftList;
+    setSelectedUbisoft(fromUbisoftList);
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
     setAutomationStage("idle");setTlxSubmitted(false);setSubmittedTlx("");setAutomationError("");
     setSelectedMenus((old)=>({...old,[index]:label}));
@@ -385,6 +388,7 @@ export function TokeerSection() {
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
     try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+    selectedUbisoftRef.current=false;
     setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setOptions({});setTicket(null);setGate(null);setVerify(null);setActivation("");
     setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");
     // The chain is gone, so do not leave the old game/gate or an "aborted"
@@ -505,6 +509,7 @@ export function TokeerSection() {
       setAutomationStage("done");setMessage("Tokeer activation was received and redeemed automatically. Launch the game from Steam.");
       toaster.toast({title:"SLSDeck · Tokeer",body:"Activation received and redeemed successfully."});
       try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+      selectedUbisoftRef.current=false;
       setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");setCodeExpiresAt(undefined);
       codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
     }catch(e){if(!stale())fail(String(e));}
@@ -533,17 +538,19 @@ export function TokeerSection() {
         // Cancellation should become available as soon as the thread exists;
         // Tokeer's AppID/setup commands can arrive a little later.
         if(generation===ticketGenerationRef.current&&!ticketAbortedRef.current){
-          setTicket(discovered);
-          checkpoint({ticket:discovered});
+          const classified={...discovered,ubisoft:selectedUbisoftRef.current||discovered.ubisoft};
+          setTicket(classified);
+          checkpoint({ticket:classified,selectedUbisoft:selectedUbisoftRef.current});
         }
       },expectedName);
       if(generation!==ticketGenerationRef.current||ticketAbortedRef.current)return;
-      setTicket(ctx);
-      if(ctx.found&&ctx.appid){
+      const classifiedCtx={...ctx,ubisoft:selectedUbisoftRef.current||ctx.ubisoft};
+      setTicket(classifiedCtx);
+      if(classifiedCtx.found&&classifiedCtx.appid){
         setMessage(`Ticket opened for ${selectedGame||"selected game"}. Starting local preparation and automatic verification.`);
-        await runAutomation(ctx,undefined,generation);
+        await runAutomation(classifiedCtx,undefined,generation);
       }else{
-        setMessage(ctx.error||"Ticket opened, but the AppID commands were not found yet.");
+        setMessage(classifiedCtx.error||"Ticket opened, but the AppID commands were not found yet.");
       }
     }catch(e){if(generation===ticketGenerationRef.current&&!ticketAbortedRef.current)setMessage(String(e));}
     finally{if(generation===ticketGenerationRef.current)setBusy("");}
@@ -564,9 +571,10 @@ export function TokeerSection() {
       const expectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
       const ctx=await waitForTicketContext(ticket.url,35000,expectedAppid,[],undefined,expectedName);
       if(generation!==ticketGenerationRef.current||ticketAbortedRef.current)return;
-      setTicket((old)=>({...old,...ctx,url:ctx.url||old?.url,opened:true}));
-      if(ctx.found&&ctx.appid){setMessage(`Commands detected. Resuming Tokeer automation for Steam AppID ${ctx.appid}.`);await runAutomation({...ticket,...ctx,url:ctx.url||ticket.url,opened:true},savedRef.current||undefined,generation);}
-      else setMessage(ctx.error||"Ticket is open, but its AppID still was not found.");
+      const classifiedCtx={...ctx,ubisoft:selectedUbisoftRef.current||ctx.ubisoft};
+      setTicket((old)=>({...old,...classifiedCtx,url:classifiedCtx.url||old?.url,opened:true}));
+      if(classifiedCtx.found&&classifiedCtx.appid){setMessage(`Commands detected. Resuming Tokeer automation for Steam AppID ${classifiedCtx.appid}.`);await runAutomation({...ticket,...classifiedCtx,url:classifiedCtx.url||ticket.url,opened:true},savedRef.current||undefined,generation);}
+      else setMessage(classifiedCtx.error||"Ticket is open, but its AppID still was not found.");
     }catch(e){if(generation===ticketGenerationRef.current&&!ticketAbortedRef.current)setMessage(String(e));}
     finally{if(generation===ticketGenerationRef.current)setBusy("");}
   };
@@ -701,6 +709,7 @@ export function TokeerSection() {
       setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
       if(r.success){
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+        selectedUbisoftRef.current=false;
         setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);
         setVerify(null);setActivation("");setCodeExpiresAt(undefined);
         sessionStartedRef.current=Date.now();
@@ -763,7 +772,7 @@ export function TokeerSection() {
     </PanelSection>
 
     {(selectedGame||gate)&&<PanelSection title="Open activation ticket">
-      {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{displayGameLabel(selectedGame)}</b></div></PanelSectionRow>}
+      {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{displayGameLabel(selectedGame)}</b> · Verifier: <b>{selectedUbisoft?"Ubisoft":"Steam"}</b></div></PanelSectionRow>}
       {ticket?.opened&&!ticket.appid
         ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
         :gate?.found
