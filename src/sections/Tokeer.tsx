@@ -57,7 +57,11 @@ type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming
 function readSavedSession(): SavedTokeerSession|null {
   try {
     const parsed=JSON.parse(window.localStorage.getItem(TOKEER_SESSION_KEY)||"null");
-    if(!parsed||(parsed.expiresAt&&Number(parsed.expiresAt)<=Date.now())){
+    // Older builds could clear the selected game while a late ticket scan
+    // persisted the old ticket again. That orphan has no trustworthy game
+    // identity and must not resurrect Prepare/Verify after an update.
+    const orphanedTicket=!!parsed?.ticket&&(parsed.ticket.found||parsed.ticket.opened||parsed.ticket.url)&&!String(parsed.selectedGame||"").trim();
+    if(!parsed||orphanedTicket||(parsed.expiresAt&&Number(parsed.expiresAt)<=Date.now())){
       window.localStorage.removeItem(TOKEER_SESSION_KEY);
       return null;
     }
@@ -765,7 +769,7 @@ export function TokeerSection() {
       {automationStage!=="idle"&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>Automation: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}{automationError?<div style={{color:"#ff7b72",marginTop:3}}>{automationError}</div>:null}</div></PanelSectionRow>}
     </PanelSection>}
 
-    {ticket?.found&&ticket.appid&&<PanelSection title="Prepare & verify">
+    {selectedGame&&ticket?.found&&ticket.appid&&<PanelSection title="Prepare & verify">
       <PanelSectionRow><div style={{fontSize:11}}>Runtime: <b>{runtime?.installed?"Installed":"Not prepared"}</b> · Default/free cooldown: <b>48 hours</b></div></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={prepare} disabled={!!busy}>Prepare game</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={runVerify} disabled={!!busy}>Verify setup / generate TLX1</ButtonItem></PanelSectionRow>
