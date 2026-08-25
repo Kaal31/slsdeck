@@ -365,8 +365,9 @@ def set_no_internet_fix(value: bool) -> None:
 def get_auto_repoint() -> bool:
     """After a fix is applied to a game whose real executable is nested (e.g. an
     Unreal *-Shipping.exe), automatically rewrite the Steam launch target to that
-    exe via launch options so the crack actually loads. On by default."""
-    return bool(get_value("autoRepoint", True))
+    exe via launch options so the crack actually loads. Opt-in: automatic target
+    changes must never happen unless the user explicitly enables them."""
+    return bool(get_value("autoRepoint", False))
 
 
 def set_auto_repoint(value: bool) -> None:

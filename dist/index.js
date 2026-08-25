@@ -11639,7 +11639,7 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
     const [autoFix, setAutoFixState] = SP_REACT.useState(false);
     const [libButtons, setLibButtons] = SP_REACT.useState(true);
     const [autoApply, setAutoApplyState] = SP_REACT.useState(false);
-    const [autoRepoint, setAutoRepointState] = SP_REACT.useState(true);
+    const [autoRepoint, setAutoRepointState] = SP_REACT.useState(false);
     const [hideToolsQam, setHideToolsQamState] = SP_REACT.useState(true);
     const [achievements, setAchievementsState] = SP_REACT.useState(true);
     const [achMoon, setAchMoon] = SP_REACT.useState(true);

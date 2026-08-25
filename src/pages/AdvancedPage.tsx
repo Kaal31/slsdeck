@@ -338,7 +338,7 @@ function OptionsPane({
   const [autoFix, setAutoFixState] = useState(false);
   const [libButtons, setLibButtons] = useState(true);
   const [autoApply, setAutoApplyState] = useState(false);
-  const [autoRepoint, setAutoRepointState] = useState(true);
+  const [autoRepoint, setAutoRepointState] = useState(false);
   const [hideToolsQam, setHideToolsQamState] = useState(true);
   const [achievements, setAchievementsState] = useState(true);
   const [achMoon, setAchMoon] = useState(true);
