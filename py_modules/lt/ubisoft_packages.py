@@ -136,6 +136,7 @@ def _chown_tree(path: str) -> None:
 
 def ensure_packages(force: bool = False) -> Dict[str, Any]:
     root = _install_root()
+    install_staged = ""
     version, url = _release_asset()
     installed_version = _installed_version()
     if not force and _complete(root) and (not version or version == installed_version):
@@ -160,19 +161,30 @@ def ensure_packages(force: bool = False) -> Dict[str, Any]:
                 raise RuntimeError("The Ubisoft package dependency is incomplete.")
             with open(os.path.join(staged, VERSION_FILE), "w", encoding="utf-8") as handle:
                 handle.write((version or hashlib.sha256(open(archive_path, "rb").read()).hexdigest()) + "\n")
-            os.makedirs(os.path.dirname(root), exist_ok=True)
+            install_parent = os.path.dirname(root)
+            os.makedirs(install_parent, exist_ok=True)
+            # /tmp and /home are separate filesystems on SteamOS. Copy the
+            # validated extraction into a sibling staging directory first so
+            # the final atomic rename never crosses a filesystem boundary.
+            install_staged = tempfile.mkdtemp(prefix=".ubisoft-packages-", dir=install_parent)
+            shutil.copytree(staged, install_staged, dirs_exist_ok=True)
+            if not _complete(install_staged):
+                raise RuntimeError("The staged Ubisoft package dependency is incomplete.")
+            _chown_tree(install_staged)
             previous = root + ".old"
             if os.path.lexists(previous):
                 shutil.rmtree(previous)
             if os.path.lexists(root):
                 os.replace(root, previous)
-            os.replace(staged, root)
-            _chown_tree(root)
+            os.replace(install_staged, root)
+            install_staged = ""
             if os.path.isdir(previous):
                 shutil.rmtree(previous)
         return {**package_status(), "updated": True, "skipped": False,
                 "latest": version or None}
     except Exception as exc:
+        if install_staged and os.path.isdir(install_staged):
+            shutil.rmtree(install_staged, ignore_errors=True)
         previous = root + ".old"
         try:
             if not os.path.lexists(root) and os.path.isdir(previous):
