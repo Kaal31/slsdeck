@@ -23,10 +23,10 @@ class Core:
         "https://api.github.com/repos/2804u13j200-spec/glowing-tribble/releases/latest"
     )
     PROTON_RELEASE_API_URL = (
-        "https://api.github.com/repos/xXJSONDeruloXx/proton-LinUwUx-patch/releases/latest"
+        "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/main-latest"
     )
     ALT_PROTON_RELEASE_API_URL = (
-        "https://api.github.com/repos/brcly/proton-LinUwUx-patch/releases/latest"
+        "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/main-latest"
     )
     JUPITER_REPOSITORY_FALLBACK = (
         "https://steamdeck-packages.steamos.cloud/archlinux-mirror/jupiter-3.8/os/x86_64/"

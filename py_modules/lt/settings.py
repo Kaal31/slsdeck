@@ -321,20 +321,31 @@ def set_hv_autoload(value: bool) -> None:
 
 
 # ── custom Proton (GE-Proton-HV) download source for Denuvo games ─────────────
-# 'owner/repo' shorthand -> resolved to the latest release's LinUwUx tarball at
-# download time (proton._resolve_download_url), so it survives asset re-tagging.
-# (The old Kaal31/slsdeckhv 'latest' asset was removed and now 404s.)
-DEFAULT_PROTON_URL = "xXJSONDeruloXx/proton-LinUwUx-patch"
-# Stale value that used to be the default; treated as "unset" so existing
-# installs fall back to the current default above instead of 404ing.
+# Canonical LinUwUx build published with SLSDeck's rolling main release.
+DEFAULT_PROTON_URL = (
+    "https://github.com/Kaal31/slsdeck/releases/download/main-latest/"
+    "Proton-GE11-1-LinUwUx.tar.gz"
+)
+# Stale values that used to be defaults; treat them as unset so existing
+# installs migrate to the canonical rolling asset instead of resolving an old
+# fork or a removed release.
 _STALE_PROTON_URLS = (
     "https://github.com/Kaal31/slsdeckhv/releases/download/latest/GE-Proton11-1-LinUwUx.tar.gz",
+    "xXJSONDeruloXx/proton-LinUwUx-patch",
+    "brcly/proton-LinUwUx-patch",
 )
 
 
 def get_proton_url() -> str:
     val = str(get_value("protonUrl", DEFAULT_PROTON_URL) or "").strip()
-    if not val or val in _STALE_PROTON_URLS or "Kaal31/slsdeckhv" in val:
+    if not val or val in _STALE_PROTON_URLS or any(
+        hint in val
+        for hint in (
+            "Kaal31/slsdeckhv",
+            "xXJSONDeruloXx/proton-LinUwUx-patch",
+            "brcly/proton-LinUwUx-patch",
+        )
+    ):
         return DEFAULT_PROTON_URL
     return val
 

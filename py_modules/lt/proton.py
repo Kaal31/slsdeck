@@ -100,13 +100,22 @@ def status() -> Dict[str, Any]:
 
 
 # ── URL resolution ──────────────────────────────────────────────────────────
-# Known-good LinUwUx Proton release repos, tried (latest release) in order.
-# The old Kaal31/slsdeckhv "latest" asset (GE-Proton11-1) was removed and now
-# 404s, so we resolve the current asset from these live repos instead.
-_PROTON_REPOS = ("xXJSONDeruloXx/proton-LinUwUx-patch", "brcly/proton-LinUwUx-patch")
-# Dead/stale sources: if the configured URL points here, ignore it and fall
-# back to _PROTON_REPOS (handles installs that saved the old default).
-_DEAD_PROTON_HINTS = ("Kaal31/slsdeckhv",)
+# Canonical rolling release. The exact asset URL is the normal default; the tag
+# API is retained for repository/API-style resolution and the Hypervisor UI.
+_PROTON_RELEASE_APIS = (
+    "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/main-latest",
+)
+_CANONICAL_PROTON_URL = (
+    "https://github.com/Kaal31/slsdeck/releases/download/main-latest/"
+    "Proton-GE11-1-LinUwUx.tar.gz"
+)
+# Dead/stale sources: if an existing install saved one, ignore it and migrate
+# to the canonical SLSDeck rolling asset.
+_DEAD_PROTON_HINTS = (
+    "Kaal31/slsdeckhv",
+    "xXJSONDeruloXx/proton-LinUwUx-patch",
+    "brcly/proton-LinUwUx-patch",
+)
 # Match a LinUwUx Proton tarball asset regardless of its 11-x version / dashes
 # (e.g. GE-Proton11-1-LinUwUx.tar.gz, GE-Proton-11-3-LinUwUx.tar.gz).
 _ASSET_RE = re.compile(r"ge-?proton-?\d+.*linuwux.*\.tar\.gz$", re.I)
@@ -147,23 +156,22 @@ def _resolve_download_url(cfg: str) -> Optional[str]:
     """Turn the configured value into a direct download URL.
     Accepts a direct .tar.gz / '/releases/download/' URL, an 'owner/repo'
     shorthand, or an api.github.com releases URL. When the configured value is
-    empty or a known-dead source, resolve the latest release from the built-in
-    LinUwUx Proton repos so a stale default keeps working."""
+    empty or a known-dead source, resolve the canonical SLSDeck rolling release
+    so a stale saved default keeps working."""
     cfg = (cfg or "").strip()
     dead = any(h in cfg for h in _DEAD_PROTON_HINTS)
     # An explicit, still-valid direct link wins.
     if cfg and not dead and (cfg.endswith(".tar.gz") or "/releases/download/" in cfg):
         return cfg
     # Build the ordered list of release-API URLs to try, then always append the
-    # built-in repos as a fallback.
+    # canonical release API as a fallback.
     apis: list = []
     if cfg and not dead:
         if cfg.startswith("http"):
             apis.append(cfg)
         elif "/" in cfg and " " not in cfg:
             apis.append(f"https://api.github.com/repos/{cfg}/releases/latest")
-    for repo in _PROTON_REPOS:
-        apis.append(f"https://api.github.com/repos/{repo}/releases/latest")
+    apis.extend(_PROTON_RELEASE_APIS)
     seen = set()
     for api in apis:
         if api in seen:
@@ -172,7 +180,9 @@ def _resolve_download_url(cfg: str) -> Optional[str]:
         u = _resolve_release_api(api)
         if u:
             return u
-    return None
+    # The tag API may be temporarily rate-limited while its stable direct asset
+    # remains downloadable.
+    return _CANONICAL_PROTON_URL
 
 
 # ── download + extract (background) ─────────────────────────────────────────
