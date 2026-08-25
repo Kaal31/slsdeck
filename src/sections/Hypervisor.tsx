@@ -198,7 +198,7 @@ export function HypervisorSection() {
   const games = markedGames(st);
 
   return (
-    <PanelSection title="Anti-Denuvo (hypervisor)">
+    <PanelSection title="HV Module">
       <PanelSectionRow>
         <div style={{ padding: "2px 0" }}>
           <Chip ok={loaded} label={loaded ? "Active" : "Inactive"} />

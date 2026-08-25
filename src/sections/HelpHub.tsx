@@ -107,10 +107,10 @@ const TOPICS: HelpTopic[] = [
     ],
   },
   {
-    key: "denuvo", title: "Anti-Denuvo", icon: <FaShieldAlt />,
+    key: "denuvo", title: "HV Module", icon: <FaShieldAlt />,
     blurb: "Hypervisor/custom-Proton tooling for supported Denuvo fixes.",
     items: [
-      { name: "Hypervisor", desc: "Install/manage the anti-Denuvo hypervisor support used by compatible fixes. This is a heavy optional dependency and only applies to supported titles." },
+      { name: "HV Module", desc: "Install/manage the anti-Denuvo hypervisor support used by compatible fixes. This is a heavy optional dependency and only applies to supported titles." },
     ],
   },
   {

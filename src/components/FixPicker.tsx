@@ -1321,7 +1321,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           Tokeer: {tokeerRefreshing
             ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
             : !tokeerLookup.updatedAt
-            ? "no successful availability cache yet — connect Discord in Anti-Denuvo and refresh the vault"
+            ? "no successful availability cache yet — connect Discord in Tokeer helper and refresh the vault"
             : `not currently matched as available (${tokeerLookup.cachedGames} cached games; zero-key games are excluded)`}
         </div>
       )}

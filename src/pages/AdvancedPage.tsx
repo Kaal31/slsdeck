@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
 import {
   FaBoxOpen, FaDownload, FaWrench,
-  FaCloud, FaSlidersH, FaKey, FaInfoCircle, FaShieldAlt, FaPuzzlePiece, FaArchive,
+  FaCloud, FaSlidersH, FaKey, FaInfoCircle, FaShieldAlt, FaLock, FaPuzzlePiece, FaArchive,
 } from "react-icons/fa";
 
 import { AddGameSection } from "../sections/AddGame";
@@ -572,8 +572,8 @@ function OptionsPane({
       <PanelSection title="Advanced tools">
         <PanelSectionRow>
           <ToggleField
-            label="Show Hypervisor Bypass Module tab"
-            description="Show the Hypervisor Bypass Module controls in Advanced. Hidden by default; Anti-Denuvo uses the Tokeer page."
+            label="Show HV Module tab"
+            description="Show the HV Module controls in Advanced. Hidden by default; Tokeer activation uses the separate Tokeer helper page."
             checked={showDeckyHv}
             onChange={(v) => onShowDeckyHvChange(v)}
           />
@@ -797,12 +797,12 @@ export function AdvancedPage() {
           content: <Body><CloudRedirectSection /></Body>,
         },
         {
-          title: "Anti-Denuvo",
-          icon: <FaShieldAlt />,
+          title: "Tokeer helper",
+          icon: <FaLock />,
           content: <Body><TokeerSection /></Body>,
         },
         ...(showDeckyHv ? [{
-          title: "Hypervisor Bypass Module",
+          title: "HV Module",
           icon: <FaShieldAlt />,
           content: <Body><HypervisorSection /></Body>,
         }] : []),
