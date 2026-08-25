@@ -115,6 +115,69 @@ function cdpCommand(wsUrl: string, method: string, params: Record<string, any> =
   });
 }
 
+/** CDP DOM node ids belong to the debugger session that created them. Keep
+ * discovery and assignment on one socket so Discord's hidden file input does
+ * not become invalid between DOM.requestNode and DOM.setFileInputFiles. */
+function cdpSetDiscordFileInput(wsUrl: string, filePath: string, timeoutMs = 7000): Promise<{ found: boolean; accepted: boolean }> {
+  return new Promise((resolve) => {
+    let done = false;
+    let sock: WebSocket;
+    let nextId = 0;
+    const pending = new Map<number, (value: any) => void>();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: { found: boolean; accepted: boolean }) => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) clearTimeout(timer);
+      pending.clear();
+      try { sock.close(); } catch {}
+      resolve(value);
+    };
+    const send = (method: string, params: Record<string, any> = {}): Promise<any> => new Promise((resolveCommand) => {
+      if (done || sock.readyState !== WebSocket.OPEN) { resolveCommand(null); return; }
+      const id = ++nextId;
+      pending.set(id, resolveCommand);
+      try { sock.send(JSON.stringify({ id, method, params })); } catch {
+        pending.delete(id);
+        resolveCommand(null);
+      }
+    });
+    try { sock = new WebSocket(wsUrl); } catch { resolve({ found: false, accepted: false }); return; }
+    sock.onmessage = (ev) => {
+      try {
+        const message = JSON.parse(String(ev.data));
+        const resolveCommand = pending.get(Number(message?.id));
+        if (!resolveCommand) return;
+        pending.delete(Number(message.id));
+        resolveCommand(message?.error ? null : (message?.result ?? null));
+      } catch {}
+    };
+    sock.onopen = async () => {
+      await send("DOM.enable");
+      await send("DOM.getDocument", { depth: 1, pierce: true });
+      const evaluated = await send("Runtime.evaluate", {
+        expression: `(function(){try{
+          var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+          var composer=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],[contenteditable]')).filter(visible).sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;})[0];
+          var form=composer&&composer.closest('form');
+          return (form&&form.querySelector('input[type="file"]'))||document.querySelector('input[type="file"]')||null;
+        }catch(e){return null;}})()`,
+        returnByValue: false,
+      });
+      const objectId = String(evaluated?.result?.objectId || "");
+      if (!objectId || evaluated?.result?.subtype === "null") { finish({ found: false, accepted: false }); return; }
+      const requested = await send("DOM.requestNode", { objectId });
+      const nodeId = Number(requested?.nodeId || 0);
+      if (!nodeId) { finish({ found: true, accepted: false }); return; }
+      const assigned = await send("DOM.setFileInputFiles", { nodeId, files: [filePath] });
+      finish({ found: true, accepted: assigned !== null });
+    };
+    sock.onerror = () => finish({ found: false, accepted: false });
+    sock.onclose = () => finish({ found: false, accepted: false });
+    timer = setTimeout(() => finish({ found: false, accepted: false }), timeoutMs);
+  });
+}
+
 async function evalJson(wsUrl: string, expression: string, timeoutMs = 5000): Promise<any> {
   const result = await cdpCommand(wsUrl, "Runtime.evaluate", {
     expression, returnByValue: true, awaitPromise: true,
@@ -1200,8 +1263,9 @@ export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string
   }
   const deadline = Date.now() + 20000;
   let tab: CdpTab | null = null;
-  let inputNodeId = 0;
-  while (Date.now() < deadline && !inputNodeId) {
+  let fileInputFound = false;
+  let fileAccepted = false;
+  while (Date.now() < deadline && !fileAccepted) {
     tab = await ticketTab(ticketUrl);
     if (!tab?.webSocketDebuggerUrl) {
       await new Promise((r) => setTimeout(r, 500));
@@ -1209,28 +1273,26 @@ export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string
     }
     const closed = await checkTokeerTicketState(ticketUrl);
     if (closed.closed) return { success: false, cancelled: true, error: closed.reason || "The Discord ticket was closed." };
-    const documentNode = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.getDocument", { depth: -1, pierce: true }, 4000);
-    const rootId = Number(documentNode?.root?.nodeId || 0);
-    if (rootId) {
-      const queried = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.querySelector", { nodeId: rootId, selector: 'input[type="file"]' }, 3000);
-      inputNodeId = Number(queried?.nodeId || 0);
-    }
-    if (!inputNodeId) {
+    const assigned = await cdpSetDiscordFileInput(tab.webSocketDebuggerUrl, filePath);
+    fileInputFound = fileInputFound || assigned.found;
+    fileAccepted = assigned.accepted;
+    if (!fileAccepted) {
       // Discord may mount its hidden file input only after the attachment
-      // control is opened. Click only a visible composer-adjacent upload/+ button.
+      // control is opened. Prefer structural classes so localized aria-labels
+      // and composer placeholders do not affect attachment discovery.
       await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
         var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
         var composer=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],[contenteditable]')).filter(visible).sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;})[0];
         if(!composer)return false;var cr=composer.getBoundingClientRect();
-        var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible).filter(function(b){var r=b.getBoundingClientRect(),t=String(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'');return r.bottom>=cr.top-24&&r.top<=cr.bottom+24&&r.right<=cr.left+24&&/(?:upload|attach|add|plus|file|\\+)/i.test(t);});
+        var structural=[].slice.call(document.querySelectorAll('[class*="attachButton"][role="button"],[class*="attachWrapper"] [role="button"]')).filter(visible);
+        var buttons=structural.length?structural:[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible).filter(function(b){var r=b.getBoundingClientRect();return r.bottom>=cr.top-24&&r.top<=cr.bottom+24&&r.right<=cr.left+24;});
         var b=buttons[buttons.length-1];if(!b)return false;b.click();return true;
       }catch(e){return false;}})()`, 2500);
       await new Promise((r) => setTimeout(r, 400));
     }
   }
-  if (!tab?.webSocketDebuggerUrl || !inputNodeId) return { success: false, error: "Discord did not expose its attachment input in the saved ticket." };
-  const setFiles = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.setFileInputFiles", { nodeId: inputNodeId, files: [filePath] }, 5000);
-  if (setFiles === null) return { success: false, error: "Chromium did not accept the Ubisoft token request attachment." };
+  if (!tab?.webSocketDebuggerUrl || !fileInputFound) return { success: false, error: "Discord did not expose its attachment input in the saved ticket." };
+  if (!fileAccepted) return { success: false, error: "Chromium did not accept the Ubisoft token request attachment." };
 
   const attachedDeadline = Date.now() + 10000;
   let attached = false;
@@ -1488,4 +1550,9 @@ export async function openDedevisionDiscordLogin(): Promise<boolean> {
   try {
     const SC: any = (window as any).SteamClient;
     if (SC?.System?.OpenInSystemBrowser) {
-      SC.System.Op
+      SC.System.OpenInSystemBrowser(DEDEVISION_INVITE_URL);
+      return true;
+    }
+  } catch {}
+  return false;
+}
