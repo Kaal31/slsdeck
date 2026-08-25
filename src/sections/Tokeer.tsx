@@ -31,6 +31,7 @@ import {
 } from "../lib/tokeerDiscordCapture";
 import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 import { launchGame } from "../lib/launchGame";
+import { hasLaunchRepoint, setLaunchRepoint } from "../lib/fixRuntime";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
@@ -129,7 +130,9 @@ export function TokeerSection() {
   const [ubisoftTokenPath,setUbisoftTokenPath]=useState(savedRef.current?.ubisoftTokenPath||"");
   const [ubisoftTokenMessageId,setUbisoftTokenMessageId]=useState(savedRef.current?.ubisoftTokenMessageId||"");
   const [restoringSelectors,setRestoringSelectors]=useState(!!selectorLayoutRef.current);
+  const [ubisoftContinuationRunning,setUbisoftContinuationRunning]=useState(false);
   const automationRunningRef=useRef(false);
+  const ubisoftCompletionPausedRef=useRef(false);
   const ticketAbortedRef=useRef(false);
   const ticketGenerationRef=useRef(0);
   const selectedUbisoftRef=useRef(!!savedRef.current?.selectedUbisoft);
@@ -413,6 +416,17 @@ export function TokeerSection() {
       setBusy("");
       return;
     }
+    const installedAppid=Number(installed.appid||0);
+    if(installedAppid&&hasLaunchRepoint(installedAppid)){
+      const removed=setLaunchRepoint(installedAppid,null);
+      const warning=removed
+        ? "SLSDeck removed the redirect-target fix from this game's launch options. Select the game again to continue; your other launch arguments were preserved."
+        : "This game's launch options still contain the SLSDeck redirect-target fix. Remove it before selecting this game for Tokeer; other launch arguments may remain.";
+      setMessage(warning);
+      toaster.toast({title:"SLSDeck · Tokeer",body:warning});
+      setBusy("");
+      return;
+    }
     setBusy(`Selecting ${label} in Discord…`);
     const selectorLabel=discord?.selectors.find((selector)=>selector.index===index)?.label||"";
     const fromUbisoftList=/\bubi(?:soft)?\b/i.test(selectorLabel);
@@ -462,6 +476,8 @@ export function TokeerSection() {
     ticketGenerationRef.current+=1;
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
+    ubisoftCompletionPausedRef.current=true;
+    setUbisoftContinuationRunning(false);
     try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
     selectedUbisoftRef.current=false;
     setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setOptions({});setTicket(null);setGate(null);setVerify(null);setActivation("");
@@ -628,7 +644,9 @@ export function TokeerSection() {
   const continueUbisoftTicket=async()=>{
     if(!ticket?.url||!ticket.appid||!ubisoftAppliedAt)return setMessage("The saved Ubisoft activation state is incomplete; reopen the ticket flow.");
     const generation=ticketGenerationRef.current;
-    const stale=()=>ticketAbortedRef.current||generation!==ticketGenerationRef.current;
+    ubisoftCompletionPausedRef.current=false;
+    setUbisoftContinuationRunning(true);
+    const stale=()=>ticketAbortedRef.current||ubisoftCompletionPausedRef.current||generation!==ticketGenerationRef.current;
     automationRunningRef.current=true;
     try{
       let tokenPath=ubisoftTokenPath,tokenMessageId=ubisoftTokenMessageId,tracked={...ticket};
@@ -670,7 +688,28 @@ export function TokeerSection() {
       checkpoint({automationStage:"done",automationError:"",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
       toaster.toast({title:"SLSDeck · Tokeer",body:vouched.success?"Ubisoft dbdata.json installed and Game worked! confirmed.":"Ubisoft dbdata.json installed successfully; Discord confirmation needs a manual press."});
     }catch(e){if(!stale()){setAutomationStage("failed");setAutomationError(String(e));setMessage(String(e));}}
-    finally{if(!stale()){automationRunningRef.current=false;setBusy("");}}
+    finally{
+      if(generation===ticketGenerationRef.current){
+        automationRunningRef.current=false;
+        setUbisoftContinuationRunning(false);
+        setBusy("");
+      }
+    }
+  };
+
+  const pauseUbisoftTicketCompletion=()=>{
+    ubisoftCompletionPausedRef.current=true;
+    automationRunningRef.current=false;
+    setUbisoftContinuationRunning(false);
+    setBusy("");
+    const resumeStage=ubisoftTokenMessageId?"waiting-dbdata":"waiting-token";
+    setAutomationStage(resumeStage);
+    setAutomationError("");
+    const pausedMessage=ubisoftTokenMessageId
+      ? "Ubisoft ticket completion paused. Press Continue Ubisoft ticket to resume searching for dbdata.json."
+      : "Ubisoft ticket completion paused. Press Continue Ubisoft ticket to resume finding and uploading the token request.";
+    setMessage(pausedMessage);
+    checkpoint({automationStage:resumeStage,automationError:"",ubisoftTokenPath,ubisoftTokenMessageId,ticket});
   };
 
   const openTicket=async()=>{
@@ -939,7 +978,7 @@ export function TokeerSection() {
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
-      {selectedUbisoft&&ticket?.opened&&ticket.url&&["waiting-token","waiting-dbdata","failed"].includes(automationStage)&&ubisoftAppliedAt>0&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={continueUbisoftTicket}>Continue Ubisoft ticket</ButtonItem></PanelSectionRow>}
+      {selectedUbisoft&&ticket?.opened&&ticket.url&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage))&&<PanelSectionRow><ButtonItem layout="below" disabled={!ubisoftContinuationRunning&&!!busy} onClick={ubisoftContinuationRunning?pauseUbisoftTicketCompletion:continueUbisoftTicket}>{ubisoftContinuationRunning?"Pause ticket completion":"Continue Ubisoft ticket"}</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&!["Waiting for Discord activation code…","Waiting for Ubisoft verification confirmation…","Waiting for Discord dbdata.json…"].includes(busy)} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
       {automationStage!=="idle"&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>Automation: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}{automationError?<div style={{color:"#ff7b72",marginTop:3}}>{automationError}</div>:null}</div></PanelSectionRow>}
