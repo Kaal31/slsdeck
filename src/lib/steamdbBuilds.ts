@@ -1,22 +1,13 @@
 import { fetchNoCors } from "@decky/api";
-import { Navigation } from "@decky/ui";
 
 export interface BuildRow { buildid: string; date: string }
-interface CdpTab { id?: string; url: string; webSocketDebuggerUrl?: string; cdpPort?: number }
+interface CdpTab { id?: string; url: string; title?: string; webSocketDebuggerUrl?: string; cdpPort?: number }
 
 const _cache = new Map<number, BuildRow[]>();
 let _cancelToken = 0;
 
 export function cancelSteamdbBuildFetch(): void {
   _cancelToken++;
-}
-
-/** Close only a SteamDB tab opened by this build-history request. Without this,
- *  the picker is mounted after NavigateToExternalWeb has replaced the visible
- *  game page, leaving the modal hidden behind SteamDB. */
-async function closeTab(id?: string, port = 8080): Promise<void> {
-  if (!id) return;
-  try { await fetchNoCors(`http://localhost:${port}/json/close/` + id); } catch { /* best effort */ }
 }
 
 async function evalString(wsUrl: string, expression: string, timeoutMs = 2500): Promise<string> {
@@ -40,7 +31,34 @@ async function evalString(wsUrl: string, expression: string, timeoutMs = 2500): 
   });
 }
 
-async function findSteamdbTab(appid: number): Promise<CdpTab | null> {
+async function cdpCommand(
+  wsUrl: string, method: string, params: Record<string, any> = {}, timeoutMs = 4000,
+): Promise<any> {
+  return new Promise((resolve) => {
+    let done = false;
+    let sock: WebSocket;
+    const finish = (value: any) => {
+      if (done) return;
+      done = true;
+      try { sock.close(); } catch { /* */ }
+      resolve(value);
+    };
+    try { sock = new WebSocket(wsUrl); } catch { resolve(null); return; }
+    sock.onopen = () => {
+      try { sock.send(JSON.stringify({ id: 92, method, params })); } catch { finish(null); }
+    };
+    sock.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+        if (msg?.id === 92) finish(msg?.result ?? null);
+      } catch { /* */ }
+    };
+    sock.onerror = () => finish(null);
+    setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+async function listCdpTabs(): Promise<CdpTab[]> {
   const candidates: CdpTab[] = [];
   await Promise.all([8080, 8081].map(async (port) => {
     try {
@@ -49,6 +67,11 @@ async function findSteamdbTab(appid: number): Promise<CdpTab | null> {
       tabs.filter((tab) => !!tab.webSocketDebuggerUrl).forEach((tab) => candidates.push({ ...tab, cdpPort: port }));
     } catch { /* port is optional */ }
   }));
+  return candidates;
+}
+
+async function findSteamdbTab(appid: number): Promise<CdpTab | null> {
+  const candidates = await listCdpTabs();
   for (const tab of candidates) {
     const listed = tab.url || "";
     const live = await evalString(tab.webSocketDebuggerUrl!, "String(location.href||'')");
@@ -56,6 +79,71 @@ async function findSteamdbTab(appid: number): Promise<CdpTab | null> {
     if (href.includes(`steamdb.info/app/${appid}/patchnotes`)) return { ...tab, url: href };
   }
   return null;
+}
+
+async function findSharedJsContext(): Promise<CdpTab | null> {
+  const tabs = await listCdpTabs();
+  return tabs.find((tab) => String(tab.title || "") === "SharedJSContext")
+    || tabs.find((tab) => /SharedJSContext/i.test(String(tab.title || "")))
+    || null;
+}
+
+async function waitForExactUrl(url: string, timeoutMs = 6500): Promise<CdpTab | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = (await listCdpTabs()).find((item) => String(item.url || "") === url);
+    if (tab?.webSocketDebuggerUrl) return tab;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return null;
+}
+
+/** Create an off-screen Steam BrowserView so opening SteamDB never replaces the
+ *  game page (which would unmount GameTools and discard its pending picker). */
+async function createHiddenSteamdbTab(appid: number): Promise<CdpTab | null> {
+  const shared = await findSharedJsContext();
+  if (!shared?.webSocketDebuggerUrl) return null;
+  const placeholder = `data:text/plain,slsdeck_steamdb_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const created = await evalString(shared.webSocketDebuggerUrl, `(function(){try{
+    if(window.SLSDECK_STEAMDB_VIEW!==undefined){
+      try{window.SLSDECK_STEAMDB_VIEW.Destroy();}catch(e){}
+      window.SLSDECK_STEAMDB_VIEW=undefined;
+    }
+    var main=window.DFL&&window.DFL.Router&&window.DFL.Router.WindowStore&&window.DFL.Router.WindowStore.GamepadUIMainWindowInstance;
+    if(!main||typeof main.CreateBrowserView!=='function')return 'unavailable';
+    var view=main.CreateBrowserView('slsdeck_steamdb_builds');
+    window.SLSDECK_STEAMDB_VIEW=view;
+    try{view.WIDTH=1280;view.HEIGHT=720;view.m_browserView.SetBounds(-10000,-10000,1280,720);view.m_browserView.SetVisible(true);}catch(e){}
+    view.m_browserView.LoadURL(${JSON.stringify(placeholder)});
+    return 'ok';
+  }catch(e){return String(e);}})()`, 4000);
+  if (created !== "ok") return null;
+  const tab = await waitForExactUrl(placeholder);
+  if (!tab?.webSocketDebuggerUrl) {
+    await destroyHiddenSteamdbTab();
+    return null;
+  }
+  await cdpCommand(tab.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+  const nav = await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", {
+    url: `https://steamdb.info/app/${appid}/patchnotes/`, transitionType: "address_bar",
+  }, 4000);
+  if (!nav) {
+    await destroyHiddenSteamdbTab();
+    return null;
+  }
+  return tab;
+}
+
+async function destroyHiddenSteamdbTab(): Promise<void> {
+  const shared = await findSharedJsContext();
+  if (!shared?.webSocketDebuggerUrl) return;
+  await evalString(shared.webSocketDebuggerUrl, `(function(){try{
+    var view=window.SLSDECK_STEAMDB_VIEW;
+    if(!view)return 'none';
+    try{view.Destroy();}catch(e){}
+    window.SLSDECK_STEAMDB_VIEW=undefined;
+    return 'ok';
+  }catch(e){return String(e);}})()`, 3000);
 }
 
 function fetchRssInTab(wsUrl: string, appid: number, timeoutMs = 5000): Promise<string> {
@@ -124,21 +212,16 @@ export async function fetchSteamdbBuilds(
   const token = _cancelToken;
   let tab = await findSteamdbTab(appid);
   const openedHere = !tab;
-  let openedTabId: string | undefined;
-  let openedTabPort = 8080;
   if (!tab) {
-    onStatus?.("Opening SteamDB once for build history…");
-    try { Navigation.NavigateToExternalWeb(`https://steamdb.info/app/${appid}/patchnotes/`); } catch { /* */ }
+    onStatus?.("Loading SteamDB build history in the background…");
+    tab = await createHiddenSteamdbTab(appid);
+    if (!tab) return [];
   }
   const deadline = Date.now() + 12000;
   try {
     while (Date.now() < deadline && token === _cancelToken) {
       tab = await findSteamdbTab(appid);
       if (tab?.webSocketDebuggerUrl) {
-        if (openedHere) {
-          openedTabId = tab.id;
-          openedTabPort = tab.cdpPort || 8080;
-        }
         onStatus?.("Reading SteamDB build history…");
         const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
         if (token !== _cancelToken) return [];
@@ -157,10 +240,7 @@ export async function fetchSteamdbBuilds(
     return [];
   } finally {
     if (openedHere) {
-      await closeTab(openedTabId, openedTabPort);
-      // Give Steam's browser stack one frame to reveal the game/QAM surface
-      // before GameTools mounts the picker modal.
-      await new Promise((r) => setTimeout(r, 350));
+      await destroyHiddenSteamdbTab();
     }
   }
 }
