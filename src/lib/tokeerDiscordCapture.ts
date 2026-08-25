@@ -1029,7 +1029,7 @@ export async function probeTokeerTicketState(ticketUrl: string): Promise<TokeerT
   return { open: false, closed: false, reason: "Discord did not provide authoritative evidence that the saved ticket was closed; its session was preserved." };
 }
 
-export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; cancelled?: boolean; error?: string }> {
+export async function sendTokeerTicketMessage(ticketUrl: string, message: string): Promise<{ success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string }> {
   const text = String(message || "").trim();
   if (!/^TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text)) {
     return { success: false, error: "The generated verification value is not a valid TLX1 code; nothing was sent to Discord." };
@@ -1145,10 +1145,159 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   const verifyExpr = `(function(){try{
     var expected=${JSON.stringify(text)};
     var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12);
-    return arts.some(function(a){return String(a.innerText||'').indexOf(expected)>=0;});
-  }catch(e){return false;}})()`;
-  const appeared = await evalJson(tab.webSocketDebuggerUrl, verifyExpr, 3000);
-  return appeared ? { success: true } : { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
+    for(var i=arts.length-1;i>=0;i--){var a=arts[i];if(String(a.innerText||'').indexOf(expected)<0)continue;var m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
+    return JSON.stringify({found:false});
+  }catch(e){return JSON.stringify({found:false});}})()`;
+  const appearedRaw = await evalJson(tab.webSocketDebuggerUrl, verifyExpr, 3000);
+  try {
+    const appeared = JSON.parse(String(appearedRaw || ""));
+    if (appeared?.found) return { success: true, lastMessageId: String(appeared.id || "") || undefined };
+  } catch {}
+  return { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
+}
+
+export async function waitForUbisoftVerificationConfirmation(ticketUrl: string, afterMessageId = "", timeoutMs = 2 * 60 * 1000, shouldAbort?: () => boolean): Promise<{ success: boolean; confirmed?: boolean; lastMessageId?: string; cancelled?: boolean; error?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (shouldAbort?.()) return { success: false, cancelled: true, error: "Waiting for Ubisoft verification was cancelled locally." };
+    const tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl) {
+      const state = await probeTokeerTicketState(ticketUrl);
+      if (state.closed) return { success: false, cancelled: true, error: state.reason || "The Discord ticket was closed." };
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30);
+      for(var i=0;i<arts.length;i++){
+        var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
+        if(after&&id&&BigInt(id)<=BigInt(after))continue;
+        var text=String(a.innerText||'').replace(/\\s+/g,' ').trim();
+        if(/verification\\s+passed|game\\s+files\\s+checked\\s+out|follow\\s+the\\s+next\\s+steps/i.test(text))return JSON.stringify({state:'passed',id:id});
+        if(/verification\\s+failed|didn['’]?t\\s+pass\\s+validation|steam\\s+setup\\s+code|run\\s+tokeer\\s+verify-ubi/i.test(text))return JSON.stringify({state:'failed',id:id,error:text.slice(0,500)});
+      }
+      return JSON.stringify({state:'waiting'});
+    }catch(e){return JSON.stringify({state:'error',error:String(e)});}})()`, 4000);
+    try {
+      const value = JSON.parse(String(raw || ""));
+      if (value?.state === "passed") return { success: true, confirmed: true, lastMessageId: String(value.id || "") || undefined };
+      if (value?.state === "failed") return { success: false, confirmed: false, lastMessageId: String(value.id || "") || undefined, error: String(value.error || "Ubisoft verification failed.") };
+      if (value?.state === "error") return { success: false, error: String(value.error || "Could not read Ubisoft verification response.") };
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { success: false, error: "Timed out waiting for Ubisoft verification confirmation; no game files were changed." };
+}
+
+export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string, expectedFilename: string): Promise<{ success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string }> {
+  const filename = String(expectedFilename || "").trim();
+  if (!/^token_req_\d+\.txt$/i.test(filename) || !String(filePath || "").endsWith(`/${filename}`)) {
+    return { success: false, error: "The selected file is not a recognized Ubisoft token request." };
+  }
+  const deadline = Date.now() + 20000;
+  let tab: CdpTab | null = null;
+  let inputNodeId = 0;
+  while (Date.now() < deadline && !inputNodeId) {
+    tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl) {
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+    const closed = await checkTokeerTicketState(ticketUrl);
+    if (closed.closed) return { success: false, cancelled: true, error: closed.reason || "The Discord ticket was closed." };
+    const documentNode = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.getDocument", { depth: -1, pierce: true }, 4000);
+    const rootId = Number(documentNode?.root?.nodeId || 0);
+    if (rootId) {
+      const queried = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.querySelector", { nodeId: rootId, selector: 'input[type="file"]' }, 3000);
+      inputNodeId = Number(queried?.nodeId || 0);
+    }
+    if (!inputNodeId) {
+      // Discord may mount its hidden file input only after the attachment
+      // control is opened. Click only a visible composer-adjacent upload/+ button.
+      await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+        var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+        var composer=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],[contenteditable]')).filter(visible).sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;})[0];
+        if(!composer)return false;var cr=composer.getBoundingClientRect();
+        var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible).filter(function(b){var r=b.getBoundingClientRect(),t=String(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'');return r.bottom>=cr.top-24&&r.top<=cr.bottom+24&&r.right<=cr.left+24&&/(?:upload|attach|add|plus|file|\\+)/i.test(t);});
+        var b=buttons[buttons.length-1];if(!b)return false;b.click();return true;
+      }catch(e){return false;}})()`, 2500);
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+  if (!tab?.webSocketDebuggerUrl || !inputNodeId) return { success: false, error: "Discord did not expose its attachment input in the saved ticket." };
+  const setFiles = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.setFileInputFiles", { nodeId: inputNodeId, files: [filePath] }, 5000);
+  if (setFiles === null) return { success: false, error: "Chromium did not accept the Ubisoft token request attachment." };
+
+  const attachedDeadline = Date.now() + 10000;
+  let attached = false;
+  while (Date.now() < attachedDeadline && !attached) {
+    attached = !!(await evalJson(tab.webSocketDebuggerUrl, `(function(){try{return String(document.body&&document.body.innerText||'').indexOf(${JSON.stringify(filename)})>=0;}catch(e){return false;}})()`, 2500));
+    if (!attached) await new Promise((r) => setTimeout(r, 350));
+  }
+  if (!attached) return { success: false, error: "Discord did not show the token request in its attachment draft." };
+  const composerPointRaw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var box=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],[contenteditable]')).filter(visible).sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;})[0];
+    if(!box)return '';var r=box.getBoundingClientRect();return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2});
+  }catch(e){return '';}})()`, 2500);
+  try {
+    const point = JSON.parse(String(composerPointRaw || ""));
+    if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+      await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 }, 2000);
+      await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 }, 2000);
+    }
+  } catch {}
+  await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
+  await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
+  const sentDeadline = Date.now() + 12000;
+  while (Date.now() < sentDeadline) {
+    const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var expected=${JSON.stringify(filename)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-15).reverse();
+      for(var i=0;i<arts.length;i++){if(String(arts[i].innerText||'').indexOf(expected)<0)continue;var m=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
+      return JSON.stringify({found:false});
+    }catch(e){return JSON.stringify({found:false});}})()`, 3000);
+    try { const value = JSON.parse(String(raw || "")); if (value?.found) return { success: true, lastMessageId: String(value.id || "") || undefined }; } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return { success: false, error: "Discord did not confirm that the Ubisoft token request was posted." };
+}
+
+export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId = "", timeoutMs = 15 * 60 * 1000, shouldAbort?: () => boolean): Promise<{ success: boolean; url?: string; lastMessageId?: string; cancelled?: boolean; error?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (shouldAbort?.()) return { success: false, cancelled: true, error: "Waiting for dbdata.json was cancelled locally." };
+    const tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl) {
+      const state = await probeTokeerTicketState(ticketUrl);
+      if (state.closed) return { success: false, cancelled: true, error: state.reason || "The Discord ticket was closed." };
+      await new Promise((r) => setTimeout(r, 1500));
+      continue;
+    }
+    const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
+      for(var i=0;i<arts.length;i++){
+        var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
+        if(after&&id&&BigInt(id)<=BigInt(after))continue;
+        var nodes=[].slice.call(a.querySelectorAll('a[href],button,[role="button"]'));
+        for(var j=0;j<nodes.length;j++){
+          var n=nodes[j],label=String(n.innerText||n.textContent||n.getAttribute('aria-label')||n.getAttribute('title')||'').replace(/\\s+/g,' ').trim();
+          if(!/(?:download\\s+)?dba(?:ta|data)\\.json/i.test(label))continue;
+          var link=n.closest('a[href]')||n.querySelector&&n.querySelector('a[href]')||null,href=String(link&&link.href||n.getAttribute&&n.getAttribute('href')||'');
+          if(/^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href))return JSON.stringify({found:true,url:href,id:id});
+        }
+        var links=[].slice.call(a.querySelectorAll('a[href]'));
+        for(var k=0;k<links.length;k++){var href=String(links[k].href||'');if(/^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href)&&/dba(?:ta|data)\\.json/i.test(href))return JSON.stringify({found:true,url:href,id:id});}
+      }
+      return JSON.stringify({found:false});
+    }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 4000);
+    try {
+      const value = JSON.parse(String(raw || ""));
+      if (value?.found && value.url) return { success: true, url: String(value.url), lastMessageId: String(value.id || "") || undefined };
+      if (value?.error) return { success: false, error: String(value.error) };
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return { success: false, error: "Timed out waiting for Discord's dbdata.json download." };
 }
 
 export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000, afterMessageId = "", shouldAbort?: () => boolean): Promise<{ success: boolean; code?: string; lastMessageId?: string; cancelled?: boolean; error?: string }> {

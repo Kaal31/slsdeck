@@ -174,6 +174,17 @@ export const tokeerPrepare = callable<[appid: number], { success: boolean; outpu
 export const tokeerPrepareVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult & { phase?: string; prepare?: any; steamMayRestart?: boolean }>("tokeer_prepare_verify");
 export const tokeerVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult>("tokeer_verify");
 export const tokeerRedeem = callable<[code: string], { success: boolean; output?: string; needsPrepare?: boolean; error?: string }>("tokeer_redeem");
+export type UbisoftHostedGame = {
+  name: string; aliases: string[]; steamAppId: number; carePackageId: number;
+  ubisoftProductIds: { native: number | null; steam: number | null };
+  tokenRequestIds: number[]; tokenDirectory: string;
+};
+export const tokeerUbisoftHostedGames = callable<[], { success: boolean; games: UbisoftHostedGame[]; installed?: boolean; error?: string }>("tokeer_ubisoft_hosted_games");
+export const tokeerUbisoftPackagesStatus = callable<[], { success: boolean; installed: boolean; healthy?: boolean; path?: string; version?: string; asset?: string }>("tokeer_ubisoft_packages_status");
+export const tokeerEnsureUbisoftPackages = callable<[force?: boolean], { success: boolean; installed?: boolean; updated?: boolean; skipped?: boolean; path?: string; version?: string; latest?: string; error?: string }>("tokeer_ensure_ubisoft_packages");
+export const tokeerApplyUbisoftPackage = callable<[appid: number], { success: boolean; appid?: number; name?: string; installPath?: string; tokenDirectory?: string; tokenRequestIds?: number[]; copied?: string[]; appliedAt?: number; error?: string }>("tokeer_apply_ubisoft_package");
+export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number], { success: boolean; found?: boolean; path?: string; filename?: string; directory?: string; size?: number; tokenRequestIds?: number[]; error?: string }>("tokeer_find_ubisoft_token");
+export const tokeerInstallUbisoftDbdata = callable<[appid: number, tokenPath: string, url: string], { success: boolean; path?: string; directory?: string; error?: string }>("tokeer_install_ubisoft_dbdata");
 
 // ── Callables ──────────────────────────────────────────────────────────────
 export const getSteamStatus = callable<[], SteamStatus>("get_steam_status");

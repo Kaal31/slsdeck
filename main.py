@@ -25,7 +25,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
                 opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
-                updates, watchdog, workshop, multiplayer, tokeer,
+                updates, watchdog, workshop, multiplayer, tokeer, ubisoft_packages,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -83,6 +83,24 @@ class Plugin:
 
     async def tokeer_redeem(self, code: str) -> Dict[str, Any]:
         return await self._run_slow(tokeer.redeem, code)
+
+    async def tokeer_ubisoft_hosted_games(self) -> Dict[str, Any]:
+        return await self._run(ubisoft_packages.hosted_games)
+
+    async def tokeer_ubisoft_packages_status(self) -> Dict[str, Any]:
+        return await self._run(ubisoft_packages.package_status)
+
+    async def tokeer_ensure_ubisoft_packages(self, force: bool = False) -> Dict[str, Any]:
+        return await self._run_dependency_install(ubisoft_packages.ensure_packages, bool(force))
+
+    async def tokeer_apply_ubisoft_package(self, appid: int) -> Dict[str, Any]:
+        return await self._run_slow(ubisoft_packages.apply_package, appid)
+
+    async def tokeer_find_ubisoft_token(self, appid: int, since_ms: int = 0) -> Dict[str, Any]:
+        return await self._run(ubisoft_packages.find_token_request, appid, since_ms)
+
+    async def tokeer_install_ubisoft_dbdata(self, appid: int, token_path: str, url: str) -> Dict[str, Any]:
+        return await self._run_slow(ubisoft_packages.install_dbdata, appid, token_path, url)
 
     # ── Grid Artwork Sync ──────────────────────────────────────────────────
     async def sync_game_art(self, appid: int, overwrite: bool = False) -> Dict[str, Any]:

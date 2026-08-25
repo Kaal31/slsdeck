@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, crInstallStatus, crEnsureInstalled } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled } from "./api";
 import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -127,6 +127,16 @@ async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLif
       }
     } catch (e) {
       console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
+    }
+    if (!token.active || !cefLooksStable(token)) return;
+
+    try {
+      if (token.active) {
+        await tokeerEnsureUbisoftPackages();
+        await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
+      }
+    } catch (e) {
+      console.warn("SLSDeck: lifecycle Ubisoft package dependency repair failed", e);
     }
     if (!token.active || !cefLooksStable(token)) return;
 

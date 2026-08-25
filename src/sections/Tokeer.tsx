@@ -1,7 +1,7 @@
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { tokeerPreflight, tokeerRedeem, tokeerRuntimeStatus, tokeerVerify, TokeerVerifyResult } from "../api";
+import { tokeerApplyUbisoftPackage, tokeerFindUbisoftToken, tokeerInstallUbisoftDbdata, tokeerPreflight, tokeerRedeem, tokeerRuntimeStatus, tokeerUbisoftHostedGames, tokeerVerify, TokeerVerifyResult, UbisoftHostedGame } from "../api";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 import {
   chooseSelectorOption,
@@ -19,13 +19,17 @@ import {
   readTokeerDiscord,
   restoreTokeerTicketView,
   sendTokeerTicketMessage,
+  uploadTokeerTicketFile,
   TokeerDiscordState,
   TokeerTicketGate,
   TokeerTicketContext,
   waitForTicketContext,
   waitForTokeerActivationCode,
+  waitForUbisoftVerificationConfirmation,
+  waitForUbisoftDbdataLink,
 } from "../lib/tokeerDiscordCapture";
 import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
+import { launchGame } from "../lib/launchGame";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
@@ -52,9 +56,12 @@ type SavedTokeerSession = {
   tlxSubmitted?: boolean;
   submittedTlx?: string;
   automationError?: string;
+  ubisoftAppliedAt?: number;
+  ubisoftTokenPath?: string;
+  ubisoftTokenMessageId?: string;
 };
 
-type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"done"|"failed"|"aborted";
+type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"patching-ubisoft"|"waiting-token"|"uploading-token"|"waiting-dbdata"|"installing-dbdata"|"done"|"failed"|"aborted";
 
 function readSavedSession(): SavedTokeerSession|null {
   try {
@@ -116,6 +123,10 @@ export function TokeerSection() {
   const [tlxSubmitted,setTlxSubmitted]=useState(!!savedRef.current?.tlxSubmitted);
   const [submittedTlx,setSubmittedTlx]=useState(savedRef.current?.submittedTlx||"");
   const [automationError,setAutomationError]=useState(savedRef.current?.automationError||"");
+  const [hostedGames,setHostedGames]=useState<UbisoftHostedGame[]>([]);
+  const [ubisoftAppliedAt,setUbisoftAppliedAt]=useState(Number(savedRef.current?.ubisoftAppliedAt||0));
+  const [ubisoftTokenPath,setUbisoftTokenPath]=useState(savedRef.current?.ubisoftTokenPath||"");
+  const [ubisoftTokenMessageId,setUbisoftTokenMessageId]=useState(savedRef.current?.ubisoftTokenMessageId||"");
   const [restoringSelectors,setRestoringSelectors]=useState(!!selectorLayoutRef.current);
   const automationRunningRef=useRef(false);
   const ticketAbortedRef=useRef(false);
@@ -142,9 +153,14 @@ export function TokeerSection() {
       expiresAt:codeExpiresAt,
       selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,
       automationStage,tlxSubmitted,submittedTlx,automationError,
+      ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,
     };
     try{window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
-  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError]);
+  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError,ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId]);
+
+  useEffect(()=>{
+    tokeerUbisoftHostedGames().then((result)=>setHostedGames(result.success?result.games||[]:[])).catch(()=>setHostedGames([]));
+  },[]);
 
   useEffect(()=>{
     if(!codeExpiresAt)return;
@@ -298,7 +314,6 @@ export function TokeerSection() {
     const timer=setInterval(()=>{void refresh();},TOKEER_VAULT_REFRESH_MS);
     return()=>{stopped=true;clearInterval(timer);};
   },[discordAuthChecked,discordSignedIn,ticket?.opened,ticket?.url,gate?.found]);
-  const appid=Number(ticket?.appid||0);
   const remainingMs=codeExpiresAt?Math.max(0,codeExpiresAt-clockNow):0;
   const remainingSeconds=Math.ceil(remainingMs/1000);
   const countdown=`${String(Math.floor(remainingSeconds/60)).padStart(2,"0")}:${String(remainingSeconds%60).padStart(2,"0")}`;
@@ -318,7 +333,19 @@ export function TokeerSection() {
   const openMenu=async(i:number,showMenu?:()=>void)=>{
     setBusy("Reading live game list…");
     try{
-      const items=await openSelectorAndReadOptions(i);
+      let items=await openSelectorAndReadOptions(i);
+      const selector=(discord?.selectors||[]).find((entry)=>entry.index===i);
+      if(/ubi(?:soft)?/i.test(String(selector?.label||""))){
+        let catalog=hostedGames;
+        if(!catalog.length){
+          const result=await tokeerUbisoftHostedGames().catch(()=>null);
+          catalog=result?.success?result.games||[]:[];
+          if(catalog.length)setHostedGames(catalog);
+        }
+        const allowed=new Set(catalog.flatMap((game)=>[game.name,...(game.aliases||[])]).map(normalizeTokeerGameName));
+        items=items.filter((label)=>allowed.has(normalizeTokeerGameName(parseTokeerGameLabel(label)?.name||label)));
+        if(!items.length)setMessage(catalog.length?"No currently hosted Ubisoft games were present in Discord's live selector.":"The hosted Ubisoft package catalog could not be loaded.");
+      }
       setOptions((old)=>({...old,[i]:items}));
       setTimeout(()=>showMenu?.(),0);
     }finally{setBusy("");}
@@ -388,10 +415,15 @@ export function TokeerSection() {
     setBusy(`Selecting ${label} in Discord…`);
     const selectorLabel=discord?.selectors.find((selector)=>selector.index===index)?.label||"";
     const fromUbisoftList=/\bubi(?:soft)?\b/i.test(selectorLabel);
+    if(fromUbisoftList){
+      const normalized=normalizeTokeerGameName(parseTokeerGameLabel(label)?.name||label);
+      const hosted=hostedGames.some((game)=>[game.name,...(game.aliases||[])].some((name)=>normalizeTokeerGameName(name)===normalized));
+      if(!hosted){setMessage("This Ubisoft title is not in the hosted package catalog, so SLSDeck did not select it or open a ticket.");setBusy("");return;}
+    }
     selectedUbisoftRef.current=fromUbisoftList;
     setSelectedUbisoft(fromUbisoftList);
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
-    setAutomationStage("idle");setTlxSubmitted(false);setSubmittedTlx("");setAutomationError("");
+    setAutomationStage("idle");setTlxSubmitted(false);setSubmittedTlx("");setAutomationError("");setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
     setSelectedMenus((old)=>({...old,[index]:label}));
     const ok=await chooseSelectorOption(index,label);
     if(!ok){setMessage("Discord selection failed. Keep the Tokeer message open and retry.");setBusy("");return;}
@@ -432,7 +464,7 @@ export function TokeerSection() {
     try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
     selectedUbisoftRef.current=false;
     setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setOptions({});setTicket(null);setGate(null);setVerify(null);setActivation("");
-    setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");
+    setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
     // The chain is gone, so do not leave the old game/gate or an "aborted"
     // workflow card on screen. Keep only a concise Status explanation.
     setAutomationStage("idle");setAutomationError("");setMessage(reason);
@@ -531,7 +563,39 @@ export function TokeerSection() {
         if(stale())return;
         if(sent.cancelled){abortTicketChain(`${sent.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
         if(!sent.success){fail(sent.error||"Could not submit TLX1 to Discord.");return;}
-        wasSubmitted=true;setTlxSubmitted(true);setAutomationStage("waiting-code");
+        wasSubmitted=true;setTlxSubmitted(true);
+        if(ticketUsesUbisoftVerifier(ctx)){
+          let catalog=hostedGames;
+          let hosted=catalog.find((game)=>Number(game.steamAppId)===Number(ctx.appid));
+          if(!hosted){
+            const result=await tokeerUbisoftHostedGames().catch(()=>null);
+            catalog=result?.success?result.games||[]:[];
+            if(catalog.length)setHostedGames(catalog);
+            hosted=catalog.find((game)=>Number(game.steamAppId)===Number(ctx.appid));
+          }
+          if(!hosted){fail(`Steam AppID ${ctx.appid} is not in the hosted Ubisoft package catalog; no game files were changed.`);return;}
+          setBusy("Waiting for Ubisoft verification confirmation…");
+          setMessage("TLX1 was submitted. Waiting for Tokeer to confirm that Ubisoft verification passed before changing game files…");
+          const confirmation=await waitForUbisoftVerificationConfirmation(ctx.url,sent.lastMessageId||ctx.lastMessageId||"",2*60*1000,stale);
+          if(stale())return;
+          if(confirmation.cancelled){abortTicketChain(confirmation.error||"The Discord ticket was closed.");return;}
+          if(!confirmation.success||!confirmation.confirmed){fail(confirmation.error||"Ubisoft verification was not accepted; no game files were changed.");return;}
+          const confirmedTicket={...ctx,lastMessageId:confirmation.lastMessageId||sent.lastMessageId||ctx.lastMessageId};
+          setTicket((old)=>({...old,...confirmedTicket}));
+          setAutomationStage("patching-ubisoft");setBusy("Applying the hosted Ubisoft package…");
+          checkpoint({automationStage:"patching-ubisoft",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:confirmedTicket});
+          const applied=await tokeerApplyUbisoftPackage(ctx.appid);
+          if(stale())return;
+          if(!applied.success||!applied.appliedAt){fail(applied.error||"The hosted Ubisoft package could not be applied.");return;}
+          const appliedAt=Number(applied.appliedAt);setUbisoftAppliedAt(appliedAt);setAutomationStage("waiting-token");
+          checkpoint({automationStage:"waiting-token",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:confirmedTicket,ubisoftAppliedAt:appliedAt,ubisoftTokenPath:"",ubisoftTokenMessageId:""});
+          const launched=launchGame(ctx.appid);
+          setMessage(launched
+            ? `Verification was accepted locally, the hosted package was applied, and ${hosted.name} was launched. Return after it generates a token request, then press Continue Ubisoft ticket.`
+            : `Verification was accepted locally and the hosted package was applied. Launch ${hosted.name}, return after it generates a token request, then press Continue Ubisoft ticket.`);
+          return;
+        }
+        setAutomationStage("waiting-code");
         checkpoint({automationStage:"waiting-code",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:ctx});
       }
 
@@ -558,6 +622,48 @@ export function TokeerSection() {
     finally{
       if(generation===ticketGenerationRef.current){automationRunningRef.current=false;setBusy("");}
     }
+  };
+
+  const continueUbisoftTicket=async()=>{
+    if(!ticket?.url||!ticket.appid||!ubisoftAppliedAt)return setMessage("The saved Ubisoft activation state is incomplete; reopen the ticket flow.");
+    const generation=ticketGenerationRef.current;
+    const stale=()=>ticketAbortedRef.current||generation!==ticketGenerationRef.current;
+    automationRunningRef.current=true;
+    try{
+      let tokenPath=ubisoftTokenPath,tokenMessageId=ubisoftTokenMessageId,tracked={...ticket};
+      if(!tokenMessageId){
+        setBusy("Finding the Ubisoft token request…");setAutomationStage("uploading-token");
+        const token=await tokeerFindUbisoftToken(ticket.appid,ubisoftAppliedAt);
+        if(stale())return;
+        if(!token.success||!token.found||!token.path||!token.filename){
+          setAutomationStage("waiting-token");setMessage(token.error||"No fresh Ubisoft token request was found yet. Run the game and retry Continue.");return;
+        }
+        tokenPath=token.path;setUbisoftTokenPath(tokenPath);
+        checkpoint({automationStage:"uploading-token",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:"",ticket});
+        setBusy("Uploading the Ubisoft token request to Discord…");
+        const uploaded=await uploadTokeerTicketFile(ticket.url,tokenPath,token.filename);
+        if(stale())return;
+        if(uploaded.cancelled){abortTicketChain(uploaded.error||"The Discord ticket was closed.");return;}
+        if(!uploaded.success){setAutomationStage("waiting-token");setMessage(uploaded.error||"The Ubisoft token request could not be uploaded.");return;}
+        tokenMessageId=uploaded.lastMessageId||ticket.lastMessageId||"";setUbisoftTokenMessageId(tokenMessageId);
+        tracked={...ticket,lastMessageId:tokenMessageId||ticket.lastMessageId};setTicket(tracked);
+      }
+      setAutomationStage("waiting-dbdata");setBusy("Waiting for Discord dbdata.json…");
+      setMessage("The Ubisoft token request was uploaded. Waiting for Discord's Download dbdata.json response…");
+      checkpoint({automationStage:"waiting-dbdata",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:tracked});
+      const received=await waitForUbisoftDbdataLink(ticket.url,tokenMessageId,15*60*1000,stale);
+      if(stale())return;
+      if(received.cancelled){abortTicketChain(received.error||"The Discord ticket was closed.");return;}
+      if(!received.success||!received.url){setAutomationStage("failed");setAutomationError(received.error||"Discord did not return dbdata.json.");setMessage(received.error||"Discord did not return dbdata.json.");return;}
+      setAutomationStage("installing-dbdata");setBusy("Installing dbdata.json beside the token request…");
+      const installed=await tokeerInstallUbisoftDbdata(ticket.appid,tokenPath,received.url);
+      if(stale())return;
+      if(!installed.success){setAutomationStage("failed");setAutomationError(installed.error||"dbdata.json installation failed.");setMessage(installed.error||"dbdata.json installation failed.");return;}
+      setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}. Launch the game again.`);
+      checkpoint({automationStage:"done",automationError:"",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
+      toaster.toast({title:"SLSDeck · Tokeer",body:"Ubisoft dbdata.json installed successfully."});
+    }catch(e){if(!stale()){setAutomationStage("failed");setAutomationError(String(e));setMessage(String(e));}}
+    finally{if(!stale()){automationRunningRef.current=false;setBusy("");}}
   };
 
   const openTicket=async()=>{
@@ -821,12 +927,13 @@ export function TokeerSection() {
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
-      {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&busy!=="Waiting for Discord activation code…"} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
+      {selectedUbisoft&&ticket?.opened&&ticket.url&&["waiting-token","waiting-dbdata","failed"].includes(automationStage)&&ubisoftAppliedAt>0&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={continueUbisoftTicket}>Continue Ubisoft ticket</ButtonItem></PanelSectionRow>}
+      {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&!["Waiting for Discord activation code…","Waiting for Ubisoft verification confirmation…","Waiting for Discord dbdata.json…"].includes(busy)} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
       {automationStage!=="idle"&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>Automation: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}{automationError?<div style={{color:"#ff7b72",marginTop:3}}>{automationError}</div>:null}</div></PanelSectionRow>}
     </PanelSection>}
 
-    {selectedGame&&ticket?.found&&ticket.appid&&<PanelSection title="Prepare & verify">
+    {selectedGame&&ticket?.found&&ticket.appid&&!selectedUbisoft&&<PanelSection title="Prepare & verify">
       <PanelSectionRow><div style={{fontSize:11}}>Runtime: <b>{runtime?.installed?"Installed":"Not prepared"}</b> · Default/free cooldown: <b>48 hours</b></div></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={prepare} disabled={!!busy}>Prepare game</ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={runVerify} disabled={!!busy}>Verify setup / generate TLX1</ButtonItem></PanelSectionRow>

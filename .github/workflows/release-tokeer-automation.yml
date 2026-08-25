@@ -42,8 +42,15 @@ jobs:
           test -s dist/index.js
           grep -q 'Waiting for Discord activation code' dist/index.js
           grep -q 'Submitting verified TLX1' dist/index.js
+          grep -q 'Continue Ubisoft ticket' dist/index.js
+          grep -q 'Waiting for Ubisoft verification confirmation' dist/index.js
       - name: Restore tracked dist support files
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Build Ubisoft package dependency
+        run: |
+          python3 .github/scripts/build-ubisoft-packages.py
+          unzip -t ubisoft-packages.zip
+          unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
       - name: Package Decky plugin
         shell: bash
         run: |
@@ -77,11 +84,18 @@ jobs:
           else
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target tokeer-automation
           fi
-          gh release upload "$TAG" SLSDeckUniversal-tokeer-automation.zip --clobber
+          gh release upload "$TAG" SLSDeckUniversal-tokeer-automation.zip ubisoft-packages.zip --clobber
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: SLSDeckUniversal-tokeer-automation
           path: SLSDeckUniversal-tokeer-automation.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Ubisoft dependency artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubisoft-packages
+          path: ubisoft-packages.zip
           if-no-files-found: error
           retention-days: 14

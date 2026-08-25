@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "games": [
+    {
+      "name": "Avatar: Frontiers of Pandora",
+      "aliases": ["Avatar Frontiers of Pandora"],
+      "steamAppId": 2840770,
+      "carePackageId": 4740,
+      "ubisoftProductIds": {"native": 4740, "steam": 5093},
+      "tokenRequestIds": [4740, 5093],
+      "tokenDirectory": ".",
+      "sourceSha256": "681a47b4bc79faf771e6d942d0e9408df156c1b3f2a8029a40a7d76fce6fe966"
+    },
+    {
+      "name": "Prince of Persia The Lost Crown",
+      "aliases": ["Prince of Persia: The Lost Crown"],
+      "steamAppId": 2751000,
+      "carePackageId": 6145,
+      "ubisoftProductIds": {"native": 6145, "steam": null},
+      "tokenRequestIds": [6145],
+      "tokenDirectory": ".",
+      "sourceSha256": "68c28eeeb6ff10679676c584bb9c4ac9b9b5a4b03d7b0f214afba57d18dcf5a6"
+    },
+    {
+      "name": "Star Wars Outlaws",
+      "aliases": [],
+      "steamAppId": 2842040,
+      "carePackageId": 17903,
+      "ubisoftProductIds": {"native": 17903, "steam": 64181},
+      "tokenRequestIds": [17903, 64181],
+      "tokenDirectory": ".",
+      "sourceSha256": "723a144c1ba926276132c20299e48ba660056d720d2304970d52a1b3cad7090b"
+    },
+    {
+      "name": "Assassin's Creed Shadows",
+      "aliases": ["Assassins Creed Shadows"],
+      "steamAppId": 3159330,
+      "carePackageId": 1081,
+      "ubisoftProductIds": {"native": 8006, "steam": 1081},
+      "tokenRequestIds": [1081, 8006],
+      "tokenDirectory": ".",
+      "sourceSha256": "4fde4a10e69001c02ac892e47e5618962a60375f40d922ef0c175aa42b2a32a4"
+    },
+    {
+      "name": "Tom Clancy's Ghost Recon Wildlands",
+      "aliases": ["Tom Clancy's Ghost Recon® Wildlands", "Ghost Recon Wildlands"],
+      "steamAppId": 460930,
+      "carePackageId": 1771,
+      "ubisoftProductIds": {"native": 1771, "steam": 3559},
+      "tokenRequestIds": [1771, 3559],
+      "tokenDirectory": ".",
+      "sourceSha256": "bcaf40b0fb10faf83fe40931a26f97b1e6560e17ae5b6f4cb0825908e11739fe"
+    },
+    {
+      "name": "Far Cry 6",
+      "aliases": [],
+      "steamAppId": 2369390,
+      "carePackageId": 5266,
+      "ubisoftProductIds": {"native": 5266, "steam": 920},
+      "tokenRequestIds": [5266, 920],
+      "tokenDirectory": "bin",
+      "sourceSha256": "6999057956fcf863935b759a7bbb58d97d5f56875952e6e9c5ae3174ad5b5ad6"
+    },
+    {
+      "name": "Assassin's Creed Black Flag Resynced",
+      "aliases": ["Assassins Creed Black Flag Resynced"],
+      "steamAppId": 3751950,
+      "carePackageId": 66088,
+      "ubisoftProductIds": {"native": 65043, "steam": 66088},
+      "tokenRequestIds": [66088, 65043],
+      "tokenDirectory": ".",
+      "sourceSha256": "8f24e4690778e6ae23ddb87c692ab91cdb6deec60dec5ebe52ccec207def2348"
+    }
+  ]
+}

@@ -22,6 +22,8 @@ import {
   tokeerRuntimeStatus,
   tokeerProtonStatus,
   tokeerEnsureProton,
+  tokeerUbisoftPackagesStatus,
+  tokeerEnsureUbisoftPackages,
   crInstallStatus,
 } from "../api";
 
@@ -76,6 +78,7 @@ export function DependenciesSection() {
   const [sysSt, setSysSt] = useState<{ foreignEngine: boolean; foreignName: string; engine: string } | null>(null);
   const [tokeerInstalled, setTokeerInstalled] = useState(false);
   const [protonStatus, setProtonStatus] = useState<{ installed: boolean; partial?: boolean } | null>(null);
+  const [ubisoftPackages, setUbisoftPackages] = useState<{ installed: boolean; healthy?: boolean; version?: string } | null>(null);
   const [cloudStatus, setCloudStatus] = useState<{ installed: boolean; partial?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean } | null>(null);
   const [diag, setDiag] = useState("");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -98,6 +101,11 @@ export function DependenciesSection() {
       setProtonStatus(proton);
       if (proton.installed) setN("tokeerProton", "GE-Proton10-34 installed");
       else if (proton.partial) setN("tokeerProton", "partial installation detected — repair required");
+    } catch { /* */ }
+    try {
+      const packages = await tokeerUbisoftPackagesStatus();
+      setUbisoftPackages(packages);
+      if (packages.installed) setN("ubisoftPackages", "hosted packages installed");
     } catch { /* */ }
     try {
       const cloud = await crInstallStatus();
@@ -231,6 +239,20 @@ export function DependenciesSection() {
       setN("tokeerProton", `error: ${e}`);
     }
     setB("tokeerProton", false);
+    refresh();
+  };
+
+  const installUbisoftPackages = async () => {
+    setB("ubisoftPackages", true);
+    setN("ubisoftPackages", ubisoftPackages?.installed ? "updating hosted packages…" : "installing hosted packages…");
+    try {
+      const r = await tokeerEnsureUbisoftPackages(true);
+      setN("ubisoftPackages", r.success ? "hosted packages installed" : `failed: ${r.error || "unknown error"}`);
+      toaster.toast({ title: "SLSDeck", body: r.success ? "Ubisoft packages ready" : "Ubisoft package installation failed" });
+    } catch (e) {
+      setN("ubisoftPackages", `error: ${e}`);
+    }
+    setB("ubisoftPackages", false);
     refresh();
   };
 
@@ -375,6 +397,15 @@ export function DependenciesSection() {
           busy={!!busy.tokeerProton}
           actionLabel={protonStatus?.installed ? "Reinstall GE-Proton10-34" : protonStatus?.partial ? "Repair GE-Proton10-34" : "Install GE-Proton10-34"}
           onAction={installProton}
+        />
+        <DepRow
+          label="Ubisoft packages"
+          hint="AppID-keyed care packages for the hosted Ubisoft activation list."
+          health={ubisoftPackages?.installed && ubisoftPackages.healthy !== false ? "ok" : "off"}
+          statusText={note.ubisoftPackages || (ubisoftPackages?.installed ? "hosted packages installed" : "not installed")}
+          busy={!!busy.ubisoftPackages}
+          actionLabel={ubisoftPackages?.installed ? "Check / reinstall Ubisoft packages" : "Install Ubisoft packages"}
+          onAction={installUbisoftPackages}
         />
         <DepRow
           label="CloudRedirect"
