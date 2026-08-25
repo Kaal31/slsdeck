@@ -113,6 +113,33 @@ def package_status() -> Dict[str, Any]:
             "path": root, "version": _installed_version(), "asset": ASSET_NAME}
 
 
+def uninstall_packages() -> Dict[str, Any]:
+    """Remove the managed catalog, rollback copy and interrupted staging dirs."""
+    root = _install_root()
+    parent = os.path.dirname(root)
+    targets = [root, root + ".old"]
+    try:
+        targets.extend(
+            os.path.join(parent, name)
+            for name in os.listdir(parent)
+            if name.startswith(".ubisoft-packages-")
+        )
+    except OSError:
+        pass
+    removed, errors = [], []
+    for path in dict.fromkeys(targets):
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+                removed.append(path)
+            elif os.path.lexists(path):
+                os.remove(path)
+                removed.append(path)
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return {"success": not errors, "removed": removed, "errors": errors}
+
+
 def _safe_extract(archive: zipfile.ZipFile, destination: str) -> None:
     base = os.path.abspath(destination)
     for member in archive.infolist():

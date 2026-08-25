@@ -438,6 +438,15 @@ class Plugin:
                 decky.logger.warning(f"SLSDeck: CloudRedirect uninstall issues: {result.get('errors')}")
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: CloudRedirect uninstall failed: {exc}")
+        # The hosted Ubisoft package catalog is a downloaded SLSDeck dependency.
+        # Remove it explicitly (including interrupted staging/rollback copies)
+        # before removing the rest of the Tokeer runtime directory.
+        try:
+            result = await self._run(ubisoft_packages.uninstall_packages)
+            if not result.get("success"):
+                decky.logger.warning(f"SLSDeck: Ubisoft package uninstall issues: {result.get('errors')}")
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: Ubisoft package uninstall failed: {exc}")
         # Tokeer and its exact managed compatibility tool are SLSDeck
         # dependencies, so a true plugin uninstall removes both.
         try:
@@ -479,14 +488,15 @@ class Plugin:
             pass
 
     async def full_uninstall_cleanup(self) -> Dict[str, Any]:
-        """Manual full removal includes CloudRedirect, Tokeer and its Proton."""
+        """Manual full removal includes CloudRedirect, Ubisoft packages, Tokeer and Proton."""
         sls = await self._run(slssteam.full_uninstall_cleanup)
         cloud = await self._run(cloudredirect.uninstall_app, True)
+        ubi = await self._run(ubisoft_packages.uninstall_packages)
         tk = await self._run(tokeer.uninstall_runtime)
         ge = await self._run(tokeer.uninstall_required_proton)
-        return {"success": bool(sls.get("success") and cloud.get("success") and tk.get("success") and ge.get("success")),
+        return {"success": bool(sls.get("success") and cloud.get("success") and ubi.get("success") and tk.get("success") and ge.get("success")),
                 "slssteam": sls, "cloudredirect": cloud, "tokeer": tk,
-                "geProton": ge, "geProtonPreserved": False}
+                "ubisoftPackages": ubi, "geProton": ge, "geProtonPreserved": False}
 
     # ── helper ────────────────────────────────────────────────────────────
     async def _run(self, fn, *args):
