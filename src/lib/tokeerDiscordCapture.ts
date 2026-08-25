@@ -1363,18 +1363,33 @@ export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId
     }
     const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
       var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
+      var trusted=function(value){try{var url=String(value||'');return /^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(url)&&/db(?:ata|data)\\.json/i.test(decodeURIComponent(url));}catch(e){return false;}};
+      var reactUrl=function(node){
+        try{
+          var queue=[],seen=[],checked=0,put=function(value,depth){if(value==null||depth>7)return;if(typeof value==='string'){if(trusted(value))queue.unshift({url:value,depth:99});return;}if((typeof value!=='object'&&typeof value!=='function')||seen.indexOf(value)>=0)return;seen.push(value);queue.push({value:value,depth:depth});};
+          for(var el=node,up=0;el&&up<6;el=el.parentElement,up++)Object.getOwnPropertyNames(el).filter(function(key){return /^__react(?:Props|Fiber)\\$/i.test(key);}).forEach(function(key){put(el[key],0);});
+          while(queue.length&&checked++<900){var item=queue.shift();if(item.url)return item.url;var value=item.value,depth=item.depth,keys=[];try{keys=Object.keys(value);}catch(e){}for(var k=0;k<keys.length;k++){var key=keys[k],child;try{child=value[key];}catch(e){continue;}if(typeof child==='string'&&trusted(child))return child;if(depth<7&&/(?:url|href|link|component|data|item|props|memoizedProps|pendingProps|return|child|sibling)/i.test(key))put(child,depth+1);}}
+        }catch(e){}
+        return '';
+      };
       for(var i=0;i<arts.length;i++){
         var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
-        if(after&&id&&BigInt(id)<=BigInt(after))continue;
-        var nodes=[].slice.call(a.querySelectorAll('a[href],button,[role="button"]'));
+        // The upload verifier can observe the bot response as its boundary.
+        // Re-read that message and skip only messages strictly older than it.
+        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        // Discord renders link-style message components beside the article in
+        // the same list item, not as ordinary anchors inside the article.
+        var scope=a.closest('li')||a.parentElement||a;
+        var nodes=[].slice.call(scope.querySelectorAll('a[href],button,[role="button"],[role="link"]'));
         for(var j=0;j<nodes.length;j++){
           var n=nodes[j],label=String(n.innerText||n.textContent||n.getAttribute('aria-label')||n.getAttribute('title')||'').replace(/\\s+/g,' ').trim();
-          if(!/(?:download\\s+)?dba(?:ta|data)\\.json/i.test(label))continue;
+          if(!/(?:download\\s+)?db(?:ata|data)\\.json/i.test(label))continue;
           var link=n.closest('a[href]')||n.querySelector&&n.querySelector('a[href]')||null,href=String(link&&link.href||n.getAttribute&&n.getAttribute('href')||'');
-          if(/^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href))return JSON.stringify({found:true,url:href,id:id});
+          if(!trusted(href))href=reactUrl(n);
+          if(trusted(href))return JSON.stringify({found:true,url:href,id:id});
         }
-        var links=[].slice.call(a.querySelectorAll('a[href]'));
-        for(var k=0;k<links.length;k++){var href=String(links[k].href||'');if(/^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href)&&/dba(?:ta|data)\\.json/i.test(href))return JSON.stringify({found:true,url:href,id:id});}
+        var links=[].slice.call(scope.querySelectorAll('a[href]'));
+        for(var l=0;l<links.length;l++){var direct=String(links[l].href||'');if(trusted(direct))return JSON.stringify({found:true,url:direct,id:id});}
       }
       return JSON.stringify({found:false});
     }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 4000);
@@ -1386,6 +1401,44 @@ export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId
     await new Promise((r) => setTimeout(r, 1500));
   }
   return { success: false, error: "Timed out waiting for Discord's dbdata.json download." };
+}
+
+export async function clickTokeerGameWorked(ticketUrl: string, afterMessageId = ""): Promise<{ success: boolean; error?: string }> {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl) {
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+    const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var after=${JSON.stringify(afterMessageId)},visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+      var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
+      for(var i=0;i<arts.length;i++){
+        var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
+        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        var scope=a.closest('li')||a.parentElement||a,buttons=[].slice.call(scope.querySelectorAll('button,[role="button"]')).filter(visible);
+        for(var j=buttons.length-1;j>=0;j--){var b=buttons[j],label=String(b.innerText||b.textContent||b.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();if(!/^game\\s+worked!?$/i.test(label))continue;if(b.disabled||b.getAttribute('aria-disabled')==='true')return JSON.stringify({found:true,disabled:true});try{b.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}var r=b.getBoundingClientRect();return JSON.stringify({found:true,x:r.left+r.width/2,y:r.top+r.height/2});}
+      }
+      return JSON.stringify({found:false});
+    }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 3500);
+    try {
+      const target = JSON.parse(String(raw || ""));
+      if (target?.disabled) return { success: true };
+      if (target?.found && Number.isFinite(Number(target.x)) && Number.isFinite(Number(target.y))) {
+        await cdpCommand(tab.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+        await cdpCommand(tab.webSocketDebuggerUrl, "Page.bringToFront", {}, 2000);
+        const point = { x: Number(target.x), y: Number(target.y) };
+        await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, 2000);
+        const down = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, 2000);
+        const up = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 }, 2000);
+        if (down !== null && up !== null) return { success: true };
+      }
+      if (target?.error) return { success: false, error: String(target.error) };
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return { success: false, error: "The latest Game worked! button was not found in the saved Discord ticket." };
 }
 
 export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs = 15 * 60 * 1000, afterMessageId = "", shouldAbort?: () => boolean): Promise<{ success: boolean; code?: string; lastMessageId?: string; cancelled?: boolean; error?: string }> {

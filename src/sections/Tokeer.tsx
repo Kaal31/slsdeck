@@ -27,6 +27,7 @@ import {
   waitForTokeerActivationCode,
   waitForUbisoftVerificationConfirmation,
   waitForUbisoftDbdataLink,
+  clickTokeerGameWorked,
 } from "../lib/tokeerDiscordCapture";
 import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 import { launchGame } from "../lib/launchGame";
@@ -659,9 +660,15 @@ export function TokeerSection() {
       const installed=await tokeerInstallUbisoftDbdata(ticket.appid,tokenPath,received.url);
       if(stale())return;
       if(!installed.success){setAutomationStage("failed");setAutomationError(installed.error||"dbdata.json installation failed.");setMessage(installed.error||"dbdata.json installation failed.");return;}
-      setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}. Launch the game again.`);
+      setBusy("Confirming that the game worked in Discord…");
+      const vouched=await clickTokeerGameWorked(ticket.url,received.lastMessageId||tracked.lastMessageId||"");
+      if(stale())return;
+      const vouchNote=vouched.success
+        ? " The latest Game worked! button was pressed in Discord."
+        : ` Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
+      setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}.${vouchNote} Launch the game again.`);
       checkpoint({automationStage:"done",automationError:"",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
-      toaster.toast({title:"SLSDeck · Tokeer",body:"Ubisoft dbdata.json installed successfully."});
+      toaster.toast({title:"SLSDeck · Tokeer",body:vouched.success?"Ubisoft dbdata.json installed and Game worked! confirmed.":"Ubisoft dbdata.json installed successfully; Discord confirmation needs a manual press."});
     }catch(e){if(!stale()){setAutomationStage("failed");setAutomationError(String(e));setMessage(String(e));}}
     finally{if(!stale()){automationRunningRef.current=false;setBusy("");}}
   };
