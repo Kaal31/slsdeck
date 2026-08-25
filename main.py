@@ -17,6 +17,7 @@ frontend via the ``*_status`` methods.
 import asyncio
 import functools
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -101,6 +102,40 @@ class Plugin:
 
     async def tokeer_install_ubisoft_dbdata(self, appid: int, token_path: str, url: str) -> Dict[str, Any]:
         return await self._run_slow(ubisoft_packages.install_dbdata, appid, token_path, url)
+
+    async def tokeer_applied_status(self, appid: int = 0) -> Dict[str, Any]:
+        games = settings.get_tokeer_applied_games()
+        records = []
+        for key, value in games.items():
+            try:
+                game_appid = int(key)
+            except Exception:
+                continue
+            record = {**value, "appid": game_appid, "applied": True}
+            try:
+                record["pinned"] = bool(slssteam.is_pinned(game_appid))
+            except Exception:
+                record["pinned"] = False
+            records.append(record)
+        records.sort(key=lambda item: float(item.get("appliedAt", 0) or 0), reverse=True)
+        if int(appid or 0):
+            match = next((item for item in records if item["appid"] == int(appid)), None)
+            return {"success": True, "applied": bool(match), "record": match, "records": records}
+        return {"success": True, "records": records}
+
+    async def tokeer_mark_applied(self, appid: int, game_name: str = "", kind: str = "steam", pin: bool = False) -> Dict[str, Any]:
+        appid = int(appid)
+        pin_result: Dict[str, Any] = {"success": True, "skipped": True}
+        if pin:
+            pin_result = await self._run(slssteam.pin_app_current, appid)
+        record = {
+            "appid": appid,
+            "gameName": str(game_name or f"AppID {appid}"),
+            "kind": "ubisoft" if str(kind).lower() == "ubisoft" else "steam",
+            "appliedAt": int(time.time() * 1000),
+        }
+        settings.set_tokeer_applied_game(appid, record)
+        return {"success": True, "record": {**record, "applied": True, "pinned": bool(pin_result.get("success") and pin)}, "pin": pin_result}
 
     # ── Grid Artwork Sync ──────────────────────────────────────────────────
     async def sync_game_art(self, appid: int, overwrite: bool = False) -> Dict[str, Any]:
@@ -1667,6 +1702,7 @@ class Plugin:
             "denuvo": settings.get_badge_denuvo(),
             "onlineFix": settings.get_badge_online_fix(),
             "fixed": settings.get_badge_fixed(),
+            "tokeer": settings.get_badge_tokeer(),
             "nonSteam": settings.get_badge_nonsteam(),
             "nonSteamName": settings.get_badge_nonsteam_name(),
             "storePage": settings.get_badge_store_page(),
@@ -1688,6 +1724,8 @@ class Plugin:
             settings.set_badge_online_fix(enabled)
         elif which == "fixed":
             settings.set_badge_fixed(enabled)
+        elif which == "tokeer":
+            settings.set_badge_tokeer(enabled)
         elif which == "nonSteam":
             settings.set_badge_nonsteam(enabled)
         elif which == "nonSteamName":

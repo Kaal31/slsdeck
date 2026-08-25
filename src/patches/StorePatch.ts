@@ -18,6 +18,7 @@ import {
   denuvoResolve,
   applyLuatoolsFix,
   tokeerPreflight,
+  tokeerAppliedStatus,
 } from "../api";
 import { applyFixRuntime } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
@@ -294,6 +295,12 @@ async function storeBadges(
           if (types.some((t) => ONLINE_RE.test(t))) { if (o.onlineFix) kinds.push("onlinefix"); }
           else if (o.fixed) kinds.push("fixed");
         }
+      } catch { /* */ }
+    }
+    if (o.tokeer) {
+      try {
+        const status = await tokeerAppliedStatus(appid);
+        if (status.success && status.applied) kinds.push("tokeer");
       } catch { /* */ }
     }
   } catch { /* */ }

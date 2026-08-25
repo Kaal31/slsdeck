@@ -568,6 +568,28 @@ def set_badge_fixed(value: bool) -> None:
     set_value("badgeFixed", bool(value))
 
 
+def get_badge_tokeer() -> bool:
+    return bool(get_value("badgeTokeer", True))
+
+
+def set_badge_tokeer(value: bool) -> None:
+    set_value("badgeTokeer", bool(value))
+
+
+def get_tokeer_applied_games() -> Dict[str, Dict[str, Any]]:
+    """Return successful Tokeer activations, keyed by Steam AppID."""
+    raw = get_value("tokeerAppliedGames", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
+
+
+def set_tokeer_applied_game(appid: int, record: Dict[str, Any]) -> None:
+    games = get_tokeer_applied_games()
+    games[str(int(appid))] = dict(record)
+    set_value("tokeerAppliedGames", games)
+
+
 def get_badge_game_page() -> bool:
     return bool(get_value("badgeGamePage", True))
 

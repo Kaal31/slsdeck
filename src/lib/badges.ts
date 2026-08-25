@@ -14,6 +14,7 @@
 import {
   getBadgeOptions, getInstalledApps, getEverAdded, getInstalledFixes, denuvoKnown, denuvoResolve,
   getNonSteamApps,
+  tokeerAppliedStatus,
 } from "../api";
 import { isInLibrary, isNonSteamShortcut } from "./ownership";
 import { badgeDisplayLabel, getEmojiBadgesEnabled } from "./emojiBadges";
@@ -31,6 +32,7 @@ export const BADGE_LABELS: Record<string, string> = {
   denuvo: "DENUVO",
   onlinefix: "ONLINE FIX",
   fixed: "FIXED",
+  tokeer: "TOKEER KEY",
   nonsteam: "NON-STEAM",
   nonsteamname: "", // dynamic — filled per-app from the shortcut's exe folder
 };
@@ -41,6 +43,7 @@ export const BADGE_COLORS: Record<string, string> = {
   denuvo: "linear-gradient(135deg, #a12a2a 0%, #e05252 100%)",
   onlinefix: "linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%)",
   fixed: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)",
+  tokeer: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)",
   nonsteam: "#000000",
   nonsteamname: "linear-gradient(135deg, #3a3f4b 0%, #555b68 100%)",
 };
@@ -57,8 +60,9 @@ let everAddedIds = new Set<number>();
 let denuvoIds = new Set<number>();
 let onlineIds = new Set<number>();
 let fixedIds = new Set<number>();
+let tokeerIds = new Set<number>();
 let opts = {
-  sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true,
+  sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true, tokeer: true,
   nonSteam: true, nonSteamName: true, library: true,
 };
 let nonSteamNames = new Map<number, string>();
@@ -130,6 +134,7 @@ function injectStyle(win: Window) {
 .${BADGE_CLASS}[data-kind="denuvo"] { background: linear-gradient(135deg, #a12a2a 0%, #e05252 100%); }
 .${BADGE_CLASS}[data-kind="onlinefix"] { background: linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%); }
 .${BADGE_CLASS}[data-kind="fixed"] { background: linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%); }
+.${BADGE_CLASS}[data-kind="tokeer"] { background: linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%); }
 `;
     win.document.head.appendChild(el);
   } catch {
@@ -181,7 +186,7 @@ function getAppId(capsule: Element): string | null {
   return null;
 }
 
-type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed" | "nonsteam" | "nonsteamname";
+type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed" | "tokeer" | "nonsteam" | "nonsteamname";
 
 function classifyNonSteam(appid: number): Kind[] {
   if (!isNonSteamShortcut(appid)) return [];
@@ -205,6 +210,7 @@ function classifyApplied(appid: number): Kind[] {
   const out: Kind[] = [];
   if (opts.onlineFix && onlineIds.has(appid)) out.push("onlinefix");
   if (opts.fixed && fixedIds.has(appid)) out.push("fixed");
+  if (opts.tokeer && tokeerIds.has(appid)) out.push("tokeer");
   return out;
 }
 
@@ -363,6 +369,7 @@ async function refreshData() {
         denuvo: !!r.denuvo,
         onlineFix: !!r.onlineFix,
         fixed: !!r.fixed,
+        tokeer: !!r.tokeer,
         nonSteam: !!r.nonSteam,
         nonSteamName: !!r.nonSteamName,
         library: !!r.library,
@@ -415,6 +422,10 @@ async function refreshData() {
       fixedIds = fx;
     }
   } catch { /* keep previous */ }
+  try {
+    const r = await tokeerAppliedStatus();
+    if (r.success) tokeerIds = new Set((r.records || []).map((record) => Number(record.appid)));
+  } catch { /* keep previous */ }
 }
 
 export function removeAllBadges() {
@@ -433,7 +444,7 @@ export async function startBadges() {
     removeAllBadges();
     return;
   }
-  if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.nonSteam) return;
+  if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.tokeer && !opts.nonSteam) return;
 
   const win = getLibraryWindow();
   if (!win) {

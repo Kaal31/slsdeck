@@ -1,7 +1,7 @@
 import { ButtonItem, DropdownItem, PanelSection, PanelSectionRow, Spinner } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { tokeerApplyUbisoftPackage, tokeerFindUbisoftToken, tokeerInstallUbisoftDbdata, tokeerPreflight, tokeerRedeem, tokeerRuntimeStatus, tokeerUbisoftHostedGames, tokeerVerify, TokeerVerifyResult, UbisoftHostedGame } from "../api";
+import { tokeerApplyUbisoftPackage, tokeerFindUbisoftToken, tokeerInstallUbisoftDbdata, tokeerMarkApplied, tokeerPreflight, tokeerRedeem, tokeerRuntimeStatus, tokeerUbisoftHostedGames, tokeerVerify, TokeerVerifyResult, UbisoftHostedGame } from "../api";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 import {
   chooseSelectorOption,
@@ -32,6 +32,7 @@ import {
 import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 import { launchGame } from "../lib/launchGame";
 import { hasLaunchRepoint, setLaunchRepoint } from "../lib/fixRuntime";
+import { refreshBadges } from "../lib/badges";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
 const checks = (v?: TokeerVerifyResult) => v?.checks || {installed:false,prefix:false,hook:false,launchOpt:false,proton:null};
@@ -558,6 +559,8 @@ export function TokeerSection() {
         const redeemed=await tokeerRedeem(resume.activation);
         if(stale())return;
         if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed.");return;}
+        await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+        void refreshBadges();
         setAutomationStage("done");setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
         return;
@@ -629,6 +632,8 @@ export function TokeerSection() {
       const redeemed=await tokeerRedeem(received.code);
       if(stale())return;
       if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}
+      await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+      void refreshBadges();
       setAutomationStage("done");setMessage("Tokeer activation was received and redeemed automatically. Launch the game from Steam.");
       toaster.toast({title:"SLSDeck · Tokeer",body:"Activation received and redeemed successfully."});
       try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
@@ -678,13 +683,18 @@ export function TokeerSection() {
       const installed=await tokeerInstallUbisoftDbdata(ticket.appid,tokenPath,received.url);
       if(stale())return;
       if(!installed.success){setAutomationStage("failed");setAutomationError(installed.error||"dbdata.json installation failed.");setMessage(installed.error||"dbdata.json installation failed.");return;}
+      const applied=await tokeerMarkApplied(ticket.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ticket.appid}`,"ubisoft",true);
+      void refreshBadges();
+      const pinNote=applied.pin?.success
+        ? " The installed build was pinned."
+        : ` The key is applied, but version pinning failed${applied.pin?.error?`: ${applied.pin.error}`:"."}`;
       setBusy("Confirming that the game worked in Discord…");
       const vouched=await clickTokeerGameWorked(ticket.url,received.lastMessageId||tracked.lastMessageId||"");
       if(stale())return;
       const vouchNote=vouched.success
         ? " The latest Game worked! button was pressed in Discord."
         : ` Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
-      setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}.${vouchNote} Launch the game again.`);
+      setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}.${pinNote}${vouchNote} Launch the game again.`);
       checkpoint({automationStage:"done",automationError:"",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
       toaster.toast({title:"SLSDeck · Tokeer",body:vouched.success?"Ubisoft dbdata.json installed and Game worked! confirmed.":"Ubisoft dbdata.json installed successfully; Discord confirmation needs a manual press."});
     }catch(e){if(!stale()){setAutomationStage("failed");setAutomationError(String(e));setMessage(String(e));}}
@@ -897,11 +907,15 @@ export function TokeerSection() {
 
   const redeem=async()=>{
     if(!activation.trim())return setMessage("Paste the activation code from Discord first.");
+    const resolvedAppid=await resolveTicketAppid();
+    if(!resolvedAppid)return;
     setBusy("Writing activation ticket…");
     try{
       const r=await tokeerRedeem(activation.trim());
       setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
       if(r.success){
+        await tokeerMarkApplied(resolvedAppid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${resolvedAppid}`,"steam",false);
+        void refreshBadges();
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
         selectedUbisoftRef.current=false;
         setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);
@@ -975,7 +989,7 @@ export function TokeerSection() {
       {ticket?.opened&&!ticket.appid
         ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
         :gate?.found
-          ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>{gate.label||"✅ I've read this & watched the tutorial"}</ButtonItem></PanelSectionRow>
+          ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||gate.disabled} onClick={openTicket}>Create a ticket</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
       {selectedUbisoft&&ticket?.opened&&ticket.url&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage))&&<PanelSectionRow><ButtonItem layout="below" disabled={!ubisoftContinuationRunning&&!!busy} onClick={ubisoftContinuationRunning?pauseUbisoftTicketCompletion:continueUbisoftTicket}>{ubisoftContinuationRunning?"Pause ticket completion":"Continue Ubisoft ticket"}</ButtonItem></PanelSectionRow>}

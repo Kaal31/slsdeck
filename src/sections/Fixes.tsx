@@ -15,6 +15,7 @@ import {
   FixCheck,
   IN_PROGRESS,
   InstalledFix,
+  TokeerAppliedRecord,
   LuatoolsCatalogFix,
   SearchResult,
   applyFix,
@@ -28,6 +29,7 @@ import {
   searchGames,
   unfix,
   customDeleteFixes,
+  tokeerAppliedStatus,
 } from "../api";
 import { importCustomFlow } from "../components/CustomImport";
 import { applyFixRuntime, resetFixRuntime, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
@@ -43,6 +45,7 @@ export function FixesSection() {
   const [checking, setChecking] = useState(false);
   const [applyState, setApplyState] = useState<AddState | null>(null);
   const [installed, setInstalled] = useState<InstalledFix[]>([]);
+  const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord[]>([]);
   const [openDesc, setOpenDesc] = useState<string | null>(null);
   const [awaiting, setAwaiting] = useState<{ label: string; run: () => Promise<void> } | null>(null);
   const [dlComplete, setDlComplete] = useState(false);
@@ -52,10 +55,12 @@ export function FixesSection() {
 
   const loadInstalled = async () => {
     try {
-      const res = await getInstalledFixes();
+      const [res, tokeer] = await Promise.all([getInstalledFixes(), tokeerAppliedStatus()]);
       setInstalled(res.success ? res.fixes : []);
+      setTokeerApplied(tokeer.success ? tokeer.records || [] : []);
     } catch {
       setInstalled([]);
+      setTokeerApplied([]);
     }
   };
 
@@ -528,6 +533,23 @@ export function FixesSection() {
                   </span>
                 </Focusable>
               </ButtonItem>
+            </PanelSectionRow>
+          ))}
+        </>
+      )}
+      {tokeerApplied.length > 0 && (
+        <>
+          <PanelSectionRow>
+            <div style={{ fontWeight: 600, marginTop: 6 }}>Tokeer status</div>
+          </PanelSectionRow>
+          {tokeerApplied.map((record) => (
+            <PanelSectionRow key={`tokeer-${record.appid}`}>
+              <Focusable style={{ display: "flex", flexDirection: "column", textAlign: "left", padding: "7px 10px" }}>
+                <span style={{ fontWeight: 600 }}>🔑 {record.gameName || `AppID ${record.appid}`}</span>
+                <span style={{ fontSize: 11, opacity: 0.68 }}>
+                  Key applied · {record.pinned ? "🔒 Version pinned" : "Version not pinned"}
+                </span>
+              </Focusable>
             </PanelSectionRow>
           ))}
         </>

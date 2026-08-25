@@ -4,6 +4,7 @@ export const EMOJI_BADGE_LABELS: Record<string, string> = {
   sls: "🏴‍☠️",
   legit: "💵",
   fixed: "🔧",
+  tokeer: "🔑",
   onlinefix: "🌐",
   denuvo: "👺",
   nonsteam: "❓",

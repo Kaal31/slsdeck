@@ -331,6 +331,7 @@ function OptionsPane({
   const [badgeStorePage, setBadgeStorePage] = useState(true);
   const [badgeOnlineFix, setBadgeOnlineFix] = useState(true);
   const [badgeFixed, setBadgeFixed] = useState(true);
+  const [badgeTokeer, setBadgeTokeer] = useState(true);
   const [badgeNonSteam, setBadgeNonSteam] = useState(true);
   const [badgeNonSteamName, setBadgeNonSteamName] = useState(true);
   const [badgeLibrary, setBadgeLibrary] = useState(true);
@@ -375,6 +376,7 @@ function OptionsPane({
         setBadgeStorePage(!!r.storePage);
         setBadgeOnlineFix(!!r.onlineFix);
         setBadgeFixed(!!r.fixed);
+        setBadgeTokeer(!!r.tokeer);
         setBadgeNonSteam(!!r.nonSteam);
         setBadgeNonSteamName(!!r.nonSteamName);
         setBadgeLibrary(!!r.library);
@@ -584,7 +586,7 @@ function OptionsPane({
         <PanelSectionRow>
           <ToggleField
             label="Emoji Badges"
-            description="Replace each enabled badge with its emoji analogue: SLS 🏴‍☠️, Legit 💵, Fix 🔧, Online Fix 🌐, Denuvo 👺, Non-Steam ❓. Disabled badges stay hidden."
+            description="Replace each enabled badge with its emoji analogue: SLS 🏴‍☠️, Legit 💵, Fix 🔧, Tokeer Key 🔑, Online Fix 🌐, Denuvo 👺, Non-Steam ❓. Disabled badges stay hidden."
             checked={badgeEmoji}
             onChange={(v) => {
               setBadgeEmoji(v);
@@ -649,6 +651,18 @@ function OptionsPane({
             onChange={async (v) => {
               setBadgeFixed(v);
               await setBadgeOption("fixed", v);
+              refreshBadges();
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Tokeer Key badge"
+            description="Marks games whose Tokeer key was successfully redeemed, or whose Ubisoft dbdata.json was successfully installed. Emoji mode uses 🔑."
+            checked={badgeTokeer}
+            onChange={async (v) => {
+              setBadgeTokeer(v);
+              await setBadgeOption("tokeer", v);
               refreshBadges();
             }}
           />

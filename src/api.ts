@@ -185,6 +185,9 @@ export const tokeerEnsureUbisoftPackages = callable<[force?: boolean], { success
 export const tokeerApplyUbisoftPackage = callable<[appid: number], { success: boolean; appid?: number; name?: string; installPath?: string; tokenDirectory?: string; tokenRequestIds?: number[]; copied?: string[]; appliedAt?: number; error?: string }>("tokeer_apply_ubisoft_package");
 export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number], { success: boolean; found?: boolean; path?: string; filename?: string; directory?: string; size?: number; tokenRequestIds?: number[]; error?: string }>("tokeer_find_ubisoft_token");
 export const tokeerInstallUbisoftDbdata = callable<[appid: number, tokenPath: string, url: string], { success: boolean; path?: string; directory?: string; error?: string }>("tokeer_install_ubisoft_dbdata");
+export type TokeerAppliedRecord = { appid: number; gameName: string; kind: "steam" | "ubisoft"; appliedAt: number; applied: boolean; pinned: boolean };
+export const tokeerAppliedStatus = callable<[appid?: number], { success: boolean; applied?: boolean; record?: TokeerAppliedRecord | null; records: TokeerAppliedRecord[] }>("tokeer_applied_status");
+export const tokeerMarkApplied = callable<[appid: number, gameName?: string, kind?: string, pin?: boolean], { success: boolean; record?: TokeerAppliedRecord; pin?: { success: boolean; skipped?: boolean; error?: string }; error?: string }>("tokeer_mark_applied");
 
 // ── Callables ──────────────────────────────────────────────────────────────
 export const getSteamStatus = callable<[], SteamStatus>("get_steam_status");
@@ -300,7 +303,7 @@ export const setGroupCollection = callable<[enabled: boolean], { success: boolea
 // library capsule badges + the injected library button bar
 export const getBadgeOptions = callable<[], {
   success: boolean; sls: boolean; legit: boolean; denuvo: boolean;
-  gamePage: boolean; onlineFix: boolean; fixed: boolean; library: boolean; storePage: boolean;
+  gamePage: boolean; onlineFix: boolean; fixed: boolean; tokeer: boolean; library: boolean; storePage: boolean;
   nonSteam: boolean; nonSteamName: boolean;
 }>("get_badge_options");
 export const setBadgeOption = callable<[which: string, enabled: boolean], { success: boolean }>("set_badge_option");

@@ -92,6 +92,8 @@ function FaWrench (props) {
   return GenIcon({"attr":{"viewBox":"0 0 512 512"},"child":[{"tag":"path","attr":{"d":"M504 256c0 136.997-111.043 248-248 248S8 392.997 8 256C8 119.083 119.043 8 256 8s248 111.083 248 248zM262.655 90c-54.497 0-89.255 22.957-116.549 63.758-3.536 5.286-2.353 12.415 2.715 16.258l34.699 26.31c5.205 3.947 12.621 3.008 16.665-2.122 17.864-22.658 30.113-35.797 57.303-35.797 20.429 0 45.698 13.148 45.698 32.958 0 14.976-12.363 22.667-32.534 33.976C247.128 238.528 216 254.941 216 296v4c0 6.627 5.373 12 12 12h56c6.627 0 12-5.373 12-12v-1.333c0-28.462 83.186-29.647 83.186-106.667 0-58.002-60.165-102-116.531-102zM256 338c-25.365 0-46 20.635-46 46 0 25.364 20.635 46 46 46s46-20.636 46-46c0-25.365-20.635-46-46-46z"},"child":[]}]})(props);
 }function FaPuzzlePiece (props) {
   return GenIcon({"attr":{"viewBox":"0 0 576 512"},"child":[{"tag":"path","attr":{"d":"M519.442 288.651c-41.519 0-59.5 31.593-82.058 31.593C377.409 320.244 432 144 432 144s-196.288 80-196.288-3.297c0-35.827 36.288-46.25 36.288-85.985C272 19.216 243.885 0 210.539 0c-34.654 0-66.366 18.891-66.366 56.346 0 41.364 31.711 59.277 31.711 81.75C175.885 207.719 0 166.758 0 166.758v333.237s178.635 41.047 178.635-28.662c0-22.473-40-40.107-40-81.471 0-37.456 29.25-56.346 63.577-56.346 33.673 0 61.788 19.216 61.788 54.717 0 39.735-36.288 50.158-36.288 85.985 0 60.803 129.675 25.73 181.23 25.73 0 0-34.725-120.101 25.827-120.101 35.962 0 46.423 36.152 86.308 36.152C556.712 416 576 387.99 576 354.443c0-34.199-18.962-65.792-56.558-65.792z"},"child":[]}]})(props);
+}function FaLock (props) {
+  return GenIcon({"attr":{"viewBox":"0 0 448 512"},"child":[{"tag":"path","attr":{"d":"M400 224h-24v-72C376 68.2 307.8 0 224 0S72 68.2 72 152v72H48c-26.5 0-48 21.5-48 48v192c0 26.5 21.5 48 48 48h352c26.5 0 48-21.5 48-48V272c0-26.5-21.5-48-48-48zm-104 0H152v-72c0-39.7 32.3-72 72-72s72 32.3 72 72v72z"},"child":[]}]})(props);
 }function FaKey (props) {
   return GenIcon({"attr":{"viewBox":"0 0 512 512"},"child":[{"tag":"path","attr":{"d":"M512 176.001C512 273.203 433.202 352 336 352c-11.22 0-22.19-1.062-32.827-3.069l-24.012 27.014A23.999 23.999 0 0 1 261.223 384H224v40c0 13.255-10.745 24-24 24h-40v40c0 13.255-10.745 24-24 24H24c-13.255 0-24-10.745-24-24v-78.059c0-6.365 2.529-12.47 7.029-16.971l161.802-161.802C163.108 213.814 160 195.271 160 176 160 78.798 238.797.001 335.999 0 433.488-.001 512 78.511 512 176.001zM336 128c0 26.51 21.49 48 48 48s48-21.49 48-48-21.49-48-48-48-48 21.49-48 48z"},"child":[]}]})(props);
 }function FaInfoCircle (props) {
@@ -129,6 +131,8 @@ const tokeerEnsureUbisoftPackages = callable("tokeer_ensure_ubisoft_packages");
 const tokeerApplyUbisoftPackage = callable("tokeer_apply_ubisoft_package");
 const tokeerFindUbisoftToken = callable("tokeer_find_ubisoft_token");
 const tokeerInstallUbisoftDbdata = callable("tokeer_install_ubisoft_dbdata");
+const tokeerAppliedStatus = callable("tokeer_applied_status");
+const tokeerMarkApplied = callable("tokeer_mark_applied");
 // ── Callables ──────────────────────────────────────────────────────────────
 callable("get_steam_status");
 const hasLua = callable("has_lua");
@@ -1893,6 +1897,93 @@ function cdpCommand(wsUrl, method, params = {}, timeoutMs = 5000) {
         timer = setTimeout(() => finish(null), timeoutMs);
     });
 }
+/** CDP DOM node ids belong to the debugger session that created them. Keep
+ * discovery and assignment on one socket so Discord's hidden file input does
+ * not become invalid between DOM.requestNode and DOM.setFileInputFiles. */
+function cdpSetDiscordFileInput(wsUrl, filePath, timeoutMs = 7000) {
+    return new Promise((resolve) => {
+        let done = false;
+        let sock;
+        let nextId = 0;
+        const pending = new Map();
+        let timer;
+        const finish = (value) => {
+            if (done)
+                return;
+            done = true;
+            if (timer !== undefined)
+                clearTimeout(timer);
+            pending.clear();
+            try {
+                sock.close();
+            }
+            catch { }
+            resolve(value);
+        };
+        const send = (method, params = {}) => new Promise((resolveCommand) => {
+            if (done || sock.readyState !== WebSocket.OPEN) {
+                resolveCommand(null);
+                return;
+            }
+            const id = ++nextId;
+            pending.set(id, resolveCommand);
+            try {
+                sock.send(JSON.stringify({ id, method, params }));
+            }
+            catch {
+                pending.delete(id);
+                resolveCommand(null);
+            }
+        });
+        try {
+            sock = new WebSocket(wsUrl);
+        }
+        catch {
+            resolve({ found: false, accepted: false });
+            return;
+        }
+        sock.onmessage = (ev) => {
+            try {
+                const message = JSON.parse(String(ev.data));
+                const resolveCommand = pending.get(Number(message?.id));
+                if (!resolveCommand)
+                    return;
+                pending.delete(Number(message.id));
+                resolveCommand(message?.error ? null : (message?.result ?? null));
+            }
+            catch { }
+        };
+        sock.onopen = async () => {
+            await send("DOM.enable");
+            await send("DOM.getDocument", { depth: 1, pierce: true });
+            const evaluated = await send("Runtime.evaluate", {
+                expression: `(function(){try{
+          var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+          var composer=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],[contenteditable]')).filter(visible).sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;})[0];
+          var form=composer&&composer.closest('form');
+          return (form&&form.querySelector('input[type="file"]'))||document.querySelector('input[type="file"]')||null;
+        }catch(e){return null;}})()`,
+                returnByValue: false,
+            });
+            const objectId = String(evaluated?.result?.objectId || "");
+            if (!objectId || evaluated?.result?.subtype === "null") {
+                finish({ found: false, accepted: false });
+                return;
+            }
+            const requested = await send("DOM.requestNode", { objectId });
+            const nodeId = Number(requested?.nodeId || 0);
+            if (!nodeId) {
+                finish({ found: true, accepted: false });
+                return;
+            }
+            const assigned = await send("DOM.setFileInputFiles", { nodeId, files: [filePath] });
+            finish({ found: true, accepted: assigned !== null });
+        };
+        sock.onerror = () => finish({ found: false, accepted: false });
+        sock.onclose = () => finish({ found: false, accepted: false });
+        timer = setTimeout(() => finish({ found: false, accepted: false }), timeoutMs);
+    });
+}
 async function evalJson(wsUrl, expression, timeoutMs = 5000) {
     const result = await cdpCommand(wsUrl, "Runtime.evaluate", {
         expression, returnByValue: true, awaitPromise: true,
@@ -2912,20 +3003,46 @@ async function sendTokeerTicketMessage(ticketUrl, message) {
         return { success: false, error: "Discord displayed the ticket message box, but did not accept the TLX1 text. It remains available for manual copy." };
     await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
     await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
-    await new Promise((r) => setTimeout(r, 700));
     const verifyExpr = `(function(){try{
     var expected=${JSON.stringify(text)};
-    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12);
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30);
     for(var i=arts.length-1;i>=0;i--){var a=arts[i];if(String(a.innerText||'').indexOf(expected)<0)continue;var m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
-    return JSON.stringify({found:false});
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],textarea,[contenteditable]')).filter(function(e){return visible(e)&&e.getAttribute('contenteditable')!=='false'&&!e.disabled&&!e.readOnly;});
+    boxes.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+    var box=boxes[0],rect=box&&box.getBoundingClientRect(),composer=!!box&&!!rect&&(rect.top>innerHeight*.45||!!box.closest('form,[class*="channelTextArea"],[class*="textArea"]'));
+    var draft=String(composer&&(box.value||box.innerText||box.textContent)||'');
+    return JSON.stringify({found:false,composer:composer,draftContains:draft.indexOf(expected)>=0});
   }catch(e){return JSON.stringify({found:false});}})()`;
-    const appearedRaw = await evalJson(tab.webSocketDebuggerUrl, verifyExpr, 3000);
-    try {
-        const appeared = JSON.parse(String(appearedRaw || ""));
-        if (appeared?.found)
-            return { success: true, lastMessageId: String(appeared.id || "") || undefined };
+    // Discord clears the Slate composer as soon as it accepts a message, but its
+    // virtualized article list can mount that message several seconds later. A
+    // single immediate DOM read therefore produced intermittent false failures.
+    // Poll the exact saved ticket and never press Enter again: either the TLX1
+    // article appears, or a persistently cleared composer proves that Discord
+    // accepted the already-entered draft and the response waiter may take over.
+    const verifyDeadline = Date.now() + 15000;
+    let composerClearedAt = 0;
+    while (Date.now() < verifyDeadline) {
+        const verifyTab = await ticketTab(ticketUrl);
+        if (verifyTab?.webSocketDebuggerUrl) {
+            const appearedRaw = await evalJson(verifyTab.webSocketDebuggerUrl, verifyExpr, 3000);
+            try {
+                const appeared = JSON.parse(String(appearedRaw || ""));
+                if (appeared?.found)
+                    return { success: true, lastMessageId: String(appeared.id || "") || undefined };
+                if (appeared?.composer && !appeared?.draftContains) {
+                    if (!composerClearedAt)
+                        composerClearedAt = Date.now();
+                    if (Date.now() - composerClearedAt >= 1500)
+                        return { success: true };
+                }
+                else
+                    composerClearedAt = 0;
+            }
+            catch { }
+        }
+        await new Promise((r) => setTimeout(r, 400));
     }
-    catch { }
     return { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
 }
 async function waitForUbisoftVerificationConfirmation(ticketUrl, afterMessageId = "", timeoutMs = 2 * 60 * 1000, shouldAbort) {
@@ -2977,8 +3094,9 @@ async function uploadTokeerTicketFile(ticketUrl, filePath, expectedFilename) {
     }
     const deadline = Date.now() + 20000;
     let tab = null;
-    let inputNodeId = 0;
-    while (Date.now() < deadline && !inputNodeId) {
+    let fileInputFound = false;
+    let fileAccepted = false;
+    while (Date.now() < deadline && !fileAccepted) {
         tab = await ticketTab(ticketUrl);
         if (!tab?.webSocketDebuggerUrl) {
             await new Promise((r) => setTimeout(r, 500));
@@ -2987,29 +3105,27 @@ async function uploadTokeerTicketFile(ticketUrl, filePath, expectedFilename) {
         const closed = await checkTokeerTicketState(ticketUrl);
         if (closed.closed)
             return { success: false, cancelled: true, error: closed.reason || "The Discord ticket was closed." };
-        const documentNode = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.getDocument", { depth: -1, pierce: true }, 4000);
-        const rootId = Number(documentNode?.root?.nodeId || 0);
-        if (rootId) {
-            const queried = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.querySelector", { nodeId: rootId, selector: 'input[type="file"]' }, 3000);
-            inputNodeId = Number(queried?.nodeId || 0);
-        }
-        if (!inputNodeId) {
+        const assigned = await cdpSetDiscordFileInput(tab.webSocketDebuggerUrl, filePath);
+        fileInputFound = fileInputFound || assigned.found;
+        fileAccepted = assigned.accepted;
+        if (!fileAccepted) {
             // Discord may mount its hidden file input only after the attachment
-            // control is opened. Click only a visible composer-adjacent upload/+ button.
+            // control is opened. Prefer structural classes so localized aria-labels
+            // and composer placeholders do not affect attachment discovery.
             await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
         var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
         var composer=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],[contenteditable]')).filter(visible).sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;})[0];
         if(!composer)return false;var cr=composer.getBoundingClientRect();
-        var buttons=[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible).filter(function(b){var r=b.getBoundingClientRect(),t=String(b.getAttribute('aria-label')||b.getAttribute('title')||b.textContent||'');return r.bottom>=cr.top-24&&r.top<=cr.bottom+24&&r.right<=cr.left+24&&/(?:upload|attach|add|plus|file|\\+)/i.test(t);});
+        var structural=[].slice.call(document.querySelectorAll('[class*="attachButton"][role="button"],[class*="attachWrapper"] [role="button"]')).filter(visible);
+        var buttons=structural.length?structural:[].slice.call(document.querySelectorAll('button,[role="button"]')).filter(visible).filter(function(b){var r=b.getBoundingClientRect();return r.bottom>=cr.top-24&&r.top<=cr.bottom+24&&r.right<=cr.left+24;});
         var b=buttons[buttons.length-1];if(!b)return false;b.click();return true;
       }catch(e){return false;}})()`, 2500);
             await new Promise((r) => setTimeout(r, 400));
         }
     }
-    if (!tab?.webSocketDebuggerUrl || !inputNodeId)
+    if (!tab?.webSocketDebuggerUrl || !fileInputFound)
         return { success: false, error: "Discord did not expose its attachment input in the saved ticket." };
-    const setFiles = await cdpCommand(tab.webSocketDebuggerUrl, "DOM.setFileInputFiles", { nodeId: inputNodeId, files: [filePath] }, 5000);
-    if (setFiles === null)
+    if (!fileAccepted)
         return { success: false, error: "Chromium did not accept the Ubisoft token request attachment." };
     const attachedDeadline = Date.now() + 10000;
     let attached = false;
@@ -3067,18 +3183,33 @@ async function waitForUbisoftDbdataLink(ticketUrl, afterMessageId = "", timeoutM
         }
         const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
       var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
+      var trusted=function(value){try{var url=String(value||'');return /^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(url)&&/db(?:ata|data)\\.json/i.test(decodeURIComponent(url));}catch(e){return false;}};
+      var reactUrl=function(node){
+        try{
+          var queue=[],seen=[],checked=0,put=function(value,depth){if(value==null||depth>7)return;if(typeof value==='string'){if(trusted(value))queue.unshift({url:value,depth:99});return;}if((typeof value!=='object'&&typeof value!=='function')||seen.indexOf(value)>=0)return;seen.push(value);queue.push({value:value,depth:depth});};
+          for(var el=node,up=0;el&&up<6;el=el.parentElement,up++)Object.getOwnPropertyNames(el).filter(function(key){return /^__react(?:Props|Fiber)\\$/i.test(key);}).forEach(function(key){put(el[key],0);});
+          while(queue.length&&checked++<900){var item=queue.shift();if(item.url)return item.url;var value=item.value,depth=item.depth,keys=[];try{keys=Object.keys(value);}catch(e){}for(var k=0;k<keys.length;k++){var key=keys[k],child;try{child=value[key];}catch(e){continue;}if(typeof child==='string'&&trusted(child))return child;if(depth<7&&/(?:url|href|link|component|data|item|props|memoizedProps|pendingProps|return|child|sibling)/i.test(key))put(child,depth+1);}}
+        }catch(e){}
+        return '';
+      };
       for(var i=0;i<arts.length;i++){
         var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
-        if(after&&id&&BigInt(id)<=BigInt(after))continue;
-        var nodes=[].slice.call(a.querySelectorAll('a[href],button,[role="button"]'));
+        // The upload verifier can observe the bot response as its boundary.
+        // Re-read that message and skip only messages strictly older than it.
+        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        // Discord renders link-style message components beside the article in
+        // the same list item, not as ordinary anchors inside the article.
+        var scope=a.closest('li')||a.parentElement||a;
+        var nodes=[].slice.call(scope.querySelectorAll('a[href],button,[role="button"],[role="link"]'));
         for(var j=0;j<nodes.length;j++){
           var n=nodes[j],label=String(n.innerText||n.textContent||n.getAttribute('aria-label')||n.getAttribute('title')||'').replace(/\\s+/g,' ').trim();
-          if(!/(?:download\\s+)?dba(?:ta|data)\\.json/i.test(label))continue;
+          if(!/(?:download\\s+)?db(?:ata|data)\\.json/i.test(label))continue;
           var link=n.closest('a[href]')||n.querySelector&&n.querySelector('a[href]')||null,href=String(link&&link.href||n.getAttribute&&n.getAttribute('href')||'');
-          if(/^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href))return JSON.stringify({found:true,url:href,id:id});
+          if(!trusted(href))href=reactUrl(n);
+          if(trusted(href))return JSON.stringify({found:true,url:href,id:id});
         }
-        var links=[].slice.call(a.querySelectorAll('a[href]'));
-        for(var k=0;k<links.length;k++){var href=String(links[k].href||'');if(/^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href)&&/dba(?:ta|data)\\.json/i.test(href))return JSON.stringify({found:true,url:href,id:id});}
+        var links=[].slice.call(scope.querySelectorAll('a[href]'));
+        for(var l=0;l<links.length;l++){var direct=String(links[l].href||'');if(trusted(direct))return JSON.stringify({found:true,url:direct,id:id});}
       }
       return JSON.stringify({found:false});
     }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 4000);
@@ -3093,6 +3224,47 @@ async function waitForUbisoftDbdataLink(ticketUrl, afterMessageId = "", timeoutM
         await new Promise((r) => setTimeout(r, 1500));
     }
     return { success: false, error: "Timed out waiting for Discord's dbdata.json download." };
+}
+async function clickTokeerGameWorked(ticketUrl, afterMessageId = "") {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+        const tab = await ticketTab(ticketUrl);
+        if (!tab?.webSocketDebuggerUrl) {
+            await new Promise((r) => setTimeout(r, 500));
+            continue;
+        }
+        const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+      var after=${JSON.stringify(afterMessageId)},visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+      var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
+      for(var i=0;i<arts.length;i++){
+        var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
+        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        var scope=a.closest('li')||a.parentElement||a,buttons=[].slice.call(scope.querySelectorAll('button,[role="button"]')).filter(visible);
+        for(var j=buttons.length-1;j>=0;j--){var b=buttons[j],label=String(b.innerText||b.textContent||b.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();if(!/^game\\s+worked!?$/i.test(label))continue;if(b.disabled||b.getAttribute('aria-disabled')==='true')return JSON.stringify({found:true,disabled:true});try{b.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}var r=b.getBoundingClientRect();return JSON.stringify({found:true,x:r.left+r.width/2,y:r.top+r.height/2});}
+      }
+      return JSON.stringify({found:false});
+    }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 3500);
+        try {
+            const target = JSON.parse(String(raw || ""));
+            if (target?.disabled)
+                return { success: true };
+            if (target?.found && Number.isFinite(Number(target.x)) && Number.isFinite(Number(target.y))) {
+                await cdpCommand(tab.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+                await cdpCommand(tab.webSocketDebuggerUrl, "Page.bringToFront", {}, 2000);
+                const point = { x: Number(target.x), y: Number(target.y) };
+                await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, 2000);
+                const down = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, 2000);
+                const up = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 }, 2000);
+                if (down !== null && up !== null)
+                    return { success: true };
+            }
+            if (target?.error)
+                return { success: false, error: String(target.error) };
+        }
+        catch { }
+        await new Promise((r) => setTimeout(r, 500));
+    }
+    return { success: false, error: "The latest Game worked! button was not found in the saved Discord ticket." };
 }
 async function waitForTokeerActivationCode(ticketUrl, timeoutMs = 15 * 60 * 1000, afterMessageId = "", shouldAbort) {
     const deadline = Date.now() + timeoutMs;
@@ -3661,6 +3833,7 @@ function FixPicker({ appid, onReload, onClose }) {
     const [tokeerProgress, setTokeerProgress] = SP_REACT.useState(0);
     const [tokeerPhase, setTokeerPhase] = SP_REACT.useState("");
     const [tokeerFailed, setTokeerFailed] = SP_REACT.useState(false);
+    const [tokeerApplied, setTokeerApplied] = SP_REACT.useState(null);
     const [dlcDownload, setDlcDownload] = SP_REACT.useState(null);
     const [applied, setApplied] = SP_REACT.useState([]);
     const [installPath, setInstallPath] = SP_REACT.useState("");
@@ -3789,6 +3962,13 @@ function FixPicker({ appid, onReload, onClose }) {
             /* ignore */
         }
         try {
+            const status = await tokeerAppliedStatus(appid);
+            setTokeerApplied(status.success && status.applied ? status.record || null : null);
+        }
+        catch {
+            setTokeerApplied(null);
+        }
+        try {
             const p = await getGameInstallPath(appid);
             setInstallPath(p.success ? p.installPath || "" : "");
         }
@@ -3905,6 +4085,7 @@ function FixPicker({ appid, onReload, onClose }) {
         setMsg("");
         setCheck(null);
         setTokeerGame(null);
+        setTokeerApplied(null);
         setTokeerRefreshing(false);
         setTokeerLookup({ name: appDisplayName(appid), cachedGames: 0 });
         setApplied([]);
@@ -4730,7 +4911,7 @@ function FixPicker({ appid, onReload, onClose }) {
                                         setMsg("Cancelled — the pin is kept; you can apply later.");
                                     }, children: "Cancel" })] })] }))] }));
     };
-    return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: SP_JSX.jsxs("div", { children: ["\uD83D\uDD12 Version pinned", pinInfo.buildid
+    return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: SP_JSX.jsxs("div", { children: [tokeerApplied ? "🔑 Tokeer key applied · " : "", "\uD83D\uDD12 Version pinned", pinInfo.buildid
                             ? ` — Build ${pinInfo.buildid}`
                             : (pinInfo.depots && Object.keys(pinInfo.depots).length
                                 ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
@@ -4740,7 +4921,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), tokeerGame && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? `${tokeerPhase || "Setting up and validating"} · ${tokeerProgress}%` : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` }), (busy === "tokeer" || tokeerProgress > 0) && (SP_JSX.jsxs("div", { style: { marginTop: 7 }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, marginBottom: 4 }, children: [SP_JSX.jsx("span", { style: { opacity: 0.78 }, children: tokeerPhase || "Tokeer setup" }), SP_JSX.jsxs("span", { children: [tokeerProgress, "%"] })] }), SP_JSX.jsx("div", { style: { height: 8, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: {
+                            : "Pin this version" }), tokeerApplied && !pinned && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 4 }, children: "\uD83D\uDD11 Tokeer key applied" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.76, lineHeight: 1.45 }, children: [tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed", " \u00B7 Version not pinned"] })] }), tokeerGame && !tokeerApplied && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? `${tokeerPhase || "Setting up and validating"} · ${tokeerProgress}%` : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` }), (busy === "tokeer" || tokeerProgress > 0) && (SP_JSX.jsxs("div", { style: { marginTop: 7 }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, marginBottom: 4 }, children: [SP_JSX.jsx("span", { style: { opacity: 0.78 }, children: tokeerPhase || "Tokeer setup" }), SP_JSX.jsxs("span", { children: [tokeerProgress, "%"] })] }), SP_JSX.jsx("div", { style: { height: 8, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: {
                                         height: "100%",
                                         width: `${Math.max(0, Math.min(100, tokeerProgress))}%`,
                                         background: tokeerFailed
@@ -4749,10 +4930,10 @@ function FixPicker({ appid, onReload, onClose }) {
                                                 ? "#5cb85c"
                                                 : "linear-gradient(90deg,#4a90d9,#9c74df)",
                                         transition: "width .35s ease, background .2s ease",
-                                    } }) })] }))] }), !tokeerGame && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.65, padding: "5px 2px" }, children: ["Tokeer: ", tokeerRefreshing
+                                    } }) })] }))] }), !tokeerGame && !tokeerApplied && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.65, padding: "5px 2px" }, children: ["Tokeer: ", tokeerRefreshing
                         ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
                         : !tokeerLookup.updatedAt
-                            ? "no successful availability cache yet — connect Discord in Anti-Denuvo and refresh the vault"
+                            ? "no successful availability cache yet — connect Discord in Tokeer helper and refresh the vault"
                             : `not currently matched as available (${tokeerLookup.cachedGames} cached games; zero-key games are excluded)`] })), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
@@ -4856,6 +5037,7 @@ const EMOJI_BADGE_LABELS = {
     sls: "🏴‍☠️",
     legit: "💵",
     fixed: "🔧",
+    tokeer: "🔑",
     onlinefix: "🌐",
     denuvo: "👺",
     nonsteam: "❓",
@@ -4904,6 +5086,7 @@ const BADGE_LABELS = {
     denuvo: "DENUVO",
     onlinefix: "ONLINE FIX",
     fixed: "FIXED",
+    tokeer: "TOKEER KEY",
     nonsteam: "NON-STEAM",
     nonsteamname: "", // dynamic — filled per-app from the shortcut's exe folder
 };
@@ -4913,6 +5096,7 @@ const BADGE_COLORS = {
     denuvo: "linear-gradient(135deg, #a12a2a 0%, #e05252 100%)",
     onlinefix: "linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%)",
     fixed: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)",
+    tokeer: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)",
     nonsteam: "#000000",
     nonsteamname: "linear-gradient(135deg, #3a3f4b 0%, #555b68 100%)",
 };
@@ -4927,8 +5111,9 @@ let everAddedIds = new Set();
 let denuvoIds = new Set();
 let onlineIds = new Set();
 let fixedIds = new Set();
+let tokeerIds = new Set();
 let opts = {
-    sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true,
+    sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true, tokeer: true,
     nonSteam: true, nonSteamName: true, library: true,
 };
 let nonSteamNames = new Map();
@@ -5003,6 +5188,7 @@ function injectStyle(win) {
 .${BADGE_CLASS}[data-kind="denuvo"] { background: linear-gradient(135deg, #a12a2a 0%, #e05252 100%); }
 .${BADGE_CLASS}[data-kind="onlinefix"] { background: linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%); }
 .${BADGE_CLASS}[data-kind="fixed"] { background: linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%); }
+.${BADGE_CLASS}[data-kind="tokeer"] { background: linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%); }
 `;
         win.document.head.appendChild(el);
     }
@@ -5095,6 +5281,8 @@ function classifyApplied(appid) {
         out.push("onlinefix");
     if (opts.fixed && fixedIds.has(appid))
         out.push("fixed");
+    if (opts.tokeer && tokeerIds.has(appid))
+        out.push("tokeer");
     return out;
 }
 function classifyDenuvo(appid) {
@@ -5258,6 +5446,7 @@ async function refreshData() {
                 denuvo: !!r.denuvo,
                 onlineFix: !!r.onlineFix,
                 fixed: !!r.fixed,
+                tokeer: !!r.tokeer,
                 nonSteam: !!r.nonSteam,
                 nonSteamName: !!r.nonSteamName,
                 library: !!r.library,
@@ -5321,6 +5510,12 @@ async function refreshData() {
         }
     }
     catch { /* keep previous */ }
+    try {
+        const r = await tokeerAppliedStatus();
+        if (r.success)
+            tokeerIds = new Set((r.records || []).map((record) => Number(record.appid)));
+    }
+    catch { /* keep previous */ }
 }
 function removeAllBadges() {
     const win = getLibraryWindow();
@@ -5339,7 +5534,7 @@ async function startBadges() {
         removeAllBadges();
         return;
     }
-    if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.nonSteam)
+    if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.tokeer && !opts.nonSteam)
         return;
     const win = getLibraryWindow();
     if (!win) {
@@ -5623,6 +5818,14 @@ async function storeBadges(appid, installed) {
                     else if (o.fixed)
                         kinds.push("fixed");
                 }
+            }
+            catch { /* */ }
+        }
+        if (o.tokeer) {
+            try {
+                const status = await tokeerAppliedStatus(appid);
+                if (status.success && status.applied)
+                    kinds.push("tokeer");
             }
             catch { /* */ }
         }
@@ -8239,10 +8442,10 @@ const TOPICS = [
         ],
     },
     {
-        key: "denuvo", title: "Anti-Denuvo", icon: SP_JSX.jsx(FaShieldAlt, {}),
+        key: "denuvo", title: "HV Module", icon: SP_JSX.jsx(FaShieldAlt, {}),
         blurb: "Hypervisor/custom-Proton tooling for supported Denuvo fixes.",
         items: [
-            { name: "Hypervisor", desc: "Install/manage the anti-Denuvo hypervisor support used by compatible fixes. This is a heavy optional dependency and only applies to supported titles." },
+            { name: "HV Module", desc: "Install/manage the anti-Denuvo hypervisor support used by compatible fixes. This is a heavy optional dependency and only applies to supported titles." },
         ],
     },
     {
@@ -8285,6 +8488,7 @@ function FixesSection() {
     const [checking, setChecking] = SP_REACT.useState(false);
     const [applyState, setApplyState] = SP_REACT.useState(null);
     const [installed, setInstalled] = SP_REACT.useState([]);
+    const [tokeerApplied, setTokeerApplied] = SP_REACT.useState([]);
     const [openDesc, setOpenDesc] = SP_REACT.useState(null);
     const [awaiting, setAwaiting] = SP_REACT.useState(null);
     const [dlComplete, setDlComplete] = SP_REACT.useState(false);
@@ -8293,11 +8497,13 @@ function FixesSection() {
     const stopFlag = SP_REACT.useRef(false);
     const loadInstalled = async () => {
         try {
-            const res = await getInstalledFixes();
+            const [res, tokeer] = await Promise.all([getInstalledFixes(), tokeerAppliedStatus()]);
             setInstalled(res.success ? res.fixes : []);
+            setTokeerApplied(tokeer.success ? tokeer.records || [] : []);
         }
         catch {
             setInstalled([]);
+            setTokeerApplied([]);
         }
     };
     SP_REACT.useEffect(() => {
@@ -8532,7 +8738,7 @@ function FixesSection() {
                     }, children: "Apply external fix\u2026" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "Pick a fix file (.zip/.rar/.7z or a loose .dll/.exe) and the game it's for. It shows as a \"Custom fix\" button in that game's Fixes menu and, once applied, in Applied fixes below (removable by tapping / Un-fix)." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Delete all custom fixes?", strDescription: "Removes every imported custom-fix file from ~/.local/share/SLSDeck/custom_fixes. Already-applied fixes stay on their games until you Un-fix them.", strOKButtonText: "Delete", onOK: async () => {
                             const r = await customDeleteFixes(0);
                             toaster.toast({ title: "SLSDeck", body: r.success ? "Custom fixes cleared" : r.error || "Failed" });
-                        } })), children: "Delete custom fixes" }) }), installed.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Applied fixes" }) }), installed.map((fix, i) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => confirmUnfix(fix), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: fix.gameName }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.6 }, children: [fix.fixType, " \u00B7 ", fix.date, " \u00B7 tap to undo"] })] }) }) }, `${fix.appid}-${fix.date}-${i}`)))] }))] }));
+                        } })), children: "Delete custom fixes" }) }), installed.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Applied fixes" }) }), installed.map((fix, i) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => confirmUnfix(fix), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: fix.gameName }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.6 }, children: [fix.fixType, " \u00B7 ", fix.date, " \u00B7 tap to undo"] })] }) }) }, `${fix.appid}-${fix.date}-${i}`)))] })), tokeerApplied.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Tokeer status" }) }), tokeerApplied.map((record) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left", padding: "7px 10px" }, children: [SP_JSX.jsxs("span", { style: { fontWeight: 600 }, children: ["\uD83D\uDD11 ", record.gameName || `AppID ${record.appid}`] }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.68 }, children: ["Key applied \u00B7 ", record.pinned ? "🔒 Version pinned" : "Version not pinned"] })] }) }, `tokeer-${record.appid}`)))] }))] }));
 }
 
 const CR_FLATPAK = "org.cloudredirect.CloudRedirect";
@@ -9455,7 +9661,7 @@ function HypervisorSection() {
     const podman = !!st?.podman_path;
     const working = busy !== "";
     const games = markedGames(st);
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Anti-Denuvo (hypervisor)", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "2px 0" }, children: [SP_JSX.jsx(Chip, { ok: loaded, label: loaded ? "Active" : "Inactive" }), SP_JSX.jsx(Chip, { ok: built, label: "Module built" }), SP_JSX.jsx(Chip, { ok: !!st?.headers_ready, label: "Headers" }), SP_JSX.jsx(Chip, { ok: !!st?.root, label: "Root" }), SP_JSX.jsx(Chip, { ok: !!st?.umip_disabled, label: "UMIP off" }), SP_JSX.jsx(Chip, { ok: !!proton?.installed, label: "Proton" })] }) }), st && st.is_steamos === false && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", padding: "2px 2px" }, children: "\u26A0 Non-SteamOS detected. The kernel-module build targets SteamOS (holo repo / linux-neptune headers); on another distro the build may fail or need its own kernel headers. Proceed at your own risk." }) })), nativeNote?.show && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, color: "#58c578", padding: "2px 2px" }, children: ["\u2713 ", nativeNote.message || "This kernel supports cpuid faulting natively — the module may not be needed.", SP_JSX.jsx("span", { style: { marginLeft: 8, textDecoration: "underline", cursor: "pointer", opacity: 0.8 }, onClick: async () => { await hvDismissNative(); setNativeNote(null); }, children: "dismiss" })] }) })), !st?.root && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7 }, children: "Backend is not running as root \u2014 reinstall the plugin so the root flag takes effect." }) })), working && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy === "deps" ? "Installing kernel headers…"
+    return (SP_JSX.jsxs(DFL.PanelSection, { title: "HV Module", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { padding: "2px 0" }, children: [SP_JSX.jsx(Chip, { ok: loaded, label: loaded ? "Active" : "Inactive" }), SP_JSX.jsx(Chip, { ok: built, label: "Module built" }), SP_JSX.jsx(Chip, { ok: !!st?.headers_ready, label: "Headers" }), SP_JSX.jsx(Chip, { ok: !!st?.root, label: "Root" }), SP_JSX.jsx(Chip, { ok: !!st?.umip_disabled, label: "UMIP off" }), SP_JSX.jsx(Chip, { ok: !!proton?.installed, label: "Proton" })] }) }), st && st.is_steamos === false && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", padding: "2px 2px" }, children: "\u26A0 Non-SteamOS detected. The kernel-module build targets SteamOS (holo repo / linux-neptune headers); on another distro the build may fail or need its own kernel headers. Proceed at your own risk." }) })), nativeNote?.show && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, color: "#58c578", padding: "2px 2px" }, children: ["\u2713 ", nativeNote.message || "This kernel supports cpuid faulting natively — the module may not be needed.", SP_JSX.jsx("span", { style: { marginLeft: 8, textDecoration: "underline", cursor: "pointer", opacity: 0.8 }, onClick: async () => { await hvDismissNative(); setNativeNote(null); }, children: "dismiss" })] }) })), !st?.root && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7 }, children: "Backend is not running as root \u2014 reinstall the plugin so the root flag takes effect." }) })), working && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy === "deps" ? "Installing kernel headers…"
                             : busy === "build" ? "Building module (this can take a few minutes)…"
                                 : busy === "container" ? "Building module in container…"
                                     : "Working…"] }) })), !working && !built && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("download", hvDownload, "Prebuilt module downloaded"), children: "Download prebuilt module (recommended)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6 }, children: ["Fetches the prebuilt cpuid_fault_emulation.ko for your kernel (", st?.kernel_release || "?", ") \u2014 no compiler, headers or source needed. Use this first; only build below if no prebuilt matches your kernel."] }) }), !st?.headers_ready && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("deps", hvInstallDeps, "Kernel headers installed"), children: "Install kernel headers (for building)" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("build", hvBuild, "Module built"), children: "Build module (native)" }) }), podman && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("container", hvBuildContainer, "Module built (container)"), children: "Build module in container (podman)" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.6 }, children: ["Building compiles the module for your kernel (", st?.kernel_release || "?", ") using", " ", st?.compiler_name || "the kernel compiler", " \u2014 needs headers + source. Rebuild after a SteamOS kernel update."] }) })] })), !working && built && !loaded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("load", hvLoadAuto, "Hypervisor enabled"), children: "Enable hypervisor" }) })), !working && built && loaded && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("unload", hvUnloadAuto, "Hypervisor disabled"), children: "Disable hypervisor" }) })), !working && built && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: doTest, disabled: working, children: "Test cpuid faulting (self-test)" }) })), !working && built && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => run("build", hvBuild, "Module rebuilt"), children: "Rebuild for this kernel" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 6 }, children: "UMIP compatibility" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7 }, children: st?.umip_disabled
@@ -9546,7 +9752,9 @@ function TokeerSection() {
     const [ubisoftTokenPath, setUbisoftTokenPath] = SP_REACT.useState(savedRef.current?.ubisoftTokenPath || "");
     const [ubisoftTokenMessageId, setUbisoftTokenMessageId] = SP_REACT.useState(savedRef.current?.ubisoftTokenMessageId || "");
     const [restoringSelectors, setRestoringSelectors] = SP_REACT.useState(!!selectorLayoutRef.current);
+    const [ubisoftContinuationRunning, setUbisoftContinuationRunning] = SP_REACT.useState(false);
     const automationRunningRef = SP_REACT.useRef(false);
+    const ubisoftCompletionPausedRef = SP_REACT.useRef(false);
     const ticketAbortedRef = SP_REACT.useRef(false);
     const ticketGenerationRef = SP_REACT.useRef(0);
     const selectedUbisoftRef = SP_REACT.useRef(!!savedRef.current?.selectedUbisoft);
@@ -9888,6 +10096,17 @@ function TokeerSection() {
             setBusy("");
             return;
         }
+        const installedAppid = Number(installed.appid || 0);
+        if (installedAppid && hasLaunchRepoint(installedAppid)) {
+            const removed = setLaunchRepoint(installedAppid, null);
+            const warning = removed
+                ? "SLSDeck removed the redirect-target fix from this game's launch options. Select the game again to continue; your other launch arguments were preserved."
+                : "This game's launch options still contain the SLSDeck redirect-target fix. Remove it before selecting this game for Tokeer; other launch arguments may remain.";
+            setMessage(warning);
+            toaster.toast({ title: "SLSDeck · Tokeer", body: warning });
+            setBusy("");
+            return;
+        }
         setBusy(`Selecting ${label} in Discord…`);
         const selectorLabel = discord?.selectors.find((selector) => selector.index === index)?.label || "";
         const fromUbisoftList = /\bubi(?:soft)?\b/i.test(selectorLabel);
@@ -9956,6 +10175,8 @@ function TokeerSection() {
         ticketGenerationRef.current += 1;
         ticketAbortedRef.current = true;
         automationRunningRef.current = false;
+        ubisoftCompletionPausedRef.current = true;
+        setUbisoftContinuationRunning(false);
         try {
             window.localStorage.removeItem(TOKEER_SESSION_KEY);
         }
@@ -10069,6 +10290,8 @@ function TokeerSection() {
                     fail(redeemed.error || redeemed.output || "Activation redemption failed.");
                     return;
                 }
+                await tokeerMarkApplied(ctx.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ctx.appid}`, "steam", false);
+                void refreshBadges();
                 setAutomationStage("done");
                 setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
                 try {
@@ -10194,6 +10417,8 @@ function TokeerSection() {
                 fail(redeemed.error || redeemed.output || "Activation redemption failed. The received code is preserved for manual retry.");
                 return;
             }
+            await tokeerMarkApplied(ctx.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ctx.appid}`, "steam", false);
+            void refreshBadges();
             setAutomationStage("done");
             setMessage("Tokeer activation was received and redeemed automatically. Launch the game from Steam.");
             toaster.toast({ title: "SLSDeck · Tokeer", body: "Activation received and redeemed successfully." });
@@ -10228,7 +10453,9 @@ function TokeerSection() {
         if (!ticket?.url || !ticket.appid || !ubisoftAppliedAt)
             return setMessage("The saved Ubisoft activation state is incomplete; reopen the ticket flow.");
         const generation = ticketGenerationRef.current;
-        const stale = () => ticketAbortedRef.current || generation !== ticketGenerationRef.current;
+        ubisoftCompletionPausedRef.current = false;
+        setUbisoftContinuationRunning(true);
+        const stale = () => ticketAbortedRef.current || ubisoftCompletionPausedRef.current || generation !== ticketGenerationRef.current;
         automationRunningRef.current = true;
         try {
             let tokenPath = ubisoftTokenPath, tokenMessageId = ubisoftTokenMessageId, tracked = { ...ticket };
@@ -10292,11 +10519,23 @@ function TokeerSection() {
                 setMessage(installed.error || "dbdata.json installation failed.");
                 return;
             }
+            const applied = await tokeerMarkApplied(ticket.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ticket.appid}`, "ubisoft", true);
+            void refreshBadges();
+            const pinNote = applied.pin?.success
+                ? " The installed build was pinned."
+                : ` The key is applied, but version pinning failed${applied.pin?.error ? `: ${applied.pin.error}` : "."}`;
+            setBusy("Confirming that the game worked in Discord…");
+            const vouched = await clickTokeerGameWorked(ticket.url, received.lastMessageId || tracked.lastMessageId || "");
+            if (stale())
+                return;
+            const vouchNote = vouched.success
+                ? " The latest Game worked! button was pressed in Discord."
+                : ` Discord could not press Game worked! automatically: ${vouched.error || "button not found"}`;
             setAutomationStage("done");
             setAutomationError("");
-            setMessage(`Ubisoft activation data was installed in ${installed.directory || "the token-request folder"}. Launch the game again.`);
+            setMessage(`Ubisoft activation data was installed in ${installed.directory || "the token-request folder"}.${pinNote}${vouchNote} Launch the game again.`);
             checkpoint({ automationStage: "done", automationError: "", ubisoftAppliedAt, ubisoftTokenPath: tokenPath, ubisoftTokenMessageId: tokenMessageId, ticket: { ...tracked, lastMessageId: received.lastMessageId || tracked.lastMessageId } });
-            toaster.toast({ title: "SLSDeck · Tokeer", body: "Ubisoft dbdata.json installed successfully." });
+            toaster.toast({ title: "SLSDeck · Tokeer", body: vouched.success ? "Ubisoft dbdata.json installed and Game worked! confirmed." : "Ubisoft dbdata.json installed successfully; Discord confirmation needs a manual press." });
         }
         catch (e) {
             if (!stale()) {
@@ -10306,11 +10545,26 @@ function TokeerSection() {
             }
         }
         finally {
-            if (!stale()) {
+            if (generation === ticketGenerationRef.current) {
                 automationRunningRef.current = false;
+                setUbisoftContinuationRunning(false);
                 setBusy("");
             }
         }
+    };
+    const pauseUbisoftTicketCompletion = () => {
+        ubisoftCompletionPausedRef.current = true;
+        automationRunningRef.current = false;
+        setUbisoftContinuationRunning(false);
+        setBusy("");
+        const resumeStage = ubisoftTokenMessageId ? "waiting-dbdata" : "waiting-token";
+        setAutomationStage(resumeStage);
+        setAutomationError("");
+        const pausedMessage = ubisoftTokenMessageId
+            ? "Ubisoft ticket completion paused. Press Continue Ubisoft ticket to resume searching for dbdata.json."
+            : "Ubisoft ticket completion paused. Press Continue Ubisoft ticket to resume finding and uploading the token request.";
+        setMessage(pausedMessage);
+        checkpoint({ automationStage: resumeStage, automationError: "", ubisoftTokenPath, ubisoftTokenMessageId, ticket });
     };
     const openTicket = async () => {
         const generation = ++ticketGenerationRef.current;
@@ -10551,11 +10805,16 @@ function TokeerSection() {
     const redeem = async () => {
         if (!activation.trim())
             return setMessage("Paste the activation code from Discord first.");
+        const resolvedAppid = await resolveTicketAppid();
+        if (!resolvedAppid)
+            return;
         setBusy("Writing activation ticket…");
         try {
             const r = await tokeerRedeem(activation.trim());
             setMessage(r.success ? "Activation written successfully. Launch the game from Steam." : (r.error || r.output || "Activation failed."));
             if (r.success) {
+                await tokeerMarkApplied(resolvedAppid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${resolvedAppid}`, "steam", false);
+                void refreshBadges();
                 try {
                     window.localStorage.removeItem(TOKEER_SESSION_KEY);
                 }
@@ -10606,11 +10865,11 @@ function TokeerSection() {
                                         ["Keys remaining", availability.vault.keysRemaining ?? "?", "#74e6a2"],
                                         ["High demand", availability.vault.highDemand ?? "?", "#ff9b8f"],
                                         ["Available now", availability.games.length, "#d2a6ff"],
-                                    ].map(([label, value, color]) => SP_JSX.jsxs("div", { style: { padding: "8px 9px", borderRadius: 7, background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 9, textTransform: "uppercase", letterSpacing: .7, opacity: .72 }, children: label }), SP_JSX.jsx("div", { style: { fontSize: 19, fontWeight: 900, lineHeight: 1.2, color: String(color), textShadow: `0 0 12px ${String(color)}55`, fontVariantNumeric: "tabular-nums" }, children: value })] }, String(label))) }), SP_JSX.jsxs("div", { style: { marginTop: 8, fontSize: 10, opacity: .7 }, children: ["Updated ", new Date(availability.updatedAt).toLocaleString()] }), SP_JSX.jsx("div", { style: { marginTop: 7, maxHeight: 150, overflowY: "auto", padding: "6px 7px", borderRadius: 6, background: "rgba(0,0,0,.18)" }, children: availability.games.map(game => SP_JSX.jsxs("div", { style: { padding: "2px 0", color: "#f2f5ff" }, children: [game.name, game.remaining !== undefined ? SP_JSX.jsx("span", { style: { color: "#74e6a2", fontWeight: 700 }, children: ` — ${game.remaining}/${game.total ?? "?"} keys` }) : ""] }, game.appid || game.name)) })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "10px 11px", borderRadius: 7, border: "1px solid rgba(255,70,70,.55)", background: "rgba(145,20,20,.2)", color: "#ff6666", fontSize: 11, fontWeight: 750, lineHeight: 1.5 }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 850, marginBottom: 3 }, children: "Account safety" }), "Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device."] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .75, lineHeight: 1.45, paddingTop: 8 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Pick a game here; Discord remains the source of truth for availability, remaining keys and the Steam AppID." }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "9px 11px", borderRadius: 8, background: "linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))", border: "1px solid rgba(104,205,255,.35)", fontSize: 12, lineHeight: 1.6, color: "#f4fbff" }, children: [SP_JSX.jsxs("span", { style: { color: restoringSelectors ? "#ffd166" : "#65e69b", fontWeight: 800 }, children: ["\u25CF ", restoringSelectors ? "RESTORING GAME LIST…" : "LIVE"] }), " \u00B7 Steam: ", SP_JSX.jsx("b", { style: { color: "#fff" }, children: discord.steamStatus || "Unknown" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: restoringSelectors ? "Returning to the Linux activation panel…" : "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy || restoringSelectors || ticketChainActive(), rgOptions: (options[s.index] || []).map(x => ({ data: x, label: displayGameLabel(x) })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: displayGameLabel(selectedGame) }), " \u00B7 Verifier: ", SP_JSX.jsx("b", { children: selectedUbisoft ? "Ubisoft" : "Steam" })] }) }), ticket?.opened && !ticket.appid
+                                    ].map(([label, value, color]) => SP_JSX.jsxs("div", { style: { padding: "8px 9px", borderRadius: 7, background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 9, textTransform: "uppercase", letterSpacing: .7, opacity: .72 }, children: label }), SP_JSX.jsx("div", { style: { fontSize: 19, fontWeight: 900, lineHeight: 1.2, color: String(color), textShadow: `0 0 12px ${String(color)}55`, fontVariantNumeric: "tabular-nums" }, children: value })] }, String(label))) }), SP_JSX.jsxs("div", { style: { marginTop: 8, fontSize: 10, opacity: .7 }, children: ["Updated ", new Date(availability.updatedAt).toLocaleString()] }), SP_JSX.jsx("div", { style: { marginTop: 7, maxHeight: 150, overflowY: "auto", padding: "6px 7px", borderRadius: 6, background: "rgba(0,0,0,.18)" }, children: availability.games.map(game => SP_JSX.jsxs("div", { style: { padding: "2px 0", color: "#f2f5ff" }, children: [game.name, game.remaining !== undefined ? SP_JSX.jsx("span", { style: { color: "#74e6a2", fontWeight: 700 }, children: ` — ${game.remaining}/${game.total ?? "?"} keys` }) : ""] }, game.appid || game.name)) })] }) }), availability && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "10px 11px", borderRadius: 7, border: "1px solid rgba(255,70,70,.55)", background: "rgba(145,20,20,.2)", color: "#ff6666", fontSize: 11, fontWeight: 750, lineHeight: 1.5 }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 850, marginBottom: 3 }, children: "Account safety" }), "Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device."] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", marginTop: 8, padding: "11px 12px", borderRadius: 8, background: "linear-gradient(135deg,rgba(255,183,77,.13),rgba(96,125,139,.12))", border: "1px solid rgba(255,193,94,.32)", boxShadow: "0 4px 14px rgba(0,0,0,.16)", fontSize: 11, lineHeight: 1.55, color: "#f4f6fa" }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 850, marginBottom: 5, color: "#ffd180", letterSpacing: .15 }, children: "Before activation" }), SP_JSX.jsx("div", { children: "Finish preparing the game before redeeming it. Install any mods, texture packs, fixes, or other changes that modify the game files first." }), SP_JSX.jsx("div", { style: { marginTop: 5, opacity: .82 }, children: "Changing game files after activation is not advised, because it may invalidate the activated setup and require you to verify or recover the files again." }), SP_JSX.jsx("div", { style: { marginTop: 7, paddingTop: 7, borderTop: "1px solid rgba(255,255,255,.1)", fontSize: 10, opacity: .68 }, children: "SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID." })] }) }), discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "9px 11px", borderRadius: 8, background: "linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))", border: "1px solid rgba(104,205,255,.35)", fontSize: 12, lineHeight: 1.6, color: "#f4fbff" }, children: [SP_JSX.jsxs("span", { style: { color: restoringSelectors ? "#ffd166" : "#65e69b", fontWeight: 800 }, children: ["\u25CF ", restoringSelectors ? "RESTORING GAME LIST…" : "LIVE"] }), " \u00B7 Steam: ", SP_JSX.jsx("b", { style: { color: "#fff" }, children: discord.steamStatus || "Unknown" })] }) }), (discord?.selectors || []).map(s => SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: s.label || `Game menu ${s.index + 1}`, description: restoringSelectors ? "Returning to the Linux activation panel…" : "Live game list from the Tokeer Discord panel", disabled: s.disabled || !!busy || restoringSelectors || ticketChainActive(), rgOptions: (options[s.index] || []).map(x => ({ data: x, label: displayGameLabel(x) })), selectedOption: selectedMenus[s.index] || null, strDefaultLabel: s.label || "Choose a game", onMenuWillOpen: (showMenu) => openMenu(s.index, showMenu), onChange: (o) => choose(s.index, String(o.data)) }) }, s.index)), !discord?.found && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .7 }, children: discord?.error || "Open the Linux activation message once and leave the Discord tab alive." }) })] }), (selectedGame || gate) && SP_JSX.jsxs(DFL.PanelSection, { title: "Open activation ticket", children: [selectedGame && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12 }, children: ["Selected: ", SP_JSX.jsx("b", { children: displayGameLabel(selectedGame) }), " \u00B7 Verifier: ", SP_JSX.jsx("b", { children: selectedUbisoft ? "Ubisoft" : "Steam" })] }) }), ticket?.opened && !ticket.appid
                         ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !ticket.url, onClick: resumeTicket, children: "Resume existing ticket / detect commands" }) })
                         : gate?.found
-                            ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: gate.label || "✅ I've read this & watched the tutorial" }) })
-                            : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: .7 }, children: ["Private ticket saved. ", codeExpiresAt ? "Activation-code countdown is running." : "The 30-minute code timer has not started yet."] }) }), selectedUbisoft && ticket?.opened && ticket.url && ["waiting-token", "waiting-dbdata", "failed"].includes(automationStage) && ubisoftAppliedAt > 0 && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: continueUbisoftTicket, children: "Continue Ubisoft ticket" }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy && !["Waiting for Discord activation code…", "Waiting for Ubisoft verification confirmation…", "Waiting for Discord dbdata.json…"].includes(busy), onClick: cancelTicket, children: "Cancel ticket in Discord" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) }), automationStage !== "idle" && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: ["Automation: ", SP_JSX.jsx("b", { children: automationStage.replace("-", " ") }), tlxSubmitted ? " · TLX1 submitted" : "", automationError ? SP_JSX.jsx("div", { style: { color: "#ff7b72", marginTop: 3 }, children: automationError }) : null] }) })] }), selectedGame && ticket?.found && ticket.appid && !selectedUbisoft && SP_JSX.jsxs(DFL.PanelSection, { title: "Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Discord", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Manual view" }) }) }), (ticket?.opened || !!activation || !!verify || automationStage !== "idle") && SP_JSX.jsxs(DFL.PanelSection, { title: "Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => updateActivation(e.target.value) }) }), codeExpiresAt && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "4px 2px 8px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: remainingMs > 0 ? "#fff" : "#ff5b5b" }, children: [SP_JSX.jsx("span", { children: remainingMs > 0 ? "Activation window" : "Activation code expired" }), SP_JSX.jsx("span", { style: { fontVariantNumeric: "tabular-nums" }, children: countdown })] }), SP_JSX.jsx("div", { style: { height: 7, marginTop: 6, borderRadius: 6, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: { height: "100%", width: `${countdownPct}%`, borderRadius: 6, background: countdownPct > 25 ? "#59bf40" : countdownPct > 10 ? "#e5a629" : "#e34b4b", transition: "width .25s linear, background .3s ease" } }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
+                            ? SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || gate.disabled, onClick: openTicket, children: "Create a ticket" }) })
+                            : SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: waitForGate, children: "Refresh confirmation" }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: .7 }, children: ["Private ticket saved. ", codeExpiresAt ? "Activation-code countdown is running." : "The 30-minute code timer has not started yet."] }) }), selectedUbisoft && ticket?.opened && ticket.url && ubisoftAppliedAt > 0 && (ubisoftContinuationRunning || ["waiting-token", "uploading-token", "waiting-dbdata", "installing-dbdata", "failed"].includes(automationStage)) && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !ubisoftContinuationRunning && !!busy, onClick: ubisoftContinuationRunning ? pauseUbisoftTicketCompletion : continueUbisoftTicket, children: ubisoftContinuationRunning ? "Pause ticket completion" : "Continue Ubisoft ticket" }) }), ticket?.opened && ticket.url && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy && !["Waiting for Discord activation code…", "Waiting for Ubisoft verification confirmation…", "Waiting for Discord dbdata.json…"].includes(busy), onClick: cancelTicket, children: "Cancel ticket in Discord" }) }), ticket?.found && ticket.appid && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Ticket detected \u00B7 Steam AppID ", SP_JSX.jsx("b", { children: ticket.appid }), " (read automatically from Tokeer's commands)"] }) }), automationStage !== "idle" && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: ["Automation: ", SP_JSX.jsx("b", { children: automationStage.replace("-", " ") }), tlxSubmitted ? " · TLX1 submitted" : "", automationError ? SP_JSX.jsx("div", { style: { color: "#ff7b72", marginTop: 3 }, children: automationError }) : null] }) })] }), selectedGame && ticket?.found && ticket.appid && !selectedUbisoft && SP_JSX.jsxs(DFL.PanelSection, { title: "Prepare & verify", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: ["Runtime: ", SP_JSX.jsx("b", { children: runtime?.installed ? "Installed" : "Not prepared" }), " \u00B7 Default/free cooldown: ", SP_JSX.jsx("b", { children: "48 hours" })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: prepare, disabled: !!busy, children: "Prepare game" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: runVerify, disabled: !!busy, children: "Verify setup / generate TLX1" }) })] }), busy && SP_JSX.jsx(DFL.PanelSection, { title: "Working", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 11 }, children: [SP_JSX.jsx(DFL.Spinner, { style: { width: 14, height: 14, marginRight: 8 } }), busy] }) }) }), message && SP_JSX.jsx(DFL.PanelSection, { title: "Status", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45 }, children: message }) }) }), verify && SP_JSX.jsxs(DFL.PanelSection, { title: "Verify result", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, lineHeight: 1.7, width: "100%" }, children: [SP_JSX.jsxs("div", { children: [c.installed ? "✓" : "✗", " Game installed"] }), SP_JSX.jsxs("div", { children: [c.prefix ? "✓" : "✗", " Proton prefix"] }), SP_JSX.jsxs("div", { children: [c.hook ? "✓" : "✗", " Native hook"] }), SP_JSX.jsxs("div", { children: [c.launchOpt ? "✓" : "✗", " Launch option"] }), SP_JSX.jsxs("div", { children: ["Proton: ", SP_JSX.jsx("b", { children: c.proton || "unknown" })] })] }) }), verify.code && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: copyTlx, children: "Copy TLX1 verification code" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 9, wordBreak: "break-all", maxHeight: 90, overflowY: "auto", opacity: .7 }, children: verify.code }) })] })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Discord", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy, onClick: () => openTokeerDiscord(), children: "Manual view" }) }) }), (ticket?.opened || !!activation || !!verify || automationStage !== "idle") && SP_JSX.jsxs(DFL.PanelSection, { title: "Redeem activation", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("input", { style: inputStyle, placeholder: "Activation code from Discord", value: activation, onChange: (e) => updateActivation(e.target.value) }) }), codeExpiresAt && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", padding: "4px 2px 8px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: remainingMs > 0 ? "#fff" : "#ff5b5b" }, children: [SP_JSX.jsx("span", { children: remainingMs > 0 ? "Activation window" : "Activation code expired" }), SP_JSX.jsx("span", { style: { fontVariantNumeric: "tabular-nums" }, children: countdown })] }), SP_JSX.jsx("div", { style: { height: 7, marginTop: 6, borderRadius: 6, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: { height: "100%", width: `${countdownPct}%`, borderRadius: 6, background: countdownPct > 25 ? "#59bf40" : countdownPct > 10 ? "#e5a629" : "#e34b4b", transition: "width .25s linear, background .3s ease" } }) })] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: !!busy || !activation, onClick: redeem, children: "Activate / write ticket" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 10, opacity: .7, lineHeight: 1.45 }, children: "Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h \u00B7 Donator 24h \u00B7 Lua Basic 12h \u00B7 Lua Pro 6h \u00B7 Elite/no-cooldown role: no standard cooldown." }) })] })] });
 }
 
 function fmtSize$1(bytes) {
@@ -11632,6 +11891,7 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
     const [badgeStorePage, setBadgeStorePage] = SP_REACT.useState(true);
     const [badgeOnlineFix, setBadgeOnlineFix] = SP_REACT.useState(true);
     const [badgeFixed, setBadgeFixed] = SP_REACT.useState(true);
+    const [badgeTokeer, setBadgeTokeer] = SP_REACT.useState(true);
     const [badgeNonSteam, setBadgeNonSteam] = SP_REACT.useState(true);
     const [badgeNonSteamName, setBadgeNonSteamName] = SP_REACT.useState(true);
     const [badgeLibrary, setBadgeLibrary] = SP_REACT.useState(true);
@@ -11677,6 +11937,7 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
             setBadgeStorePage(!!r.storePage);
             setBadgeOnlineFix(!!r.onlineFix);
             setBadgeFixed(!!r.fixed);
+            setBadgeTokeer(!!r.tokeer);
             setBadgeNonSteam(!!r.nonSteam);
             setBadgeNonSteamName(!!r.nonSteamName);
             setBadgeLibrary(!!r.library);
@@ -11712,7 +11973,7 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
                                 else {
                                     toaster.toast({ title: "SLSDeck", body: "Collection sync off (existing collection kept)" });
                                 }
-                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Backup custom manifests and fixes", description: "Include imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. When restored, they reappear in the Fixes and Download tabs. Off by default.", checked: backupCustom, onChange: async (v) => { setBackupCustomState(v); await setBackupCustom(v); } }) })] }), SP_JSX.jsx(AddDownloadToggle, {}), SP_JSX.jsx(DlcCloudToggles, {}), SP_JSX.jsx(InjectionRecovery, {}), SP_JSX.jsx(DFL.PanelSection, { title: "Advanced tools", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Hypervisor Bypass Module tab", description: "Show the Hypervisor Bypass Module controls in Advanced. Hidden by default; Anti-Denuvo uses the Tokeer page.", checked: showDeckyHv, onChange: (v) => onShowDeckyHvChange(v) }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Library badges", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Emoji Badges", description: "Replace each enabled badge with its emoji analogue: SLS \uD83C\uDFF4\u200D\u2620\uFE0F, Legit \uD83D\uDCB5, Fix \uD83D\uDD27, Online Fix \uD83C\uDF10, Denuvo \uD83D\uDC7A, Non-Steam \u2753. Disabled badges stay hidden.", checked: badgeEmoji, onChange: (v) => {
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Backup custom manifests and fixes", description: "Include imported custom fixes and manifests (~/.local/share/SLSDeck) in the backup archive. When restored, they reappear in the Fixes and Download tabs. Off by default.", checked: backupCustom, onChange: async (v) => { setBackupCustomState(v); await setBackupCustom(v); } }) })] }), SP_JSX.jsx(AddDownloadToggle, {}), SP_JSX.jsx(DlcCloudToggles, {}), SP_JSX.jsx(InjectionRecovery, {}), SP_JSX.jsx(DFL.PanelSection, { title: "Advanced tools", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show HV Module tab", description: "Show the HV Module controls in Advanced. Hidden by default; Tokeer activation uses the separate Tokeer helper page.", checked: showDeckyHv, onChange: (v) => onShowDeckyHvChange(v) }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Library badges", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Emoji Badges", description: "Replace each enabled badge with its emoji analogue: SLS \uD83C\uDFF4\u200D\u2620\uFE0F, Legit \uD83D\uDCB5, Fix \uD83D\uDD27, Tokeer Key \uD83D\uDD11, Online Fix \uD83C\uDF10, Denuvo \uD83D\uDC7A, Non-Steam \u2753. Disabled badges stay hidden.", checked: badgeEmoji, onChange: (v) => {
                                 setBadgeEmoji(v);
                                 setEmojiBadgesEnabled(v);
                                 refreshBadges();
@@ -11735,6 +11996,10 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Fix-applied badge (FIXED)", description: "Marks games with a non-online fix installed (ryuu / crack / generic). Online fixes get the Online-fix badge instead.", checked: badgeFixed, onChange: async (v) => {
                                 setBadgeFixed(v);
                                 await setBadgeOption("fixed", v);
+                                refreshBadges();
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Tokeer Key badge", description: "Marks games whose Tokeer key was successfully redeemed, or whose Ubisoft dbdata.json was successfully installed. Emoji mode uses \uD83D\uDD11.", checked: badgeTokeer, onChange: async (v) => {
+                                setBadgeTokeer(v);
+                                await setBadgeOption("tokeer", v);
                                 refreshBadges();
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Non-Steam badge", description: "Black NON-STEAM badge on non-Steam shortcuts.", checked: badgeNonSteam, onChange: async (v) => {
                                 setBadgeNonSteam(v);
@@ -11815,12 +12080,12 @@ function AdvancedPage() {
                         content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(CloudRedirectSection, {}) }),
                     },
                     {
-                        title: "Anti-Denuvo",
-                        icon: SP_JSX.jsx(FaShieldAlt, {}),
+                        title: "Tokeer helper",
+                        icon: SP_JSX.jsx(FaLock, {}),
                         content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(TokeerSection, {}) }),
                     },
                     ...(showDeckyHv ? [{
-                            title: "Hypervisor Bypass Module",
+                            title: "HV Module",
                             icon: SP_JSX.jsx(FaShieldAlt, {}),
                             content: SP_JSX.jsx(Body, { children: SP_JSX.jsx(HypervisorSection, {}) }),
                         }] : []),
@@ -11971,6 +12236,7 @@ const STYLES = {
     denuvo: { label: "DENUVO", background: "linear-gradient(135deg, #a12a2a 0%, #e05252 100%)" },
     onlinefix: { label: "ONLINE FIX", background: "linear-gradient(135deg, #1f5f9e 0%, #3d8fd8 100%)" },
     fixed: { label: "FIXED", background: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)" },
+    tokeer: { label: "TOKEER KEY", background: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)" },
 };
 function GameDetailsBadge() {
     const params = DFL.useParams();
@@ -11990,7 +12256,7 @@ function GameDetailsBadge() {
         let cancelled = false;
         (async () => {
             let opts = {
-                sls: true, legit: true, denuvo: true, gamePage: true, onlineFix: true, fixed: true,
+                sls: true, legit: true, denuvo: true, gamePage: true, onlineFix: true, fixed: true, tokeer: true,
             };
             try {
                 const r = await getBadgeOptions();
@@ -12002,6 +12268,7 @@ function GameDetailsBadge() {
                         gamePage: !!r.gamePage,
                         onlineFix: !!r.onlineFix,
                         fixed: !!r.fixed,
+                        tokeer: !!r.tokeer,
                     };
                 }
             }
@@ -12074,6 +12341,14 @@ function GameDetailsBadge() {
                 catch {
                     /* ignore */
                 }
+            }
+            if (opts.tokeer) {
+                try {
+                    const status = await tokeerAppliedStatus(appid);
+                    if (status.success && status.applied)
+                        out.push("tokeer");
+                }
+                catch { /* ignore */ }
             }
             const hasFix = out.some((k) => k === "onlinefix" || k === "fixed");
             const finalKinds = hasFix ? out.filter((k) => k !== "legit") : out;

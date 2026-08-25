@@ -55,6 +55,8 @@ import {
   getDlcOwnedOnly,
   triggerSteamInstall,
   tokeerPreflight,
+  tokeerAppliedStatus,
+  TokeerAppliedRecord,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
@@ -145,6 +147,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [tokeerProgress, setTokeerProgress] = useState(0);
   const [tokeerPhase, setTokeerPhase] = useState("");
   const [tokeerFailed, setTokeerFailed] = useState(false);
+  const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord | null>(null);
   const [dlcDownload, setDlcDownload] = useState<DepotDownloadJob | null>(null);
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
@@ -270,6 +273,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       /* ignore */
     }
     try {
+      const status = await tokeerAppliedStatus(appid);
+      setTokeerApplied(status.success && status.applied ? status.record || null : null);
+    } catch {
+      setTokeerApplied(null);
+    }
+    try {
       const p = await getGameInstallPath(appid);
       setInstallPath(p.success ? p.installPath || "" : "");
     } catch {
@@ -373,6 +382,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setMsg("");
     setCheck(null);
     setTokeerGame(null);
+    setTokeerApplied(null);
     setTokeerRefreshing(false);
     setTokeerLookup({ name: appDisplayName(appid), cachedGames: 0 });
     setApplied([]);
@@ -1263,7 +1273,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       {pinned && (
         <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
           <div>
-            🔒 Version pinned{pinInfo.buildid
+            {tokeerApplied ? "🔑 Tokeer key applied · " : ""}🔒 Version pinned{pinInfo.buildid
               ? ` — Build ${pinInfo.buildid}`
               : (pinInfo.depots && Object.keys(pinInfo.depots).length
                   ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
@@ -1284,7 +1294,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           ? "Pinning…"
           : "Pin this version"}
       </DialogButton>
-      {tokeerGame && <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
+      {tokeerApplied && !pinned && <div style={{ border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }}>
+        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>🔑 Tokeer key applied</div>
+        <div style={{ fontSize: 11, opacity: 0.76, lineHeight: 1.45 }}>
+          {tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed"} · Version not pinned
+        </div>
+      </div>}
+      {tokeerGame && !tokeerApplied && <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
           Tokeer · {tokeerGame.remaining ?? "?"}{tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : ""} keys available
           {tokeerRefreshing ? " · refreshing…" : ""}
@@ -1316,7 +1332,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           </div>
         )}
       </div>}
-      {!tokeerGame && (
+      {!tokeerGame && !tokeerApplied && (
         <div style={{ fontSize: 11, opacity: 0.65, padding: "5px 2px" }}>
           Tokeer: {tokeerRefreshing
             ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
