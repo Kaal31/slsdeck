@@ -2828,7 +2828,11 @@ async function waitForUbisoftVerificationConfirmation(ticketUrl, afterMessageId 
       var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30);
       for(var i=0;i<arts.length;i++){
         var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
-        if(after&&id&&BigInt(id)<=BigInt(after))continue;
+        // The bot's immediate reply quotes the submitted TLX1. The send
+        // verifier can therefore save this Verification Passed article itself
+        // as the boundary message. Re-read the boundary and skip only messages
+        // strictly older than it.
+        if(after&&id&&BigInt(id)<BigInt(after))continue;
         var text=String(a.innerText||'').replace(/\\s+/g,' ').trim();
         if(/verification\\s+passed|game\\s+files\\s+checked\\s+out|follow\\s+the\\s+next\\s+steps/i.test(text))return JSON.stringify({state:'passed',id:id});
         if(/verification\\s+failed|didn['’]?t\\s+pass\\s+validation|steam\\s+setup\\s+code|run\\s+tokeer\\s+verify-ubi/i.test(text))return JSON.stringify({state:'failed',id:id,error:text.slice(0,500)});
@@ -13042,10 +13046,4 @@ var index = definePlugin(() => {
                 if (stopWorkshopPatch)
                     stopWorkshopPatch();
             }
-            catch { /* ignore */ }
-        },
-    };
-});
-
-export { index as default };
-//# sourceMappingURL=index.js.map
+            catch { /* 
