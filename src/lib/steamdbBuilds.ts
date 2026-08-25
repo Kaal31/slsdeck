@@ -2,13 +2,21 @@ import { fetchNoCors } from "@decky/api";
 import { Navigation } from "@decky/ui";
 
 export interface BuildRow { buildid: string; date: string }
-interface CdpTab { url: string; webSocketDebuggerUrl?: string; cdpPort?: number }
+interface CdpTab { id?: string; url: string; webSocketDebuggerUrl?: string; cdpPort?: number }
 
 const _cache = new Map<number, BuildRow[]>();
 let _cancelToken = 0;
 
 export function cancelSteamdbBuildFetch(): void {
   _cancelToken++;
+}
+
+/** Close only a SteamDB tab opened by this build-history request. Without this,
+ *  the picker is mounted after NavigateToExternalWeb has replaced the visible
+ *  game page, leaving the modal hidden behind SteamDB. */
+async function closeTab(id?: string, port = 8080): Promise<void> {
+  if (!id) return;
+  try { await fetchNoCors(`http://localhost:${port}/json/close/` + id); } catch { /* best effort */ }
 }
 
 async function evalString(wsUrl: string, expression: string, timeoutMs = 2500): Promise<string> {
@@ -115,28 +123,44 @@ export async function fetchSteamdbBuilds(
   if (_cache.has(appid)) return _cache.get(appid)!;
   const token = _cancelToken;
   let tab = await findSteamdbTab(appid);
+  const openedHere = !tab;
+  let openedTabId: string | undefined;
+  let openedTabPort = 8080;
   if (!tab) {
     onStatus?.("Opening SteamDB once for build history…");
     try { Navigation.NavigateToExternalWeb(`https://steamdb.info/app/${appid}/patchnotes/`); } catch { /* */ }
   }
   const deadline = Date.now() + 12000;
-  while (Date.now() < deadline && token === _cancelToken) {
-    tab = await findSteamdbTab(appid);
-    if (tab?.webSocketDebuggerUrl) {
-      onStatus?.("Reading SteamDB build history…");
-      const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
-      if (token !== _cancelToken) return [];
-      if (xml && xml.includes("<item>")) {
-        const rows = parseRss(xml);
-        if (rows.length) { _cache.set(appid, rows); return rows; }
+  try {
+    while (Date.now() < deadline && token === _cancelToken) {
+      tab = await findSteamdbTab(appid);
+      if (tab?.webSocketDebuggerUrl) {
+        if (openedHere) {
+          openedTabId = tab.id;
+          openedTabPort = tab.cdpPort || 8080;
+        }
+        onStatus?.("Reading SteamDB build history…");
+        const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
+        if (token !== _cancelToken) return [];
+        if (xml && xml.includes("<item>")) {
+          const rows = parseRss(xml);
+          if (rows.length) { _cache.set(appid, rows); return rows; }
+        }
+        const visibleRows = await readBuildsFromDom(tab.webSocketDebuggerUrl);
+        if (visibleRows.length) { _cache.set(appid, visibleRows); return visibleRows; }
+        onStatus?.("SteamDB opened, but no public build rows are rendered yet…");
+      } else {
+        onStatus?.("Waiting briefly for the SteamDB page…");
       }
-      const visibleRows = await readBuildsFromDom(tab.webSocketDebuggerUrl);
-      if (visibleRows.length) { _cache.set(appid, visibleRows); return visibleRows; }
-      onStatus?.("SteamDB opened, but no public build rows are rendered yet…");
-    } else {
-      onStatus?.("Waiting briefly for the SteamDB page…");
+      await new Promise((r) => setTimeout(r, 1000));
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    return [];
+  } finally {
+    if (openedHere) {
+      await closeTab(openedTabId, openedTabPort);
+      // Give Steam's browser stack one frame to reveal the game/QAM surface
+      // before GameTools mounts the picker modal.
+      await new Promise((r) => setTimeout(r, 350));
+    }
   }
-  return [];
 }

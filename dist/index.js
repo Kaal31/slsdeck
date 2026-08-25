@@ -1058,6 +1058,17 @@ let _cancelToken = 0;
 function cancelSteamdbBuildFetch() {
     _cancelToken++;
 }
+/** Close only a SteamDB tab opened by this build-history request. Without this,
+ *  the picker is mounted after NavigateToExternalWeb has replaced the visible
+ *  game page, leaving the modal hidden behind SteamDB. */
+async function closeTab$1(id, port = 8080) {
+    if (!id)
+        return;
+    try {
+        await fetchNoCors(`http://localhost:${port}/json/close/` + id);
+    }
+    catch { /* best effort */ }
+}
 async function evalString(wsUrl, expression, timeoutMs = 2500) {
     return new Promise((resolve) => {
         let done = false;
@@ -1202,6 +1213,9 @@ async function fetchSteamdbBuilds(appid, onStatus) {
         return _cache.get(appid);
     const token = _cancelToken;
     let tab = await findSteamdbTab(appid);
+    const openedHere = !tab;
+    let openedTabId;
+    let openedTabPort = 8080;
     if (!tab) {
         onStatus?.("Opening SteamDB once for build history…");
         try {
@@ -1210,33 +1224,47 @@ async function fetchSteamdbBuilds(appid, onStatus) {
         catch { /* */ }
     }
     const deadline = Date.now() + 12000;
-    while (Date.now() < deadline && token === _cancelToken) {
-        tab = await findSteamdbTab(appid);
-        if (tab?.webSocketDebuggerUrl) {
-            onStatus?.("Reading SteamDB build history…");
-            const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
-            if (token !== _cancelToken)
-                return [];
-            if (xml && xml.includes("<item>")) {
-                const rows = parseRss(xml);
-                if (rows.length) {
-                    _cache.set(appid, rows);
-                    return rows;
+    try {
+        while (Date.now() < deadline && token === _cancelToken) {
+            tab = await findSteamdbTab(appid);
+            if (tab?.webSocketDebuggerUrl) {
+                if (openedHere) {
+                    openedTabId = tab.id;
+                    openedTabPort = tab.cdpPort || 8080;
                 }
+                onStatus?.("Reading SteamDB build history…");
+                const xml = await fetchRssInTab(tab.webSocketDebuggerUrl, appid);
+                if (token !== _cancelToken)
+                    return [];
+                if (xml && xml.includes("<item>")) {
+                    const rows = parseRss(xml);
+                    if (rows.length) {
+                        _cache.set(appid, rows);
+                        return rows;
+                    }
+                }
+                const visibleRows = await readBuildsFromDom(tab.webSocketDebuggerUrl);
+                if (visibleRows.length) {
+                    _cache.set(appid, visibleRows);
+                    return visibleRows;
+                }
+                onStatus?.("SteamDB opened, but no public build rows are rendered yet…");
             }
-            const visibleRows = await readBuildsFromDom(tab.webSocketDebuggerUrl);
-            if (visibleRows.length) {
-                _cache.set(appid, visibleRows);
-                return visibleRows;
+            else {
+                onStatus?.("Waiting briefly for the SteamDB page…");
             }
-            onStatus?.("SteamDB opened, but no public build rows are rendered yet…");
+            await new Promise((r) => setTimeout(r, 1000));
         }
-        else {
-            onStatus?.("Waiting briefly for the SteamDB page…");
-        }
-        await new Promise((r) => setTimeout(r, 1000));
+        return [];
     }
-    return [];
+    finally {
+        if (openedHere) {
+            await closeTab$1(openedTabId, openedTabPort);
+            // Give Steam's browser stack one frame to reveal the game/QAM surface
+            // before GameTools mounts the picker modal.
+            await new Promise((r) => setTimeout(r, 350));
+        }
+    }
 }
 
 /** Close a CEF tab by its target id (so we don't leave a SteamDB page open per
@@ -13046,4 +13074,10 @@ var index = definePlugin(() => {
                 if (stopWorkshopPatch)
                     stopWorkshopPatch();
             }
-            catch { /* 
+            catch { /* ignore */ }
+        },
+    };
+});
+
+export { index as default };
+//# sourceMappingURL=index.js.map
