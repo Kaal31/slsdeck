@@ -1204,18 +1204,40 @@ export async function sendTokeerTicketMessage(ticketUrl: string, message: string
   if (!draftEntered) return { success: false, error: "Discord displayed the ticket message box, but did not accept the TLX1 text. It remains available for manual copy." };
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
   await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }, 2500);
-  await new Promise((r) => setTimeout(r, 700));
   const verifyExpr = `(function(){try{
     var expected=${JSON.stringify(text)};
-    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-12);
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30);
     for(var i=arts.length-1;i>=0;i--){var a=arts[i];if(String(a.innerText||'').indexOf(expected)<0)continue;var m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
-    return JSON.stringify({found:false});
+    var boxes=[].slice.call(document.querySelectorAll('[role="textbox"],[data-slate-editor="true"],textarea,[contenteditable]')).filter(function(e){return visible(e)&&e.getAttribute('contenteditable')!=='false'&&!e.disabled&&!e.readOnly;});
+    boxes.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+    var box=boxes[0],rect=box&&box.getBoundingClientRect(),composer=!!box&&!!rect&&(rect.top>innerHeight*.45||!!box.closest('form,[class*="channelTextArea"],[class*="textArea"]'));
+    var draft=String(composer&&(box.value||box.innerText||box.textContent)||'');
+    return JSON.stringify({found:false,composer:composer,draftContains:draft.indexOf(expected)>=0});
   }catch(e){return JSON.stringify({found:false});}})()`;
-  const appearedRaw = await evalJson(tab.webSocketDebuggerUrl, verifyExpr, 3000);
-  try {
-    const appeared = JSON.parse(String(appearedRaw || ""));
-    if (appeared?.found) return { success: true, lastMessageId: String(appeared.id || "") || undefined };
-  } catch {}
+  // Discord clears the Slate composer as soon as it accepts a message, but its
+  // virtualized article list can mount that message several seconds later. A
+  // single immediate DOM read therefore produced intermittent false failures.
+  // Poll the exact saved ticket and never press Enter again: either the TLX1
+  // article appears, or a persistently cleared composer proves that Discord
+  // accepted the already-entered draft and the response waiter may take over.
+  const verifyDeadline = Date.now() + 15000;
+  let composerClearedAt = 0;
+  while (Date.now() < verifyDeadline) {
+    const verifyTab = await ticketTab(ticketUrl);
+    if (verifyTab?.webSocketDebuggerUrl) {
+      const appearedRaw = await evalJson(verifyTab.webSocketDebuggerUrl, verifyExpr, 3000);
+      try {
+        const appeared = JSON.parse(String(appearedRaw || ""));
+        if (appeared?.found) return { success: true, lastMessageId: String(appeared.id || "") || undefined };
+        if (appeared?.composer && !appeared?.draftContains) {
+          if (!composerClearedAt) composerClearedAt = Date.now();
+          if (Date.now() - composerClearedAt >= 1500) return { success: true };
+        } else composerClearedAt = 0;
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
   return { success: false, error: "Discord did not confirm that the TLX1 message was posted. It remains available for manual copy." };
 }
 
