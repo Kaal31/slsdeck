@@ -1,88 +1,82 @@
 # SLSDeckUniversal
 
-A **Decky Loader plugin for SteamOS / Steam Deck** that brings the SLSDeck workflow to Linux and collects game-management, manifest, compatibility-fix, and related utilities in one interface.
+**SLSDeckUniversal** is a Decky Loader plugin for SteamOS that brings game setup, manifests, fixes, compatibility tools, cloud saves, and supported Denuvo activation helpers into one controller-friendly interface.
 
-This repository is the SteamOS/Decky version of the project. The current plugin package is named **SLSDeckUniversal**.
+The plugin is designed primarily for Steam Deck, with support for compatible SteamOS handhelds where the required Steam and Decky interfaces are available.
 
-## What it does
+## Features
 
-SLSDeckUniversal integrates with Steam on SteamOS and provides tools for managing added games and their supporting data directly from Decky Loader.
+- Add and remove games through **slsteam-moon**.
+- Retrieve manifests and depot data from configured sources.
+- Select, downgrade, restore, and pin installed game builds.
+- Manage ProductInfo **AppTokens**, optional DLC configuration, and source credentials.
+- Install supported game fixes from **Ryuu**, **Perondepot**, and other configured sources.
+- Access the same fixes and statuses from Quick Access and injected Steam library controls.
+- Back up and restore supported game data through Archive.
+- Redirect supported cloud saves with **CloudRedirect**.
+- Display configurable library, game-page, and store-page badges, including **TOKEER KEY** (🔑 in emoji mode).
+- Use **Tokeer Helper** for supported Steam and Ubisoft activation workflows.
+- Use the optional **HV Module** and LinUwUx Proton workflow for supported titles.
+- Run diagnostics and reload or restart Steam when required.
 
-Current functionality includes:
-
-- Adding and removing games through **slsteam-moon** integration.
-- Manifest/depot handling from configured sources.
-- Multiple API-key support for sources that require authentication.
-- Installed-game tracking and management.
-- Manifest version selection/pinning.
-- **AppToken** handling for games that require ProductInfo tokens.
-- Optional DLC configuration.
-- Game fixes, including fix sources/workflows based on **Ryuu** and **Perondepot**.
-- Online/game compatibility fixes where supported.
-- Denuvo-related tooling, including the optional hypervisor/custom-Proton workflow.
-- Steam reload/restart helpers after configuration changes.
-
-## Main components and dependencies
+## Main components
 
 | Component | Purpose |
 |---|---|
-| **Decky Loader** | Plugin framework and Steam Deck UI integration |
-| **slsteam-moon** | SteamOS-side game/ownership integration used by the current plugin |
-| **Ryuu** | Source/workflow used by the game-fix system |
-| **Perondepot** | Additional game-fix/depot-related source used by the plugin |
-| **httpx** | Python HTTP client used by the backend |
-| **py7zr** | Python 7z archive support |
-| **@decky/api** | Decky frontend API |
-| **@decky/ui** | Decky UI components used when building the frontend |
-| **Rollup + TypeScript** | Frontend build toolchain |
-
-Older SLSDeck documentation may refer to **SLSsteam**, **h3adcr-b/headcrab**, or **steamnetsock-patch** as the primary dependency stack. Those names describe earlier iterations of the SteamOS port and should not be treated as the best summary of the current SLSDeckUniversal build.
+| **Decky Loader** | Hosts the plugin and SteamOS interface |
+| **slsteam-moon** | Steam integration, ownership handling, manifests, and pinning |
+| **Ryuu / Perondepot** | Supported game-fix sources |
+| **Tokeer Helper** | Guided activation support for compatible games |
+| **Ubisoft packages** | Care-package files for supported Ubisoft titles |
+| **HV Module** | Optional hypervisor and custom-Proton compatibility workflow |
+| **CloudRedirect** | Optional cloud-save redirection |
 
 ## Requirements
 
-- A Steam Deck or compatible SteamOS environment.
+- SteamOS on a Steam Deck or compatible handheld.
 - **Decky Loader** installed.
-- Network access for features that retrieve manifests, fixes, metadata, or other remote resources.
-- Any API keys required by the manifest/fix sources you choose to use.
+- Network access for dependencies, manifests, metadata, fixes, and activation services.
+- Credentials or API keys for any optional sources you enable.
 
-Python dependencies declared by the plugin are:
-
-```text
-httpx==0.27.2
-py7zr==0.22.0
-```
-
-Decky handles the plugin's Python dependency installation.
+Decky installs the Python dependencies declared in `requirements.txt`. The compiled frontend bundle is included under `dist/`.
 
 ## Installation
 
-Install the plugin through the Decky Loader developer/plugin installation workflow, or place the plugin directory in your Decky plugins directory and restart/reload Decky as appropriate.
+Download the current plugin ZIP from [GitHub Releases](https://github.com/Kaal31/slsdeck/releases), then install it through Decky Loader's developer/plugin installation flow. Restart or reload Decky when prompted.
 
-The repository includes a prebuilt frontend bundle in `dist/`, so rebuilding the TypeScript frontend is not required simply to use an existing build.
+Dependencies used by optional features can be installed and repaired from the plugin's **Dependencies** page.
 
-## Using the plugin
+## Basic use
 
-Open SLSDeckUniversal from Decky's Quick Access menu. From there you can configure sources/API keys, manage games, manifests and fixes, and use the plugin's Steam integration features.
+Open SLSDeckUniversal from Decky's Quick Access menu:
 
-Some operations require Steam to be reloaded before changes become visible. Use the plugin's reload controls when prompted.
+1. Configure required accounts or keys under **Sources & keys**.
+2. Add or select a game.
+3. Open **Game fixes**, the per-game Fixes panel, or the injected library Fixes button.
+4. Follow the displayed restart, Proton, build-pinning, or verification instructions.
 
-## Build from source
+### Tokeer Helper
 
-The frontend source is included in the repository.
+Install its listed dependencies, enable **Tokeer Helper** in Options, and open it from the Advanced page. Sign in to the DeDevision Discord session, select a supported game, press **Create a ticket**, and follow the prompts in the panel.
+
+Apply any mods, textures, or other intended game-file changes before activation. Changing protected game files afterward is not advised and may require another activation. Use only your own account and device.
+
+After a confirmed activation, SLSDeckUniversal records the game as **TOKEER KEY**. This records a successful application; it is not a continuous DRM-validity check.
+
+## Building from source
 
 ```bash
 npm install
 npm run build
 ```
 
-The build produces the frontend bundle under `dist/`.
+The build writes the Decky frontend bundle to `dist/`. Python backend modules live under `py_modules/lt/`.
 
-The main frontend/runtime dependencies are defined in `package.json`; Python backend dependencies are defined in `requirements.txt`.
+## Branches
 
-## Development branch
-
-The `dev` branch is intended for ongoing development and documentation updates before changes are promoted to `main`.
+- `main` — current production source.
+- `tokeer-automation` — active Tokeer automation development and rolling builds.
 
 ## Project status
 
-SLSDeckUniversal is under active development. Features, source integrations, dependency names, and compatibility workflows may change between builds, so the current repository files and changelog should be treated as the authoritative reference for a particular version.
+SLSDeckUniversal is under active development. Steam, Discord, external sources, and SteamOS updates can require compatibility changes, so use the latest release and consult the in-plugin diagnostics when a workflow stops working.
