@@ -400,12 +400,15 @@ export function TokeerSection() {
 
   const waitForGate=async()=>{
     setGate(null);
-    for(let i=0;i<20;i++){
+    const deadline=Date.now()+35000;
+    let lastError="";
+    while(Date.now()<deadline){
       const g=await readLatestTicketGate();
       if(g.found){setGate(g);setMessage("Tokeer is ready to open your private activation ticket.");return;}
+      lastError=g.error||lastError;
       await sleep(500);
     }
-    setMessage("The game was selected, but the green Tokeer confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
+    setMessage(lastError||"The game was selected, but the agreement and tutorial confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
   };
 
   const choose=async(index:number,label:string)=>{
@@ -743,7 +746,7 @@ export function TokeerSection() {
     ticketAbortedRef.current=false;
     cancelTokeerAvailabilityRefresh();
     setBusy("Opening Tokeer ticket…");
-    setMessage("Pressing the real green Discord confirmation and waiting for the ticket/thread…");
+    setMessage("Pressing Discord's agreement and tutorial confirmation and waiting for the ticket/thread…");
     try{
       const installed=selectedGame?await tokeerPreflight(0,selectedGame):null;
       if(selectedGame&&(!installed?.success||!installed.installed||!installed.appid)){
