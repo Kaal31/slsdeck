@@ -22,6 +22,7 @@ import { badgeDisplayLabel, getEmojiBadgesEnabled } from "./emojiBadges";
 const BADGE_CLASS = "slsdeck-badge";
 const STYLE_ID = "slsdeck-badge-style";
 const POSITIONED_ATTR = "data-slsdeck-positioned";
+export const BADGE_STATE_EVENT = "slsdeck-badge-state-changed";
 
 /** fixType strings vary by call site ("Online Fix", "online"…). */
 export const ONLINE_RE = /online/i;
@@ -33,6 +34,7 @@ export const BADGE_LABELS: Record<string, string> = {
   onlinefix: "ONLINE FIX",
   fixed: "FIXED",
   tokeer: "TOKEER KEY",
+  tokeercheck: "TOKEER CHECK",
   nonsteam: "NON-STEAM",
   nonsteamname: "", // dynamic — filled per-app from the shortcut's exe folder
 };
@@ -44,6 +46,7 @@ export const BADGE_COLORS: Record<string, string> = {
   onlinefix: "linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%)",
   fixed: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)",
   tokeer: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)",
+  tokeercheck: "linear-gradient(135deg, #8b4d16 0%, #d97706 100%)",
   nonsteam: "#000000",
   nonsteamname: "linear-gradient(135deg, #3a3f4b 0%, #555b68 100%)",
 };
@@ -61,6 +64,7 @@ let denuvoIds = new Set<number>();
 let onlineIds = new Set<number>();
 let fixedIds = new Set<number>();
 let tokeerIds = new Set<number>();
+let tokeerCheckIds = new Set<number>();
 let opts = {
   sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true, tokeer: true,
   nonSteam: true, nonSteamName: true, library: true,
@@ -186,7 +190,7 @@ function getAppId(capsule: Element): string | null {
   return null;
 }
 
-type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed" | "tokeer" | "nonsteam" | "nonsteamname";
+type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed" | "tokeer" | "tokeercheck" | "nonsteam" | "nonsteamname";
 
 function classifyNonSteam(appid: number): Kind[] {
   if (!isNonSteamShortcut(appid)) return [];
@@ -211,6 +215,7 @@ function classifyApplied(appid: number): Kind[] {
   if (opts.onlineFix && onlineIds.has(appid)) out.push("onlinefix");
   if (opts.fixed && fixedIds.has(appid)) out.push("fixed");
   if (opts.tokeer && tokeerIds.has(appid)) out.push("tokeer");
+  if (opts.tokeer && tokeerCheckIds.has(appid)) out.push("tokeercheck");
   return out;
 }
 
@@ -360,6 +365,10 @@ function debouncedScan() {
 }
 
 async function refreshData() {
+  const previousOnline = Array.from(onlineIds).sort((a, b) => a - b).join(",");
+  const previousFixed = Array.from(fixedIds).sort((a, b) => a - b).join(",");
+  const previousTokeer = Array.from(tokeerIds).sort((a, b) => a - b).join(",");
+  const previousTokeerCheck = Array.from(tokeerCheckIds).sort((a, b) => a - b).join(",");
   try {
     const r = await getBadgeOptions();
     if (r.success) {
@@ -420,11 +429,28 @@ async function refreshData() {
       }
       onlineIds = on;
       fixedIds = fx;
+      const nextOnline = Array.from(onlineIds).sort((a, b) => a - b).join(",");
+      const nextFixed = Array.from(fixedIds).sort((a, b) => a - b).join(",");
+      if (nextOnline !== previousOnline || nextFixed !== previousFixed) {
+        try { window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT)); } catch { /* ignore */ }
+      }
     }
   } catch { /* keep previous */ }
   try {
     const r = await tokeerAppliedStatus();
-    if (r.success) tokeerIds = new Set((r.records || []).map((record) => Number(record.appid)));
+    if (r.success) {
+      tokeerIds = new Set((r.records || [])
+        .filter((record) => record.health === "valid" && record.pinned && record.pinMatchesActivation)
+        .map((record) => Number(record.appid)));
+      tokeerCheckIds = new Set((r.records || [])
+        .filter((record) => record.health === "check" && record.pinned && record.pinMatchesActivation)
+        .map((record) => Number(record.appid)));
+      const nextTokeer = Array.from(tokeerIds).sort((a, b) => a - b).join(",");
+      const nextTokeerCheck = Array.from(tokeerCheckIds).sort((a, b) => a - b).join(",");
+      if (nextTokeer !== previousTokeer || nextTokeerCheck !== previousTokeerCheck) {
+        try { window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT)); } catch { /* ignore */ }
+      }
+    }
   } catch { /* keep previous */ }
 }
 
@@ -478,4 +504,5 @@ export function stopBadges() {
 export async function refreshBadges() {
   removeAllBadges();
   await startBadges();
+  try { window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT)); } catch { /* ignore */ }
 }

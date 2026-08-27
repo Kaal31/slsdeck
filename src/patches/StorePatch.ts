@@ -22,7 +22,7 @@ import {
 } from "../api";
 import { applyFixRuntime } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
-import { BADGE_LABELS, BADGE_COLORS, ONLINE_RE } from "../lib/badges";
+import { BADGE_LABELS, BADGE_COLORS, BADGE_STATE_EVENT, ONLINE_RE, refreshBadges } from "../lib/badges";
 import { hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame } from "../lib/tokeerAvailability";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 
@@ -64,6 +64,7 @@ let poll: ReturnType<typeof setInterval> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let bgTimer: ReturnType<typeof setInterval> | null = null;
 let histUnlisten: (() => void) | null = null;
+let badgeListener: (() => void) | null = null;
 
 // ── CDP helpers ─────────────────────────────────────────────────────────────
 function cdp(method: string, params?: any): void {
@@ -300,7 +301,10 @@ async function storeBadges(
     if (o.tokeer) {
       try {
         const status = await tokeerAppliedStatus(appid);
-        if (status.success && status.applied) kinds.push("tokeer");
+        const record = status.record;
+        if (status.success && status.applied && record?.pinned && record.pinMatchesActivation && record.health !== "changed") {
+          kinds.push(status.record?.health === "valid" ? "tokeer" : "tokeercheck");
+        }
       } catch { /* */ }
     }
   } catch { /* */ }
@@ -569,6 +573,7 @@ async function onAction(payloadStr: string): Promise<void> {
           setStatus("Un-fix: " + (st.status || ""));
           if (["done", "failed", "cancelled"].includes(st.status || "")) {
             clearPoll();
+            if (st.status === "done") await refreshBadges();
             setStatus(st.status === "done" ? "Fix reverted — restart Steam" : st.error || "Un-fix failed");
           }
         } catch {
@@ -714,6 +719,10 @@ function handleLocation(pathname: string): void {
 
 export function initStorePatch(): () => void {
   mounted = true;
+  badgeListener = () => {
+    if (currentAppId && wsReady) void reinject(Number(currentAppId));
+  };
+  window.addEventListener(BADGE_STATE_EVENT, badgeListener as EventListener);
   console.log("===LT=== initStorePatch: store injection starting");
   getStoreDisabled()
     .then((r) => {
@@ -762,6 +771,10 @@ export function initStorePatch(): () => void {
     if (histUnlisten) {
       histUnlisten();
       histUnlisten = null;
+    }
+    if (badgeListener) {
+      window.removeEventListener(BADGE_STATE_EVENT, badgeListener as EventListener);
+      badgeListener = null;
     }
     if (ws) {
       try {

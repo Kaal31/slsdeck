@@ -699,7 +699,7 @@ export function TokeerSection() {
         if(stale())return;
         if(!installed.success){setAutomationStage("failed");setAutomationError(installed.error||"dbdata.json installation failed.");setMessage(installed.error||"dbdata.json installation failed.");return;}
       }
-      const applied=await tokeerMarkApplied(ticket.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ticket.appid}`,"ubisoft",true);
+      const applied=await tokeerMarkApplied(ticket.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ticket.appid}`,"ubisoft",true,installed.path||"");
       void refreshBadges();
       const pinNote=applied.pin?.success
         ? " The installed build was pinned."

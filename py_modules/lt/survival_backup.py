@@ -164,6 +164,10 @@ def save() -> Dict[str, Any]:
     try:
         from . import settings
         builds = dict(settings.get_value("pinnedBuilds", {}) or {})
+        for appid, gids in pins.items():
+            settings.set_pinned_manifest_snapshot(
+                int(appid), gids, str(builds.get(str(appid)) or "")
+            )
     except Exception:
         builds = {}
 
@@ -268,7 +272,30 @@ def restore() -> Dict[str, Any]:
         return {"success": True, "busy": True}
     path = backup_path()
     if not os.path.isfile(path):
-        return {"success": True, "found": False}
+        # Settings are preserved independently of plugin binaries. They are a
+        # second exact-manifest recovery source if the external zip was removed.
+        try:
+            from . import settings, slssteam
+            restored = 0
+            snapshots = settings.get_pinned_manifest_snapshots()
+            if snapshots:
+                slssteam.ensure_config()
+            for appid, entry in snapshots.items():
+                gids = (entry or {}).get("depots") or {}
+                if not gids:
+                    continue
+                current = {str(d): str(g) for d, g in (slssteam._read_pin_gids(int(appid)) or {}).items()}
+                wanted = {str(d): str(g) for d, g in gids.items()}
+                if current == wanted:
+                    continue
+                result = slssteam.pin_app_gids(
+                    int(appid), {int(d): str(g) for d, g in wanted.items()}
+                )
+                if result.get("success"):
+                    restored += 1
+            return {"success": True, "found": False, "settingsPins": restored}
+        except Exception as exc:
+            return {"success": False, "found": False, "error": str(exc)}
     _RESTORING = True
     try:
         from . import settings, slssteam, downloads, buildarchive
@@ -374,8 +401,15 @@ def restore() -> Dict[str, Any]:
                         pass
                 for appid, gids in pins.items():
                     try:
+                        wanted = {str(d): str(g) for d, g in gids.items()}
+                        current = {
+                            str(d): str(g)
+                            for d, g in (slssteam._read_pin_gids(int(appid)) or {}).items()
+                        }
+                        if current == wanted:
+                            continue
                         r = slssteam.pin_app_gids(
-                            int(appid), {int(d): str(g) for d, g in gids.items()}
+                            int(appid), {int(d): str(g) for d, g in wanted.items()}
                         )
                         if r.get("success"):
                             applied += 1
@@ -409,7 +443,7 @@ def patch(slssteam: Any, downloads: Any) -> None:
     except Exception:
         pass
 
-    for name in ("pin_app_gids", "pin_app_current", "add_app", "remove_app"):
+    for name in ("pin_app_gids", "pin_app_current", "purge_pins_for_app", "add_app", "remove_app"):
         original = getattr(slssteam, name, None)
         if not callable(original):
             continue

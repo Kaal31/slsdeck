@@ -26,7 +26,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
                 opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
-                updates, watchdog, workshop, multiplayer, tokeer, ubisoft_packages, lifecycle,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -114,11 +114,8 @@ class Plugin:
                 game_appid = int(key)
             except Exception:
                 continue
-            record = {**value, "appid": game_appid, "applied": True}
-            try:
-                record["pinned"] = bool(slssteam.is_pinned(game_appid))
-            except Exception:
-                record["pinned"] = False
+            health = await self._run(tokeer_health.evaluate, game_appid, value)
+            record = {**value, **health, "appid": game_appid, "applied": True}
             records.append(record)
         records.sort(key=lambda item: float(item.get("appliedAt", 0) or 0), reverse=True)
         if int(appid or 0):
@@ -126,7 +123,8 @@ class Plugin:
             return {"success": True, "applied": bool(match), "record": match, "records": records}
         return {"success": True, "records": records}
 
-    async def tokeer_mark_applied(self, appid: int, game_name: str = "", kind: str = "steam", pin: bool = False) -> Dict[str, Any]:
+    async def tokeer_mark_applied(self, appid: int, game_name: str = "", kind: str = "steam",
+                                  pin: bool = False, evidence_path: str = "") -> Dict[str, Any]:
         appid = int(appid)
         pin_result: Dict[str, Any] = {"success": True, "skipped": True}
         if pin:
@@ -137,8 +135,11 @@ class Plugin:
             "kind": "ubisoft" if str(kind).lower() == "ubisoft" else "steam",
             "appliedAt": int(time.time() * 1000),
         }
+        record.update(await self._run(tokeer_health.capture, appid, record["kind"], evidence_path))
         settings.set_tokeer_applied_game(appid, record)
-        return {"success": True, "record": {**record, "applied": True, "pinned": bool(pin_result.get("success") and pin)}, "pin": pin_result}
+        tokeer_health.invalidate(appid)
+        health = await self._run(tokeer_health.evaluate, appid, record, True)
+        return {"success": True, "record": {**record, **health, "applied": True}, "pin": pin_result}
 
     # ── Grid Artwork Sync ──────────────────────────────────────────────────
     async def sync_game_art(self, appid: int, overwrite: bool = False) -> Dict[str, Any]:
@@ -1146,6 +1147,8 @@ class Plugin:
                     depots = {}
                 try:
                     buildid = settings.get_pinned_build(int(appid))
+                    if not buildid:
+                        buildid = str((settings.get_pinned_manifest_snapshots().get(str(int(appid))) or {}).get("buildid") or "")
                 except Exception:
                     buildid = ""
             # Snapshot creation is not limited to already-pinned games. Steam's

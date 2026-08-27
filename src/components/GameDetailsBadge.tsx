@@ -4,10 +4,10 @@ import {
   denuvoKnown, denuvoResolve, getBadgeOptions, getEverAdded, getInstalledFixes, hasLua, tokeerAppliedStatus,
 } from "../api";
 import { isInLibrary, isNonSteamShortcut } from "../lib/ownership";
-import { ONLINE_RE } from "../lib/badges";
+import { BADGE_STATE_EVENT, ONLINE_RE } from "../lib/badges";
 import { badgeDisplayLabel, getEmojiBadgesEnabled } from "../lib/emojiBadges";
 
-type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed" | "tokeer";
+type Kind = "sls" | "legit" | "denuvo" | "onlinefix" | "fixed" | "tokeer" | "tokeercheck";
 
 const STYLES: Record<Kind, { label: string; background: string }> = {
   sls: { label: "SLS", background: "linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%)" },
@@ -16,6 +16,7 @@ const STYLES: Record<Kind, { label: string; background: string }> = {
   onlinefix: { label: "ONLINE FIX", background: "linear-gradient(135deg, #1f5f9e 0%, #3d8fd8 100%)" },
   fixed: { label: "FIXED", background: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)" },
   tokeer: { label: "TOKEER KEY", background: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)" },
+  tokeercheck: { label: "TOKEER CHECK", background: "linear-gradient(135deg, #8b4d16 0%, #d97706 100%)" },
 };
 
 export function GameDetailsBadge() {
@@ -24,12 +25,16 @@ export function GameDetailsBadge() {
     params?.appid && /^\d+$/.test(params.appid) ? parseInt(params.appid, 10) : null;
 
   const [kinds, setKinds] = useState<Kind[]>([]);
-  const [emojiVersion, setEmojiVersion] = useState(0);
+  const [badgeVersion, setBadgeVersion] = useState(0);
 
   useEffect(() => {
-    const onEmoji = () => setEmojiVersion((v) => v + 1);
-    window.addEventListener("slsdeck-emoji-badges", onEmoji as EventListener);
-    return () => window.removeEventListener("slsdeck-emoji-badges", onEmoji as EventListener);
+    const onBadgeChange = () => setBadgeVersion((v) => v + 1);
+    window.addEventListener("slsdeck-emoji-badges", onBadgeChange as EventListener);
+    window.addEventListener(BADGE_STATE_EVENT, onBadgeChange as EventListener);
+    return () => {
+      window.removeEventListener("slsdeck-emoji-badges", onBadgeChange as EventListener);
+      window.removeEventListener(BADGE_STATE_EVENT, onBadgeChange as EventListener);
+    };
   }, []);
 
   useEffect(() => {
@@ -124,7 +129,10 @@ export function GameDetailsBadge() {
       if (opts.tokeer) {
         try {
           const status = await tokeerAppliedStatus(appid);
-          if (status.success && status.applied) out.push("tokeer");
+          const record = status.record;
+          if (status.success && status.applied && record?.pinned && record.pinMatchesActivation && record.health !== "changed") {
+            out.push(status.record?.health === "valid" ? "tokeer" : "tokeercheck");
+          }
         } catch { /* ignore */ }
       }
       const hasFix = out.some((k) => k === "onlinefix" || k === "fixed");
@@ -134,13 +142,11 @@ export function GameDetailsBadge() {
     return () => {
       cancelled = true;
     };
-  }, [appid]);
+  }, [appid, badgeVersion]);
 
   if (appid == null || !kinds.length) return null;
 
   const emojiMode = getEmojiBadgesEnabled();
-  void emojiVersion;
-
   return (
     <div style={{ display: "flex", gap: emojiMode ? 10 : 8, margin: "12px 24px 0", alignItems: "center" }}>
       {kinds.map((k) => (

@@ -35,6 +35,7 @@ import { importCustomFlow } from "../components/CustomImport";
 import { applyFixRuntime, resetFixRuntime, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
+import { refreshBadges } from "../lib/badges";
 
 export function FixesSection() {
   const [appidText, setAppidText] = useState("");
@@ -192,6 +193,7 @@ export function FixesSection() {
           autoRepointFromState(appid, res.state);
           toaster.toast({ title: "SLSDeck", body: `Fix applied to ${name}` });
           loadInstalled();
+          void refreshBadges();
         } else if (["failed", "cancelled"].includes(res.state.status || "")) {
           clearInterval(pollRef.current!);
           if (res.state.status === "failed")
@@ -248,7 +250,10 @@ export function FixesSection() {
             const st = await getUnfixStatus(fix.appid);
             if (st.success && ["done", "failed"].includes(st.state.status || "")) {
               clearInterval(timer);
-              if (st.state.status === "done") clearFixLaunchOptions(fix.appid);
+              if (st.state.status === "done") {
+                clearFixLaunchOptions(fix.appid);
+                void refreshBadges();
+              }
               toaster.toast({
                 title: "SLSDeck",
                 body: st.state.status === "done" ? "Fix removed" : st.state.error || "Failed",
@@ -545,9 +550,9 @@ export function FixesSection() {
           {tokeerApplied.map((record) => (
             <PanelSectionRow key={`tokeer-${record.appid}`}>
               <Focusable style={{ display: "flex", flexDirection: "column", textAlign: "left", padding: "7px 10px" }}>
-                <span style={{ fontWeight: 600 }}>🔑 {record.gameName || `AppID ${record.appid}`}</span>
+                <span style={{ fontWeight: 600 }}>{record.health === "valid" ? "🔑" : "⚠️"} {record.gameName || `AppID ${record.appid}`}</span>
                 <span style={{ fontSize: 11, opacity: 0.68 }}>
-                  Key applied · {record.pinned ? "🔒 Version pinned" : "Version not pinned"}
+                  {record.health === "valid" ? "Key applied" : (record.healthReason || "Verification needed")} · {record.pinned ? "🔒 Version pinned" : "Version not pinned"}
                 </span>
               </Focusable>
             </PanelSectionRow>

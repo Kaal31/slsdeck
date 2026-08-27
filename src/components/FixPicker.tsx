@@ -62,6 +62,7 @@ import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
+import { refreshBadges } from "../lib/badges";
 import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
@@ -413,6 +414,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             onDone?.(st);
             onReload?.();
             refresh();
+            void refreshBadges();
           }
         }
       } catch {
@@ -986,6 +988,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       () => {
         setPinned(false);
         clearFixLaunchOptions(appid); // strip repoint + WINEDLLOVERRIDES
+        void refreshBadges();
       }
     );
   };
@@ -1273,12 +1276,17 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       {pinned && (
         <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
           <div>
-            {tokeerApplied ? "🔑 Tokeer key applied · " : ""}🔒 Version pinned{pinInfo.buildid
+            {tokeerApplied
+              ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
+              : ""}🔒 Version pinned{pinInfo.buildid
               ? ` — Build ${pinInfo.buildid}`
               : (pinInfo.depots && Object.keys(pinInfo.depots).length
                   ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
                   : "")} — the game won't update past the pinned version.
           </div>
+          {tokeerApplied && tokeerApplied.health !== "valid" && (
+            <div style={{ color: "#ffbf69" }}>{tokeerApplied.healthReason || "Tokeer activation needs verification."}</div>
+          )}
         </div>
       )}
       <DialogButton
@@ -1295,9 +1303,11 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           : "Pin this version"}
       </DialogButton>
       {tokeerApplied && !pinned && <div style={{ border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }}>
-        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>🔑 Tokeer key applied</div>
+        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>
+          {tokeerApplied.health === "valid" ? "🔑 Tokeer key applied" : "⚠️ Tokeer verification needed"}
+        </div>
         <div style={{ fontSize: 11, opacity: 0.76, lineHeight: 1.45 }}>
-          {tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed"} · Version not pinned
+          {tokeerApplied.healthReason || (tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed")} · Version not pinned
         </div>
       </div>}
       {tokeerGame && !tokeerApplied && <div style={{ border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }}>
