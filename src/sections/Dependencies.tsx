@@ -151,7 +151,9 @@ export function DependenciesSection() {
         const st = await getSlssteamInstallStatus();
         const state: SlsInstallState = st.state || {};
         const s = state.status;
-        setN(id, s === "running" ? `installing… ${state.percent ? state.percent + "%" : ""}` : (s || ""));
+        setN(id, s === "running"
+          ? `installing${state.stage ? `: ${state.stage.replace(/-/g, " ")}` : ""}… ${state.percent ? state.percent + "%" : ""}`
+          : (s || ""));
         if (s === "done" || s === "failed") {
           if (pollRef.current) clearInterval(pollRef.current);
           if (s === "done") {

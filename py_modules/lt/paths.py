@@ -9,6 +9,7 @@ runtime dir and the API key under the plugin settings dir.
 from __future__ import annotations
 
 import os
+import pwd
 
 try:
     import decky  # type: ignore
@@ -50,24 +51,62 @@ def get_settings_dir() -> str:
 
 
 def get_user_home() -> str:
-    """Home directory of the Steam Deck user (e.g. /home/deck)."""
+    """Home directory of the desktop user running Steam.
+
+    Decky normally exports ``DECKY_USER_HOME``.  On non-SteamOS Decky hosts
+    (notably CachyOS) that variable has not always been present, and the backend
+    itself runs as root.  Do not fall back to a list of distribution-specific
+    usernames: score real login users by whether their home contains Steam or
+    Decky's homebrew tree instead.
+    """
     home = _env("DECKY_USER_HOME", _env("HOME", os.path.expanduser("~")))
-    if not home or home.rstrip("/") in ("/root", "", "/"):
-        if os.path.isdir("/home/deck"):
-            return "/home/deck"
+    if home and home.rstrip("/") not in ("/root", "", "/") and os.path.isdir(home):
+        return os.path.realpath(home)
+
+    # Explicit user identity is the next most authoritative source.
+    for key in ("DECKY_USER", "SUDO_USER", "USER"):
+        user = (os.environ.get(key) or "").strip()
+        if not user or user == "root":
+            continue
         try:
-            import pwd
-            for user in ("deck", "steam", "gamer", "fedora", "ubuntu", "arch"):
-                try:
-                    pw = pwd.getpwnam(user)
-                    if pw and pw.pw_dir and os.path.isdir(pw.pw_dir):
-                        return pw.pw_dir
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return "/home/deck"
-    return home
+            candidate = pwd.getpwnam(user).pw_dir
+            if candidate and os.path.isdir(candidate):
+                return os.path.realpath(candidate)
+        except (KeyError, OSError):
+            continue
+
+    def _score(candidate: str) -> int:
+        score = 0
+        for rel in (
+            (".steam", "steam"),
+            (".local", "share", "Steam"),
+            (".var", "app", "com.valvesoftware.Steam"),
+        ):
+            if os.path.isdir(os.path.join(candidate, *rel)):
+                score += 10
+        if os.path.isdir(os.path.join(candidate, "homebrew")):
+            score += 4
+        if candidate.startswith("/home/") or candidate.startswith("/var/home/"):
+            score += 1
+        return score
+
+    candidates = []
+    try:
+        for entry in pwd.getpwall():
+            candidate = entry.pw_dir or ""
+            if entry.pw_uid < 1000 or entry.pw_name in ("nobody", "root"):
+                continue
+            if candidate and os.path.isdir(candidate):
+                candidates.append((_score(candidate), entry.pw_uid, candidate))
+    except OSError:
+        pass
+    if candidates:
+        candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+        return os.path.realpath(candidates[0][2])
+
+    # Historical last resort.  Returning the path keeps diagnostics usable,
+    # while the installer preflight now rejects it when it does not exist.
+    return "/home/deck"
 
 
 def plugin_path(*parts: str) -> str:

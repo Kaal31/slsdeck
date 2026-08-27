@@ -1,6 +1,6 @@
 import { staticClasses, DialogButton, Navigation, ButtonItem, PanelSectionRow } from "@decky/ui";
 import { definePlugin, routerHook, toaster } from "@decky/api";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FaPuzzlePiece, FaCog } from "react-icons/fa";
 
 import { GameControlsSection } from "./sections/GameControls";
@@ -195,24 +195,31 @@ function RepairBanner() {
   const [cfgIssues, setCfgIssues] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");
-  useEffect(() => {
-    (async () => {
-      try {
-        // Only relevant once SLSsteam is actually installed — a fresh setup isn't
-        // "inactive", it's just not set up yet (the onboarding button handles that).
-        const st = await getSlssteamStatus();
-        if (!st?.installed) return;
-        const [fix, cfg] = await Promise.all([
-          clientFixNeeded().catch(() => ({ success: false } as any)),
-          slsConfigHealth().catch(() => ({ success: false } as any)),
-        ]);
-        const clientBad = !!(fix?.success && fix.needed);
-        const issues = (cfg?.success && cfg.changed ? cfg.issues : []) || [];
-        if (clientBad) { setNeeded(true); setReason(fix.reason || ""); }
-        if (issues.length) { setNeeded(true); setCfgIssues(issues); }
-      } catch { /* ignore */ }
-    })();
+  const auditHealth = useCallback(async () => {
+    try {
+      // Only relevant once SLSsteam is actually installed — a fresh setup isn't
+      // "inactive", it's just not set up yet (the onboarding button handles that).
+      const st = await getSlssteamStatus();
+      if (!st?.installed) {
+        setNeeded(false); setReason(""); setCfgIssues([]);
+        return true;
+      }
+      const [fix, cfg] = await Promise.all([
+        clientFixNeeded().catch(() => ({ success: false } as any)),
+        slsConfigHealth().catch(() => ({ success: false } as any)),
+      ]);
+      const clientBad = !!(fix?.success && fix.needed);
+      const issues = (cfg?.success && cfg.changed ? cfg.issues : []) || [];
+      setReason(clientBad ? fix.reason || "" : "");
+      setCfgIssues(issues);
+      setNeeded(clientBad || issues.length > 0);
+      return !clientBad && issues.length === 0;
+    } catch {
+      // An unavailable audit must never declare the system repaired.
+      return false;
+    }
   }, []);
+  useEffect(() => { void auditHealth(); }, [auditHealth]);
   if (!needed) return null;
   const configOnly = cfgIssues.length > 0 && !reason;
   return (
@@ -255,10 +262,12 @@ function RepairBanner() {
                 setDone(r.success
                   ? `Repair started${healed ? ` (fixed ${healed} config issue${healed === 1 ? "" : "s"})` : ""} — Steam will reconfigure and reload.`
                   : (r.error || "Repair failed."));
-                if (r.success) setTimeout(() => setNeeded(false), 4000);
+                if (r.success) setTimeout(() => { void auditHealth(); }, 4000);
               } else {
-                setDone(`Fixed ${healed} config issue${healed === 1 ? "" : "s"} — fully restart Steam to apply.`);
-                setTimeout(() => setNeeded(false), 4000);
+                const healthy = await auditHealth();
+                setDone(healthy
+                  ? `Fixed ${healed} config issue${healed === 1 ? "" : "s"} — fully restart Steam to apply.`
+                  : "Repair completed, but the fresh health check still detects a problem.");
               }
             } catch (e) { setDone(`Failed: ${e}`); }
             setBusy(false);

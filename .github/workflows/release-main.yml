@@ -1,0 +1,126 @@
+name: Release main
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+
+      - name: Verify release features are compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/index.js
+          grep -q 'Continue Ubisoft ticket' dist/index.js
+          grep -q 'Pause ticket completion' dist/index.js
+          grep -q 'Waiting for Discord dbdata.json' dist/index.js
+
+      - name: Restore tracked dist support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+
+      - name: Build Ubisoft package dependency
+        run: |
+          python3 .github/scripts/build-ubisoft-packages.py
+          unzip -t ubisoft-packages.zip
+          unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
+
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-main.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          test -f artifact/SLSDeckUniversal/package.json
+          node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") process.exit(1)'
+          cd artifact
+          zip -qr ../SLSDeckUniversal-main.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-main.zip | grep -q 'SLSDeckUniversal/package.json'
+
+      - name: Update complete rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="main-latest"
+          PROTON_ASSET="Proton-GE11-1-LinUwUx.tar.gz"
+          TITLE="SLSDeck main latest"
+          NOTES="Rolling release built automatically from main. Includes the Decky plugin, LinUwUx Proton dependency, and hosted Ubisoft care packages."
+
+          # Moving a release tag and clobbering selected assets does not delete
+          # unrelated assets. Require the large, manually uploaded Proton build
+          # to exist before moving the tag so a partial main release is never
+          # presented as complete.
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$PROTON_ASSET"
+
+          git fetch origin --tags --force
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --latest
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --latest --target main
+          fi
+
+          gh release upload "$TAG" SLSDeckUniversal-main.zip ubisoft-packages.zip --clobber
+
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for required in SLSDeckUniversal-main.zip "$PROTON_ASSET" ubisoft-packages.zip; do
+            grep -Fxq "$required" <<<"$assets"
+          done
+
+      - name: Upload plugin workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-main
+          path: SLSDeckUniversal-main.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Ubisoft dependency artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubisoft-packages
+          path: ubisoft-packages.zip
+          if-no-files-found: error
+          retention-days: 14
