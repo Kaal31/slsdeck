@@ -1007,6 +1007,91 @@ async function ticketTab(ticketUrl: string): Promise<CdpTab | null> {
   return null;
 }
 
+async function forceTicketToNewest(tab: CdpTab): Promise<void> {
+  if (!tab?.webSocketDebuggerUrl) return;
+  // Discord virtualizes old and new messages. A parked BrowserView can remain
+  // at the verification article forever, so a bot response exists on Discord
+  // but is not mounted in the DOM. Prefer Discord's own jump-to-present control,
+  // then force the article scroller to its newest edge as a structural fallback.
+  await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var jump=[].slice.call(document.querySelectorAll('[class*="jumpToPresent"],button,[role="button"]')).filter(visible).filter(function(e){var t=String(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();return /jump\\s+to\\s+present|new\\s+messages?/i.test(t)||String(e.className||'').indexOf('jumpToPresent')>=0;})[0];
+    if(jump){try{jump.click();}catch(e){}}
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')),last=arts[arts.length-1];
+    if(last){var s=last.parentElement;while(s&&!(s.scrollHeight>s.clientHeight+20))s=s.parentElement;if(s)s.scrollTop=s.scrollHeight;try{last.scrollIntoView({block:'end',inline:'nearest'});}catch(e){}}
+    return true;
+  }catch(e){return false;}})()`, 3000);
+  await new Promise((r) => setTimeout(r, 450));
+}
+
+function cdpClickAndCaptureDbdata(wsUrl: string, x: number, y: number, timeoutMs = 8000): Promise<string> {
+  return new Promise((resolve) => {
+    let done = false, sock: WebSocket, nextId = 0;
+    const pending = new Map<number, (value: any) => void>();
+    const trusted = (url: any, filename = "") => {
+      try {
+        const value = String(url || "");
+        return /^https:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\//i.test(value)
+          && (/db(?:ata|data)\.json/i.test(decodeURIComponent(value)) || /db(?:ata|data)\.json/i.test(String(filename || "")));
+      } catch { return false; }
+    };
+    const finish = (value = "") => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      pending.clear();
+      try { sock.close(); } catch {}
+      resolve(value);
+    };
+    const send = (method: string, params: Record<string, any> = {}) => new Promise<any>((resolveCommand) => {
+      if (done || sock.readyState !== WebSocket.OPEN) { resolveCommand(null); return; }
+      const id = ++nextId;
+      pending.set(id, resolveCommand);
+      try { sock.send(JSON.stringify({ id, method, params })); } catch { pending.delete(id); resolveCommand(null); }
+    });
+    const timer = setTimeout(() => finish(""), timeoutMs);
+    try { sock = new WebSocket(wsUrl); } catch { finish(""); return; }
+    sock.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(String(event.data));
+        if (msg?.id && pending.has(msg.id)) {
+          const cb = pending.get(msg.id)!; pending.delete(msg.id); cb(msg.result ?? null); return;
+        }
+        const p = msg?.params || {};
+        const url = p?.response?.url || p?.request?.url || p?.url || "";
+        const filename = p?.suggestedFilename || "";
+        if (trusted(url, filename)) finish(String(url));
+      } catch {}
+    };
+    sock.onerror = () => finish("");
+    sock.onclose = () => finish("");
+    sock.onopen = async () => {
+      await send("Network.enable");
+      await send("Page.enable");
+      await send("Input.dispatchMouseEvent", { type:"mousePressed", x, y, button:"left", buttons:1, clickCount:1 });
+      await send("Input.dispatchMouseEvent", { type:"mouseReleased", x, y, button:"left", buttons:0, clickCount:1 });
+    };
+  });
+}
+
+export async function findPostedTokeerTicketFile(ticketUrl: string, expectedFilename: string): Promise<{ success: boolean; found: boolean; lastMessageId?: string; error?: string }> {
+  const filename = String(expectedFilename || "").trim();
+  if (!/^token_req_\d+\.txt$/i.test(filename)) return { success:false, found:false, error:"Invalid Ubisoft token request name." };
+  const tab = await ticketTab(ticketUrl);
+  if (!tab?.webSocketDebuggerUrl) return { success:false, found:false, error:"The exact saved Discord ticket could not be opened." };
+  await forceTicketToNewest(tab);
+  const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+    var expected=${JSON.stringify(filename)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-80).reverse();
+    for(var i=0;i<arts.length;i++){if(String(arts[i].innerText||'').indexOf(expected)<0)continue;var m=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
+    return JSON.stringify({found:false});
+  }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 3500);
+  try {
+    const value = JSON.parse(String(raw || ""));
+    if (value?.found) return { success:true, found:true, lastMessageId:String(value.id || "") || undefined };
+    return { success:!value?.error, found:false, error:value?.error ? String(value.error) : undefined };
+  } catch { return { success:false, found:false, error:"Could not inspect the saved Discord ticket." }; }
+}
+
 /** Return the managed Discord view to a saved private ticket after a temporary
  * background vault scrape. */
 export async function restoreTokeerTicketView(ticketUrl: string): Promise<boolean> {
@@ -1361,6 +1446,7 @@ export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId
       await new Promise((r) => setTimeout(r, 1500));
       continue;
     }
+    await forceTicketToNewest(tab);
     const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
       var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
       var trusted=function(value){try{var url=String(value||'');return /^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(url)&&/db(?:ata|data)\\.json/i.test(decodeURIComponent(url));}catch(e){return false;}};
@@ -1374,9 +1460,9 @@ export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId
       };
       for(var i=0;i<arts.length;i++){
         var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
-        // The upload verifier can observe the bot response as its boundary.
-        // Re-read that message and skip only messages strictly older than it.
-        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        // This is the exact saved private ticket. Search its mounted messages
+        // idempotently instead of trusting one race-prone upload boundary: a
+        // retry must recover dbdata that arrived before SLSDeck confirmed send.
         // Discord renders link-style message components beside the article in
         // the same list item, not as ordinary anchors inside the article.
         var scope=a.closest('li')||a.parentElement||a;
@@ -1387,6 +1473,7 @@ export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId
           var link=n.closest('a[href]')||n.querySelector&&n.querySelector('a[href]')||null,href=String(link&&link.href||n.getAttribute&&n.getAttribute('href')||'');
           if(!trusted(href))href=reactUrl(n);
           if(trusted(href))return JSON.stringify({found:true,url:href,id:id});
+          if(n.getBoundingClientRect){var rr=n.getBoundingClientRect();if(rr.width>0&&rr.height>0)return JSON.stringify({found:false,click:{x:rr.left+rr.width/2,y:rr.top+rr.height/2},id:id});}
         }
         var links=[].slice.call(scope.querySelectorAll('a[href]'));
         for(var l=0;l<links.length;l++){var direct=String(links[l].href||'');if(trusted(direct))return JSON.stringify({found:true,url:direct,id:id});}
@@ -1396,6 +1483,10 @@ export async function waitForUbisoftDbdataLink(ticketUrl: string, afterMessageId
     try {
       const value = JSON.parse(String(raw || ""));
       if (value?.found && value.url) return { success: true, url: String(value.url), lastMessageId: String(value.id || "") || undefined };
+      if (value?.click && Number.isFinite(value.click.x) && Number.isFinite(value.click.y)) {
+        const captured = await cdpClickAndCaptureDbdata(tab.webSocketDebuggerUrl, Number(value.click.x), Number(value.click.y));
+        if (captured) return { success:true, url:captured, lastMessageId:String(value.id || "") || undefined };
+      }
       if (value?.error) return { success: false, error: String(value.error) };
     } catch {}
     await new Promise((r) => setTimeout(r, 1500));

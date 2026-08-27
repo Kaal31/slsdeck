@@ -26,7 +26,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
                 opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
-                updates, watchdog, workshop, multiplayer, tokeer, ubisoft_packages,
+                updates, watchdog, workshop, multiplayer, tokeer, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -102,6 +102,9 @@ class Plugin:
 
     async def tokeer_install_ubisoft_dbdata(self, appid: int, token_path: str, url: str) -> Dict[str, Any]:
         return await self._run_slow(ubisoft_packages.install_dbdata, appid, token_path, url)
+
+    async def tokeer_ubisoft_dbdata_status(self, appid: int, token_path: str) -> Dict[str, Any]:
+        return await self._run(ubisoft_packages.installed_dbdata_status, appid, token_path)
 
     async def tokeer_applied_status(self, appid: int = 0) -> Dict[str, Any]:
         games = settings.get_tokeer_applied_games()
@@ -291,6 +294,14 @@ class Plugin:
                     # the Updates tab and Dependencies, never nagged on every bump.
                     if last_v:
                         decky.logger.info(f"SLSDeck: plugin updated {last_v} -> {cur_v}")
+                        cleaned = lifecycle.cleanup_for_update()
+                        transient = settings.reset_lifecycle_transients()
+                        if not cleaned.get("success"):
+                            decky.logger.warning(f"SLSDeck: update cleanup issues: {cleaned.get('errors')}")
+                        decky.logger.info(
+                            f"SLSDeck: update migration removed {len(cleaned.get('removed') or [])} stale path(s) "
+                            f"and reset {len(transient.get('removed') or [])} transient setting(s)"
+                        )
                     settings.set_last_plugin_version(cur_v)
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: plugin-update recheck failed: {exc}")
@@ -521,6 +532,17 @@ class Plugin:
             close_http_client("uninstall")
         except Exception:
             pass
+        # Decky only removes the active plugin code. Remove our rebuildable data,
+        # logs and obsolete plugin identities now, while preserving the current
+        # settings/keys directory. The live-watched ~/.config/SLSsteam remains
+        # inert after deactivate_injection and is intentionally not deleted.
+        try:
+            result = lifecycle.cleanup_for_uninstall()
+            settings.reset_lifecycle_transients()
+            if not result.get("success"):
+                decky.logger.warning(f"SLSDeck: safe uninstall cleanup issues: {result.get('errors')}")
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: safe uninstall cleanup failed: {exc}")
 
     async def full_uninstall_cleanup(self) -> Dict[str, Any]:
         """Manual full removal includes CloudRedirect, Ubisoft packages, Tokeer and Proton."""

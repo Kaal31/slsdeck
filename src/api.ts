@@ -74,6 +74,8 @@ export interface SlsInstallState {
   needsDesktopMode?: boolean;
   percent?: number;
   returnCode?: number;
+  stage?: string;
+  preflight?: Record<string, unknown>;
 }
 
 export interface SlsStatus {
@@ -185,6 +187,7 @@ export const tokeerEnsureUbisoftPackages = callable<[force?: boolean], { success
 export const tokeerApplyUbisoftPackage = callable<[appid: number], { success: boolean; appid?: number; name?: string; installPath?: string; tokenDirectory?: string; tokenRequestIds?: number[]; copied?: string[]; appliedAt?: number; error?: string }>("tokeer_apply_ubisoft_package");
 export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number], { success: boolean; found?: boolean; path?: string; filename?: string; directory?: string; size?: number; tokenRequestIds?: number[]; error?: string }>("tokeer_find_ubisoft_token");
 export const tokeerInstallUbisoftDbdata = callable<[appid: number, tokenPath: string, url: string], { success: boolean; path?: string; directory?: string; error?: string }>("tokeer_install_ubisoft_dbdata");
+export const tokeerUbisoftDbdataStatus = callable<[appid: number, tokenPath: string], { success: boolean; installed: boolean; path?: string; directory?: string; error?: string }>("tokeer_ubisoft_dbdata_status");
 export type TokeerAppliedRecord = { appid: number; gameName: string; kind: "steam" | "ubisoft"; appliedAt: number; applied: boolean; pinned: boolean };
 export const tokeerAppliedStatus = callable<[appid?: number], { success: boolean; applied?: boolean; record?: TokeerAppliedRecord | null; records: TokeerAppliedRecord[] }>("tokeer_applied_status");
 export const tokeerMarkApplied = callable<[appid: number, gameName?: string, kind?: string, pin?: boolean], { success: boolean; record?: TokeerAppliedRecord; pin?: { success: boolean; skipped?: boolean; error?: string }; error?: string }>("tokeer_mark_applied");

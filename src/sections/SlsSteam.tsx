@@ -177,7 +177,7 @@ export function SlsSteamSection() {
         <PanelSectionRow>
           <div style={{ fontSize: 12, opacity: 0.85, padding: "2px 0" }}>
             <Spinner style={{ width: 14, height: 14, marginRight: 8 }} />
-            {inst?.status === "queued" ? "Starting…" : "Installing…"}
+            {inst?.status === "queued" ? "Starting…" : (inst?.stage ? `Installing: ${inst.stage.replace(/-/g, " ")}…` : "Installing…")}
             {typeof inst?.percent === "number" && inst.percent > 0 ? ` ${inst.percent}%` : ""}
           </div>
         </PanelSectionRow>

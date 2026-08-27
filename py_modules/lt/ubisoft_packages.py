@@ -17,8 +17,8 @@ from . import steam
 
 
 ASSET_NAME = "ubisoft-packages.zip"
-ASSET_URL = "https://github.com/Kaal31/slsdeck/releases/download/tokeer-automation-latest/ubisoft-packages.zip"
-RELEASE_API = "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/tokeer-automation-latest"
+ASSET_URL = "https://github.com/Kaal31/slsdeck/releases/download/main-latest/ubisoft-packages.zip"
+RELEASE_API = "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/main-latest"
 VERSION_FILE = ".asset-version"
 
 
@@ -357,3 +357,33 @@ def install_dbdata(appid: int, token_path: str, url: str) -> Dict[str, Any]:
         return {"success": True, "path": destination, "directory": os.path.dirname(token)}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+def installed_dbdata_status(appid: int, token_path: str) -> Dict[str, Any]:
+    """Validate activation data belonging to the current token request.
+
+    A retry may have lost its final UI checkpoint after installing dbdata.json.
+    Accept only a valid file beside the selected hosted game's token request and
+    only when it is at least as new as that request, never stale prior data.
+    """
+    try:
+        appid = int(appid)
+        if not _game(appid):
+            return {"success": False, "installed": False, "error": "This Ubisoft game is not hosted."}
+        token = os.path.realpath(token_path)
+        found = find_token_request(appid, 0)
+        if not found.get("success") or os.path.realpath(str(found.get("path") or "")) != token:
+            return {"success": True, "installed": False}
+        destination = os.path.join(os.path.dirname(token), "dbdata.json")
+        try:
+            if os.stat(destination).st_mtime < os.stat(token).st_mtime:
+                return {"success": True, "installed": False}
+            with open(destination, "r", encoding="utf-8-sig") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            return {"success": True, "installed": False}
+        valid = isinstance(payload, dict) and bool(str(payload.get("DenuvoToken") or "").strip())
+        return {"success": True, "installed": valid,
+                "path": destination if valid else "", "directory": os.path.dirname(token)}
+    except Exception as exc:
+        return {"success": False, "installed": False, "error": str(exc)}

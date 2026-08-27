@@ -903,6 +903,26 @@ def reset_dep_fail(name: str) -> None:
             _persist_locked()
 
 
+def reset_lifecycle_transients() -> Dict[str, Any]:
+    """Clear state that must not survive a plugin binary upgrade.
+
+    User preferences, credentials/API keys, pins, applied-fix records and
+    pending user work are deliberately preserved.  Dependency failure counters
+    are merely a retry throttle for one installed build; carrying them into a
+    newer build can permanently suppress the repair that the update supplied.
+    """
+    removed = []
+    with _LOCK:
+        values = _load_locked()
+        for field in (DEP_FAIL_FIELD,):
+            if field in values:
+                values.pop(field, None)
+                removed.append(field)
+        if removed:
+            _persist_locked()
+    return {"success": True, "removed": removed}
+
+
 def dep_fail_capped(name: str) -> bool:
     return get_dep_fail(name) >= DEP_FAIL_CAP
 
