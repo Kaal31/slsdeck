@@ -32,7 +32,7 @@ import {
 } from "../lib/tokeerDiscordCapture";
 import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 import { launchGame } from "../lib/launchGame";
-import { hasLaunchRepoint, setLaunchRepoint } from "../lib/fixRuntime";
+import { getCurrentLaunchOptions, hasLaunchRepoint, setLaunchRepoint } from "../lib/fixRuntime";
 import { refreshBadges } from "../lib/badges";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
@@ -1167,7 +1167,7 @@ export function TokeerSection() {
         toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
         return;
       }
-      const r=await tokeerVerify(resolvedAppid,ticketUsesUbisoftVerifier(ticket));
+      const r=await tokeerVerify(resolvedAppid,ticketUsesUbisoftVerifier(ticket),getCurrentLaunchOptions(resolvedAppid));
       if(r.success){
         setVerify(r);
         setMessage("Setup verified. Copy the TLX1 and paste it into the open Discord ticket.");

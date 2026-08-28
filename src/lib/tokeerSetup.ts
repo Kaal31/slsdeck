@@ -1,5 +1,5 @@
 import { tokeerEnsureProton, tokeerEnsureRuntime, tokeerPreflight, tokeerVerify, TokeerVerifyResult } from "../api";
-import { configureTokeerLaunch } from "./fixRuntime";
+import { configureTokeerLaunch, getCurrentLaunchOptions } from "./fixRuntime";
 import { launchGame } from "./launchGame";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,13 +104,13 @@ export async function setupAndVerifyTokeer(
   }
 
   onStatus?.("Checking the game setup…");
-  let verified = await tokeerVerify(appid, ubisoft);
+  let verified = await tokeerVerify(appid, ubisoft, getCurrentLaunchOptions(appid));
   if (!verified.success && !verified.checks?.prefix) {
     onStatus?.("Creating the Proton prefix with one game launch—Steam will stay open…");
     launchGame(appid);
     for (let attempt = 0; attempt < 30; attempt++) {
       await sleep(2000);
-      verified = await tokeerVerify(appid, ubisoft);
+      verified = await tokeerVerify(appid, ubisoft, getCurrentLaunchOptions(appid));
       if (verified.success || verified.checks?.prefix) break;
     }
   }

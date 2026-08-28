@@ -174,7 +174,7 @@ export const tokeerProtonStatus = callable<[], { success: boolean; installed: bo
 export const tokeerEnsureProton = callable<[force?: boolean], { success: boolean; installed?: boolean; healthy?: boolean; updated?: boolean; skipped?: boolean; name?: string; path?: string; requiredProton?: string; error?: string }>("tokeer_ensure_proton");
 export const tokeerPrepare = callable<[appid: number], { success: boolean; output?: string; steamMayRestart?: boolean; error?: string }>("tokeer_prepare");
 export const tokeerPrepareVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult & { phase?: string; prepare?: any; steamMayRestart?: boolean }>("tokeer_prepare_verify");
-export const tokeerVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult>("tokeer_verify");
+export const tokeerVerify = callable<[appid: number, ubisoft?: boolean, liveLaunchOptions?: string], TokeerVerifyResult>("tokeer_verify");
 export const tokeerRedeem = callable<[code: string], { success: boolean; output?: string; needsPrepare?: boolean; error?: string }>("tokeer_redeem");
 export type UbisoftHostedGame = {
   name: string; aliases: string[]; steamAppId: number; carePackageId: number;
