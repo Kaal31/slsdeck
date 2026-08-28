@@ -531,6 +531,37 @@ def _bundled_7zz():
 ORIG_SUFFIX = ".slsdeck-orig"
 
 
+def _existing_case_rel(install_path: str, rel: str) -> str:
+    """Use the on-disk spelling for path components that already exist.
+
+    Fix archives are commonly assembled on Windows, where ``acshadows.exe``
+    and ``ACShadows.exe`` name the same file.  Linux treats them as different
+    files, so blindly using the archive spelling can leave the original beside
+    a lower-case replacement that the game never launches.
+
+    Exact matches always win.  A case-insensitive match is used only when it is
+    unique; an ambiguous directory is left unchanged rather than guessing.
+    """
+    normalized = rel.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    resolved: List[str] = []
+    current = install_path
+    for part in parts:
+        exact = os.path.join(current, part)
+        chosen = part
+        if not os.path.lexists(exact) and os.path.isdir(current):
+            try:
+                matches = [name for name in os.listdir(current)
+                           if name.casefold() == part.casefold()]
+            except OSError:
+                matches = []
+            if len(matches) == 1:
+                chosen = matches[0]
+        resolved.append(chosen)
+        current = os.path.join(current, chosen)
+    return "/".join(resolved)
+
+
 def _stash_original(install_path: str, rel: str) -> bool:
     """Preserve a game file the fix is about to overwrite. Returns True when the
     target already existed, i.e. this is a replacement rather than a new file."""
@@ -589,9 +620,11 @@ def _extract_rar_fix(archive_path, install_path, appid, extracted=None, replaced
             rel = os.path.relpath(full, tmp)
             if not _is_safe_path(install_path, rel):
                 continue
-            target = os.path.join(install_path, rel)
+            norm = _existing_case_rel(install_path, rel)
+            if not _is_safe_path(install_path, norm):
+                continue
+            target = os.path.join(install_path, norm.replace("/", os.sep))
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            norm = rel.replace("\\", "/")
             if _stash_original(install_path, norm):
                 replaced.append(norm)
             shutil.copy2(full, target)
@@ -621,9 +654,11 @@ def _extract_zip_fix(dest_zip, install_path, appid, extracted=None, replaced=Non
                 rel = member
             if not rel or not _is_safe_path(install_path, rel):
                 continue
-            target = os.path.join(install_path, rel)
+            norm = _existing_case_rel(install_path, rel)
+            if not _is_safe_path(install_path, norm):
+                continue
+            target = os.path.join(install_path, norm.replace("/", os.sep))
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            norm = rel.replace("\\", "/")
             if _stash_original(install_path, norm):
                 replaced.append(norm)
             with archive.open(member) as src, open(target, "wb") as out:
@@ -848,10 +883,13 @@ def _mirror_fix_to_exe_dir(install_path: str, extracted_files: List[str],
         cur_dir = os.path.abspath(os.path.dirname(src))
         if cur_dir == exe_dir_abs:
             continue  # already beside the exe
-        dst = os.path.join(exe_dir_abs, os.path.basename(rel))
-        dst_rel = os.path.relpath(dst, install_path).replace("\\", "/")
+        proposed_rel = os.path.join(
+            os.path.relpath(exe_dir_abs, install_path), os.path.basename(rel)
+        ).replace("\\", "/")
+        dst_rel = _existing_case_rel(install_path, proposed_rel)
         if not _is_safe_path(install_path, dst_rel):
             continue
+        dst = os.path.join(install_path, dst_rel.replace("/", os.sep))
         try:
             if _stash_original(install_path, dst_rel):
                 replaced_files.append(dst_rel)
