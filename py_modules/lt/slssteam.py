@@ -1413,6 +1413,19 @@ def _chown_to_user(path: str) -> None:
 def _extraction_available() -> bool:
     if any(shutil.which(n) for n in ("7z", "7za", "7zr", "bsdtar")):
         return True
+    # The plugin bundles a static x86_64 7zz precisely so Arch/Cachy installs
+    # do not depend on pacman or Decky's embedded Python having py7zr ready.
+    try:
+        bundled = defaults_path(os.path.join("bin", "7zz"))
+        if os.path.isfile(bundled):
+            try:
+                os.chmod(bundled, 0o755)
+            except Exception:
+                pass
+            if os.access(bundled, os.X_OK):
+                return True
+    except Exception:
+        pass
     try:
         import py7zr  # noqa: F401
         return True
