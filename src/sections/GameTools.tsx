@@ -171,7 +171,7 @@ export function GameToolsSection() {
   // DepotDownloader job progress for THIS game. The download runs in a backend
   // thread and its state lives in DL_STATE; we poll depotdl_queue so the user
   // sees percent / completion / errors instead of a fire-and-forget toast.
-  type DdlJob = { appid: number; status: string; percent: number; op?: string; error?: string; plannedDepots?: { depot: string; manifest: string; kind: string }[]; currentDepot?: string; currentManifest?: string; completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number; enrichmentStatus?: string; depotMetadata?: Record<string,{kind:string;confidence:string;source:string;dlcAppid?:number;fromAppid?:number;name?:string;os?:string;language?:string}> };
+  type DdlJob = { appid: number; status: string; percent: number; op?: string; buildid?: string; error?: string; plannedDepots?: { depot: string; manifest: string; kind: string }[]; currentDepot?: string; currentManifest?: string; completedDepots?: string[]; failedDepots?: string[]; depotDone?: number; depotTotal?: number; enrichmentStatus?: string; depotMetadata?: Record<string,{kind:string;confidence:string;source:string;dlcAppid?:number;fromAppid?:number;name?:string;os?:string;language?:string}> };
   const [ddl, setDdl] = useState<DdlJob | null>(null);
   const ddlTimer = useRef<any>(null);
   const stopDdl = () => { if (ddlTimer.current) { clearInterval(ddlTimer.current); ddlTimer.current = null; } };
@@ -196,6 +196,10 @@ export function GameToolsSection() {
     return () => { active = false; stopDdl(); };
   }, [depotdl, appid, pollDdlOnce, startDdl]);
   const ddlActive = ddl?.status === "downloading" || ddl?.status === "resolving";
+  const buildDownloadActive = ddlActive && ddl?.op === "build";
+  const ddlPercent = ddl?.status === "done"
+    ? 100
+    : Math.max(1, Math.min(99, Math.round(ddl?.percent || 1)));
 
   const refreshProton = useCallback(() => {
     if (appid == null) return;
@@ -852,10 +856,45 @@ export function GameToolsSection() {
         </PanelSectionRow>
       )}
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={!!busy} onClick={openBuildPicker}>
-          {busy === "bp" ? "Working…" : "Install a specific build…"}
+        <ButtonItem layout="below" disabled={!!busy || buildDownloadActive} onClick={openBuildPicker}>
+          {busy === "bp"
+            ? "Preparing build download…"
+            : buildDownloadActive
+              ? `Downloading build ${ddl?.buildid || ""} — ${ddlPercent}%`
+              : "Install a specific build…"}
         </ButtonItem>
       </PanelSectionRow>
+      {depotdl && ddl?.op === "build" && (
+        <PanelSectionRow>
+          <div style={{ width: "100%", padding: "2px 0 6px" }}>
+            <div style={{ fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+              <span>
+                Build {ddl.buildid || "?"} · {ddl.status}
+                {ddl.currentDepot ? ` · depot ${ddl.currentDepot}` : ""}
+              </span>
+              <span style={{ opacity: 0.8 }}>{ddl.status === "failed" ? "" : `${ddlPercent}%`}</span>
+            </div>
+            <div style={{ height: 6, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${ddlPercent}%`,
+                background: ddl.status === "failed" ? "#d9534f" : ddl.status === "done" ? "#5cb85c" : "#4a90d9",
+                transition: "width 0.3s",
+              }} />
+            </div>
+            {ddl.depotTotal ? (
+              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>
+                Depots {ddl.depotDone || 0}/{ddl.depotTotal}
+              </div>
+            ) : null}
+            {ddl.error ? (
+              <div style={{ fontSize: 11, color: ddl.status === "failed" ? "#f0ad4e" : "#8fbf8f", marginTop: 4 }}>
+                {ddl.error}
+              </div>
+            ) : null}
+          </div>
+        </PanelSectionRow>
+      )}
       {depotdl && (
         <PanelSectionRow>
           <ButtonItem
@@ -949,7 +988,7 @@ export function GameToolsSection() {
           </ButtonItem>
         </PanelSectionRow>
       )}
-      {depotdl && ddl && (
+      {depotdl && ddl && ddl.op !== "build" && (
         <PanelSectionRow>
           <div style={{ width: "100%", padding: "2px 0" }}>
             <div style={{ fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>

@@ -298,7 +298,8 @@ def download_build(appid: int, buildid: str) -> Dict[str, Any]:
     if not r.get("success") or not r.get("gids"):
         return {"success": False, "error": r.get("message", "Could not resolve that build")}
     depot_gid = {str(k): str(v) for k, v in r["gids"].items()}
-    _set(appid, {"status": "downloading", "op": "build", "percent": 1, "error": ""})
+    _set(appid, {"status": "downloading", "op": "build", "buildid": str(buildid),
+                 "percent": 1, "error": ""})
     threading.Thread(target=_build_worker, args=(appid, depot_gid, str(buildid)),
                      name=f"depotdl-build-{appid}", daemon=True).start()
     return {"success": True}
@@ -315,7 +316,8 @@ def download_build_with_gids(appid: int, buildid: str, depot_gid: Dict[str, str]
              if str(d).isdigit() and str(g).isdigit()}
     if not clean:
         return {"success": False, "error": "no depot:gid pairs supplied"}
-    _set(appid, {"status": "resolving", "op": "build", "percent": 1, "error": ""})
+    _set(appid, {"status": "resolving", "op": "build", "buildid": str(buildid),
+                 "percent": 1, "error": ""})
     threading.Thread(target=_build_worker, args=(appid, clean, str(buildid)),
                      name=f"depotdl-build-{appid}", daemon=True).start()
     return {"success": True}
