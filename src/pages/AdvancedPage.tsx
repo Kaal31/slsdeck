@@ -519,7 +519,7 @@ function OptionsPane({
         <PanelSectionRow>
           <ToggleField
             label="Show Reinstall SLSsteam in Quick Access"
-            description="When SLSsteam is installed, show its Reinstall button in the Quick Access panel. Install still shows when it isn't installed yet."
+            description="When SLSsteam is installed, show its status and Reinstall section in Quick Access on store pages. Install still shows when it isn't installed yet."
             checked={reinstallQam}
             onChange={async (v) => { setReinstallQam(v); await setShowReinstallQam(v); }}
           />

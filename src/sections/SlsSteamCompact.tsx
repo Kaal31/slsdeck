@@ -168,11 +168,11 @@ export function SlsSteamCompact() {
   const onGamePage = onLibraryGamePage || onStoreGamePage;
   const showReinstallButton = !!status?.installed && (!onGamePage || showReinstall);
 
-  // On an actual game page the installed engine is global plumbing, not a
-  // per-game action. Hide the entire maintenance/status section there; repair
-  // warnings still come from RepairBanner and missing-engine onboarding still
-  // appears so a fresh install remains possible.
-  if (onLibraryGamePage && status?.installed && !working) return null;
+  // On a library game page the installed engine is global plumbing, not a
+  // per-game action. On a store game page the same complete block (title,
+  // status chips and reinstall action) is controlled by the QAM reinstall
+  // preference. Missing-engine onboarding remains visible on either surface.
+  if (status?.installed && !working && (onLibraryGamePage || (onStoreGamePage && !showReinstall))) return null;
 
   return (
     <PanelSection title="SLSsteam">
