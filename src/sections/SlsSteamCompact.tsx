@@ -15,6 +15,7 @@ import {
   disableForeignEngines,
   currentLibraryAppId,
 } from "../api";
+import { getStoreAppId } from "../patches/StorePatch";
 
 function Chip({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -159,14 +160,19 @@ export function SlsSteamCompact() {
   };
 
   const working = busy || inst?.status === "running" || inst?.status === "queued";
-  const onGamePage = currentLibraryAppId() != null;
+  // The Quick Access panel can be opened from either a library details page or
+  // an in-client store game page.  The latter used to look like a non-game
+  // page here, which made Reinstall appear even when its QAM toggle was off.
+  const onLibraryGamePage = currentLibraryAppId() != null;
+  const onStoreGamePage = getStoreAppId() != null;
+  const onGamePage = onLibraryGamePage || onStoreGamePage;
   const showReinstallButton = !!status?.installed && (!onGamePage || showReinstall);
 
   // On an actual game page the installed engine is global plumbing, not a
   // per-game action. Hide the entire maintenance/status section there; repair
   // warnings still come from RepairBanner and missing-engine onboarding still
   // appears so a fresh install remains possible.
-  if (onGamePage && status?.installed && !working) return null;
+  if (onLibraryGamePage && status?.installed && !working) return null;
 
   return (
     <PanelSection title="SLSsteam">
