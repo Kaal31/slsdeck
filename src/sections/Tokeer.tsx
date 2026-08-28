@@ -64,6 +64,7 @@ type SavedTokeerSession = {
   ubisoftTokenPath?: string;
   ubisoftTokenMessageId?: string;
   quotaUntil?: number;
+  maintenance?: boolean;
 };
 
 type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"checking-game"|"confirming-worked"|"patching-ubisoft"|"waiting-token"|"uploading-token"|"waiting-dbdata"|"installing-dbdata"|"done"|"failed"|"aborted";
@@ -159,6 +160,7 @@ export function TokeerSection() {
   const [ubisoftTokenPath,setUbisoftTokenPath]=useState(savedRef.current?.ubisoftTokenPath||"");
   const [ubisoftTokenMessageId,setUbisoftTokenMessageId]=useState(savedRef.current?.ubisoftTokenMessageId||"");
   const [quotaUntil,setQuotaUntil]=useState(Number(savedRef.current?.quotaUntil||0));
+  const [maintenance,setMaintenance]=useState(!!savedRef.current?.maintenance);
   const [restoringSelectors,setRestoringSelectors]=useState(!!selectorLayoutRef.current);
   const [ubisoftContinuationRunning,setUbisoftContinuationRunning]=useState(false);
   const [ticketCompletionPaused,setTicketCompletionPaused]=useState(false);
@@ -190,10 +192,10 @@ export function TokeerSection() {
       expiresAt:codeExpiresAt,
       selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,
       automationStage,tlxSubmitted,submittedTlx,automationError,
-      ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil,
+      ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil,maintenance,
     };
     try{savedRef.current=data;window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
-  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError,ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil]);
+  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError,ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil,maintenance]);
 
   useEffect(()=>{
     tokeerUbisoftHostedGames().then((result)=>setHostedGames(result.success?result.games||[]:[])).catch(()=>setHostedGames([]));
@@ -936,18 +938,27 @@ export function TokeerSection() {
       const expectedAppid=Number(installed?.appid||0);
       const r=await clickLatestTicketGate();
       if(!r.success){
+        if(r.maintenance){
+          setMaintenance(true);setQuotaUntil(0);
+          setTicket(null);setAutomationStage("idle");setAutomationError("");
+          setMessage("Discord did not open a ticket because Tokeer's activation system is under maintenance.");
+          checkpoint({maintenance:true,quotaUntil:0,automationStage:"idle",automationError:"",ticket:null});
+          return;
+        }
         if(r.quota){
           const waitSeconds=Math.max(1,Number(r.quotaWaitSeconds||0));
           const until=Date.now()+waitSeconds*1000;
           setQuotaUntil(until);
           setTicket(null);setAutomationStage("idle");setAutomationError("");
+          setMaintenance(false);
           setMessage("Discord did not open a ticket because this account's activation quota is still on cooldown.");
-          checkpoint({quotaUntil:until,automationStage:"idle",automationError:"",ticket:null});
+          checkpoint({maintenance:false,quotaUntil:until,automationStage:"idle",automationError:"",ticket:null});
           return;
         }
         setMessage(r.error||"Could not press the Tokeer confirmation button.");return;
       }
-      setQuotaUntil(0);
+      setMaintenance(false);setQuotaUntil(0);
+      checkpoint({maintenance:false,quotaUntil:0});
       const expectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
       const ctx=await waitForTicketContext(r.fromUrl||"",25000,expectedAppid,r.existingChannelIds||[],(discovered)=>{
         // Cancellation should become available as soon as the thread exists;
@@ -1227,6 +1238,7 @@ export function TokeerSection() {
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={openTicket}>Create a ticket</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
       {quotaUntil>clockNow&&<PanelSectionRow><div style={{fontSize:11,fontWeight:700,color:"#ffd166",lineHeight:1.45}}>Your quota was depleted. Try again after {quotaCountdown}.</div></PanelSectionRow>}
+      {maintenance&&<PanelSectionRow><div style={{fontSize:11,fontWeight:700,color:"#ffd166",lineHeight:1.45}}>Tokeer's activation system is currently under maintenance. Please try again later.</div></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&(
         (selectedUbisoft&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||ticketCompletionPaused||["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage)))||
