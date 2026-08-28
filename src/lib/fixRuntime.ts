@@ -174,41 +174,6 @@ function currentLaunchOptions(appid: number): string {
   return d && typeof d.strLaunchOptions === "string" ? d.strLaunchOptions : "";
 }
 
-/** Keep Tokeer's live activation wrapper on top of a guarded/archive launch
- * option template.  Tokeer owns only ost-run.sh and dinput8; every other user
- * or SLSDeck argument continues to come from the guarded template. */
-export function preserveTokeerLaunchOverlay(template: string, current: string): string {
-  const wrapperMatch = String(current || "").match(
-    /(?:'([^']*\/\.tokeer\/ost-run\.sh)'|"([^"]*\/\.tokeer\/ost-run\.sh)"|([^\s'\"]*\/\.tokeer\/ost-run\.sh))/
-  );
-  const wrapper = wrapperMatch && (wrapperMatch[1] || wrapperMatch[2] || wrapperMatch[3]);
-  if (!wrapper) return template || "";
-
-  const overrides: string[] = [];
-  let rest = String(template || "")
-    // A snapshot captured while Tokeer was already active may contain an older
-    // copy. Remove it before placing the one live wrapper back exactly once.
-    .replace(/(?:'[^']*\/\.tokeer\/ost-run\.sh'|"[^"]*\/\.tokeer\/ost-run\.sh"|[^\s'\"]*\/\.tokeer\/ost-run\.sh)\s*/g, "")
-    .replace(
-    /WINEDLLOVERRIDES=(?:"([^"]*)"|'([^']*)'|([^\s]+))\s*/gi,
-    (_all, dq, sq, bare) => {
-      String(dq ?? sq ?? bare ?? "").split(";").map((x) => x.trim()).filter(Boolean).forEach((x) => overrides.push(x));
-      return "";
-    }
-    ).replace(/\s+/g, " ").trim();
-  const merged = overrides.filter((entry) => !/^dinput8\s*=/i.test(entry)).concat("dinput8=n,b");
-  const deduped = merged.filter((entry, i, all) => {
-    const key = entry.split("=")[0].trim().toLowerCase();
-    return all.findIndex((x) => x.split("=")[0].trim().toLowerCase() === key) === i;
-  });
-  if (!rest) rest = "%command%";
-  if (!rest.includes("%command%")) rest = `${rest} %command%`;
-  const quotedWrapper = `'${wrapper.replace(/'/g, "'\\''")}'`;
-  return `WINEDLLOVERRIDES="${deduped.join(";")}" ${quotedWrapper} ${rest}`
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /** True only when the game has a Proton compatibility tool enabled (not a
  *  native Linux runtime shim, not empty). */
 function hasProtonLayer(appid: number): boolean {
