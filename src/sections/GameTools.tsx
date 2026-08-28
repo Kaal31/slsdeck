@@ -929,6 +929,43 @@ export function GameToolsSection() {
           </div>
         </PanelSectionRow>
       )}
+      {depotdl && ddl && ddl.op !== "build" && (
+        <PanelSectionRow>
+          <div style={{ width: "100%", padding: "2px 0" }}>
+            <div style={{ fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
+              <span>{ddl.op === "dlc" ? "DLC-candidate depots" : "Build depots"} · {ddl.status}</span>
+              <span style={{ opacity: 0.8 }}>
+                {ddl.status === "downloading" || ddl.status === "resolving" ? `${Math.max(1, Math.min(99, Math.round(ddl.percent || 1)))}%` : ddl.status === "done" ? "100%" : ""}
+              </span>
+            </div>
+            <div style={{ height: 6, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${ddl.status === "done" ? 100 : Math.max(1, Math.min(99, Math.round(ddl.percent || 1)))}%`,
+                background: ddl.status === "failed" ? "#d9534f" : ddl.status === "done" ? "#5cb85c" : "#4a90d9",
+                transition: "width 0.3s",
+              }} />
+            </div>
+            {ddl.error && (
+              <div style={{ fontSize: 11, color: ddl.status === "failed" ? "#f0ad4e" : "#8fbf8f", marginTop: 4, lineHeight: 1.4 }}>
+                {ddl.error}
+              </div>
+            )}
+            {!!ddl.plannedDepots?.length && <div style={{marginTop:7,padding:7,borderRadius:6,background:"rgba(0,0,0,.18)",fontSize:10,lineHeight:1.5}}>
+              <div style={{fontWeight:700,marginBottom:3}}>Depots {ddl.depotDone||0}/{ddl.depotTotal||ddl.plannedDepots.length}</div>
+              {ddl.plannedDepots.map((d)=>{const m=ddl.depotMetadata?.[d.depot];const label=m?.kind==="dlc"?`DLC ${m.dlcAppid||""}`:m?.kind==="shared"?`shared from ${m.fromAppid||"app"}`:m?.kind==="base-or-shared"?"base/shared":d.kind==="dlc-candidate"?"DLC candidate":"build";return <div key={d.depot} style={{display:"flex",justifyContent:"space-between",gap:8,color:ddl.failedDepots?.includes(d.depot)?"#f0ad4e":ddl.completedDepots?.includes(d.depot)?"#8fd49a":ddl.currentDepot===d.depot?"#72c7ff":"rgba(255,255,255,.72)"}}>
+                <span>{ddl.currentDepot===d.depot?"▶ ":ddl.completedDepots?.includes(d.depot)?"✓ ":ddl.failedDepots?.includes(d.depot)?"! ":""}Depot {d.depot}{m?.name?` · ${m.name}`:""}</span>
+                <span style={{opacity:.65}}>{label}{m?.os?` · ${m.os}`:""}{m?.language?` · ${m.language}`:""} · GID {d.manifest}</span>
+              </div>})}
+              {ddl.enrichmentStatus==="running"&&<div style={{marginTop:5,opacity:.65}}>Enriching depot relationships in the background…</div>}
+              {ddl.op==="dlc"&&<div style={{marginTop:5,color:"#d7b7ff",opacity:.85}}>Candidate means the depot came from the full game bundle; Steam app-info is still required to prove that it belongs to a DLC.</div>}
+            </div>}
+            {ddl.status === "done" && !ddl.error && (
+              <div style={{ fontSize: 11, color: "#8fbf8f", marginTop: 4 }}>Done — files placed in the game folder. Restart Steam if needed.</div>
+            )}
+          </div>
+        </PanelSectionRow>
+      )}
       {depotdl && (
         <PanelSectionRow>
           <ButtonItem
@@ -986,43 +1023,6 @@ export function GameToolsSection() {
           >
             {busy === "archive" ? "Archiving…" : "Archive game snapshot…"}
           </ButtonItem>
-        </PanelSectionRow>
-      )}
-      {depotdl && ddl && ddl.op !== "build" && (
-        <PanelSectionRow>
-          <div style={{ width: "100%", padding: "2px 0" }}>
-            <div style={{ fontSize: 12, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-              <span>{ddl.op === "dlc" ? "DLC-candidate depots" : "Build depots"} · {ddl.status}</span>
-              <span style={{ opacity: 0.8 }}>
-                {ddl.status === "downloading" || ddl.status === "resolving" ? `${Math.max(1, Math.min(99, Math.round(ddl.percent || 1)))}%` : ddl.status === "done" ? "100%" : ""}
-              </span>
-            </div>
-            <div style={{ height: 6, background: "rgba(255,255,255,0.15)", borderRadius: 3, overflow: "hidden" }}>
-              <div style={{
-                height: "100%",
-                width: `${ddl.status === "done" ? 100 : Math.max(1, Math.min(99, Math.round(ddl.percent || 1)))}%`,
-                background: ddl.status === "failed" ? "#d9534f" : ddl.status === "done" ? "#5cb85c" : "#4a90d9",
-                transition: "width 0.3s",
-              }} />
-            </div>
-            {ddl.error && (
-              <div style={{ fontSize: 11, color: ddl.status === "failed" ? "#f0ad4e" : "#8fbf8f", marginTop: 4, lineHeight: 1.4 }}>
-                {ddl.error}
-              </div>
-            )}
-            {!!ddl.plannedDepots?.length && <div style={{marginTop:7,padding:7,borderRadius:6,background:"rgba(0,0,0,.18)",fontSize:10,lineHeight:1.5}}>
-              <div style={{fontWeight:700,marginBottom:3}}>Depots {ddl.depotDone||0}/{ddl.depotTotal||ddl.plannedDepots.length}</div>
-              {ddl.plannedDepots.map((d)=>{const m=ddl.depotMetadata?.[d.depot];const label=m?.kind==="dlc"?`DLC ${m.dlcAppid||""}`:m?.kind==="shared"?`shared from ${m.fromAppid||"app"}`:m?.kind==="base-or-shared"?"base/shared":d.kind==="dlc-candidate"?"DLC candidate":"build";return <div key={d.depot} style={{display:"flex",justifyContent:"space-between",gap:8,color:ddl.failedDepots?.includes(d.depot)?"#f0ad4e":ddl.completedDepots?.includes(d.depot)?"#8fd49a":ddl.currentDepot===d.depot?"#72c7ff":"rgba(255,255,255,.72)"}}>
-                <span>{ddl.currentDepot===d.depot?"▶ ":ddl.completedDepots?.includes(d.depot)?"✓ ":ddl.failedDepots?.includes(d.depot)?"! ":""}Depot {d.depot}{m?.name?` · ${m.name}`:""}</span>
-                <span style={{opacity:.65}}>{label}{m?.os?` · ${m.os}`:""}{m?.language?` · ${m.language}`:""} · GID {d.manifest}</span>
-              </div>})}
-              {ddl.enrichmentStatus==="running"&&<div style={{marginTop:5,opacity:.65}}>Enriching depot relationships in the background…</div>}
-              {ddl.op==="dlc"&&<div style={{marginTop:5,color:"#d7b7ff",opacity:.85}}>Candidate means the depot came from the full game bundle; Steam app-info is still required to prove that it belongs to a DLC.</div>}
-            </div>}
-            {ddl.status === "done" && !ddl.error && (
-              <div style={{ fontSize: 11, color: "#8fbf8f", marginTop: 4 }}>Done — files placed in the game folder. Restart Steam if needed.</div>
-            )}
-          </div>
         </PanelSectionRow>
       )}
 
