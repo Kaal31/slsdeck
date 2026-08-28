@@ -1594,24 +1594,32 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
       await new Promise((r) => setTimeout(r, 1500));
       continue;
     }
+    // A parked Steam BrowserView often remains virtualized at the submitted
+    // TLX1 article. The bot response then exists in Discord but is not mounted
+    // for querySelector until we jump/scroll to the newest edge.
+    await forceTicketToNewest(tab);
     const expr = `(function(){try{
       var after=${JSON.stringify(afterMessageId)};
       var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
       var page=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
-      var recent=arts.slice(0,12).map(function(a){return String(a.innerText||'');}).join('\n');
-      if(/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket was cancelled or closed.'});
-      if(/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(page))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket channel no longer exists or is inaccessible.'});
+      var recent=arts.slice(0,12).map(function(a){return String(a.innerText||'');}).join('\\n');
+      if(/(?:ticket\\s+(?:has\\s+been|was|is(?:\\s+now)?)?\\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\\s+(?:this\\s+)?ticket)/i.test(recent))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket was cancelled or closed.'});
+      if(/(?:unknown\\s+channel|channel\\s+(?:is\\s+)?unavailable|you\\s+(?:do\\s+not|don't)\\s+have\\s+access|no\\s+access\\s+to\\s+this\\s+channel)/i.test(page))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket channel no longer exists or is inaccessible.'});
       var common=/^(?:verify|setup|ticket|cancel|close|valid|code|redeem|tokeer|linux|steam|proton)$/i;
       for(var i=0;i<arts.length;i++){
-        var a=arts[i], identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\d+)-(\d+)/), messageId=identity&&identity[2]||'';
-        if(after&&messageId&&BigInt(messageId)<=BigInt(after))continue;
+        var a=arts[i], identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/), messageId=identity&&identity[2]||'';
         var text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
-        if(/TLX1\./i.test(text))continue;
+        var strongContext=/(?:here['’]?s\\s+your\\s+activation|your\\s+code)/i.test(text);
+        // Normal responses must be newer than the submitted TLX1. On resume,
+        // allow the unmistakable activation embed even if stale bookkeeping
+        // accidentally saved its own ID as the boundary.
+        if(after&&messageId&&BigInt(messageId)<=BigInt(after)&&!strongContext)continue;
+        if(/TLX1\\./i.test(text))continue;
         var nodes=[].slice.call(a.querySelectorAll('code,pre')).map(function(n){return String(n.textContent||'').trim();});
-        var contextual=/(?:activation|redeem|single[- ]use|expires|30\s*minutes?|verification\s+(?:succeeded|complete))/i.test(text);
+        var contextual=strongContext||/(?:activation|redeem|single[- ]use|expires|30\\s*minutes?|verification\\s+(?:succeeded|complete))/i.test(text);
         var matches=nodes.filter(function(v){return /^[A-Za-z0-9_-]{6}$/.test(v)&&!common.test(v);});
         if(!matches.length&&contextual){
-          matches=(text.match(/(?:^|\s|[:#])([A-Za-z0-9_-]{6})(?=$|\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
+          matches=(text.match(/(?:^|\\s|[:#])([A-Za-z0-9_-]{6})(?=$|\\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
         }
         if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0],lastMessageId:messageId});
       }
