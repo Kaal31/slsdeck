@@ -174,6 +174,16 @@ function currentLaunchOptions(appid: number): string {
   return d && typeof d.strLaunchOptions === "string" ? d.strLaunchOptions : "";
 }
 
+/** Read Steam's current live value, falling back to the app-details cache on
+ * client builds that do not expose GetLaunchOptionsForApp. */
+export function getCurrentLaunchOptions(appid: number): string {
+  try {
+    const live = (window as any).SteamClient?.Apps?.GetLaunchOptionsForApp?.(appid);
+    if (typeof live === "string") return live;
+  } catch { /* use the app-details cache below */ }
+  return currentLaunchOptions(appid);
+}
+
 /** True only when the game has a Proton compatibility tool enabled (not a
  *  native Linux runtime shim, not empty). */
 function hasProtonLayer(appid: number): boolean {

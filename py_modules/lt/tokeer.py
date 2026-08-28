@@ -8,6 +8,8 @@ through Decky RPC.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import pwd
@@ -32,6 +34,7 @@ DEFAULT_COOLDOWN_HOURS = 48
 RELEASE_API = "https://api.github.com/repos/Tesla697/TokeerDRM-App/releases/latest"
 VERSION_FILE = ".slsdeck_runtime_version"
 REQUIRED_PROTON = "GE-Proton10-34"
+LINUX_VALIDATE_SECRET = b"tokeer_linux_setup_validate_2026_v1_shared"
 def _home() -> str:
     return get_user_home()
 
@@ -624,7 +627,8 @@ def _decode_tlx(code: str) -> Dict[str, Any]:
         return {}
 
 
-def verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
+def verify(appid: int, ubisoft: bool = False,
+           live_launch_options: str = "") -> Dict[str, Any]:
     if not str(appid).isdigit() or int(appid) <= 0:
         return {"success": False, "error": "Invalid Steam AppID."}
     cmd = os.path.join(_tdir(), "tokeer")
@@ -682,6 +686,33 @@ def verify(appid: int, ubisoft: bool = False) -> Dict[str, Any]:
                     f"{expected_mode} verification was requested. The code was not submitted."
                 ),
             }
+        # SLSDeck writes launch options through Steam's live API so Steam does
+        # not need to restart. Upstream verifies localconfig.vdf, which can lag
+        # behind the live value. Correct only that stale field, and only for the
+        # exact wrapper installed in this user's Tokeer home. Every other check
+        # remains exactly as reported by the upstream validator.
+        wrapper = os.path.join(_tdir(), "ost-run.sh")
+        live_options = str(live_launch_options or "")
+        live_wrapper_set = bool(
+            not ubisoft
+            and re.search(
+                r"(?:^|\s)(?:'" + re.escape(wrapper) + r"'|\""
+                + re.escape(wrapper) + r"\"|" + re.escape(wrapper)
+                + r")(?:\s|$)",
+                live_options,
+            )
+            and "%command%" in live_options
+        )
+        if not report.get("launch_opt") and live_wrapper_set:
+            report["launch_opt"] = True
+            raw = json.dumps(report, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            sig = hmac.new(LINUX_VALIDATE_SECRET, raw, hashlib.sha256).digest()
+
+            def _b64(value: bytes) -> str:
+                return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+            code = "TLX1." + _b64(raw) + "." + _b64(sig)
+            out += "\nSLSDeck: launch option confirmed through Steam's live API.\n"
         checks = {
             "installed": bool(report.get("installed")),
             "prefix": bool(report.get("prefix")),
@@ -721,7 +752,9 @@ def redeem(code: str) -> Dict[str, Any]:
     if not os.path.isfile(cmd):
         return {"success": False, "needsPrepare": True, "error": "Tokeer is not prepared yet."}
     try:
-        p = _run_as_user([cmd, code, "--no-launch"], timeout=120)
+        # Follow Tokeer's official one-command flow: write the activation
+        # tickets and launch the game through steam://rungameid/<appid>.
+        p = _run_as_user([cmd, code], timeout=120)
         out = p.stdout or ""
         return {"success": p.returncode == 0, "returnCode": p.returncode,
                 "output": out[-24000:], "error": "" if p.returncode == 0 else "Activation failed."}

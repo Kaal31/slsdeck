@@ -739,7 +739,7 @@ export async function readLatestTicketGate(): Promise<TokeerTicketGate> {
   try { return JSON.parse(String(raw || "")); } catch { return { found: false, error: "Could not read the ticket confirmation button." }; }
 }
 
-async function readTokeerQuota(tab: CdpTab, afterMessageId = ""): Promise<{ found: boolean; waitText?: string; waitSeconds?: number }> {
+async function readTokeerTicketRejection(tab: CdpTab, afterMessageId = ""): Promise<{ found: boolean; maintenance?: boolean; waitText?: string; waitSeconds?: number }> {
   if (!tab.webSocketDebuggerUrl) return { found: false };
   const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
     var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-20).reverse();
@@ -747,6 +747,9 @@ async function readTokeerQuota(tab: CdpTab, afterMessageId = ""): Promise<{ foun
       var identity=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=identity&&identity[2]||'';
       if(after&&id&&BigInt(id)<=BigInt(after))continue;
       var text=String(arts[i].innerText||arts[i].textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      if(/activation\\s+system\\s+is\\s+currently\\s+under\\s+maintenance/i.test(text)||/currently\\s+under\\s+maintenance[\\s\\S]{0,120}?no\\s+token\\s+has\\s+been\\s+used/i.test(text)){
+        return JSON.stringify({found:true,maintenance:true});
+      }
       var match=text.match(/(?:cooldown\\s+active|quota\\s+(?:was\\s+)?depleted)[\\s\\S]{0,160}?(?:try\\s+again\\s+(?:in|after))\\s+((?:\\d+\\s*[dhms]\\s*)+)/i);
       if(!match)continue;
       var token=String(match[1]||'').trim(),seconds=0,re=/(\\d+)\\s*([dhms])/ig,m;
@@ -758,7 +761,7 @@ async function readTokeerQuota(tab: CdpTab, afterMessageId = ""): Promise<{ foun
   try { return JSON.parse(String(raw || "")); } catch { return { found: false }; }
 }
 
-export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; existingChannelIds?: string[]; quota?: boolean; quotaWaitText?: string; quotaWaitSeconds?: number; error?: string }> {
+export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; existingChannelIds?: string[]; maintenance?: boolean; quota?: boolean; quotaWaitText?: string; quotaWaitSeconds?: number; error?: string }> {
   const tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return { success: false, error: "Tokeer activation channel is not open." };
   // Snapshot the sidebar before Discord inserts the private ticket thread.
@@ -769,8 +772,9 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
   try { gate = JSON.parse(String(raw || "")); } catch {}
   if (!gate?.found) return { success: false, error: gate?.error || "The agreement and tutorial confirmation button is not ready yet." };
   if (gate.disabled) {
-    const quota = await readTokeerQuota(tab);
-    if (quota.found) return { success: false, quota: true, quotaWaitText: quota.waitText, quotaWaitSeconds: quota.waitSeconds };
+    const rejection = await readTokeerTicketRejection(tab);
+    if (rejection.maintenance) return { success: false, maintenance: true };
+    if (rejection.found) return { success: false, quota: true, quotaWaitText: rejection.waitText, quotaWaitSeconds: rejection.waitSeconds };
     return { success: false, error: "Discord currently rejects the ticket action, but did not expose a cooldown time." };
   }
   const x = Number(gate.x), y = Number(gate.y);
@@ -787,8 +791,9 @@ export async function clickLatestTicketGate(): Promise<{ success: boolean; fromU
   // of creating a thread. Give the bot a short window to render that response
   // before the caller begins waiting for a new private channel.
   for (let attempt = 0; attempt < 12; attempt++) {
-    const quota = await readTokeerQuota(tab, beforeMessageId);
-    if (quota.found) return { success: false, quota: true, quotaWaitText: quota.waitText, quotaWaitSeconds: quota.waitSeconds };
+    const rejection = await readTokeerTicketRejection(tab, beforeMessageId);
+    if (rejection.maintenance) return { success: false, maintenance: true };
+    if (rejection.found) return { success: false, quota: true, quotaWaitText: rejection.waitText, quotaWaitSeconds: rejection.waitSeconds };
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return { success: true, fromUrl: tab.url, existingChannelIds };
@@ -1589,24 +1594,32 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
       await new Promise((r) => setTimeout(r, 1500));
       continue;
     }
+    // A parked Steam BrowserView often remains virtualized at the submitted
+    // TLX1 article. The bot response then exists in Discord but is not mounted
+    // for querySelector until we jump/scroll to the newest edge.
+    await forceTicketToNewest(tab);
     const expr = `(function(){try{
       var after=${JSON.stringify(afterMessageId)};
       var arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30).reverse();
       var page=String(document.body&&document.body.innerText||'').replace(/\u00a0/g,' ');
-      var recent=arts.slice(0,12).map(function(a){return String(a.innerText||'');}).join('\n');
-      if(/(?:ticket\s+(?:has\s+been|was|is(?:\s+now)?)?\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\s+(?:this\s+)?ticket)/i.test(recent))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket was cancelled or closed.'});
-      if(/(?:unknown\s+channel|channel\s+(?:is\s+)?unavailable|you\s+(?:do\s+not|don't)\s+have\s+access|no\s+access\s+to\s+this\s+channel)/i.test(page))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket channel no longer exists or is inaccessible.'});
+      var recent=arts.slice(0,12).map(function(a){return String(a.innerText||'');}).join('\\n');
+      if(/(?:ticket\\s+(?:has\\s+been|was|is(?:\\s+now)?)?\\s*(?:closed|cancelled|canceled|deleted)|(?:closing|deleting|cancelling|canceling)\\s+(?:this\\s+)?ticket)/i.test(recent))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket was cancelled or closed.'});
+      if(/(?:unknown\\s+channel|channel\\s+(?:is\\s+)?unavailable|you\\s+(?:do\\s+not|don't)\\s+have\\s+access|no\\s+access\\s+to\\s+this\\s+channel)/i.test(page))return JSON.stringify({found:false,cancelled:true,error:'The Discord ticket channel no longer exists or is inaccessible.'});
       var common=/^(?:verify|setup|ticket|cancel|close|valid|code|redeem|tokeer|linux|steam|proton)$/i;
       for(var i=0;i<arts.length;i++){
-        var a=arts[i], identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\d+)-(\d+)/), messageId=identity&&identity[2]||'';
-        if(after&&messageId&&BigInt(messageId)<=BigInt(after))continue;
+        var a=arts[i], identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/), messageId=identity&&identity[2]||'';
         var text=String(a.innerText||'').replace(/\u00a0/g,' ').trim();
-        if(/TLX1\./i.test(text))continue;
+        var strongContext=/(?:here['’]?s\\s+your\\s+activation|your\\s+code)/i.test(text);
+        // Normal responses must be newer than the submitted TLX1. On resume,
+        // allow the unmistakable activation embed even if stale bookkeeping
+        // accidentally saved its own ID as the boundary.
+        if(after&&messageId&&BigInt(messageId)<=BigInt(after)&&!strongContext)continue;
+        if(/TLX1\\./i.test(text))continue;
         var nodes=[].slice.call(a.querySelectorAll('code,pre')).map(function(n){return String(n.textContent||'').trim();});
-        var contextual=/(?:activation|redeem|single[- ]use|expires|30\s*minutes?|verification\s+(?:succeeded|complete))/i.test(text);
+        var contextual=strongContext||/(?:activation|redeem|single[- ]use|expires|30\\s*minutes?|verification\\s+(?:succeeded|complete))/i.test(text);
         var matches=nodes.filter(function(v){return /^[A-Za-z0-9_-]{6}$/.test(v)&&!common.test(v);});
         if(!matches.length&&contextual){
-          matches=(text.match(/(?:^|\s|[:#])([A-Za-z0-9_-]{6})(?=$|\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
+          matches=(text.match(/(?:^|\\s|[:#])([A-Za-z0-9_-]{6})(?=$|\\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
         }
         if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0],lastMessageId:messageId});
       }

@@ -49,7 +49,7 @@ const TOPICS: HelpTopic[] = [
       { name: "Hide tools & diagnostics in Quick Access", desc: "Keep the QAM compact by hiding general Tools/Diagnostics there; those controls remain in Advanced." },
       { name: "Show Actions & fixes in Quick Access", desc: "Show the per-game Actions & fixes block in QAM." },
       { name: "Show added games in Quick Access", desc: "Move the added-games list into QAM instead of showing it only on the Add a game page." },
-      { name: "Show Reinstall SLSsteam in Quick Access", desc: "Controls the optional Reinstall button once SLSsteam already exists. First-time Install still appears when SLSsteam is missing regardless of this toggle; reinstall is hidden on game pages by default." },
+      { name: "Show Reinstall SLSsteam in Quick Access", desc: "Controls the complete SLSsteam status and Reinstall section on store pages once SLSsteam already exists. First-time Install still appears when SLSsteam is missing regardless of this toggle; the section stays hidden on library game pages." },
 
       { name: "Achievements (slsteam-moon)", desc: "Allow moon to obtain/use achievement schema support for added games." },
       { name: "Group SLS games into a collection", desc: "Keep a Steam collection called SLSDeck synchronized with the games added through SLSsteam." },

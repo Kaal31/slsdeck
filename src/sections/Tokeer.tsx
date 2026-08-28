@@ -32,7 +32,7 @@ import {
 } from "../lib/tokeerDiscordCapture";
 import { cancelTokeerAvailabilityRefresh, normalizeTokeerGameName, parseTokeerGameLabel, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, TokeerAvailabilityCache } from "../lib/tokeerAvailability";
 import { launchGame } from "../lib/launchGame";
-import { hasLaunchRepoint, setLaunchRepoint } from "../lib/fixRuntime";
+import { getCurrentLaunchOptions, hasLaunchRepoint, setLaunchRepoint } from "../lib/fixRuntime";
 import { refreshBadges } from "../lib/badges";
 
 const inputStyle: any = { width:"100%", boxSizing:"border-box", padding:"8px 10px", borderRadius:4, border:"1px solid rgba(255,255,255,.25)", background:"rgba(0,0,0,.22)", color:"inherit" };
@@ -43,6 +43,8 @@ const TOKEER_AUTO_CONNECT_KEY = "slsdeck.tokeerAutoConnect.v1";
 const TOKEER_SELECTOR_CACHE_KEY = "slsdeck.tokeerSelectorLayout.v1";
 const TOKEER_VAULT_REFRESH_MS = 10 * 60 * 1000;
 const TOKEER_SESSION_MS = 30 * 60 * 1000;
+const TOKEER_PENDING_SELECTION_MS = 2 * 60 * 1000;
+const TOKEER_GATE_WAIT_MS = 10 * 1000;
 
 type SavedTokeerSession = {
   startedAt: number;
@@ -64,11 +66,13 @@ type SavedTokeerSession = {
   ubisoftTokenPath?: string;
   ubisoftTokenMessageId?: string;
   quotaUntil?: number;
+  maintenance?: boolean;
+  selectionExpiresAt?: number;
 };
 
 type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"checking-game"|"confirming-worked"|"patching-ubisoft"|"waiting-token"|"uploading-token"|"waiting-dbdata"|"installing-dbdata"|"done"|"failed"|"aborted";
 
-async function launchAndConfirmGameStarted(appid:number,shouldAbort?:()=>boolean):Promise<{confirmed:boolean;available:boolean;launched:boolean;error?:string}>{
+async function confirmTokeerLaunchedGameStarted(appid:number,shouldAbort?:()=>boolean):Promise<{confirmed:boolean;available:boolean;launched:boolean;error?:string}>{
   const sessions:any=(window as any).SteamClient?.GameSessions;
   const register=sessions?.RegisterForAppLifetimeNotifications;
   if(typeof register!=="function")return {confirmed:false,available:false,launched:false,error:"Steam does not expose game-lifetime confirmation on this client."};
@@ -81,16 +85,18 @@ async function launchAndConfirmGameStarted(appid:number,shouldAbort?:()=>boolean
       if(eventAppid===Number(appid)&&!!event?.bRunning)resolveStarted(true);
     });
   }catch(e){return {confirmed:false,available:false,launched:false,error:`Steam game-lifetime confirmation could not be registered: ${String(e)}`};}
-  const launched=launchGame(appid);
-  if(!launched){try{subscription?.unregister?.();}catch{}return {confirmed:false,available:true,launched:false,error:"Steam did not accept the game launch request."};}
   try{
     const deadline=Date.now()+45000;
     while(Date.now()<deadline){
       if(shouldAbort?.())return {confirmed:false,available:true,launched:true,error:"Game launch confirmation was paused."};
+      try{
+        const details=(window as any).appDetailsStore?.GetAppDetails?.(Number(appid));
+        if(details?.bIsRunning||details?.bRunning||details?.bIsLaunching)return {confirmed:true,available:true,launched:true};
+      }catch{}
       const confirmed=await Promise.race([started,sleep(500).then(()=>false)]);
       if(confirmed)return {confirmed:true,available:true,launched:true};
     }
-    return {confirmed:false,available:true,launched:true,error:"Steam accepted the launch, but did not confirm that the game process started."};
+    return {confirmed:false,available:true,launched:true,error:"Tokeer applied the activation, but Steam did not confirm that its game launch started."};
   }finally{try{subscription?.unregister?.();}catch{}}
 }
 
@@ -101,7 +107,13 @@ function readSavedSession(): SavedTokeerSession|null {
     // persisted the old ticket again. That orphan has no trustworthy game
     // identity and must not resurrect Prepare/Verify after an update.
     const orphanedTicket=!!parsed?.ticket&&(parsed.ticket.found||parsed.ticket.opened||parsed.ticket.url)&&!String(parsed.selectedGame||"").trim();
-    if(!parsed||orphanedTicket||(parsed.expiresAt&&Number(parsed.expiresAt)<=Date.now())){
+    const pendingSelectionExpired=!!parsed?.selectedGame&&!parsed?.ticket?.url&&(
+      (parsed.selectionExpiresAt&&Number(parsed.selectionExpiresAt)<=Date.now())||
+      (!parsed.selectionExpiresAt&&parsed.startedAt&&Number(parsed.startedAt)+TOKEER_PENDING_SELECTION_MS<=Date.now())
+    );
+    // Preserve an expired real ticket for one render so the lifecycle cleanup
+    // can close it in Discord before removing the local session.
+    if(!parsed||orphanedTicket||pendingSelectionExpired){
       window.localStorage.removeItem(TOKEER_SESSION_KEY);
       return null;
     }
@@ -159,6 +171,8 @@ export function TokeerSection() {
   const [ubisoftTokenPath,setUbisoftTokenPath]=useState(savedRef.current?.ubisoftTokenPath||"");
   const [ubisoftTokenMessageId,setUbisoftTokenMessageId]=useState(savedRef.current?.ubisoftTokenMessageId||"");
   const [quotaUntil,setQuotaUntil]=useState(Number(savedRef.current?.quotaUntil||0));
+  const [maintenance,setMaintenance]=useState(!!savedRef.current?.maintenance);
+  const [selectionExpiresAt,setSelectionExpiresAt]=useState<number|undefined>(savedRef.current?.selectionExpiresAt);
   const [restoringSelectors,setRestoringSelectors]=useState(!!selectorLayoutRef.current);
   const [ubisoftContinuationRunning,setUbisoftContinuationRunning]=useState(false);
   const [ticketCompletionPaused,setTicketCompletionPaused]=useState(false);
@@ -168,6 +182,7 @@ export function TokeerSection() {
   const ticketGenerationRef=useRef(0);
   const selectedUbisoftRef=useRef(!!savedRef.current?.selectedUbisoft);
   const loginPendingRef=useRef(false);
+  const expiryCleanupRef=useRef(false);
 
   const checkpoint=(patch:Partial<SavedTokeerSession>)=>{
     try{
@@ -190,22 +205,22 @@ export function TokeerSection() {
       expiresAt:codeExpiresAt,
       selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,
       automationStage,tlxSubmitted,submittedTlx,automationError,
-      ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil,
+      ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil,maintenance,selectionExpiresAt,
     };
     try{savedRef.current=data;window.localStorage.setItem(TOKEER_SESSION_KEY,JSON.stringify(data));}catch{}
-  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError,ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil]);
+  },[selectedGame,selectedUbisoft,selectedMenus,ticket,gate,activation,verify,message,codeExpiresAt,automationStage,tlxSubmitted,submittedTlx,automationError,ubisoftAppliedAt,ubisoftTokenPath,ubisoftTokenMessageId,quotaUntil,maintenance,selectionExpiresAt]);
 
   useEffect(()=>{
     tokeerUbisoftHostedGames().then((result)=>setHostedGames(result.success?result.games||[]:[])).catch(()=>setHostedGames([]));
   },[]);
 
   useEffect(()=>{
-    if(!codeExpiresAt&&!quotaUntil)return;
+    if(!codeExpiresAt&&!quotaUntil&&!selectionExpiresAt)return;
     const tick=()=>setClockNow(Date.now());
     tick();
     const timer=setInterval(tick,250);
     return()=>clearInterval(timer);
-  },[codeExpiresAt,quotaUntil]);
+  },[codeExpiresAt,quotaUntil,selectionExpiresAt]);
 
   const rememberDiscord=(state:TokeerDiscordState,markRestoringOnMiss=false)=>{
     if(state.found&&(state.selectors||[]).length){
@@ -435,9 +450,31 @@ export function TokeerSection() {
     finally{setBusy("");}
   };
 
+  const clearPendingSelection=(reason:string)=>{
+    ticketGenerationRef.current+=1;
+    ticketAbortedRef.current=true;
+    automationRunningRef.current=false;
+    try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+    selectedUbisoftRef.current=false;
+    setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setOptions({});setGate(null);setTicket(null);setVerify(null);setActivation("");
+    setSelectionExpiresAt(undefined);setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");
+    setAutomationStage("idle");setAutomationError("");setMessage(reason);setBusy("");
+    codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
+    void restoreActivationPanel(ticketGenerationRef.current);
+  };
+
+  useEffect(()=>{
+    if(!selectionExpiresAt||ticket?.url)return;
+    const expire=()=>clearPendingSelection("The pending Tokeer game selection expired before a ticket opened. The selection and local cache were cleared; select the game again.");
+    const remaining=selectionExpiresAt-Date.now();
+    if(remaining<=0){expire();return;}
+    const timer=setTimeout(expire,remaining);
+    return()=>clearTimeout(timer);
+  },[selectionExpiresAt,ticket?.url]);
+
   const waitForGate=async()=>{
     setGate(null);
-    const deadline=Date.now()+35000;
+    const deadline=Date.now()+TOKEER_GATE_WAIT_MS;
     let lastError="";
     while(Date.now()<deadline){
       const g=await readLatestTicketGate();
@@ -451,7 +488,7 @@ export function TokeerSection() {
       lastError=g.error||lastError;
       await sleep(500);
     }
-    setMessage(lastError||"The game was selected, but the agreement and tutorial confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
+    clearPendingSelection(lastError||"The agreement and tutorial confirmation did not appear, so the stale game selection and local Tokeer cache were cleared. Select the game again.");
   };
 
   const choose=async(index:number,label:string)=>{
@@ -486,11 +523,14 @@ export function TokeerSection() {
     }
     selectedUbisoftRef.current=fromUbisoftList;
     setSelectedUbisoft(fromUbisoftList);
+    const pendingUntil=Date.now()+TOKEER_PENDING_SELECTION_MS;
+    sessionStartedRef.current=Date.now();
+    setSelectionExpiresAt(pendingUntil);
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
     setAutomationStage("idle");setTlxSubmitted(false);setSubmittedTlx("");setAutomationError("");setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
     setSelectedMenus((old)=>({...old,[index]:label}));
     const ok=await chooseSelectorOption(index,label);
-    if(!ok){setMessage("Discord selection failed. Keep the Tokeer message open and retry.");setBusy("");return;}
+    if(!ok){clearPendingSelection("Discord selection failed, so SLSDeck cleared the stale game selection. Keep the Tokeer message open and select the game again.");return;}
     setBusy("Waiting for Tokeer confirmation…");
     setMessage(`Selected ${label}. Waiting for the newest bot message…`);
     await waitForGate();
@@ -530,7 +570,7 @@ export function TokeerSection() {
     try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
     selectedUbisoftRef.current=false;
     setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setOptions({});setTicket(null);setGate(null);setVerify(null);setActivation("");
-    setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
+    setSelectionExpiresAt(undefined);setCodeExpiresAt(undefined);setTlxSubmitted(false);setSubmittedTlx("");setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
     // The chain is gone, so do not leave the old game/gate or an "aborted"
     // workflow card on screen. Keep only a concise Status explanation.
     setAutomationStage("idle");setAutomationError("");setMessage(reason);
@@ -611,7 +651,7 @@ export function TokeerSection() {
         // persist this boundary and only retry the Discord confirmation.
         if(stage==="checking-game"){
           setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
-          const checked=await launchAndConfirmGameStarted(ctx.appid,stale);
+          const checked=await confirmTokeerLaunchedGameStarted(ctx.appid,stale);
           if(stale())return;
           if(!checked.confirmed){
             const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
@@ -700,7 +740,7 @@ export function TokeerSection() {
 
         if(stage==="checking-game"){
           setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
-          const checked=await launchAndConfirmGameStarted(ctx.appid,stale);
+          const checked=await confirmTokeerLaunchedGameStarted(ctx.appid,stale);
           if(stale())return;
           if(!checked.confirmed){
             const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
@@ -936,18 +976,27 @@ export function TokeerSection() {
       const expectedAppid=Number(installed?.appid||0);
       const r=await clickLatestTicketGate();
       if(!r.success){
+        if(r.maintenance){
+          setMaintenance(true);setQuotaUntil(0);
+          setTicket(null);setAutomationStage("idle");setAutomationError("");
+          setMessage("Discord did not open a ticket because Tokeer's activation system is under maintenance.");
+          checkpoint({maintenance:true,quotaUntil:0,automationStage:"idle",automationError:"",ticket:null});
+          return;
+        }
         if(r.quota){
           const waitSeconds=Math.max(1,Number(r.quotaWaitSeconds||0));
           const until=Date.now()+waitSeconds*1000;
           setQuotaUntil(until);
           setTicket(null);setAutomationStage("idle");setAutomationError("");
+          setMaintenance(false);
           setMessage("Discord did not open a ticket because this account's activation quota is still on cooldown.");
-          checkpoint({quotaUntil:until,automationStage:"idle",automationError:"",ticket:null});
+          checkpoint({maintenance:false,quotaUntil:until,automationStage:"idle",automationError:"",ticket:null});
           return;
         }
-        setMessage(r.error||"Could not press the Tokeer confirmation button.");return;
+        clearPendingSelection(`${r.error||"Could not press the Tokeer confirmation button."} The stale game selection and local cache were cleared; select the game again.`);return;
       }
-      setQuotaUntil(0);
+      setMaintenance(false);setQuotaUntil(0);setSelectionExpiresAt(undefined);
+      checkpoint({maintenance:false,quotaUntil:0,selectionExpiresAt:undefined});
       const expectedName=parseTokeerGameLabel(selectedGame)?.name||selectedGame;
       const ctx=await waitForTicketContext(r.fromUrl||"",25000,expectedAppid,r.existingChannelIds||[],(discovered)=>{
         // Cancellation should become available as soon as the thread exists;
@@ -1034,6 +1083,27 @@ export function TokeerSection() {
     finally{setBusy("");}
   };
 
+  useEffect(()=>{
+    if(!codeExpiresAt||codeExpiresAt>clockNow){
+      if(!codeExpiresAt)expiryCleanupRef.current=false;
+      return;
+    }
+    if(expiryCleanupRef.current)return;
+    expiryCleanupRef.current=true;
+    ticketAbortedRef.current=true;
+    automationRunningRef.current=false;
+    setBusy("Closing expired Tokeer ticket…");
+    void (async()=>{
+      let closed=false;
+      if(ticket?.url){
+        try{closed=!!(await cancelTokeerTicket(ticket.url)).success;}catch{}
+      }
+      abortTicketChain(closed
+        ?"The Tokeer activation code expired. Its Discord ticket was closed and the selected game and local cache were cleared."
+        :"The Tokeer activation code expired. The selected game and local cache were cleared; close the ticket manually in Discord if it is still visible.");
+    })();
+  },[codeExpiresAt,clockNow,ticket?.url]);
+
   const resolveTicketAppid=async():Promise<number>=>{
     const generation=ticketGenerationRef.current;
     const current=Number(ticket?.appid||0);
@@ -1099,7 +1169,7 @@ export function TokeerSection() {
         toaster.toast({title:"SLSDeck · Tokeer",body:failure.slice(0,220)});
         return;
       }
-      const r=await tokeerVerify(resolvedAppid,ticketUsesUbisoftVerifier(ticket));
+      const r=await tokeerVerify(resolvedAppid,ticketUsesUbisoftVerifier(ticket),getCurrentLaunchOptions(resolvedAppid));
       if(r.success){
         setVerify(r);
         setMessage("Setup verified. Copy the TLX1 and paste it into the open Discord ticket.");
@@ -1133,7 +1203,7 @@ export function TokeerSection() {
           const tracked={...ticket};
           setAutomationStage("checking-game");
           checkpoint({automationStage:"checking-game",automationError:"",ticket:tracked});
-          const checked=await launchAndConfirmGameStarted(resolvedAppid,()=>ticketCompletionPausedRef.current||ticketAbortedRef.current);
+          const checked=await confirmTokeerLaunchedGameStarted(resolvedAppid,()=>ticketCompletionPausedRef.current||ticketAbortedRef.current);
           if(!checked.confirmed){
             const body=`Activation written successfully, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
             setAutomationError(body);setMessage(body);
@@ -1227,6 +1297,7 @@ export function TokeerSection() {
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={openTicket}>Create a ticket</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
       {quotaUntil>clockNow&&<PanelSectionRow><div style={{fontSize:11,fontWeight:700,color:"#ffd166",lineHeight:1.45}}>Your quota was depleted. Try again after {quotaCountdown}.</div></PanelSectionRow>}
+      {maintenance&&<PanelSectionRow><div style={{fontSize:11,fontWeight:700,color:"#ffd166",lineHeight:1.45}}>Tokeer's activation system is currently under maintenance. Please try again later.</div></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&(
         (selectedUbisoft&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||ticketCompletionPaused||["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage)))||

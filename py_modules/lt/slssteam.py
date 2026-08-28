@@ -1413,6 +1413,19 @@ def _chown_to_user(path: str) -> None:
 def _extraction_available() -> bool:
     if any(shutil.which(n) for n in ("7z", "7za", "7zr", "bsdtar")):
         return True
+    # The plugin bundles a static x86_64 7zz precisely so Arch/Cachy installs
+    # do not depend on pacman or Decky's embedded Python having py7zr ready.
+    try:
+        bundled = defaults_path(os.path.join("bin", "7zz"))
+        if os.path.isfile(bundled):
+            try:
+                os.chmod(bundled, 0o755)
+            except Exception:
+                pass
+            if os.access(bundled, os.X_OK):
+                return True
+    except Exception:
+        pass
     try:
         import py7zr  # noqa: F401
         return True
@@ -3327,12 +3340,30 @@ exec python3 -c "import sys,py7zr; py7zr.SevenZipFile(sys.argv[1],'r').extractal
 """
 
 
+_PRIVILEGE_SHIM = """#!/bin/sh
+# SLSDeck's Decky backend deliberately runs Headcrab as the desktop user.  A
+# first install has no terminal in which sudo can request a password, and
+# pkexec may open a prompt behind Game Mode.  Headcrab treats its package-manager
+# step as optional because SLSDeck supplies the required user-space tools below.
+echo "SLSDeck: skipped interactive privilege command: $*" >&2
+exit 1
+"""
+
+
 def _write_shims(shim_dir: str) -> None:
     os.makedirs(shim_dir, exist_ok=True)
     wget = os.path.join(shim_dir, "wget")
     with open(wget, "w", encoding="utf-8") as fh:
         fh.write(_WGET_SHIM)
     os.chmod(wget, 0o755)
+    # CachyOS is detected as Arch by Headcrab, which otherwise calls real
+    # `sudo pacman` during a no-stdin Decky job.  Always shadow interactive
+    # privilege frontends; installation itself is intentionally rootless.
+    for name in ("sudo", "pkexec"):
+        p = os.path.join(shim_dir, name)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(_PRIVILEGE_SHIM)
+        os.chmod(p, 0o755)
     if not any(shutil.which(n) for n in ("7z", "7za", "7zr")):
         for name in ("7z", "7za"):
             p = os.path.join(shim_dir, name)
@@ -3455,6 +3486,7 @@ def _run_headcrab_shimmed() -> bool:
         proc = subprocess.Popen(
             cmd, cwd=tmp, env=run_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            start_new_session=True,
         )
         assert proc.stdout is not None
         # Watchdog: headcrab can stall silently (e.g. a network read that never
@@ -3472,9 +3504,13 @@ def _run_headcrab_shimmed() -> bool:
                 time.sleep(2)
             if p.poll() is None:
                 flag["v"] = True
-                for _kill in (p.terminate, p.kill):
+                # Kill the whole session, not just bash.  A surviving pacman,
+                # sudo or downloader child can inherit stdout and keep the
+                # reader loop blocked forever after its parent is gone.
+                import signal
+                for sig in (signal.SIGTERM, signal.SIGKILL):
                     try:
-                        _kill()
+                        os.killpg(p.pid, sig)
                     except Exception:
                         pass
                     try:

@@ -79,8 +79,10 @@ class Plugin:
     async def tokeer_prepare_verify(self, appid: int, ubisoft: bool = False) -> Dict[str, Any]:
         return await self._run_slow(tokeer.prepare_and_verify, appid, bool(ubisoft))
 
-    async def tokeer_verify(self, appid: int, ubisoft: bool = False) -> Dict[str, Any]:
-        return await self._run_slow(tokeer.verify, appid, bool(ubisoft))
+    async def tokeer_verify(self, appid: int, ubisoft: bool = False,
+                            live_launch_options: str = "") -> Dict[str, Any]:
+        return await self._run_slow(tokeer.verify, appid, bool(ubisoft),
+                                    str(live_launch_options or ""))
 
     async def tokeer_redeem(self, code: str) -> Dict[str, Any]:
         return await self._run_slow(tokeer.redeem, code)
