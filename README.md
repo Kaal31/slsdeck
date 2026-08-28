@@ -1,5 +1,7 @@
 # SLSDeckUniversal
 
+[![vibecoded with claude | chatgpt](https://img.shields.io/badge/vibecoded%20with-claude%20%7C%20chatgpt-8A2BE2)](https://github.com/Kaal31/slsdeck)
+
 **SLSDeckUniversal** is a Decky Loader plugin for SteamOS that brings game setup, manifests, fixes, compatibility tools, cloud saves, and supported Denuvo activation helpers into one controller-friendly interface.
 
 The plugin is designed primarily for Steam Deck, with support for compatible SteamOS handhelds where the required Steam and Decky interfaces are available.
