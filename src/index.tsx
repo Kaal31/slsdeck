@@ -18,6 +18,7 @@ import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
 import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
 import { archiveReconcileAll } from "./api";
+import { preserveTokeerLaunchOverlay } from "./lib/fixRuntime";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -120,7 +121,9 @@ async function applyArchiveTemplatesOnBoot(): Promise<void> {
       try {
         const SC: any = (window as any).SteamClient;
         const current = SC?.Apps?.GetLaunchOptionsForApp?.(t.appid);
-        const wanted = t.wantLaunchOptions ?? "";
+        // An active Tokeer activation is a live managed overlay, not user drift.
+        // Guard the snapshot underneath it without deleting ost-run.sh.
+        const wanted = preserveTokeerLaunchOverlay(t.wantLaunchOptions ?? "", current ?? "");
         if (typeof current === "string" && current === wanted) continue;
         SC?.Apps?.SetAppLaunchOptions?.(t.appid, wanted);
         console.info(`SLSDeck: restored launch args for ${t.appid} from its active build template`);
