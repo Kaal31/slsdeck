@@ -52,7 +52,7 @@ type SavedTokeerSession = {
   expiresAt?: number;
   selectedGame?: string;
   selectedUbisoft?: boolean;
-  selectedMenus?: Record<number,string>;
+  selectedMenus?: Record<string,string>;
   ticket?: TokeerTicketContext|null;
   gate?: TokeerTicketGate|null;
   activation?: string;
@@ -134,7 +134,13 @@ function readAutoConnect(): boolean {
 function readSelectorLayout(): TokeerDiscordState|null {
   try {
     const parsed=JSON.parse(window.localStorage.getItem(TOKEER_SELECTOR_CACHE_KEY)||"null");
-    return parsed?.found&&Array.isArray(parsed.selectors)&&parsed.selectors.length?parsed:null;
+    if(!parsed?.found||!Array.isArray(parsed.selectors)||!parsed.selectors.length)return null;
+    parsed.selectors=parsed.selectors.map((selector:any,index:number)=>{
+      const label=String(selector?.label||`Game menu ${index+1}`);
+      const kind=/ubi(?:soft)?/i.test(label)?"ubisoft":/(?:^|\b)ea(?:\b|\s*games?)/i.test(label)?"ea":/steam|linux|proton/i.test(label)?"steam":"other";
+      return {...selector,index:Number.isFinite(Number(selector?.index))?Number(selector.index):index,key:String(selector?.key||`legacy:${kind}:${label.toLowerCase().replace(/[^a-z0-9]+/g,"-")}`),kind:selector?.kind||kind};
+    });
+    return parsed;
   } catch { return null; }
 }
 
@@ -153,8 +159,8 @@ export function TokeerSection() {
   const [clockNow,setClockNow]=useState(Date.now());
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState(savedRef.current?.message||"");
-  const [options,setOptions]=useState<Record<number,string[]>>({});
-  const [selectedMenus,setSelectedMenus]=useState<Record<number,string>>(savedRef.current?.selectedMenus||{});
+  const [options,setOptions]=useState<Record<string,string[]>>({});
+  const [selectedMenus,setSelectedMenus]=useState<Record<string,string>>(savedRef.current?.selectedMenus||{});
   const [selectedGame,setSelectedGame]=useState(savedRef.current?.selectedGame||"");
   const [selectedUbisoft,setSelectedUbisoft]=useState(!!savedRef.current?.selectedUbisoft);
   const [gate,setGate]=useState<TokeerTicketGate|null>(savedRef.current?.gate||null);
@@ -388,11 +394,11 @@ export function TokeerSection() {
     setActivation(next);
   };
 
-  const openMenu=async(i:number,showMenu?:()=>void)=>{
+  const openMenu=async(selectorKey:string,showMenu?:()=>void)=>{
     setBusy("Reading live game list…");
     try{
-      let items=await openSelectorAndReadOptions(i);
-      const selector=(discord?.selectors||[]).find((entry)=>entry.index===i);
+      let items=await openSelectorAndReadOptions(selectorKey);
+      const selector=(discord?.selectors||[]).find((entry)=>entry.key===selectorKey);
       if(/ubi(?:soft)?/i.test(String(selector?.label||""))){
         let catalog=hostedGames;
         if(!catalog.length){
@@ -404,7 +410,7 @@ export function TokeerSection() {
         items=items.filter((label)=>allowed.has(normalizeTokeerGameName(parseTokeerGameLabel(label)?.name||label)));
         if(!items.length)setMessage(catalog.length?"No currently hosted Ubisoft games were present in Discord's live selector.":"The hosted Ubisoft package catalog could not be loaded.");
       }
-      setOptions((old)=>({...old,[i]:items}));
+      setOptions((old)=>({...old,[selectorKey]:items}));
       setTimeout(()=>showMenu?.(),0);
     }finally{setBusy("");}
   };
@@ -491,7 +497,7 @@ export function TokeerSection() {
     clearPendingSelection(lastError||"The agreement and tutorial confirmation did not appear, so the stale game selection and local Tokeer cache were cleared. Select the game again.");
   };
 
-  const choose=async(index:number,label:string)=>{
+  const choose=async(selectorKey:string,label:string)=>{
     setQuotaUntil(0);
     setBusy(`Checking whether ${label} is installed…`);
     const installed=await tokeerPreflight(0,label).catch(()=>null);
@@ -514,8 +520,8 @@ export function TokeerSection() {
       return;
     }
     setBusy(`Selecting ${label} in Discord…`);
-    const selectorLabel=discord?.selectors.find((selector)=>selector.index===index)?.label||"";
-    const fromUbisoftList=/\bubi(?:soft)?\b/i.test(selectorLabel);
+    const selector=discord?.selectors.find((entry)=>entry.key===selectorKey);
+    const fromUbisoftList=selector?.kind==="ubisoft"||/\bubi(?:soft)?\b/i.test(selector?.label||"");
     if(fromUbisoftList){
       const normalized=normalizeTokeerGameName(parseTokeerGameLabel(label)?.name||label);
       const hosted=hostedGames.some((game)=>[game.name,...(game.aliases||[])].some((name)=>normalizeTokeerGameName(name)===normalized));
@@ -528,8 +534,10 @@ export function TokeerSection() {
     setSelectionExpiresAt(pendingUntil);
     setSelectedGame(label); setGate(null); setTicket(null); setVerify(null);
     setAutomationStage("idle");setTlxSubmitted(false);setSubmittedTlx("");setAutomationError("");setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
-    setSelectedMenus((old)=>({...old,[index]:label}));
-    const ok=await chooseSelectorOption(index,label);
+    // Store the semantic selector identity. Moving the Discord component to a
+    // different message or position no longer changes this key.
+    setSelectedMenus((old)=>({...old,[selectorKey]:label}));
+    const ok=await chooseSelectorOption(selectorKey,label);
     if(!ok){clearPendingSelection("Discord selection failed, so SLSDeck cleared the stale game selection. Keep the Tokeer message open and select the game again.");return;}
     setBusy("Waiting for Tokeer confirmation…");
     setMessage(`Selected ${label}. Waiting for the newest bot message…`);
@@ -1276,15 +1284,15 @@ export function TokeerSection() {
         <div style={{marginTop:7,paddingTop:7,borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.68}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID.</div>
       </div></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
-      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.index}><DropdownItem
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Returning to the Linux activation panel…":"Live game list from the Tokeer Discord panel"}
         disabled={s.disabled||!!busy||restoringSelectors||ticketChainActive()}
-        rgOptions={(options[s.index]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
-        selectedOption={selectedMenus[s.index]||null}
+        rgOptions={(options[s.key]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
+        selectedOption={selectedMenus[s.key]||selectedMenus[String(s.index)]||null}
         strDefaultLabel={s.label||"Choose a game"}
-        onMenuWillOpen={(showMenu)=>openMenu(s.index,showMenu)}
-        onChange={(o:any)=>choose(s.index,String(o.data))}
+        onMenuWillOpen={(showMenu)=>openMenu(s.key,showMenu)}
+        onChange={(o:any)=>choose(s.key,String(o.data))}
       /></PanelSectionRow>)}
       {!discord?.found&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>{discord?.error||"Open the Linux activation message once and leave the Discord tab alive."}</div></PanelSectionRow>}
     </PanelSection>

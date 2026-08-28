@@ -1,7 +1,7 @@
 import { fetchNoCors } from "@decky/api";
 import { Navigation } from "@decky/ui";
 
-export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175/1535685399265935422";
+export const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175";
 export const DEDEVISION_INVITE_URL = "https://discord.gg/denuvo";
 const GUILD_ID = "1464130182364270696";
 // Tokeer's Linux game picker lives in this channel, but tickets are created as
@@ -9,7 +9,6 @@ const GUILD_ID = "1464130182364270696";
 const TOKEER_PANEL_CHANNEL_ID = "1534460498446127175";
 const TOKEER_TICKET_PARENT_CHANNEL_ID = "1465275824075833477";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/${TOKEER_PANEL_CHANNEL_ID}`;
-const TARGET_MESSAGE = "1535685399265935422";
 const CDP_PORTS = [8080, 8081];
 const TOKEER_VIEW_NAME = "slsdeck_tokeer";
 
@@ -30,7 +29,7 @@ export type TokeerDiscordState = {
   ubisoftGames?: number;
   keysRemaining?: number;
   highDemand?: number;
-  selectors: Array<{ index: number; label: string; disabled: boolean }>;
+  selectors: Array<{ index: number; key: string; label: string; kind: "steam" | "ubisoft" | "ea" | "other"; controlType?: "select" | "button"; messageId?: string; disabled: boolean }>;
   rawText?: string;
   error?: string;
   tabUrl?: string;
@@ -589,19 +588,26 @@ async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
 }
 
 const SNAPSHOT_EXPR = `(function(){try{
-  var id=${JSON.stringify(TARGET_MESSAGE)};
-  var exact=document.querySelector('[data-list-item-id$="-'+id+'"]') || (document.querySelector('#message-accessories-'+id) && document.querySelector('#message-accessories-'+id).closest('[role="article"]')) || (document.querySelector('#message-reactions-'+id) && document.querySelector('#message-reactions-'+id).closest('[role="article"]'));
   var arts=[].slice.call(document.querySelectorAll('[role="article"]'));
-  var controls=function(a){return [].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"],button[aria-expanded]'));};
-  var article=exact || arts.reverse().find(function(a){var t=(a.innerText||'');return controls(a).length>0 && /steam|games? listed|keys? remaining|high demand|tokeer/i.test(t);});
-  if(!article) return {found:false,selectors:[],error:'Discord is open, but the Tokeer activation panel is not rendered. Sign in if needed, open the Linux activation channel, and press Refresh.'};
-  var text=(article.innerText||'').replace(/\u00a0/g,' ');
+  var controls=function(a){return [].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"],button,[role="button"]')).filter(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();var select=e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox';return select||(!/remaining/i.test(t)&&/(?:steam|ubi(?:soft)?|ea)(?:\\s+games?)?\\s*(?:\\(|-|$)/i.test(t));});};
+  var norm=function(v){return String(v||'').replace(/\u00a0/g,' ').replace(/\\s+/g,' ').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');};
+  var classify=function(v){v=String(v||'');return /ubi(?:soft)?/i.test(v)?'ubisoft':/(?:^|\\b)ea(?:\\b|\\s*games?)/i.test(v)?'ea':/steam|linux|proton/i.test(v)?'steam':'other';};
+  var panels=arts.filter(function(a){var t=a.innerText||'';return controls(a).length>0&&/steam|ubi(?:soft)?|ea(?:\\s*games?)?|linux|proton|games?/i.test(t);});
+  var seen={},selects=[];
+  panels.forEach(function(a){
+    var context=(a.innerText||a.textContent||'').replace(/\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+    var identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),messageId=identity&&identity[2]||'';
+    controls(a).forEach(function(e){
+      var label=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      var kind=classify(label+' '+context),semantic=norm(label)||kind,base=kind+':'+semantic,count=(seen[base]||0)+1;seen[base]=count;
+      var controlType=e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox'?'select':'button';
+      selects.push({index:selects.length,key:base+(count>1?':'+count:''),label:label||context.split(/\\n/)[0]||('Game menu '+(selects.length+1)),kind:kind,controlType:controlType,messageId:messageId,disabled:e.getAttribute('aria-disabled')==='true'||e.disabled===true});
+    });
+  });
+  if(!selects.length) return {found:false,selectors:[],error:'Discord is open, but no semantic Tokeer game selector is currently rendered. Sign in if needed, open the Linux activation channel, and press Refresh.'};
+  var text=panels.map(function(a){return a.innerText||'';}).join('\\n').replace(/\u00a0/g,' ');
   var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
   var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};
-  var selects=controls(article).filter(function(e){return e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox';}).map(function(e,i){
-    var label=(e.innerText||e.textContent||'').trim();
-    return {index:i,label:label,disabled:e.getAttribute('aria-disabled')==='true'};
-  });
   return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
 }catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
 
@@ -662,14 +668,36 @@ async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
   return { ...snap.value, selectors: Array.isArray(snap.value.selectors) ? snap.value.selectors : [], tabUrl: tab.url };
 }
 
-export async function openSelectorAndReadOptions(index: number, timeoutMs = 5000): Promise<string[]> {
+export type TokeerSelectorRef = number | string | { index?: number; key?: string; label?: string; kind?: string };
+
+function resolveSelectorRef(ref: TokeerSelectorRef, state: TokeerDiscordState): { index: number; key: string; label: string; kind: string } | null {
+  const selectors = state.selectors || [];
+  if (typeof ref === "number") return selectors.find((s) => s.index === ref) || null;
+  if (typeof ref === "string") return selectors.find((s) => s.key === ref) || selectors.find((s) => s.label === ref) || null;
+  const key = String(ref?.key || "");
+  const label = String(ref?.label || "");
+  return (key && selectors.find((s) => s.key === key))
+    || (label && selectors.find((s) => s.label === label && (!ref.kind || s.kind === ref.kind)))
+    || selectors.find((s) => s.index === Number(ref?.index))
+    || null;
+}
+
+/** Open a selector by semantic identity. Numeric indexes remain accepted only
+ * for sessions saved by older builds; current callers always pass `key`. */
+export async function openSelectorAndReadOptions(ref: TokeerSelectorRef, timeoutMs = 5000): Promise<string[]> {
   const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return [];
+  const state = await readTokeerDiscord(true);
+  const target = resolveSelectorRef(ref, state);
+  if (!target) return [];
   const clickExpr = `(function(){try{
-    var id=${JSON.stringify(TARGET_MESSAGE)},arts=[].slice.call(document.querySelectorAll('[role="article"]'));
-    var a=document.querySelector('[data-list-item-id$="-'+id+'"]')||document.querySelector('#message-accessories-'+id)?.closest('[role="article"]')||arts.reverse().find(function(x){return x.querySelector('[aria-haspopup="listbox"],[role="combobox"]')&&/steam|games?|keys?|tokeer/i.test(x.innerText||'');});
-    var xs=a?[].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];
-    var e=xs[${Number(index)}];if(!e)return false;
+    var wantKey=${JSON.stringify(target.key)},wantLabel=${JSON.stringify(target.label)},wantKind=${JSON.stringify(target.kind)};
+    var controls=function(a){return [].slice.call(a.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"],button,[role="button"]')).filter(function(e){var t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();var select=e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox';return select||(!/remaining/i.test(t)&&/(?:steam|ubi(?:soft)?|ea)(?:\\s+games?)?\\s*(?:\\(|-|$)/i.test(t));});};
+    var norm=function(v){return String(v||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');};
+    var classify=function(v){v=String(v||'');return /ubi(?:soft)?/i.test(v)?'ubisoft':/(?:^|\\b)ea(?:\\b|\\s*games?)/i.test(v)?'ea':/steam|linux|proton/i.test(v)?'steam':'other';};
+    var seen={},found=null,panels=[].slice.call(document.querySelectorAll('[role="article"]')).filter(function(a){return controls(a).length>0&&/steam|ubi(?:soft)?|ea(?:\\s*games?)?|linux|proton|games?/i.test(a.innerText||'');});
+    panels.some(function(a){var context=(a.innerText||a.textContent||'').replace(/\\s+/g,' ').trim();return controls(a).some(function(e){var label=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),kind=classify(label+' '+context),base=kind+':'+(norm(label)||kind),count=(seen[base]||0)+1;seen[base]=count;var key=base+(count>1?':'+count:'');if(key===wantKey||(label===wantLabel&&kind===wantKind)){found=e;return true;}return false;});});
+    var e=found;if(!e)return false;
     var visible=function(x){var r=x.getBoundingClientRect();return r.width>0&&r.height>0;};
     var open=e.getAttribute('aria-expanded')==='true';
     var visibleOptions=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).filter(visible);
@@ -689,23 +717,32 @@ export async function openSelectorAndReadOptions(index: number, timeoutMs = 5000
     var root=boxes.length?boxes[boxes.length-1]:document;
     var rows=[].slice.call(root.querySelectorAll('[role="option"]')).filter(visible);
     if(!rows.length)rows=[].slice.call(document.querySelectorAll('[role="option"]')).filter(visible);
+    if(!rows.length)rows=[].slice.call(document.querySelectorAll('[role="dialog"] button,[role="dialog"] [role="button"],[class*="popover"] button,[role="article"] button,[role="article"] [role="button"]')).filter(visible).filter(function(e){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining/i.test(e.innerText||e.textContent||e.getAttribute('aria-label')||'');});
     var labels=rows.map(function(e){return (e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();}).filter(Boolean);
     // Tokeer's game rows carry availability text. If those are present, keep
     // only them and discard Discord navigation/notification menu entries.
     var games=labels.filter(function(t){return /\\b\\d+\\s+of\\s+\\d+\\s+remaining\\s*\\(\\d+%\\)/i.test(t);});
     return JSON.stringify(games.length?games:labels);
   }catch(e){return '[]';}})()`;
-  const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr, Math.min(timeoutMs, 3000));
-  try { return JSON.parse(String(raw || "[]")); } catch { return []; }
+  const deadline = Date.now() + Math.max(500, timeoutMs);
+  do {
+    const raw = await evalJson(tab.webSocketDebuggerUrl, optionsExpr, Math.min(Math.max(250, deadline - Date.now()), 3000));
+    try {
+      const labels = JSON.parse(String(raw || "[]"));
+      if (Array.isArray(labels) && labels.length) return labels;
+    } catch { /* keep waiting for Discord's dynamic response */ }
+    if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+  return [];
 }
 
-export async function chooseSelectorOption(index: number, label: string): Promise<boolean> {
-  const tab = await findDiscordTab();
+export async function chooseSelectorOption(ref: TokeerSelectorRef, label: string): Promise<boolean> {
+  const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return false;
-  const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
+  const visibleExpr = `(function(){try{var want=${JSON.stringify(label)};return [].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"],[role="dialog"] button,[role="dialog"] [role="button"],[class*="popover"] button,[role="article"] button,[role="article"] [role="button"]')).some(function(e){var r=e.getBoundingClientRect(),t=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim();return r.width>0&&r.height>0&&t===want;});}catch(e){return false;}})()`;
   const alreadyOpen = !!(await evalJson(tab.webSocketDebuggerUrl, visibleExpr));
-  if (!alreadyOpen) await openSelectorAndReadOptions(index);
-  const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
+  if (!alreadyOpen) await openSelectorAndReadOptions(ref);
+  const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"],[role="dialog"] button,[role="dialog"] [role="button"],[class*="popover"] button,[role="article"] button,[role="article"] [role="button"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
   return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
 

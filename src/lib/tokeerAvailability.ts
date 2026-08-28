@@ -185,7 +185,7 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
       const parsed: TokeerAvailableGame[] = [];
       for (const selector of state.selectors || []) {
         if (outOfTime() || cancelled()) break;
-        const labels = await beforeDeadline(openSelectorAndReadOptions(selector.index, remaining(deadline)), deadline, [] as string[]);
+        const labels = await beforeDeadline(openSelectorAndReadOptions(selector.key || selector.index, remaining(deadline)), deadline, [] as string[]);
         for (const label of labels) {
           const game = parseTokeerGameLabel(label);
           if (game && (game.remaining === undefined || game.remaining > 0)) parsed.push(game);
