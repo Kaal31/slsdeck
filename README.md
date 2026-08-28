@@ -1,5 +1,7 @@
 # SLSDeckUniversal
 
+[![vibecoded with claude | chatgpt](https://img.shields.io/badge/vibecoded%20with-claude%20%7C%20chatgpt-8A2BE2)](https://github.com/Kaal31/slsdeck)
+
 A **Decky Loader plugin for SteamOS / Steam Deck** that brings the SLSDeck workflow to Linux and collects game-management, manifest, compatibility-fix, and related utilities in one interface.
 
 This repository is the SteamOS/Decky version of the project. The current plugin package is named **SLSDeckUniversal**.
