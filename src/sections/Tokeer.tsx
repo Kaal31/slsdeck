@@ -72,7 +72,7 @@ type SavedTokeerSession = {
 
 type AutomationStage = "idle"|"preparing"|"submitting"|"waiting-code"|"redeeming"|"checking-game"|"confirming-worked"|"patching-ubisoft"|"waiting-token"|"uploading-token"|"waiting-dbdata"|"installing-dbdata"|"done"|"failed"|"aborted";
 
-async function launchAndConfirmGameStarted(appid:number,shouldAbort?:()=>boolean):Promise<{confirmed:boolean;available:boolean;launched:boolean;error?:string}>{
+async function confirmTokeerLaunchedGameStarted(appid:number,shouldAbort?:()=>boolean):Promise<{confirmed:boolean;available:boolean;launched:boolean;error?:string}>{
   const sessions:any=(window as any).SteamClient?.GameSessions;
   const register=sessions?.RegisterForAppLifetimeNotifications;
   if(typeof register!=="function")return {confirmed:false,available:false,launched:false,error:"Steam does not expose game-lifetime confirmation on this client."};
@@ -85,16 +85,18 @@ async function launchAndConfirmGameStarted(appid:number,shouldAbort?:()=>boolean
       if(eventAppid===Number(appid)&&!!event?.bRunning)resolveStarted(true);
     });
   }catch(e){return {confirmed:false,available:false,launched:false,error:`Steam game-lifetime confirmation could not be registered: ${String(e)}`};}
-  const launched=launchGame(appid);
-  if(!launched){try{subscription?.unregister?.();}catch{}return {confirmed:false,available:true,launched:false,error:"Steam did not accept the game launch request."};}
   try{
     const deadline=Date.now()+45000;
     while(Date.now()<deadline){
       if(shouldAbort?.())return {confirmed:false,available:true,launched:true,error:"Game launch confirmation was paused."};
+      try{
+        const details=(window as any).appDetailsStore?.GetAppDetails?.(Number(appid));
+        if(details?.bIsRunning||details?.bRunning||details?.bIsLaunching)return {confirmed:true,available:true,launched:true};
+      }catch{}
       const confirmed=await Promise.race([started,sleep(500).then(()=>false)]);
       if(confirmed)return {confirmed:true,available:true,launched:true};
     }
-    return {confirmed:false,available:true,launched:true,error:"Steam accepted the launch, but did not confirm that the game process started."};
+    return {confirmed:false,available:true,launched:true,error:"Tokeer applied the activation, but Steam did not confirm that its game launch started."};
   }finally{try{subscription?.unregister?.();}catch{}}
 }
 
@@ -649,7 +651,7 @@ export function TokeerSection() {
         // persist this boundary and only retry the Discord confirmation.
         if(stage==="checking-game"){
           setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
-          const checked=await launchAndConfirmGameStarted(ctx.appid,stale);
+          const checked=await confirmTokeerLaunchedGameStarted(ctx.appid,stale);
           if(stale())return;
           if(!checked.confirmed){
             const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
@@ -738,7 +740,7 @@ export function TokeerSection() {
 
         if(stage==="checking-game"){
           setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
-          const checked=await launchAndConfirmGameStarted(ctx.appid,stale);
+          const checked=await confirmTokeerLaunchedGameStarted(ctx.appid,stale);
           if(stale())return;
           if(!checked.confirmed){
             const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
@@ -1201,7 +1203,7 @@ export function TokeerSection() {
           const tracked={...ticket};
           setAutomationStage("checking-game");
           checkpoint({automationStage:"checking-game",automationError:"",ticket:tracked});
-          const checked=await launchAndConfirmGameStarted(resolvedAppid,()=>ticketCompletionPausedRef.current||ticketAbortedRef.current);
+          const checked=await confirmTokeerLaunchedGameStarted(resolvedAppid,()=>ticketCompletionPausedRef.current||ticketAbortedRef.current);
           if(!checked.confirmed){
             const body=`Activation written successfully, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
             setAutomationError(body);setMessage(body);

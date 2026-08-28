@@ -752,7 +752,9 @@ def redeem(code: str) -> Dict[str, Any]:
     if not os.path.isfile(cmd):
         return {"success": False, "needsPrepare": True, "error": "Tokeer is not prepared yet."}
     try:
-        p = _run_as_user([cmd, code, "--no-launch"], timeout=120)
+        # Follow Tokeer's official one-command flow: write the activation
+        # tickets and launch the game through steam://rungameid/<appid>.
+        p = _run_as_user([cmd, code], timeout=120)
         out = p.stdout or ""
         return {"success": p.returncode == 0, "returnCode": p.returncode,
                 "output": out[-24000:], "error": "" if p.returncode == 0 else "Activation failed."}
