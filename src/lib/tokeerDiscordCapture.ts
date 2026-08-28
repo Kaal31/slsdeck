@@ -9,6 +9,8 @@ const GUILD_ID = "1464130182364270696";
 const TOKEER_PANEL_CHANNEL_ID = "1534460498446127175";
 const TOKEER_TICKET_PARENT_CHANNEL_ID = "1465275824075833477";
 const TOKEER_CHANNEL = `/channels/${GUILD_ID}/${TOKEER_PANEL_CHANNEL_ID}`;
+const LEGACY_TARGET_MESSAGE = "1535685399265935422";
+const LEGACY_TOKEER_DISCORD_URL = `${TOKEER_DISCORD_URL}/${LEGACY_TARGET_MESSAGE}`;
 const CDP_PORTS = [8080, 8081];
 const TOKEER_VIEW_NAME = "slsdeck_tokeer";
 
@@ -604,7 +606,17 @@ const SNAPSHOT_EXPR = `(function(){try{
       selects.push({index:selects.length,key:base+(count>1?':'+count:''),label:label||context.split(/\\n/)[0]||('Game menu '+(selects.length+1)),kind:kind,controlType:controlType,messageId:messageId,disabled:e.getAttribute('aria-disabled')==='true'||e.disabled===true});
     });
   });
-  if(!selects.length) return {found:false,selectors:[],error:'Discord is open, but no semantic Tokeer game selector is currently rendered. Sign in if needed, open the Linux activation channel, and press Refresh.'};
+  // Compatibility fallback for the original single-message panel. Keep this
+  // isolated behind semantic discovery so new layouts never inherit its fixed
+  // message/index assumptions.
+  if(!selects.length){
+    var legacyId=${JSON.stringify(LEGACY_TARGET_MESSAGE)};
+    var legacy=document.querySelector('[data-list-item-id$="-'+legacyId+'"]')||(document.querySelector('#message-accessories-'+legacyId)&&document.querySelector('#message-accessories-'+legacyId).closest('[role="article"]'));
+    var legacyControls=legacy?[].slice.call(legacy.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(e){return e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox';}):[];
+    legacyControls.forEach(function(e,i){var label=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),kind=classify(label+' '+(legacy.innerText||''));selects.push({index:i,key:'legacy:'+i,label:label||('Game menu '+(i+1)),kind:kind,controlType:'select',messageId:legacyId,disabled:e.getAttribute('aria-disabled')==='true'||e.disabled===true});});
+    if(legacy)panels=[legacy];
+  }
+  if(!selects.length) return {found:false,selectors:[],error:'Discord is open, but neither the semantic panel nor the legacy Tokeer game selector is currently rendered. Sign in if needed, open the Linux activation channel, and press Refresh.'};
   var text=panels.map(function(a){return a.innerText||'';}).join('\\n').replace(/\u00a0/g,' ');
   var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
   var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};
@@ -653,7 +665,19 @@ async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
   if (!tab.url?.includes(TOKEER_CHANNEL)) {
     return { found: false, selectors: [], tabUrl: tab.url, error: "Discord is visible in Steam CEF, but it is on a different page. Press ‘Open Tokeer Discord’ to return to the activation panel." };
   }
-  const snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
+  let snap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
+  // Last-resort compatibility path: older panels can be far enough back in
+  // Discord's virtualized history that the exact article is not mounted when
+  // the channel opens at its newest edge. Jump to the former anchor only after
+  // the position-independent scan fails, then run the original indexed scrape.
+  if (!snap.error && (!snap.value || !snap.value.found)) {
+    await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: LEGACY_TOKEER_DISCORD_URL, transitionType: "address_bar" }, 4000);
+    const legacyReady = await retainManagedTokeerTab(tab, LEGACY_TOKEER_DISCORD_URL, 5000);
+    if (legacyReady) {
+      const legacySnap = await evalDetailed(tab.webSocketDebuggerUrl, SNAPSHOT_EXPR);
+      if (!legacySnap.error && legacySnap.value?.found) snap = legacySnap;
+    }
+  }
   if (snap.error) {
     // The memoized target may be a socket that died under us (Steam replaced the
     // view, or the page navigated). Drop it so the next attempt re-resolves
@@ -697,6 +721,8 @@ export async function openSelectorAndReadOptions(ref: TokeerSelectorRef, timeout
     var classify=function(v){v=String(v||'');return /ubi(?:soft)?/i.test(v)?'ubisoft':/(?:^|\\b)ea(?:\\b|\\s*games?)/i.test(v)?'ea':/steam|linux|proton/i.test(v)?'steam':'other';};
     var seen={},found=null,panels=[].slice.call(document.querySelectorAll('[role="article"]')).filter(function(a){return controls(a).length>0&&/steam|ubi(?:soft)?|ea(?:\\s*games?)?|linux|proton|games?/i.test(a.innerText||'');});
     panels.some(function(a){var context=(a.innerText||a.textContent||'').replace(/\\s+/g,' ').trim();return controls(a).some(function(e){var label=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim(),kind=classify(label+' '+context),base=kind+':'+(norm(label)||kind),count=(seen[base]||0)+1;seen[base]=count;var key=base+(count>1?':'+count:'');if(key===wantKey||(label===wantLabel&&kind===wantKind)){found=e;return true;}return false;});});
+    // Old method fallback for a cached/index-only selector session.
+    if(!found){var legacyId=${JSON.stringify(LEGACY_TARGET_MESSAGE)},legacy=document.querySelector('[data-list-item-id$="-'+legacyId+'"]')||(document.querySelector('#message-accessories-'+legacyId)&&document.querySelector('#message-accessories-'+legacyId).closest('[role="article"]'));var legacyControls=legacy?[].slice.call(legacy.querySelectorAll('[aria-haspopup="listbox"],[role="combobox"]')).filter(function(x){return x.getAttribute('aria-haspopup')==='listbox'||x.getAttribute('role')==='combobox';}):[];found=legacyControls[${Number(target.index)}]||null;}
     var e=found;if(!e)return false;
     var visible=function(x){var r=x.getBoundingClientRect();return r.width>0&&r.height>0;};
     var open=e.getAttribute('aria-expanded')==='true';
