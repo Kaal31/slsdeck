@@ -41,6 +41,8 @@ export type TokeerTicketGate = {
   label?: string;
   disabled?: boolean;
   messageText?: string;
+  x?: number;
+  y?: number;
   error?: string;
 };
 
@@ -707,18 +709,27 @@ export async function chooseSelectorOption(index: number, label: string): Promis
   return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
 
+// Discord may render the interaction component in a sibling row rather than
+// inside the message article, and some builds expose it as role=button instead
+// of a literal <button>. Match the distinctive acknowledgement/tutorial label
+// globally in the exact activation channel; do not match generic Confirm or
+// Continue controls elsewhere in Discord.
 const TICKET_GATE_EXPR = `(function(){try{
-  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-  for(var i=0;i<arts.length;i++){
-    var a=arts[i], bs=[].slice.call(a.querySelectorAll('button'));
-    for(var j=0;j<bs.length;j++){
-      var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
-      if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((a.innerText||'')+' '+label)){
-        return JSON.stringify({found:true,label:label,disabled:b.disabled||b.getAttribute('aria-disabled')==='true',messageText:(a.innerText||'').slice(0,5000)});
-      }
-    }
+  var text=function(e){return String(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();};
+  var rendered=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+  var all=[].slice.call(document.querySelectorAll('button,[role="button"]'));
+  var seen=[],matches=[];
+  for(var i=0;i<all.length;i++){
+    var b=all[i];if(seen.indexOf(b)>=0||!rendered(b))continue;seen.push(b);
+    var label=text(b);
+    if(/(?:tutorial|instruction(?:s)?|video)/i.test(label)&&/(?:read|agree|acknowledge|understand|watch(?:ed)?)/i.test(label))matches.push({button:b,label:label});
   }
-  return JSON.stringify({found:false,error:'Waiting for the newest Tokeer confirmation message…'});
+  if(!matches.length)return JSON.stringify({found:false,error:'Waiting for the agreement and tutorial confirmation button…'});
+  matches.sort(function(a,b){return a.button.getBoundingClientRect().top-b.button.getBoundingClientRect().top;});
+  var item=matches[matches.length-1],button=item.button;
+  try{button.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}
+  var r=button.getBoundingClientRect(),article=button.closest('[role="article"]'),context=article||(button.parentElement&&button.parentElement.parentElement)||button.parentElement;
+  return JSON.stringify({found:true,label:item.label,disabled:!!button.disabled||button.getAttribute('aria-disabled')==='true',x:r.left+r.width/2,y:r.top+r.height/2,messageText:String(context&&context.innerText||'').slice(0,5000)});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 
 export async function readLatestTicketGate(): Promise<TokeerTicketGate> {
@@ -728,25 +739,59 @@ export async function readLatestTicketGate(): Promise<TokeerTicketGate> {
   try { return JSON.parse(String(raw || "")); } catch { return { found: false, error: "Could not read the ticket confirmation button." }; }
 }
 
-export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; existingChannelIds?: string[]; error?: string }> {
+async function readTokeerQuota(tab: CdpTab, afterMessageId = ""): Promise<{ found: boolean; waitText?: string; waitSeconds?: number }> {
+  if (!tab.webSocketDebuggerUrl) return { found: false };
+  const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+    var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-20).reverse();
+    for(var i=0;i<arts.length;i++){
+      var identity=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=identity&&identity[2]||'';
+      if(after&&id&&BigInt(id)<=BigInt(after))continue;
+      var text=String(arts[i].innerText||arts[i].textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      var match=text.match(/(?:cooldown\\s+active|quota\\s+(?:was\\s+)?depleted)[\\s\\S]{0,160}?(?:try\\s+again\\s+(?:in|after))\\s+((?:\\d+\\s*[dhms]\\s*)+)/i);
+      if(!match)continue;
+      var token=String(match[1]||'').trim(),seconds=0,re=/(\\d+)\\s*([dhms])/ig,m;
+      while((m=re.exec(token))){var n=Number(m[1]);seconds+=n*(m[2].toLowerCase()==='d'?86400:m[2].toLowerCase()==='h'?3600:m[2].toLowerCase()==='m'?60:1);}
+      return JSON.stringify({found:true,waitText:token,waitSeconds:seconds});
+    }
+    return JSON.stringify({found:false});
+  }catch(e){return JSON.stringify({found:false});}})()`, 3000);
+  try { return JSON.parse(String(raw || "")); } catch { return { found: false }; }
+}
+
+export async function clickLatestTicketGate(): Promise<{ success: boolean; fromUrl?: string; existingChannelIds?: string[]; quota?: boolean; quotaWaitText?: string; quotaWaitSeconds?: number; error?: string }> {
   const tab = await findDiscordTab();
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return { success: false, error: "Tokeer activation channel is not open." };
   // Snapshot the sidebar before Discord inserts the private ticket thread.
   const existingChannelIds = (await readSidebarChannels(tab)).map((item) => item.id);
-  const expr = `(function(){try{
-    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-    for(var i=0;i<arts.length;i++){
-      var bs=[].slice.call(arts[i].querySelectorAll('button'));
-      for(var j=0;j<bs.length;j++){
-        var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
-        if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((arts[i].innerText||'')+' '+label) && !b.disabled && b.getAttribute('aria-disabled')!=='true'){var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});return true;}
-      }
-    }
-    return false;
-  }catch(e){return false;}})()`;
-  const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+  const beforeMessageId = String(await evalJson(tab.webSocketDebuggerUrl, `(function(){try{var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();for(var i=0;i<arts.length;i++){var m=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);if(m)return m[2];}return '';}catch(e){return '';}})()`, 2500) || "");
+  const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_GATE_EXPR);
+  let gate: TokeerTicketGate | null = null;
+  try { gate = JSON.parse(String(raw || "")); } catch {}
+  if (!gate?.found) return { success: false, error: gate?.error || "The agreement and tutorial confirmation button is not ready yet." };
+  if (gate.disabled) {
+    const quota = await readTokeerQuota(tab);
+    if (quota.found) return { success: false, quota: true, quotaWaitText: quota.waitText, quotaWaitSeconds: quota.waitSeconds };
+    return { success: false, error: "Discord currently rejects the ticket action, but did not expose a cooldown time." };
+  }
+  const x = Number(gate.x), y = Number(gate.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { success: false, error: "The agreement and tutorial confirmation button could not be positioned." };
+  await cdpCommand(tab.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+  await cdpCommand(tab.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+  await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, 2000);
+  const down = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, 2000);
+  const up = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, 2000);
+  const ok = down !== null && up !== null;
   if (ok) invalidateDiscordCaptureCaches();
-  return ok ? { success: true, fromUrl: tab.url, existingChannelIds } : { success: false, error: "The green ticket confirmation button is not ready yet." };
+  if (!ok) return { success: false, error: "Discord did not accept the agreement and tutorial confirmation click." };
+  // Quota responses are ephemeral and appear in the activation channel instead
+  // of creating a thread. Give the bot a short window to render that response
+  // before the caller begins waiting for a new private channel.
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const quota = await readTokeerQuota(tab, beforeMessageId);
+    if (quota.found) return { success: false, quota: true, quotaWaitText: quota.waitText, quotaWaitSeconds: quota.waitSeconds };
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return { success: true, fromUrl: tab.url, existingChannelIds };
 }
 
 const TICKET_CONTEXT_EXPR = `(function(){try{

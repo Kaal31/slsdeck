@@ -1526,13 +1526,29 @@ def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
                 logger.warn(f"SLSDeck: Failed to delete {rel}: {exc}")
 
         if remaining_fixes:
-            with open(log_path, "w", encoding="utf-8") as fh:
+            staged_log = log_path + ".slsdeck-new"
+            with open(staged_log, "w", encoding="utf-8") as fh:
                 fh.write("\n\n---\n\n".join(remaining_fixes))
+            os.replace(staged_log, log_path)
         else:
             try:
                 os.remove(log_path)
-            except Exception:
+            except FileNotFoundError:
                 pass
+            except Exception as exc:
+                raise RuntimeError(f"Fix files were reverted, but the fix record could not be removed: {exc}")
+
+        # The FIXED/ONLINE FIX badges are derived from this log. Never report a
+        # successful unfix while the selected record is still present, or every
+        # UI surface will correctly recreate a badge for a fix that looked gone.
+        if os.path.isfile(log_path):
+            with open(log_path, "r", encoding="utf-8") as handle:
+                remaining_content = handle.read()
+            remaining_records = _parse_fix_log(
+                remaining_content, appid, f"AppID {appid}", install_path
+            )
+            if fix_date is None or any(str(item.get("date") or "") == fix_date for item in remaining_records):
+                raise RuntimeError("Fix files were reverted, but the fix record is still present.")
 
         if not preserve_unlockers:
             # Also strip any SmokeAPI DLC-unlock proxy (restore the original

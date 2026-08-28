@@ -13,7 +13,7 @@ import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
 import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled } from "./api";
-import { startBadges, stopBadges, removeAllBadges } from "./lib/badges";
+import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
 import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
@@ -33,6 +33,60 @@ const DEPENDENCY_STABLE_WINDOW_MS = 45 * 1000;
 const DEPENDENCY_STEP_GAP_MS = 20 * 1000;
 const DEPENDENCY_RETRY_MS = 30 * 60 * 1000;
 const DEPENDENCY_LOCK_KEY = "__slsdeckDependencyRepairPromise";
+const PENDING_ADD_VERIFY_KEY = "slsdeck.pendingAddVerification.v1";
+
+type PendingAddVerification = { appid: number; name: string; sessionOrigin: number; createdAt: number; liveReady: boolean };
+
+function readPendingAddVerifications(): PendingAddVerification[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PENDING_ADD_VERIFY_KEY) || "[]");
+    return Array.isArray(value) ? value.filter((item) => Number(item?.appid) > 0) : [];
+  } catch { return []; }
+}
+
+function writePendingAddVerifications(items: PendingAddVerification[]): void {
+  try { window.localStorage.setItem(PENDING_ADD_VERIFY_KEY, JSON.stringify(items.slice(-50))); } catch { /* ignore */ }
+}
+
+function queueAddVerification(appid: number, name: string, liveReady: boolean): void {
+  const items = readPendingAddVerifications().filter((item) => item.appid !== Number(appid));
+  items.push({ appid: Number(appid), name: name || `AppID ${appid}`, sessionOrigin: performance.timeOrigin, createdAt: Date.now(), liveReady });
+  writePendingAddVerifications(items);
+}
+
+function steamLibraryHasApp(appid: number): boolean {
+  try {
+    const apps: any = (window as any).collectionStore?.allAppsCollection?.apps;
+    if (apps?.has?.(appid) || apps?.get?.(appid)) return true;
+  } catch { /* ignore */ }
+  try {
+    return !!((window as any).appStore?.GetAppOverviewByAppID?.(appid) ||
+      (window as any).appStore?.GetAppOverviewByGameID?.(appid));
+  } catch { return false; }
+}
+
+async function verifyAddedGameReachedSteam(appid: number, name: string): Promise<void> {
+  for (let attempt = 0; attempt < 15; attempt++) {
+    if (steamLibraryHasApp(appid)) {
+      writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
+      return;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+  }
+  // Registration in config.yaml is not enough: this is the final frontend
+  // proof that Steam actually accepted the injected package/appinfo entry.
+  toaster.toast({
+    title: "SLSDeck · game was not added",
+    body: `${name} never appeared in Steam after the add completed. Refresh the manifest/source credentials (for example an expired Hubcap key) and retry. Depot keys affect downloading, but normally do not control whether the library entry appears.`,
+    duration: 15000,
+  });
+  writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
+}
+
+function verifyAddsPendingFromPreviousSteamSession(): void {
+  const previous = readPendingAddVerifications().filter((item) => item.sessionOrigin !== performance.timeOrigin);
+  previous.forEach((item) => { void verifyAddedGameReachedSteam(item.appid, item.name); });
+}
 
 type DependencyLifecycleToken = { active: boolean; stableSince: number };
 
@@ -445,7 +499,10 @@ export default definePlugin(() => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
         const liveReady = !!(e as any).liveReady;
-        toaster.toast({
+        const earlyNotified: Set<number> | undefined = (window as any).__slsdeckEarlyAddNotified;
+        const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
+        const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
+        if (!skipDuplicate) toaster.toast({
           title: "SLSDeck",
           body:
             e.status === "done" && e.success
@@ -457,6 +514,16 @@ export default definePlugin(() => {
               : `${isAssella ? "Install" : "Add"} failed: ${e.name}${e.error ? " — " + e.error : ""}`,
         });
         if (e.status === "done" && e.success) {
+          void refreshBadges();
+          if (!isAssella) {
+            queueAddVerification(e.appid, e.name, liveReady);
+            // A verified HotReload should materialize in this Steam session.
+            // Restart-fallback adds stay queued and are checked on the next
+            // Steam/webhelper session instead of raising a premature warning.
+            if (liveReady) {
+              window.setTimeout(() => { void verifyAddedGameReachedSteam(e.appid, e.name); }, 5000);
+            }
+          }
           // slsteam-moon's verified HotReload path updates package/license/appinfo
           // in the current Steam session, so normal SLS adds must NOT restart.
           // Keep ASSella's existing reload behavior separate from this live path.
@@ -466,6 +533,8 @@ export default definePlugin(() => {
             .catch(() => {});
           // Keep the optional "SLSDeck" collection in sync as games are added.
           syncSlsCollection().catch(() => {});
+        } else if (!isAssella) {
+          markSlsAddPending(e.appid, false);
         }
       });
     } catch {
@@ -494,6 +563,7 @@ export default definePlugin(() => {
   // late: SetAppLaunchOptions needs a live SteamClient, and the backend has
   // already done its half during warmup.
   setTimeout(() => { applyArchiveTemplatesOnBoot().catch(() => {}); }, 12000);
+  setTimeout(() => { verifyAddsPendingFromPreviousSteamSession(); }, 15000);
   const collectionSync = setInterval(() => { syncSlsCollection().catch(() => {}); }, 60000);
 
   return {

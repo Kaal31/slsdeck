@@ -188,9 +188,14 @@ export const tokeerApplyUbisoftPackage = callable<[appid: number], { success: bo
 export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number], { success: boolean; found?: boolean; path?: string; filename?: string; directory?: string; size?: number; tokenRequestIds?: number[]; error?: string }>("tokeer_find_ubisoft_token");
 export const tokeerInstallUbisoftDbdata = callable<[appid: number, tokenPath: string, url: string], { success: boolean; path?: string; directory?: string; error?: string }>("tokeer_install_ubisoft_dbdata");
 export const tokeerUbisoftDbdataStatus = callable<[appid: number, tokenPath: string], { success: boolean; installed: boolean; path?: string; directory?: string; error?: string }>("tokeer_ubisoft_dbdata_status");
-export type TokeerAppliedRecord = { appid: number; gameName: string; kind: "steam" | "ubisoft"; appliedAt: number; applied: boolean; pinned: boolean };
+export type TokeerAppliedRecord = {
+  appid: number; gameName: string; kind: "steam" | "ubisoft"; appliedAt: number;
+  applied: boolean; pinned: boolean; health: "valid" | "check" | "changed";
+  healthReason?: string; ageDays?: number; pinMatchesActivation?: boolean;
+  activationBuildId?: string; activationDepots?: Record<string, string>;
+};
 export const tokeerAppliedStatus = callable<[appid?: number], { success: boolean; applied?: boolean; record?: TokeerAppliedRecord | null; records: TokeerAppliedRecord[] }>("tokeer_applied_status");
-export const tokeerMarkApplied = callable<[appid: number, gameName?: string, kind?: string, pin?: boolean], { success: boolean; record?: TokeerAppliedRecord; pin?: { success: boolean; skipped?: boolean; error?: string }; error?: string }>("tokeer_mark_applied");
+export const tokeerMarkApplied = callable<[appid: number, gameName?: string, kind?: string, pin?: boolean, evidencePath?: string], { success: boolean; record?: TokeerAppliedRecord; pin?: { success: boolean; skipped?: boolean; error?: string }; error?: string }>("tokeer_mark_applied");
 
 // ── Callables ──────────────────────────────────────────────────────────────
 export const getSteamStatus = callable<[], SteamStatus>("get_steam_status");

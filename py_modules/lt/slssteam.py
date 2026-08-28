@@ -4046,8 +4046,21 @@ def purge_pins_for_app(appid) -> Dict[str, Any]:
         return {"success": False, "error": "config.yaml not found"}
     lines, changed = _purge_pins_lines(lines, int(appid))
     if not changed:
+        try:
+            from . import settings
+            settings.set_pinned_build(int(appid), "")
+            settings.clear_pinned_manifest_snapshot(int(appid))
+        except Exception:
+            pass
         return {"success": True, "changed": False}
     ok = _write_config_lines(lines)
+    if ok:
+        try:
+            from . import settings
+            settings.set_pinned_build(int(appid), "")
+            settings.clear_pinned_manifest_snapshot(int(appid))
+        except Exception:
+            pass
     return {"success": ok, "changed": ok}
 
 
@@ -4091,6 +4104,17 @@ def pin_app_current(appid) -> Dict[str, Any]:
         for k, b in enumerate(block):
             lines.insert(header + 1 + k, b)
     ok = _write_config_lines(lines)
+    if ok:
+        try:
+            from . import settings
+            current_build = _steam_mod.get_installed_buildid(appid)
+            settings.set_pinned_manifest_snapshot(
+                appid, depots, current_build
+            )
+            if current_build:
+                settings.set_pinned_build(appid, current_build)
+        except Exception:
+            pass
     return {"success": ok, "depots": len(depots)}
 
 
@@ -4197,6 +4221,13 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
             lines.insert(header + 1 + k, b)
     ok = _write_config_lines(lines)
     if ok:
+        try:
+            from . import settings
+            settings.set_pinned_manifest_snapshot(appid, clean, "")
+            if changed:
+                settings.set_pinned_build(appid, "")
+        except Exception:
+            pass
         try:
             from . import buildhistory
             buildhistory.snapshot(appid, clean, source="pin")

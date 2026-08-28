@@ -13,6 +13,7 @@ import {
   getHideOnOwned,
 } from "../api";
 import { shouldHideForOwned, isNonSteamShortcut } from "../lib/ownership";
+import { markSlsAddPending, refreshBadges } from "../lib/badges";
 import { FixPicker } from "../components/FixPicker";
 import { appDisplayName } from "../lib/fixRuntime";
 import { getStoreAppId } from "../patches/StorePatch";
@@ -95,15 +96,18 @@ export function GameControlsSection({ onChanged }: Props) {
     if (appid == null) return;
     setBusy("adding");
     setStatus("Starting…");
+    markSlsAddPending(appid);
     try {
       const res = await startAdd(appid);
       if (!res.success) {
+        markSlsAddPending(appid, false);
         setBusy("");
         setStatus(res.error || "Could not add");
         toaster.toast({ title: "SLSDeck", body: res.error || "Could not add" });
         return;
       }
     } catch {
+      markSlsAddPending(appid, false);
       setBusy("");
       setStatus("Could not start");
       return;
@@ -119,10 +123,14 @@ export function GameControlsSection({ onChanged }: Props) {
           setBusy("");
           if (st.status === "done") {
             setInstalled(true);
+            void refreshBadges();
             setStatus("Added — reload Steam");
             onChanged?.();
-          } else if (st.status === "failed") {
-            setStatus(st.error || "Failed");
+          } else {
+            markSlsAddPending(appid, false);
+            if (st.status === "failed") {
+              setStatus(st.error || "Failed");
+            }
           }
         }
       } catch {

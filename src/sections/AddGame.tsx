@@ -25,6 +25,7 @@ import {
 } from "../api";
 import { importCustomFlow } from "../components/CustomImport";
 import { InstalledSection } from "./Installed";
+import { markSlsAddPending, refreshBadges } from "../lib/badges";
 
 // Imported custom manifests / lua files, grouped by game — mirrors the
 // "Applied fixes" list style in the Fixes tab.
@@ -149,14 +150,17 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
     setActiveAppId(appid);
     setActiveName(name);
     setState({ status: "queued" });
+    markSlsAddPending(appid);
     try {
       const res = await startAdd(appid);
       if (!res.success) {
+        markSlsAddPending(appid, false);
         toaster.toast({ title: "SLSDeck", body: res.error || "Failed to start" });
         setState({ status: "failed", error: res.error });
         return;
       }
     } catch (e) {
+      markSlsAddPending(appid, false);
       setState({ status: "failed", error: String(e) });
       return;
     }
@@ -169,6 +173,7 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
         const status = res.state.status;
         if (status === "done") {
           stopPolling();
+          void refreshBadges();
           const live = !!(res.state as any).liveReady;
           toaster.toast({
             title: "SLSDeck",
@@ -178,9 +183,11 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
           });
           onChanged();
         } else if (status === "failed") {
+          markSlsAddPending(appid, false);
           stopPolling();
           toaster.toast({ title: "SLSDeck", body: res.state.error || "Failed" });
         } else if (status === "cancelled") {
+          markSlsAddPending(appid, false);
           stopPolling();
         }
       } catch {

@@ -3,6 +3,7 @@ import { toaster } from "@decky/api";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { AddState, deleteLua, getAddStatus, getHideOnOwned, getLibraryButtons, hasLua, startAdd } from "../api";
 import { shouldHideForOwned, isNonSteamShortcut } from "../lib/ownership";
+import { markSlsAddPending, refreshBadges } from "../lib/badges";
 import { FixPicker } from "./FixPicker";
 
 function FixModal({ appid, closeModal }: { appid: number; closeModal?: () => void }) {
@@ -80,14 +81,17 @@ export function GameActionButtons() {
     if (appid == null) return;
     setBusy("adding");
     setProgress("Starting…");
+    markSlsAddPending(appid);
     try {
       const res = await startAdd(appid);
       if (!res.success) {
+        markSlsAddPending(appid, false);
         setBusy("");
         toaster.toast({ title: "SLSDeck", body: res.error || "Could not add" });
         return;
       }
     } catch {
+      markSlsAddPending(appid, false);
       setBusy("");
       toaster.toast({ title: "SLSDeck", body: "Could not start" });
       return;
@@ -100,9 +104,15 @@ export function GameActionButtons() {
         if (["done", "failed", "cancelled"].includes(st.status || "")) {
           stop();
           setBusy("");
-          if (st.status === "done") setInstalled(true);
-          else if (st.status === "failed")
-            toaster.toast({ title: "SLSDeck", body: st.error || "Failed" });
+          if (st.status === "done") {
+            setInstalled(true);
+            void refreshBadges();
+          } else {
+            markSlsAddPending(appid, false);
+            if (st.status === "failed") {
+              toaster.toast({ title: "SLSDeck", body: st.error || "Failed" });
+            }
+          }
         }
       } catch {
         /* keep polling */

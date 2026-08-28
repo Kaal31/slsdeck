@@ -151,8 +151,55 @@ def set_pinned_build(appid, buildid) -> None:
         else:
             m.pop(key, None)
         set_value("pinnedBuilds", m)
+        snapshots = dict(get_value("pinnedManifestSnapshots", {}) or {})
+        if key in snapshots and isinstance(snapshots[key], dict):
+            entry = dict(snapshots[key])
+            if buildid:
+                entry["buildid"] = str(buildid)
+                snapshots[key] = entry
+            else:
+                entry["buildid"] = ""
+                snapshots[key] = entry
+            set_value("pinnedManifestSnapshots", snapshots)
     except Exception:
         pass
+
+
+def get_pinned_manifest_snapshots() -> Dict[str, Dict[str, Any]]:
+    """Durable exact-build pin material, independent of SLSsteam config.yaml."""
+    raw = get_value("pinnedManifestSnapshots", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
+
+
+def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: str = "") -> None:
+    clean = {
+        str(depot): str(gid)
+        for depot, gid in (depots or {}).items()
+        if str(depot).isdigit() and str(gid).isdigit()
+    }
+    key = str(int(appid))
+    snapshots = get_pinned_manifest_snapshots()
+    if clean:
+        previous = snapshots.get(key) or {}
+        previous_depots = {
+            str(depot): str(gid) for depot, gid in (previous.get("depots") or {}).items()
+        }
+        snapshots[key] = {
+            "depots": clean,
+            "buildid": str(buildid or (previous.get("buildid") if previous_depots == clean else "") or ""),
+        }
+    else:
+        snapshots.pop(key, None)
+    set_value("pinnedManifestSnapshots", snapshots)
+
+
+def clear_pinned_manifest_snapshot(appid: int) -> None:
+    key = str(int(appid))
+    snapshots = get_pinned_manifest_snapshots()
+    snapshots.pop(key, None)
+    set_value("pinnedManifestSnapshots", snapshots)
 
 
 # ── multiple API keys ──────────────────────────────────────────────────────
