@@ -63,14 +63,11 @@ jobs:
           done
           test -f artifact/SLSDeckUniversal/package.json
           node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") process.exit(1)'
-          cd artifact/SLSDeckUniversal
-          zip -qr ../../SLSDeckUniversal-cachy-compat.zip .
-          cd ../..
-          unzip -l SLSDeckUniversal-cachy-compat.zip | grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+.*[[:space:]]plugin.json$'
-          if unzip -Z1 SLSDeckUniversal-cachy-compat.zip | grep -q '^SLSDeckUniversal/'; then
-            echo 'Plugin archive contains an invalid extra SLSDeckUniversal directory.' >&2
-            exit 1
-          fi
+          cd artifact
+          zip -qr ../SLSDeckUniversal-cachy-compat.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-cachy-compat.zip | grep -q 'SLSDeckUniversal/plugin.json'
+          test "$(unzip -Z1 SLSDeckUniversal-cachy-compat.zip | awk -F/ 'NF {print $1}' | sort -u)" = "SLSDeckUniversal"
       - name: Update rolling prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,7 +90,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SLSDeckUniversal-cachy-compat
-          path: artifact/SLSDeckUniversal/
+          path: artifact/
           if-no-files-found: error
           retention-days: 14
       - name: Upload Ubisoft dependency artifact
