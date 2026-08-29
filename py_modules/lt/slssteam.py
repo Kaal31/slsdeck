@@ -1271,6 +1271,21 @@ def headcrab_compatible_client() -> str:
     now = _t.time()
     if _HEADCRAB_COMPAT_CACHE["ver"] and now - _HEADCRAB_COMPAT_CACHE["ts"] < 3600:
         return _HEADCRAB_COMPAT_CACHE["ver"]
+    # The installer caches the exact upstream script it actually runs. Prefer
+    # that over another network request: Decky's HTTP client can be offline or
+    # return a stale raw-GitHub response, which previously made this check fall
+    # back to an obsolete constant and launch Headcrab against an already-
+    # compatible client.
+    try:
+        cached = os.path.join(config_dir(), "tools", "headcrab.sh")
+        if os.path.isfile(cached):
+            with open(cached, "r", encoding="utf-8", errors="ignore") as fh:
+                m = re.search(r"HeadcrabCompatibleClientVer\s*=\s*(\d+)", fh.read())
+            if m:
+                _HEADCRAB_COMPAT_CACHE.update(ts=now, ver=m.group(1))
+                return m.group(1)
+    except Exception:
+        pass
     try:
         client = ensure_http_client("headcrab: compat ver")
         r = client.get(_cache_bust(HEADCRAB_RAW_URL), timeout=15, follow_redirects=True)
@@ -1812,8 +1827,10 @@ def _run_install() -> None:
         # fallback: setup.sh may install SLSsteam.so but not the pattern-refresh
         # helper / library-inject.so, and without pattern-refresh injection can't
         # recover after a Steam update. Copying the whole bin/ guarantees they land.
-        _stage("installing-engine", "Installing engine (setup.sh)…")
-        _run_setup_script(extract_root)
+        _stage("installing-engine", "Installing engine files…")
+        # Do not invoke upstream setup.sh from Decky. It can open sudo/pkexec
+        # password prompts, restart Steam, and install competing launch wrappers.
+        # We place every binary and install both launch paths ourselves below.
         _log("Placing SLSsteam libraries (SLSsteam.so, library-inject.so, pattern-refresh)…")
         _place_libraries(extract_root)
         _record_engine_version()
@@ -4029,7 +4046,8 @@ def refresh_moon_engine() -> Dict[str, Any]:
         if not _extract_any(archive, root):
             return {"success": False, "error": "moon extract failed"}
         _chown_to_user(tmp)
-        _run_setup_script(root)
+        # Decky owns launcher installation; upstream setup.sh is interactive and
+        # must not be run from the plugin repair path.
         _place_libraries(root)
         _record_engine_version()
         ok = installed_lib_is_moon()
@@ -4117,7 +4135,7 @@ def ensure_moon_engine() -> Dict[str, Any]:
         if not _extract_any(archive, root):
             return {"success": False, "changed": False, "error": "moon extract failed"}
         _chown_to_user(tmp)
-        _run_setup_script(root)
+        # Avoid upstream setup.sh here as well (sudo/pkexec + Steam restarts).
         # Always place the full bin/* (incl. pattern-refresh), not only when the
         # moon .so is missing — headcrab's AceSLS overlay strips pattern-refresh,
         # so re-asserting the .so alone would leave the helper gone.
