@@ -1720,6 +1720,11 @@ def _run_setup_script(extract_root: str) -> int:
         return -1
     mode = "flatpak-install" if _is_flatpak_steam() else "install"
     try:
+        # Decky runs the backend as root, but setup.sh deliberately runs as the
+        # desktop user. tempfile.mkdtemp() creates a root-owned 0700 directory,
+        # so without transferring the extracted tree first bash exits 126 before
+        # it can even read setup.sh.
+        _chown_to_user(extract_root)
         proc = subprocess.run(
             _wrap_as_user(["bash", setup, mode]),
             cwd=os.path.dirname(setup),
@@ -1789,6 +1794,9 @@ def _run_install() -> None:
         if not _extract_any(archive, extract_root):
             _set_install({"status": "failed", "error": "Could not extract engine release"})
             return
+        # setup.sh runs as the desktop user, which must be able to traverse the
+        # root-created 0700 mkdtemp parent as well as read the extracted files.
+        _chown_to_user(tmp)
 
         # The fork ships its own setup.sh — run it first (it knows its layout),
         # then ALWAYS copy the full bin/* ourselves. Not just as a missing-.so
@@ -1820,9 +1828,18 @@ def _run_install() -> None:
         _chown_to_user(os.path.join(config_dir(), "tools"))
         _stage("client-compatibility", "Setting up Steam client compatibility (h3adcr-b)… this can take a few minutes")
         try:
-            _run_headcrab_shimmed()
+            client_compatible = _run_headcrab_shimmed()
         except Exception as hc_exc:
+            client_compatible = False
             _log(f"Client-compatibility step failed: {hc_exc}")
+        if not client_compatible:
+            _set_install({
+                "status": "failed",
+                "success": False,
+                "installed": bool(find_installed_lib()),
+                "error": "Steam client compatibility setup failed; see the install log",
+            })
+            return
         ensure_config()
 
         # 2) Apply OUR steam.sh wrapper LAST — on-device testing showed this is
@@ -3410,6 +3427,11 @@ def _run_headcrab_shimmed() -> bool:
     shim = os.path.join(tmp, "bin")
     _write_shims(shim)
 
+    # As with the moon setup archive, this directory was made by Decky's root
+    # backend with mode 0700 and is then consumed (and written to) by `deck`.
+    # Give the complete staging tree to that user only after all shims exist.
+    _chown_to_user(tmp)
+
     # Our injection writes a steam.cfg with BootStrapperInhibitAll=enable to stop
     # Steam overwriting the wrapper — but that ALSO blocks client updates, which
     # is exactly how headcrab downgrades. Remove it so the downgrade can run.
@@ -3564,7 +3586,10 @@ def _run_headcrab_shimmed() -> bool:
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass
-    return bool(find_installed_lib())
+    # An already-installed .so says nothing about whether this run succeeded.
+    # Returning it here used to turn permission errors and failed downgrades into
+    # a green "Done" state. The compatibility operation itself must exit cleanly.
+    return rc == 0
 
 
 def client_fix_needed() -> Dict[str, Any]:
@@ -3634,6 +3659,14 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
                       "startedAt": time.time()})
         try:
             ok = _run_headcrab_shimmed()
+            if not ok:
+                _set_install({
+                    "status": "failed",
+                    "success": False,
+                    "installed": bool(find_installed_lib()),
+                    "error": "Steam client compatibility setup failed; see the install log",
+                })
+                return
             # headcrab installs stock AceSLS SLSsteam over whatever engine is
             # present, which silently downgrades slsteam-moon and kills depot-key
             # support. Put the fork back before declaring success.
