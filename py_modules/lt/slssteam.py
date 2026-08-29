@@ -2757,6 +2757,7 @@ def _activate_steam_sh_wrapper() -> Dict[str, Any]:
         return {"success": False, "error": "steam.sh not found"}
     d = os.path.dirname(sh)
     orig = os.path.join(d, "steam.sh.slsorig")
+    client = os.path.join(d, "client.sh")
     try:
         current = ""
         try:
@@ -2770,11 +2771,22 @@ def _activate_steam_sh_wrapper() -> Dict[str, Any]:
         # already-wrapped launcher as the "original".
         if not already and not os.path.exists(orig) and _looks_pristine(current):
             shutil.copy2(sh, orig)
+        # A previous Headcrab run replaces steam.sh but downloads Valve's clean
+        # launcher as client.sh. If our own backup predates the plugin install or
+        # was lost, recover from that clean copy instead of leaving the Headcrab
+        # bootstrap loop in place.
+        if not os.path.exists(orig) and os.path.isfile(client):
+            try:
+                with open(client, "r", encoding="utf-8", errors="ignore") as fh:
+                    client_text = fh.read()
+                if _looks_pristine(client_text):
+                    shutil.copy2(client, orig)
+            except Exception:
+                pass
         if not os.path.exists(orig):
             return {"success": False, "error": "Could not back up steam.sh"}
 
         # client.sh = a pristine copy of Valve's launcher that our wrapper sources.
-        client = os.path.join(d, "client.sh")
         if not os.path.exists(client):
             shutil.copy2(orig, client)
         try:
@@ -3733,11 +3745,20 @@ def _start_engine_only_repair() -> Dict[str, Any]:
                       "startedAt": time.time(), "detached": False, "unit": ""})
         try:
             _log("Steam client already matches Headcrab; skipping the destructive client repair")
+            # Headcrab may have left its bootstrap steam.sh behind from an older
+            # failed attempt. Replace it with our known launcher immediately,
+            # before a moon download or pattern refresh can delay recovery.
+            act = activate_injection()
+            if not act.get("success"):
+                _set_install({"status": "failed", "success": False,
+                              "error": act.get("error") or "launcher restoration failed"})
+                return
             moon = refresh_moon_engine()
             if not moon.get("success"):
                 _set_install({"status": "failed", "success": False,
                               "error": moon.get("error") or "slsteam-moon reinstall failed"})
                 return
+            # Re-assert after replacing the binary as well; idempotent.
             act = activate_injection()
             if not act.get("success"):
                 _set_install({"status": "failed", "success": False,
@@ -3814,6 +3835,10 @@ def _start_gaming_mode_client_fix() -> Dict[str, Any]:
 def start_client_fix(force: bool = False) -> Dict[str, Any]:
     # Guard the heavy path: without this, enabling injection re-downloads the
     # whole Steam client even when the installed one is already supported.
+    # Reconcile a previous transient service before honoring the in-memory lock.
+    # Without this, a service which exited while Steam/Decky was restarting left
+    # Repair permanently returning "A task is already running".
+    get_install_status()
     chk = client_fix_needed()
     if not force:
         if not chk.get("needed"):
