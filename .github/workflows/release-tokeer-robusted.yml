@@ -31,6 +31,28 @@ jobs:
           cache: npm
       - name: Install frontend dependencies
         run: npm ci
+      - name: Stamp unique rolling version
+        env:
+          ROLLING_VERSION: 0.9.61-robust.${{ github.run_number }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const expectedName = 'SLSDeckUniversal';
+          for (const file of ['plugin.json', 'package.json']) {
+            const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (value.name !== expectedName) {
+              throw new Error(`${file} plugin name is ${value.name}, expected ${expectedName}`);
+            }
+            value.version = process.env.ROLLING_VERSION;
+            fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+          }
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          if (lock.name !== expectedName || lock.packages?.['']?.name !== expectedName) {
+            throw new Error('package-lock.json plugin name does not match SLSDeckUniversal');
+          }
+          NODE
+          grep -q '"name": "SLSDeckUniversal"' plugin.json
+          grep -q "\"version\": \"$ROLLING_VERSION\"" plugin.json
       - name: Build frontend
         run: npm run build
       - name: Check Python syntax
