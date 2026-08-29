@@ -1,20 +1,20 @@
-"""HVAuto (KoriaPolis/HVAuto) hypervisor-crack source — build-first pipeline.
+"""HVAuto (KoriaPolis/HVAuto) hypervisor-crack source with build compatibility hints.
 
 HVAuto ships a static JSON: a list of ``{name, buildid, fixes:[{href, badges}]}``.
-The crack is built for a *specific* Steam build. Our flow is build-first (unlike
-SteaMidra, which matches your already-installed build):
+The crack is built for a *specific* Steam build. Build selection is independent:
 
   1. match the game by TITLE  -> get the crack's target ``buildid``
-  2. resolve that buildid -> the depot manifest gids to pin
+  2. resolve that buildid for compatibility/status
        * if buildid == the game's CURRENT public build, steamcmd.net gives the
          gids directly (no scraping) — the common case for fresh cracks
        * otherwise it's an older build and we flag "needs history" (the SteaMidra
          depot_history resolver would be needed; not wired here yet)
-  3. pin those gids (slssteam.pin_app_gids) so Steam downloads the crack's build
+  3. let the user select/downgrade that build in the specific-build workflow
   4. download + extract the crack's GAME-folder files (done in the apply step,
      dropping the Windows-HV bits — our cpuid module + Proton-HV replace those)
 
-This module covers steps 1-2 (+ the pin helper). The download/extract/auto-HV
+This module covers steps 1-2 and reports the compatible BuildID without changing
+ManifestPins. The download/extract/auto-HV
 orchestration lives in the apply step.
 """
 
@@ -445,19 +445,10 @@ def apply_hv(appid: int, install_path: str, name: str = "", href: str = "") -> D
     if not href:
         return {"success": False, "error": "HVAuto entry has no download link"}
 
-    # 1) resolve the crack's build -> gids, and pin so Steam fetches that build
+    # The catalog BuildID is compatibility metadata, not authority to replace a
+    # pin selected in the specific-build menu. Resolve it for status only.
     res = resolve_build(appid, buildid)
     pinned = False
-    if res.get("status") in ("current", "resolved") and res.get("gids"):
-        try:
-            from . import slssteam
-            gids = {int(d): str(g) for d, g in res["gids"].items()}
-            pr = slssteam.pin_app_gids(int(appid), gids)
-            pinned = bool(pr.get("success"))
-        except Exception as exc:
-            logger.warn(f"hvauto: pin failed: {exc}")
-    # (older builds: we don't have the gids without the depot-history resolver, so
-    #  we proceed to install the crack files but flag the build mismatch.)
 
     # 2) get the crack archive. First: did the user already download it (host
     #    blocked auto-DL last time)? Scan ~/Downloads so a second Apply press
@@ -509,7 +500,7 @@ def apply_hv(appid: int, install_path: str, name: str = "", href: str = "") -> D
             "buildStatus": res.get("status"), "currentBuildid": res.get("currentBuildid", ""),
             "installed": len(mir["extracted"]), "protonTool": proton_tool,
             "activateHv": True, "fromDownloads": bool(from_downloads),
-            "note": (f"Pinned + crack installed {src}.".replace("  ", " ")
-                     if res.get("status") in ("current", "resolved")
-                     else f"Crack installed {src}, but its older target build couldn't be resolved — "
-                          "it may not match until you pin that build manually.")}
+            "note": (f"Crack installed {src}. Compatible build: {buildid}.".replace("  ", " ")
+                     if res.get("status") == "current"
+                     else f"Crack installed {src}. It targets build {buildid}; "
+                          "select that build separately if the current build is incompatible.")}

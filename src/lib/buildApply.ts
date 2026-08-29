@@ -17,14 +17,15 @@
 import {
   appDownloadComplete,
   getGameInstallPath,
-  pinForFix,
   triggerSteamInstall,
   noInternetFixBegin,
 } from "../api";
 
 export type ApplyPhase =
   | "pinning"
+  | "pin_failed"
   | "updating"
+  | "awaiting_reinstall"
   | "awaiting_download"
   | "applying";
 
@@ -37,12 +38,12 @@ export interface BuildApplyHooks {
   doApply: () => Promise<void>;
   // Return true to abort the auto-poll loop (e.g. user cancelled / closed).
   shouldStop?: () => boolean;
-  // Custom pin resolver — lua.tools fixes pass one that pins to THIS fix's exact
-  // build (its own manifest). Defaults to the generic pinForFix resolver.
-  pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean }>;
+  // Exact pin resolver — only source fixes with a paired manifest pass one.
+  // Missing means universal/current-build apply, never generic manifest lookup.
+  pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean; error?: string }>;
 }
 
-export type BuildApplyResult = "applied" | "awaiting";
+export type BuildApplyResult = "applied" | "awaiting" | "reinstall";
 
 async function installed(appid: number): Promise<boolean> {
   try {
@@ -62,6 +63,14 @@ export async function isDownloadComplete(appid: number): Promise<boolean> {
 }
 
 export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildApplyResult> {
+  // No paired manifest means this is a universal/local fix. Apply it to the
+  // installed build; the backend may lock that current build after extraction.
+  // Never run the generic game-manifest resolver from a fix apply path.
+  if (!h.pinFn) {
+    h.onPhase("applying");
+    await h.doApply();
+    return "applied";
+  }
   // 1) Pin to the fix's build (lua.tools -> hubcap -> ~/Downloads). No-op if none.
   h.onPhase("pinning");
   let source = "none";
@@ -70,7 +79,7 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
   // update rather than silently applying onto a stale build.
   let pinChanged = true;
   try {
-    const pin = h.pinFn ? await h.pinFn() : await pinForFix(h.appid);
+    const pin = await h.pinFn();
     source = pin.source || "none";
     pinned = !!pin.pinned;
     pinChanged = pin.changed !== false;
@@ -81,12 +90,11 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
   const isInstalled = await installed(h.appid);
   const downloadComplete = isInstalled ? await isDownloadComplete(h.appid) : false;
 
-  // 2) No build could be pinned -> nothing to update toward; apply what we have
-  //    (legacy behaviour: apply now, pin-after happens inside the apply).
+  // A source advertised a paired manifest, so failure to pin it must stop the
+  // operation. Applying anyway would put the fix on latest/the wrong build.
   if (source === "none" || !pinned) {
-    h.onPhase("applying");
-    await h.doApply();
-    return "applied";
+    h.onPhase("pin_failed", { source });
+    throw new Error("The selected fix's paired manifest could not be pinned.");
   }
 
   // 3) Skip the update ONLY when the game is already pinned to *this exact build*
@@ -99,6 +107,15 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
     h.onPhase("applying");
     await h.doApply();
     return "applied";
+  }
+
+  // Steam does not reliably switch an already-installed app to historical
+  // ManifestPins by launching or validating it. It frequently launches the
+  // current build instead. Keep the exact pin, but require a reinstall; the
+  // next apply attempt verifies the installed depot GIDs before extraction.
+  if (pinChanged && isInstalled) {
+    h.onPhase("awaiting_reinstall", { source });
+    return "reinstall";
   }
 
   // 4) Trigger Steam to update/download the game to the pinned build. First apply

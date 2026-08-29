@@ -455,7 +455,9 @@ def _norm_fix(raw: Dict[str, Any], appid: int = 0) -> Dict[str, Any]:
         "appid": int(appid) if appid else 0,
         "name": str(_first(raw, "name", "Name") or ""),
         "build": str(build) if build is not None else "",
-        "manifest_id": str(build) if build is not None else "",
+        # `title` is a Steam BuildID, not a depot manifest GID. Exact GIDs are
+        # read only from this fix's paired manifest .lua.
+        "manifest_id": "",
         "depot_id": str(depot) if depot is not None else "",
         "release_date": str(rdate) if rdate is not None else "",
         "release_year": "",

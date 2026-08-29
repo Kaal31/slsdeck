@@ -17,6 +17,7 @@ import {
   denuvoKnown,
   denuvoResolve,
   applyLuatoolsFix,
+  pinForLuatoolsFix,
   tokeerPreflight,
   tokeerAppliedStatus,
 } from "../api";
@@ -489,7 +490,19 @@ async function onAction(payloadStr: string): Promise<void> {
       const p = await getGameInstallPath(appid);
       if (!p.success || !p.installPath) { setStatus("Game not installed — add it first, then install"); return; }
       const f = msg.fix || {};
-      const started = await applyLuatoolsFix(appid, String(f.id || ""), p.installPath, String(f.manifest_id || f.build || ""), String(f.depot_id || ""), "lua.tools fix", "");
+      if (f.has_manifest) {
+        setStatus("Loading this fix's exact manifest…");
+        const pin = await pinForLuatoolsFix(appid, String(f.id || ""));
+        if (!pin.pinned) {
+          setStatus(pin.error || "This fix's paired manifest could not be pinned; nothing was applied");
+          return;
+        }
+        if (pin.changed !== false) {
+          setStatus("Exact fix build pinned — uninstall and reinstall the game, then press this fix again");
+          return;
+        }
+      }
+      const started = await applyLuatoolsFix(appid, String(f.id || ""), p.installPath, "", "", "lua.tools fix", "");
       if (!started.success) { setStatus(started.error || "Could not start lua.tools fix"); return; }
       clearPoll();
       poll = setInterval(async () => {

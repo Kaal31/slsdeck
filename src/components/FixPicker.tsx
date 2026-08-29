@@ -63,7 +63,6 @@ import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFr
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
-import { prepareCatalogFixBuild } from "../lib/catalogFixBuild";
 import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
@@ -176,7 +175,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [autoApply, setAutoApplyState] = useState(false);
   // Guided build-accurate apply: after pin+update we wait for the user to press
   // "Apply now". `awaiting` holds the deferred apply and the originating fix row.
-  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void> } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void>; mode?: "download" | "reinstall" } | null>(null);
   const [activeFixKey, setActiveFixKey] = useState("");
   const [fixState, setFixState] = useState<AddState>({});
   const [dlComplete, setDlComplete] = useState(false);
@@ -288,8 +287,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const p = await getPinStatus(appid);
       setPinned(!!p.pinned);
-      const snapshotBuild = p.buildid || p.installedBuildid;
-      const snapshotDepots = Object.keys(p.depots || {}).length ? p.depots : p.installedDepots;
+      // An exact depot-GID pin may not have a Steam BuildID. Do not label it as
+      // the installed/latest BuildID; that made a correct historical pin appear
+      // to have silently changed to latest.
+      const snapshotBuild = p.pinned ? p.buildid : p.installedBuildid;
+      const snapshotDepots = p.pinned
+        ? (p.depots || {})
+        : (Object.keys(p.depots || {}).length ? p.depots : p.installedDepots);
       setPinInfo({ buildid: snapshotBuild, depots: snapshotDepots });
       // Ask about THIS build specifically: the same game can have several
       // builds archived, so "is this game archived" is the wrong question.
@@ -503,7 +507,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     key: string,
     label: string,
     startExtract: () => Promise<{ success: boolean; error?: string }>,
-    pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean }>
+    pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean; error?: string }>
   ) => {
     setAwaiting(null);
     setActiveFixKey(key);
@@ -543,22 +547,32 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         shouldStop: () => stopFlag.current,
         onPhase: (phase, info) => {
           if (phase === "pinning") setMsg("Finding & pinning the fix's build…");
+          else if (phase === "pin_failed")
+            setMsg("This fix's paired manifest could not be loaded. Nothing was applied or pinned.");
           else if (phase === "updating")
             setMsg(
               `Pinned via ${info?.source || "source"} — updating the game in Steam to that build…`
             );
           else if (phase === "awaiting_download")
             setMsg("Steam is updating the game. When the download finishes, press “Apply now”.");
+          else if (phase === "awaiting_reinstall")
+            setMsg("The exact fix build is pinned. Uninstall and reinstall the game, then press this fix again; Steam cannot reliably downgrade an installed game by launching it.");
           else if (phase === "applying") setMsg(`Applying ${label}…`);
         },
       });
-      if (result === "awaiting") {
+      if (result === "reinstall") {
         setBusy("");
-        setAwaiting({ key, label, run: doApply });
+        setAwaiting({ key, label, run: doApply, mode: "reinstall" });
+      } else if (result === "awaiting") {
+        setBusy("");
+        setAwaiting({ key, label, run: doApply, mode: "download" });
         startDlPoll();
       }
-    } catch {
-      /* doApply already surfaced the failure */
+    } catch (e) {
+      if (!String(e).includes("apply-start-failed")) {
+        setBusy("");
+        setFixState({ status: "failed", error: `${e}`.replace(/^Error:\s*/, "") });
+      }
     }
   };
 
@@ -598,7 +612,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           appid, fix.id, installPath, fix.manifest_id || "", fix.depot_id || "",
           "lua.tools fix", check?.gameName || ""
         ),
-      () => pinForLuatoolsFix(appid, fix.id)
+      fix.has_manifest ? () => pinForLuatoolsFix(appid, fix.id) : undefined
     );
   };
 
@@ -816,9 +830,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         setManualDl(null);
         setFixState({ status: "done" });
         if (kind === "hv") {
+          const protonTool = (r as any).protonTool as string | undefined;
           setMsg(
             `HV crack installed (build ${r.buildid || "?"}${r.pinned ? ", pinned" : ""}). ` +
-              (r.protonTool ? `Set Proton to ${r.protonTool} for this game, then restart Steam. ` : "") +
+              (protonTool ? `Set Proton to ${protonTool} for this game, then restart Steam. ` : "") +
               (r.note || ""),
           );
         } else {
@@ -865,36 +880,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     }
     setAwaiting(null);
     setActiveFixKey(key);
-    setFixState({ status: "resolving" } as any);
-    setBusy(key);
-    setMsg(`Resolving required build ${target.buildid || "?"}…`);
-    stopFlag.current = false;
-    try {
-      const prepared = await prepareCatalogFixBuild(
-        appid,
-        target.buildid || "",
-        target.gids || {},
-        (p) => {
-          setMsg(p.message || "");
-          setFixState({
-            status: p.phase,
-            ...((p.percent != null) ? { percent: p.percent } : {}),
-          } as any);
-        },
-      );
-      if (prepared.status === "ready") {
-        await applyCatalogPayload(kind, key);
-        return;
-      }
-      setBusy("");
-      setAwaiting({ key, label, run: () => applyCatalogPayload(kind, key) });
-      startDlPoll();
-    } catch (e) {
-      const error = `${e}`.replace(/^Error:\s*/, "");
-      setBusy("");
-      setFixState({ status: "failed", error });
-      setMsg(error);
+    // HV/CrakFiles publish a compatible BuildID, not authoritative depot GIDs.
+    // Applying the payload must not replace a pin chosen in Specific build.
+    if (target.status === "older") {
+      setMsg(`${label} targets build ${target.buildid || "?"}. Applying it without changing your selected build…`);
     }
+    await applyCatalogPayload(kind, key);
   };
 
   const doCrak = async () => {
@@ -1237,14 +1228,16 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-              Pinned — waiting for Steam to update the game
+              {awaiting.mode === "reinstall" ? "Exact build pinned — reinstall required" : "Pinned — waiting for Steam to update the game"}
             </div>
             <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>
-              {dlComplete
+              {awaiting.mode === "reinstall"
+                ? "The fix's exact build is pinned. Uninstall this game, reinstall it from Steam, then press the fix again. The fix will only apply after the installed depot manifests match."
+                : dlComplete
                 ? "Download complete. Press Apply now to install the fix onto this build."
                 : "Press Start download now to retry Steam's pinned-build update. The game is launched too, which helps Steam begin the download if it is still idle."}
             </div>
-            {!dlComplete && (
+            {awaiting.mode !== "reinstall" && !dlComplete && (
               <DialogButton
                 style={{ ...bs, marginBottom: 6 }}
                 onClick={async () => {
@@ -1257,12 +1250,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
               </DialogButton>
             )}
             <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
-              <DialogButton
+              {awaiting.mode !== "reinstall" && <DialogButton
                 style={bs}
                 onClick={() => awaiting.run().catch(() => {})}
               >
                 {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
-              </DialogButton>
+              </DialogButton>}
               <DialogButton
                 style={bs}
                 onClick={() => {
@@ -1647,7 +1640,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             HVAuto crack · build {hv.buildid || "?"}
           </div>
           <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
-            Build-matched: installs the required Steam build first, then applies the HV fix.
+            Compatible build: {hv.buildid || "unknown"}. This does not change your version pin; use Specific build first when a downgrade is needed.
           </div>
           <DialogButton
             style={{ fontSize: 12, padding: "5px 8px" }}
@@ -1673,7 +1666,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             </div>
           )}
           <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
-            Build-matched: installs the required Steam build first, then applies the crack.
+            Compatible build: {crak.buildid || "unknown"}. This does not change your version pin; use Specific build first when a downgrade is needed.
           </div>
           <DialogButton
             style={{ fontSize: 12, padding: "5px 8px" }}

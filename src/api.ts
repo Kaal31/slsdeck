@@ -461,7 +461,7 @@ export const dlcUnlockerRemove = callable<
   [appid: number, kind: UnlockerKind],
   { success: boolean; restored?: number; error?: string }
 >("dlc_unlocker_remove");
-// HVAuto (hypervisor crack) — build-first pipeline.
+// HVAuto (hypervisor crack) — compatible BuildID hint; pinning stays separate.
 export const hvAutoStatus = callable<
   [appid: number],
   { success: boolean; found?: boolean; name?: string; buildid?: string; hrefs?: string[]; badges?: string[]; resolve?: { status?: string; buildid?: string; currentBuildid?: string; message?: string }; error?: string }

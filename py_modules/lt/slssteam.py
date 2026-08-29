@@ -4230,9 +4230,12 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
         from . import steam as _steam
         installed_raw = _steam.get_installed_depots(appid) or {}
         installed = {int(d): str(g) for d, g in installed_raw.items() if str(d).isdigit()}
-        if installed and all(installed.get(d) == g for d, g in clean.items()):
-            already_on_build = True
-            changed = False
+        if installed:
+            already_on_build = all(installed.get(d) == g for d, g in clean.items())
+            # A pre-existing pin is not proof that the files on disk match it.
+            # If Steam stayed on latest, this must remain a build change and the
+            # fix must not be applied onto the wrong installed manifests.
+            changed = not already_on_build
     except Exception:
         pass
     lines = _config_lines()

@@ -1204,12 +1204,9 @@ def _pin_to_build(appid: int, manifest_id: str, depot_id: str) -> Dict[str, Any]
 def _apply_pin(appid: int, prefer_gids: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
     """Version-lock a fixed game, with a current-build fallback.
 
-    Order: (1) the exact depot→gid map the fix names (setManifestid / catalog);
-    (2) the layered pin-source resolver (Hubcap / ~/Downloads lua); (3) if neither
-    yields a build-specific manifest — as with a build-agnostic fix like Binding
-    of Isaac — pin the CURRENTLY-INSTALLED build so Steam still can't update past
-    the version the fix was applied to. Only the engine truly lacking a pin key
-    (`unsupported`) skips the fallback.
+    Exact-manifest source fixes pass their own depot→gid map. Universal/local
+    fixes pass none and lock the CURRENTLY-INSTALLED build. The generic game
+    manifest resolver is deliberately not used here because it may target latest.
 
     Returns a dict with a reliable ``pinned`` bool (True only when depots were
     actually written), plus ``fellBack`` when it used the installed build.
@@ -1223,16 +1220,22 @@ def _apply_pin(appid: int, prefer_gids: Optional[Dict[int, str]] = None) -> Dict
         if prefer_gids:
             r = dict(slssteam.pin_app_gids(int(appid), prefer_gids) or {})
         else:
-            r = dict(pinsource.auto_pin_from_source(appid) or {})
+            r = dict(slssteam.pin_app_current(appid) or {})
     except Exception as exc:
         logger.warn(f"SLSDeck: build-specific pin failed for {appid}: {exc}")
         r = {"success": False, "error": str(exc)}
-    if _did_pin(r):
+    if _did_pin(r) or (not prefer_gids and r.get("success")):
         r["pinned"] = True
+        if not prefer_gids:
+            r["fellBack"] = True
         return r
     if r.get("unsupported"):
         return r  # engine has no pin key at all — a current-build pin can't work
-    # fall back to the installed build (build-agnostic fix)
+    # Never disguise an exact-source pin failure by locking a different build.
+    if prefer_gids:
+        r["pinned"] = False
+        return r
+    # Defensive fallback for an unusual current-pin implementation response.
     try:
         cur = dict(slssteam.pin_app_current(appid) or {})
     except Exception as exc:

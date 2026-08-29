@@ -218,8 +218,8 @@ def auto_pin_from_source(appid: int) -> Dict[str, object]:
 def auto_pin_from_luatools_fix(appid: int, fix_id: str) -> Dict[str, object]:
     """Pin to the EXACT build a specific lua.tools fix targets, using that fix's
     paired manifest (slot=manifest). This makes the update-vs-skip decision
-    accurate per-fix instead of relying on the generic per-app manifest. Falls
-    back to the generic resolver if the fix manifest can't be fetched."""
+    accurate per-fix instead of relying on the generic per-app manifest. The
+    selected fix is authoritative; never substitute a generic/latest manifest."""
     try:
         appid = int(appid)
     except Exception:
@@ -230,7 +230,8 @@ def auto_pin_from_luatools_fix(appid: int, fix_id: str) -> Dict[str, object]:
     except Exception as exc:
         logger.debug(f"pinsource: fix manifest fetch failed: {exc}")
     if not text:
-        return auto_pin_from_source(appid)
+        return {"success": True, "pinned": False, "source": "lua.tools-fix",
+                "error": "selected fix has no readable paired manifest .lua"}
     gids = parse_setmanifestid(text)
     if not gids:
         return {"success": True, "pinned": False, "source": "lua.tools",
