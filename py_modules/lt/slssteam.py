@@ -1514,6 +1514,15 @@ def get_install_status() -> Dict[str, Any]:
     # Safety net: if a run wedges (a blocking child that never returns), never
     # let the UI spin forever — fail it after a generous cap.
     if state.get("status") == "running":
+        unit = state.get("unit") if state.get("detached") else ""
+        if unit and not _detached_repair_active(str(unit)):
+            _set_install({
+                "status": "failed",
+                "success": False,
+                "error": "The independent Steam repair stopped before completion. You can retry.",
+            })
+            with _INSTALL_LOCK:
+                state = dict(_INSTALL_STATE)
         started = state.get("startedAt")
         if started and (time.time() - float(started)) > 1800:
             _set_install({
@@ -3614,6 +3623,8 @@ def client_fix_needed() -> Dict[str, Any]:
     if marker in text:
         text = text[text.rfind(marker):]
     lowered = text.lower()
+    current = steam_client_version()
+    supported = headcrab_compatible_client()
 
     # "Loaded successfully" is DEFINITIVE: SLSsteam only reaches it after the
     # steamclient.so hash check, so the installed client is supported.
@@ -3630,6 +3641,13 @@ def client_fix_needed() -> Dict[str, Any]:
                           "(steamclient.so hash accepted) — no client change needed"}
     for bad in ("hash missmatch", "hash mismatch", "aborting", "refusing to load"):
         if bad in lowered:
+            if current and supported and current == supported:
+                return {
+                    "needed": True,
+                    "engineOnly": True,
+                    "reason": "SLSsteam aborted, but Steam already matches Headcrab's "
+                              "supported client build — repair the engine and launcher only",
+                }
             return {"needed": True,
                     "reason": f"SLSsteam reported '{bad}' against the current client"}
     return {"needed": True, "reason": "SLSsteam did not report a successful load"}
@@ -3668,6 +3686,67 @@ def _gaming_mode_client_fix_entry(relaunch_desktop: bool = False) -> int:
                 _log("Restarted Steam after Desktop Mode client repair")
             except Exception as exc:
                 _log(f"Could not restart Steam after Desktop Mode repair: {exc}")
+
+
+def _detached_repair_active(unit: str) -> bool:
+    """Whether the transient user service backing the UI's running state exists."""
+    if not unit:
+        return False
+    try:
+        import pwd
+        pw = pwd.getpwnam(_decky_user())
+        uid = pw.pw_uid
+        cmd = [
+            "sudo", "-u", pw.pw_name, "env",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            "systemctl", "--user", "is-active", unit,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return proc.returncode == 0 and (proc.stdout or "").strip() in ("active", "activating")
+    except Exception:
+        return False
+
+
+def _start_engine_only_repair() -> Dict[str, Any]:
+    """Repair moon + launch wrappers without letting Headcrab stop Steam."""
+    def _worker():
+        _INSTALL_LOG.clear()
+        _set_install({"status": "running", "stage": "repairing-engine",
+                      "startedAt": time.time(), "detached": False, "unit": ""})
+        try:
+            _log("Steam client already matches Headcrab; skipping the destructive client repair")
+            moon = refresh_moon_engine()
+            if not moon.get("success"):
+                _set_install({"status": "failed", "success": False,
+                              "error": moon.get("error") or "slsteam-moon reinstall failed"})
+                return
+            act = activate_injection()
+            if not act.get("success"):
+                _set_install({"status": "failed", "success": False,
+                              "error": act.get("error") or "injection activation failed"})
+                return
+            patterns = refresh_patterns_now()
+            if not patterns.get("success"):
+                _set_install({
+                    "status": "failed", "success": False, "installed": True,
+                    "needsRestart": True,
+                    "error": "The launcher was restored, but the latest slsteam-moon "
+                             "still cannot match this Steam binary. Restart the Deck; "
+                             "if it still aborts, upstream moon pattern coverage is required.",
+                    "patternResult": patterns,
+                })
+                return
+            _set_install({"status": "done", "success": True, "installed": True,
+                          "needsRestart": True,
+                          "message": "Engine and launcher repaired. Restart the Deck once to load them."})
+            _log("Engine and launcher repaired — restart the Deck once to apply")
+        except Exception as exc:
+            _set_install({"status": "failed", "success": False, "error": str(exc)})
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"success": True, "engineOnly": True,
+            "message": "Repairing the engine without changing the Steam client."}
 
 
 def _start_gaming_mode_client_fix() -> Dict[str, Any]:
@@ -3718,8 +3797,8 @@ def _start_gaming_mode_client_fix() -> Dict[str, Any]:
 def start_client_fix(force: bool = False) -> Dict[str, Any]:
     # Guard the heavy path: without this, enabling injection re-downloads the
     # whole Steam client even when the installed one is already supported.
+    chk = client_fix_needed()
     if not force:
-        chk = client_fix_needed()
         if not chk.get("needed"):
             logger.log(f"SLSsteam: skipping client fix — {chk.get('reason')}")
             return {"success": True, "skipped": True, "reason": chk.get("reason")}
@@ -3733,6 +3812,12 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
         pass
     _set_install({"status": "queued", "error": "", "log": "", "percent": 0})
 
+    # Force means "repair despite the banner", not "downgrade a client which is
+    # already exactly Headcrab's target". In that case Headcrab only replaces
+    # steam.sh, stops Steam, and creates a bootstrap loop; refresh moon + wrapper.
+    if chk.get("engineOnly"):
+        return _start_engine_only_repair()
+
     # Headcrab deliberately stops Steam. In Gaming Mode that also destroys the
     # Decky worker which started it, so hand the operation to the user's systemd
     # manager first. The gamescope session owns restarting its Steam shell.
@@ -3740,7 +3825,8 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
     if detached.get("success"):
         _set_install({"status": "running", "success": True,
                       "stage": "client-compatibility", "detached": True,
-                      "message": "Repair continues across the Gaming Mode Steam restart."})
+                      "message": "Repair continues across the Gaming Mode Steam restart.",
+                      "unit": detached.get("unit"), "startedAt": time.time()})
         return detached
     _log(f"Independent Gaming Mode repair unavailable ({detached.get('error')}); using fallback")
 
@@ -3942,6 +4028,7 @@ def refresh_moon_engine() -> Dict[str, Any]:
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
             return {"success": False, "error": "moon extract failed"}
+        _chown_to_user(tmp)
         _run_setup_script(root)
         _place_libraries(root)
         _record_engine_version()
@@ -4029,6 +4116,7 @@ def ensure_moon_engine() -> Dict[str, Any]:
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
             return {"success": False, "changed": False, "error": "moon extract failed"}
+        _chown_to_user(tmp)
         _run_setup_script(root)
         # Always place the full bin/* (incl. pattern-refresh), not only when the
         # moon .so is missing — headcrab's AceSLS overlay strips pattern-refresh,
