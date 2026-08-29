@@ -3635,6 +3635,86 @@ def client_fix_needed() -> Dict[str, Any]:
     return {"needed": True, "reason": "SLSsteam did not report a successful load"}
 
 
+def _gaming_mode_client_fix_entry(relaunch_desktop: bool = False) -> int:
+    """Finish Headcrab outside Decky's Steam-owned process tree.
+
+    In Gaming Mode Steam is the UI shell. Headcrab must stop it to replace the
+    client, which also takes Decky and an ordinary plugin worker down. The user
+    service running this entry survives that shell restart and restores the moon
+    engine after Headcrab temporarily installs stock SLSsteam.
+    """
+    try:
+        if not _run_headcrab_shimmed():
+            return 1
+        moon = ensure_moon_engine()
+        if not moon.get("success"):
+            _log(f"slsteam-moon restore failed: {moon.get('error')}")
+            return 1
+        ensure_config()
+        activate_injection()
+        _log("Gaming Mode client repair completed; the session may now reload Steam")
+        return 0
+    except Exception as exc:
+        _log(f"Gaming Mode client repair failed: {exc}")
+        return 1
+    finally:
+        if relaunch_desktop:
+            try:
+                subprocess.Popen(
+                    ["steam"], env=_rich_env(), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                _log("Restarted Steam after Desktop Mode client repair")
+            except Exception as exc:
+                _log(f"Could not restart Steam after Desktop Mode repair: {exc}")
+
+
+def _start_gaming_mode_client_fix() -> Dict[str, Any]:
+    """Start repair in the user's systemd manager, independent of Steam/Decky."""
+    if not _is_root() or not shutil.which("systemd-run"):
+        return {"success": False, "error": "Gaming Mode user-service launcher unavailable"}
+    try:
+        import pwd
+        import sys
+        pw = pwd.getpwnam(_decky_user())
+        uid = pw.pw_uid
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        unit = f"slsdeck-headcrab-repair-{int(time.time())}"
+        # gamescope supervises and restarts Steam in Gaming Mode. Desktop Mode
+        # has no such supervisor, so the repair service must relaunch it itself.
+        gaming_mode = False
+        try:
+            probe = subprocess.run(["pgrep", "-fa", "gamescope-session"],
+                                   capture_output=True, text=True, timeout=3)
+            gaming_mode = probe.returncode == 0 and bool((probe.stdout or "").strip())
+        except Exception:
+            pass
+        code = (
+            "from py_modules.lt.slssteam import _gaming_mode_client_fix_entry; "
+            f"raise SystemExit(_gaming_mode_client_fix_entry({not gaming_mode!r}))"
+        )
+        cmd = [
+            "sudo", "-u", pw.pw_name, "env",
+            f"HOME={pw.pw_dir}",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            f"PYTHONPATH={project_root}",
+            "systemd-run", "--user", f"--unit={unit}", "--collect",
+            "--property=Type=exec", sys.executable, "-c", code,
+        ]
+        proc = subprocess.run(cmd, cwd=project_root, env=_rich_env(),
+                              capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "systemd-run failed").strip()
+            return {"success": False, "error": detail[:400]}
+        _log("Gaming Mode repair handed to an independent user service")
+        return {"success": True, "detached": True, "unit": unit,
+                "mode": "gaming" if gaming_mode else "desktop"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def start_client_fix(force: bool = False) -> Dict[str, Any]:
     # Guard the heavy path: without this, enabling injection re-downloads the
     # whole Steam client even when the installed one is already supported.
@@ -3652,6 +3732,17 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
     except Exception:
         pass
     _set_install({"status": "queued", "error": "", "log": "", "percent": 0})
+
+    # Headcrab deliberately stops Steam. In Gaming Mode that also destroys the
+    # Decky worker which started it, so hand the operation to the user's systemd
+    # manager first. The gamescope session owns restarting its Steam shell.
+    detached = _start_gaming_mode_client_fix()
+    if detached.get("success"):
+        _set_install({"status": "running", "success": True,
+                      "stage": "client-compatibility", "detached": True,
+                      "message": "Repair continues across the Gaming Mode Steam restart."})
+        return detached
+    _log(f"Independent Gaming Mode repair unavailable ({detached.get('error')}); using fallback")
 
     def _worker():
         _INSTALL_LOG.clear()
