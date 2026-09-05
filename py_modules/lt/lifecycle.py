@@ -97,10 +97,15 @@ def cleanup_for_update() -> Dict[str, Any]:
 
 
 def cleanup_for_uninstall() -> Dict[str, Any]:
-    """Remove safe Decky-owned state during uninstall.
+    """Remove all Decky-owned state during an explicit plugin uninstall.
 
-    Keep the active settings directory so explicit user settings and keys
-    survive a reinstall.  Never touch watched SLSsteam config or game content.
+    Decky leaves both ``homebrew/data/<id>`` and
+    ``homebrew/settings/<id>`` behind.  Preserving the latter made a reinstall
+    inherit stale lifecycle/version state and could keep a repaired build on
+    the old install path.  A normal plugin update uses ``cleanup_for_update``
+    and still preserves preferences, credentials and pins; only Decky's true
+    uninstall callback removes them.  Watched SLSsteam config and game content
+    remain out of scope here.
     """
     removed: List[str] = []
     errors: List[str] = []
@@ -113,6 +118,11 @@ def cleanup_for_uninstall() -> Dict[str, Any]:
         logs = os.path.join(root, "logs")
         _remove_tree(os.path.join(logs, CURRENT_ID), logs, removed, errors)
 
+    # Remove settings last: _homebrew_root() uses their location to resolve the
+    # Decky root without recreating the already-deleted runtime directory.
+    settings = os.path.realpath(get_settings_dir())
+    _remove_tree(settings, os.path.dirname(settings), removed, errors)
+
     logger.log(f"SLSDeck lifecycle: uninstall cleanup removed {len(removed)} safe path(s)")
     return {"success": not errors, "removed": removed, "errors": errors,
-            "preserved": [get_settings_dir(), "~/.config/SLSsteam (watched while Steam is live)"]}
+            "preserved": ["~/.config/SLSsteam (watched while Steam is live)"]}
