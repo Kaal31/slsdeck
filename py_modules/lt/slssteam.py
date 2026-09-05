@@ -1598,36 +1598,36 @@ def _download(url: str, dest: str, sha256: str = "") -> bool:
         the difference between "we fetched a file" and "we fetched the file we
         expected".
     """
-    import httpx  # local import; httpx ships with the plugin
+    from .httpc import ensure_http_client
     if not str(url).lower().startswith("https://"):
         _log(f"refusing non-HTTPS download: {url}")
         return False
     h = __import__("hashlib").sha256() if sha256 else None
     try:
-        with httpx.Client(follow_redirects=True, timeout=120) as client:
-            with client.stream("GET", url) as resp:
-                # Guard every redirect hop, not just the first URL.
-                for r in list(getattr(resp, "history", []) or []) + [resp]:
-                    hop = str(r.url)
-                    if not hop.lower().startswith("https://"):
-                        _log(f"refusing redirect to non-HTTPS: {hop}")
-                        return False
-                resp.raise_for_status()
-                total = int(resp.headers.get("Content-Length", "0") or "0")
-                read = 0
-                with open(dest, "wb") as fh:
-                    for chunk in resp.iter_bytes():
-                        if not chunk:
-                            continue
-                        fh.write(chunk)
-                        if h is not None:
-                            h.update(chunk)
-                        read += len(chunk)
-                        if total:
-                            # Clamp: a gzipped response reports a compressed
-                            # Content-Length while iter_bytes yields decompressed
-                            # bytes, so read can exceed total (was showing >100%).
-                            _set_install({"percent": min(100, int(read / total * 100))})
+        client = ensure_http_client("SLSsteam: engine download")
+        with client.stream("GET", url, follow_redirects=True, timeout=120) as resp:
+            # Guard every redirect hop, not just the first URL.
+            for r in list(getattr(resp, "history", []) or []) + [resp]:
+                hop = str(r.url)
+                if not hop.lower().startswith("https://"):
+                    _log(f"refusing redirect to non-HTTPS: {hop}")
+                    return False
+            resp.raise_for_status()
+            total = int(resp.headers.get("Content-Length", "0") or "0")
+            read = 0
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_bytes():
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    if h is not None:
+                        h.update(chunk)
+                    read += len(chunk)
+                    if total:
+                        # Clamp: a gzipped response reports a compressed
+                        # Content-Length while iter_bytes yields decompressed
+                        # bytes, so read can exceed total (was showing >100%).
+                        _set_install({"percent": min(100, int(read / total * 100))})
         if os.path.getsize(dest) <= 0:
             return False
         if h is not None:
@@ -1810,7 +1810,8 @@ def _run_install() -> None:
 
         _stage("downloading", "Downloading engine…")
         if not _download(url, archive):
-            _set_install({"status": "failed", "error": "Download failed (no network?)"})
+            detail = _INSTALL_LOG[-1] if _INSTALL_LOG else "unknown download error"
+            _set_install({"status": "failed", "error": f"Engine download failed: {detail}"})
             return
 
         _stage("extracting", "Extracting…")
@@ -3453,6 +3454,40 @@ def _run_headcrab_shimmed() -> bool:
         else:
             _log("Could not obtain h3adcr-b (no network, no bundled copy)")
             return False
+
+    # Headcrab is a client compatibility tool, but its upstream script also
+    # downloads AceSLS's stock SLSsteam and copies it over the installed engine
+    # every time it starts Steam.  Stock SLSsteam has no depot-key support, so
+    # moon-added games then become 0 B downloads.  Make sure moon is available
+    # before touching the client and override only that unrelated copy step.
+    moon_before = ensure_moon_engine()
+    if not moon_before.get("success"):
+        _log(f"Refusing client repair without slsteam-moon: {moon_before.get('error')}")
+        return False
+    try:
+        with open(script, "r", encoding="utf-8", errors="ignore") as fh:
+            script_text = fh.read()
+        marker = "\n    main\n"
+        pos = script_text.rfind(marker)
+        if pos < 0:
+            marker = "\nmain\n"
+            pos = script_text.rfind(marker)
+        if pos < 0:
+            _log("Refusing unrecognised Headcrab script: final main call not found")
+            return False
+        preserve = (
+            "\n# SLSDeck: Headcrab may repair the client, but must not replace moon.\n"
+            "copySLSsteam(){\n"
+            "    echo 'SLSDeck: preserving installed slsteam-moon engine'\n"
+            "}\n"
+        )
+        script_text = script_text[:pos] + preserve + script_text[pos:]
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(script_text)
+        _log("Patched Headcrab to preserve slsteam-moon (stock engine copy disabled)")
+    except Exception as exc:
+        _log(f"Could not make Headcrab moon-safe: {exc}")
+        return False
     os.chmod(script, 0o755)
     # Cache the compatible-client version straight from the script we just fetched,
     # so our "client matches?" diagnostic uses the real target, not the stale const.
@@ -3627,7 +3662,13 @@ def _run_headcrab_shimmed() -> bool:
     # An already-installed .so says nothing about whether this run succeeded.
     # Returning it here used to turn permission errors and failed downgrades into
     # a green "Done" state. The compatibility operation itself must exit cleanly.
-    return rc == 0
+    if rc != 0:
+        return False
+    final_engine = installed_lib_is_moon()
+    if not final_engine.get("moon"):
+        _log("Client repair rejected: final engine is not slsteam-moon")
+        return False
+    return True
 
 
 def client_fix_needed() -> Dict[str, Any]:
@@ -3899,10 +3940,20 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
                     _log(f"WARNING: {moon.get('error')}")
             except Exception as mexc:
                 _log(f"slsteam-moon re-assert failed: {mexc}")
+            if not moon.get("success") or not installed_lib_is_moon().get("moon"):
+                _set_install({
+                    "status": "failed",
+                    "success": False,
+                    "installed": bool(find_installed_lib()),
+                    "engineIsMoon": False,
+                    "error": "Client repair finished, but slsteam-moon could not be verified; "
+                             "stock SLSsteam was not accepted",
+                })
+                return
             ensure_config()
             installed = bool(find_installed_lib())
             injected = is_injected()
-            _set_install({"status": "done", "success": ok or installed,
+            _set_install({"status": "done", "success": bool(ok and installed),
                           "installed": installed, "injected": injected,
                           "clientFixed": True,
                           "moonRestored": bool(moon.get("changed")),
@@ -3920,9 +3971,6 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
 # genuinely unowned games download but stay encrypted. slsteam-moon reads the
 # depot decryption keys from config/stplug-in/<appid>.lua (which this plugin
 # already writes), so added games actually decrypt and launch.
-SLS_MOON_API = "https://api.github.com/repos/swwayps/slsteam-moon/releases/latest"
-
-
 _MOON_MARKERS = (b"stplug-in", b"addappid", b"depotkey", b"ManifestStore")
 
 
@@ -4182,13 +4230,11 @@ def ensure_moon_engine() -> Dict[str, Any]:
 def _resolve_moon_zip_url() -> str:
     """Find the latest slsteam-moon-linux-*.zip download URL."""
     try:
-        import httpx
-        with httpx.Client(follow_redirects=True, timeout=30) as c:
-            r = c.get(SLS_MOON_API, headers={"Accept": "application/vnd.github+json",
-                                             "User-Agent": "SLSDeck"})
-            r.raise_for_status()
-            data = r.json()
-        assets = data.get("assets", []) or []
+        from . import ghrel
+        release = ghrel.latest("swwayps/slsteam-moon", force=True)
+        if not release.get("success"):
+            raise RuntimeError(release.get("error") or "GitHub release lookup failed")
+        assets = release.get("assets", []) or []
         zips = [a for a in assets
                 if str(a.get("name", "")).startswith("slsteam-moon-linux")
                 and str(a.get("name", "")).endswith(".zip")]
@@ -4201,7 +4247,7 @@ def _resolve_moon_zip_url() -> str:
         lumen = [a for a in zips if "lumen" in str(a.get("name", "")).lower()]
         chosen = (lumen or zips)[0]
         _log(f"slsteam-moon asset: {chosen.get('name')}")
-        return chosen.get("browser_download_url", "")
+        return chosen.get("url", "")
     except Exception as exc:
         _log(f"Could not resolve slsteam-moon release: {exc}")
         return ""
