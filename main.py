@@ -535,13 +535,12 @@ class Plugin:
             close_http_client("uninstall")
         except Exception:
             pass
-        # Decky only removes the active plugin code. Remove our rebuildable data,
-        # logs and obsolete plugin identities now, while preserving the current
-        # settings/keys directory. The live-watched ~/.config/SLSsteam remains
-        # inert after deactivate_injection and is intentionally not deleted.
+        # Decky only removes the active plugin code. Remove our data, settings,
+        # logs and obsolete plugin identities as well so a later reinstall is
+        # genuinely clean. The live-watched ~/.config/SLSsteam remains inert
+        # after deactivate_injection and is intentionally not deleted here.
         try:
             result = lifecycle.cleanup_for_uninstall()
-            settings.reset_lifecycle_transients()
             if not result.get("success"):
                 decky.logger.warning(f"SLSDeck: safe uninstall cleanup issues: {result.get('errors')}")
         except Exception as exc:
