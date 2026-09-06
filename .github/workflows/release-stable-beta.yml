@@ -1,0 +1,102 @@
+name: Release stable-beta
+
+on:
+  push:
+    branches:
+      - stable-beta
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-stable-beta
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout stable-beta
+        uses: actions/checkout@v4
+        with:
+          ref: stable-beta
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Stamp unique rolling version
+        env:
+          ROLLING_VERSION: 0.9.61-stable-beta.${{ github.run_number }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const expectedName = 'SLSDeckUniversal';
+          for (const file of ['plugin.json', 'package.json']) {
+            const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (value.name !== expectedName) throw new Error(`${file} has wrong plugin name`);
+            value.version = process.env.ROLLING_VERSION;
+            fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+          }
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          if (lock.name !== expectedName || lock.packages?.['']?.name !== expectedName) {
+            throw new Error('package-lock.json plugin name does not match SLSDeckUniversal');
+          }
+          NODE
+      - name: Build and validate
+        run: |
+          npm run build
+          python3 -m compileall -q main.py py_modules
+          test -s dist/index.js
+      - name: Restore tracked dist support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Build Ubisoft package dependency
+        run: |
+          python3 .github/scripts/build-ubisoft-packages.py
+          unzip -t ubisoft-packages.zip
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-stable-beta.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          cd artifact
+          zip -qr ../SLSDeckUniversal-stable-beta.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-stable-beta.zip | grep -q 'SLSDeckUniversal/plugin.json'
+          test "$(unzip -Z1 SLSDeckUniversal-stable-beta.zip | awk -F/ 'NF {print $1}' | sort -u)" = "SLSDeckUniversal"
+      - name: Update rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="stable-beta-latest"
+          git fetch origin --tags --force
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "SLSDeck stable beta" --notes "Rolling prerelease built automatically from stable-beta." --prerelease
+          else
+            gh release create "$TAG" --title "SLSDeck stable beta" --notes "Rolling prerelease built automatically from stable-beta." --prerelease --target stable-beta
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-stable-beta.zip ubisoft-packages.zip --clobber
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-stable-beta
+          path: |
+            SLSDeckUniversal-stable-beta.zip
+            ubisoft-packages.zip
+          if-no-files-found: error
+          retention-days: 14
