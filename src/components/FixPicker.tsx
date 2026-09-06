@@ -1166,11 +1166,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     const showProgress = activeFixKey === key && !!fixState.status;
     const total = Number(fixState.totalBytes || 0);
     const read = Number(fixState.bytesRead || 0);
-    const phasePercent = Number((fixState as any).percent);
+    const rawPhasePercent = (fixState as any).percent;
+    const phasePercent = typeof rawPhasePercent === "number" ? rawPhasePercent : Number.NaN;
     const percent = Number.isFinite(phasePercent)
       ? Math.max(0, Math.min(100, Math.round(phasePercent)))
       : total > 0
-      ? Math.max(0, Math.min(100, Math.round((read / total) * 100)))
+      ? Math.max(0, Math.min(80, Math.round((read / total) * 80)))
       : fixState.status === "done"
       ? 100
       : undefined;
@@ -1196,6 +1197,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
                   ? "Downloading fix…"
                   : fixState.status === "extracting"
                   ? "Extracting fix…"
+                  : fixState.status === "applying"
+                  ? "Applying fix files…"
+                  : fixState.status === "finalizing"
+                  ? "Finalizing fix…"
                   : fixState.status === "done"
                   ? "Fix applied"
                   : fixState.status === "failed"
