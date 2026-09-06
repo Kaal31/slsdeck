@@ -110,6 +110,47 @@ def _run_as_user(argv, timeout=180) -> subprocess.CompletedProcess:
     env["HOME"] = _home()
     env["USER"] = _deck_user()
     env["LOGNAME"] = _deck_user()
+    # Decky runs the backend as root. `runuser` changes uid/gid but does not
+    # attach the process to the Deck user's graphical/login session. Tokeer's
+    # final steam:// launch and some Proton helpers need that session bus.
+    try:
+        uid = pwd.getpwnam(_deck_user()).pw_uid
+    except Exception:
+        uid = os.stat(_home()).st_uid
+    env["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{uid}/bus"
+    # Preserve compositor/display values from the live Steam process when
+    # Decky's own environment does not contain them (normal in Gaming Mode).
+    session_keys = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY")
+    if not all(env.get(key) for key in session_keys[:2]):
+        try:
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                proc = f"/proc/{pid}"
+                if os.stat(proc).st_uid != uid:
+                    continue
+                try:
+                    with open(os.path.join(proc, "comm"), "r", encoding="utf-8", errors="ignore") as fh:
+                        comm = fh.read().strip().lower()
+                    if comm not in ("steam", "steamwebhelper", "gamescope"):
+                        continue
+                    with open(os.path.join(proc, "environ"), "rb") as fh:
+                        entries = fh.read().split(b"\0")
+                    live = {}
+                    for entry in entries:
+                        key, sep, value = entry.partition(b"=")
+                        if sep:
+                            live[key.decode("utf-8", "ignore")] = value.decode("utf-8", "ignore")
+                    for key in session_keys:
+                        if live.get(key):
+                            env[key] = live[key]
+                    if env.get("DISPLAY") or env.get("WAYLAND_DISPLAY"):
+                        break
+                except (OSError, PermissionError):
+                    continue
+        except (OSError, PermissionError):
+            pass
     env["PATH"] = ":".join([
         os.path.join(_home(), ".local", "bin"),
         "/usr/local/bin", "/usr/bin", "/bin",
@@ -754,9 +795,27 @@ def redeem(code: str) -> Dict[str, Any]:
     try:
         # Follow Tokeer's official one-command flow: write the activation
         # tickets and launch the game through steam://rungameid/<appid>.
-        p = _run_as_user([cmd, code], timeout=120)
+        # Upstream's Wine registry import has its own 120-second timeout. Give
+        # it enough room to unwind and print the failing phase instead of
+        # killing the wrapper at the exact same deadline with no diagnostics.
+        p = _run_as_user([cmd, code], timeout=150)
         out = p.stdout or ""
+        phase = ""
+        matches = re.findall(r"\[([1-4])/4\]\s*([^\n]+)", out)
+        if matches:
+            phase = f"Tokeer stopped during step {matches[-1][0]}/4 ({matches[-1][1].strip()}). "
         return {"success": p.returncode == 0, "returnCode": p.returncode,
-                "output": out[-24000:], "error": "" if p.returncode == 0 else "Activation failed."}
+                "output": out[-24000:],
+                "error": "" if p.returncode == 0 else phase + "Activation failed.\n\n" + out[-6000:]}
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or exc.output or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", "replace")
+        partial = str(partial)
+        matches = re.findall(r"\[([1-4])/4\]\s*([^\n]+)", partial)
+        phase = (f" during step {matches[-1][0]}/4 ({matches[-1][1].strip()})"
+                 if matches else " before reporting its current step")
+        return {"success": False, "output": partial[-24000:], "timedOut": True,
+                "error": f"Tokeer did not finish{phase} after 150 seconds.\n\n{partial[-6000:]}".strip()}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
