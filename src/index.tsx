@@ -54,25 +54,40 @@ function queueAddVerification(appid: number, name: string, liveReady: boolean): 
   writePendingAddVerifications(items);
 }
 
-function steamLibraryHasApp(appid: number): boolean {
+/** Steam's library stores are not always exposed to Decky in Desktop/Big
+ * Picture contexts. `null` means the frontend cannot answer authoritatively;
+ * it must not be treated as proof that an otherwise successful add failed. */
+function steamLibraryHasApp(appid: number): boolean | null {
+  let libraryCollectionAvailable = false;
   try {
     const apps: any = (window as any).collectionStore?.allAppsCollection?.apps;
-    if (apps?.has?.(appid) || apps?.get?.(appid)) return true;
+    if (apps) {
+      libraryCollectionAvailable = true;
+      if (apps?.has?.(appid) || apps?.has?.(String(appid)) || apps?.get?.(appid) || apps?.get?.(String(appid))) return true;
+    }
   } catch { /* ignore */ }
   try {
-    return !!((window as any).appStore?.GetAppOverviewByAppID?.(appid) ||
-      (window as any).appStore?.GetAppOverviewByGameID?.(appid));
-  } catch { return false; }
+    if ((window as any).appStore?.GetAppOverviewByAppID?.(appid) ||
+      (window as any).appStore?.GetAppOverviewByGameID?.(appid)) return true;
+  } catch { /* ignore */ }
+  return libraryCollectionAvailable ? false : null;
 }
 
 async function verifyAddedGameReachedSteam(appid: number, name: string): Promise<void> {
+  let authoritative = false;
   for (let attempt = 0; attempt < 15; attempt++) {
-    if (steamLibraryHasApp(appid)) {
+    const present = steamLibraryHasApp(appid);
+    if (present === true) {
       writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
       return;
     }
+    if (present === false) authoritative = true;
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
   }
+  // Desktop Mode can run the plugin without collectionStore/appStore. Keep the
+  // pending record so a later Gaming Mode session can verify it, but never emit
+  // a false failure notification from an unavailable frontend data source.
+  if (!authoritative) return;
   // Registration in config.yaml is not enough: this is the final frontend
   // proof that Steam actually accepted the injected package/appinfo entry.
   toaster.toast({
