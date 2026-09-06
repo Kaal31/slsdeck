@@ -1271,6 +1271,21 @@ def headcrab_compatible_client() -> str:
     now = _t.time()
     if _HEADCRAB_COMPAT_CACHE["ver"] and now - _HEADCRAB_COMPAT_CACHE["ts"] < 3600:
         return _HEADCRAB_COMPAT_CACHE["ver"]
+    # The installer caches the exact upstream script it actually runs. Prefer
+    # that over another network request: Decky's HTTP client can be offline or
+    # return a stale raw-GitHub response, which previously made this check fall
+    # back to an obsolete constant and launch Headcrab against an already-
+    # compatible client.
+    try:
+        cached = os.path.join(config_dir(), "tools", "headcrab.sh")
+        if os.path.isfile(cached):
+            with open(cached, "r", encoding="utf-8", errors="ignore") as fh:
+                m = re.search(r"HeadcrabCompatibleClientVer\s*=\s*(\d+)", fh.read())
+            if m:
+                _HEADCRAB_COMPAT_CACHE.update(ts=now, ver=m.group(1))
+                return m.group(1)
+    except Exception:
+        pass
     try:
         client = ensure_http_client("headcrab: compat ver")
         r = client.get(_cache_bust(HEADCRAB_RAW_URL), timeout=15, follow_redirects=True)
@@ -1413,6 +1428,19 @@ def _chown_to_user(path: str) -> None:
 def _extraction_available() -> bool:
     if any(shutil.which(n) for n in ("7z", "7za", "7zr", "bsdtar")):
         return True
+    # The plugin bundles a static x86_64 7zz precisely so Arch/Cachy installs
+    # do not depend on pacman or Decky's embedded Python having py7zr ready.
+    try:
+        bundled = defaults_path(os.path.join("bin", "7zz"))
+        if os.path.isfile(bundled):
+            try:
+                os.chmod(bundled, 0o755)
+            except Exception:
+                pass
+            if os.access(bundled, os.X_OK):
+                return True
+    except Exception:
+        pass
     try:
         import py7zr  # noqa: F401
         return True
@@ -1501,6 +1529,15 @@ def get_install_status() -> Dict[str, Any]:
     # Safety net: if a run wedges (a blocking child that never returns), never
     # let the UI spin forever — fail it after a generous cap.
     if state.get("status") == "running":
+        unit = state.get("unit") if state.get("detached") else ""
+        if unit and not _detached_repair_active(str(unit)):
+            _set_install({
+                "status": "failed",
+                "success": False,
+                "error": "The independent Steam repair stopped before completion. You can retry.",
+            })
+            with _INSTALL_LOCK:
+                state = dict(_INSTALL_STATE)
         started = state.get("startedAt")
         if started and (time.time() - float(started)) > 1800:
             _set_install({
@@ -1561,36 +1598,36 @@ def _download(url: str, dest: str, sha256: str = "") -> bool:
         the difference between "we fetched a file" and "we fetched the file we
         expected".
     """
-    import httpx  # local import; httpx ships with the plugin
+    from .httpc import ensure_http_client
     if not str(url).lower().startswith("https://"):
         _log(f"refusing non-HTTPS download: {url}")
         return False
     h = __import__("hashlib").sha256() if sha256 else None
     try:
-        with httpx.Client(follow_redirects=True, timeout=120) as client:
-            with client.stream("GET", url) as resp:
-                # Guard every redirect hop, not just the first URL.
-                for r in list(getattr(resp, "history", []) or []) + [resp]:
-                    hop = str(r.url)
-                    if not hop.lower().startswith("https://"):
-                        _log(f"refusing redirect to non-HTTPS: {hop}")
-                        return False
-                resp.raise_for_status()
-                total = int(resp.headers.get("Content-Length", "0") or "0")
-                read = 0
-                with open(dest, "wb") as fh:
-                    for chunk in resp.iter_bytes():
-                        if not chunk:
-                            continue
-                        fh.write(chunk)
-                        if h is not None:
-                            h.update(chunk)
-                        read += len(chunk)
-                        if total:
-                            # Clamp: a gzipped response reports a compressed
-                            # Content-Length while iter_bytes yields decompressed
-                            # bytes, so read can exceed total (was showing >100%).
-                            _set_install({"percent": min(100, int(read / total * 100))})
+        client = ensure_http_client("SLSsteam: engine download")
+        with client.stream("GET", url, follow_redirects=True, timeout=120) as resp:
+            # Guard every redirect hop, not just the first URL.
+            for r in list(getattr(resp, "history", []) or []) + [resp]:
+                hop = str(r.url)
+                if not hop.lower().startswith("https://"):
+                    _log(f"refusing redirect to non-HTTPS: {hop}")
+                    return False
+            resp.raise_for_status()
+            total = int(resp.headers.get("Content-Length", "0") or "0")
+            read = 0
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_bytes():
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    if h is not None:
+                        h.update(chunk)
+                    read += len(chunk)
+                    if total:
+                        # Clamp: a gzipped response reports a compressed
+                        # Content-Length while iter_bytes yields decompressed
+                        # bytes, so read can exceed total (was showing >100%).
+                        _set_install({"percent": min(100, int(read / total * 100))})
         if os.path.getsize(dest) <= 0:
             return False
         if h is not None:
@@ -1707,6 +1744,11 @@ def _run_setup_script(extract_root: str) -> int:
         return -1
     mode = "flatpak-install" if _is_flatpak_steam() else "install"
     try:
+        # Decky runs the backend as root, but setup.sh deliberately runs as the
+        # desktop user. tempfile.mkdtemp() creates a root-owned 0700 directory,
+        # so without transferring the extracted tree first bash exits 126 before
+        # it can even read setup.sh.
+        _chown_to_user(extract_root)
         proc = subprocess.run(
             _wrap_as_user(["bash", setup, mode]),
             cwd=os.path.dirname(setup),
@@ -1768,7 +1810,8 @@ def _run_install() -> None:
 
         _stage("downloading", "Downloading engine…")
         if not _download(url, archive):
-            _set_install({"status": "failed", "error": "Download failed (no network?)"})
+            detail = _INSTALL_LOG[-1] if _INSTALL_LOG else "unknown download error"
+            _set_install({"status": "failed", "error": f"Engine download failed: {detail}"})
             return
 
         _stage("extracting", "Extracting…")
@@ -1776,14 +1819,19 @@ def _run_install() -> None:
         if not _extract_any(archive, extract_root):
             _set_install({"status": "failed", "error": "Could not extract engine release"})
             return
+        # setup.sh runs as the desktop user, which must be able to traverse the
+        # root-created 0700 mkdtemp parent as well as read the extracted files.
+        _chown_to_user(tmp)
 
         # The fork ships its own setup.sh — run it first (it knows its layout),
         # then ALWAYS copy the full bin/* ourselves. Not just as a missing-.so
         # fallback: setup.sh may install SLSsteam.so but not the pattern-refresh
         # helper / library-inject.so, and without pattern-refresh injection can't
         # recover after a Steam update. Copying the whole bin/ guarantees they land.
-        _stage("installing-engine", "Installing engine (setup.sh)…")
-        _run_setup_script(extract_root)
+        _stage("installing-engine", "Installing engine files…")
+        # Do not invoke upstream setup.sh from Decky. It can open sudo/pkexec
+        # password prompts, restart Steam, and install competing launch wrappers.
+        # We place every binary and install both launch paths ourselves below.
         _log("Placing SLSsteam libraries (SLSsteam.so, library-inject.so, pattern-refresh)…")
         _place_libraries(extract_root)
         _record_engine_version()
@@ -1807,9 +1855,18 @@ def _run_install() -> None:
         _chown_to_user(os.path.join(config_dir(), "tools"))
         _stage("client-compatibility", "Setting up Steam client compatibility (h3adcr-b)… this can take a few minutes")
         try:
-            _run_headcrab_shimmed()
+            client_compatible = _run_headcrab_shimmed()
         except Exception as hc_exc:
+            client_compatible = False
             _log(f"Client-compatibility step failed: {hc_exc}")
+        if not client_compatible:
+            _set_install({
+                "status": "failed",
+                "success": False,
+                "installed": bool(find_installed_lib()),
+                "error": "Steam client compatibility setup failed; see the install log",
+            })
+            return
         ensure_config()
 
         # 2) Apply OUR steam.sh wrapper LAST — on-device testing showed this is
@@ -2701,6 +2758,7 @@ def _activate_steam_sh_wrapper() -> Dict[str, Any]:
         return {"success": False, "error": "steam.sh not found"}
     d = os.path.dirname(sh)
     orig = os.path.join(d, "steam.sh.slsorig")
+    client = os.path.join(d, "client.sh")
     try:
         current = ""
         try:
@@ -2714,11 +2772,22 @@ def _activate_steam_sh_wrapper() -> Dict[str, Any]:
         # already-wrapped launcher as the "original".
         if not already and not os.path.exists(orig) and _looks_pristine(current):
             shutil.copy2(sh, orig)
+        # A previous Headcrab run replaces steam.sh but downloads Valve's clean
+        # launcher as client.sh. If our own backup predates the plugin install or
+        # was lost, recover from that clean copy instead of leaving the Headcrab
+        # bootstrap loop in place.
+        if not os.path.exists(orig) and os.path.isfile(client):
+            try:
+                with open(client, "r", encoding="utf-8", errors="ignore") as fh:
+                    client_text = fh.read()
+                if _looks_pristine(client_text):
+                    shutil.copy2(client, orig)
+            except Exception:
+                pass
         if not os.path.exists(orig):
             return {"success": False, "error": "Could not back up steam.sh"}
 
         # client.sh = a pristine copy of Valve's launcher that our wrapper sources.
-        client = os.path.join(d, "client.sh")
         if not os.path.exists(client):
             shutil.copy2(orig, client)
         try:
@@ -3327,12 +3396,30 @@ exec python3 -c "import sys,py7zr; py7zr.SevenZipFile(sys.argv[1],'r').extractal
 """
 
 
+_PRIVILEGE_SHIM = """#!/bin/sh
+# SLSDeck's Decky backend deliberately runs Headcrab as the desktop user.  A
+# first install has no terminal in which sudo can request a password, and
+# pkexec may open a prompt behind Game Mode.  Headcrab treats its package-manager
+# step as optional because SLSDeck supplies the required user-space tools below.
+echo "SLSDeck: skipped interactive privilege command: $*" >&2
+exit 1
+"""
+
+
 def _write_shims(shim_dir: str) -> None:
     os.makedirs(shim_dir, exist_ok=True)
     wget = os.path.join(shim_dir, "wget")
     with open(wget, "w", encoding="utf-8") as fh:
         fh.write(_WGET_SHIM)
     os.chmod(wget, 0o755)
+    # CachyOS is detected as Arch by Headcrab, which otherwise calls real
+    # `sudo pacman` during a no-stdin Decky job.  Always shadow interactive
+    # privilege frontends; installation itself is intentionally rootless.
+    for name in ("sudo", "pkexec"):
+        p = os.path.join(shim_dir, name)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(_PRIVILEGE_SHIM)
+        os.chmod(p, 0o755)
     if not any(shutil.which(n) for n in ("7z", "7za", "7zr")):
         for name in ("7z", "7za"):
             p = os.path.join(shim_dir, name)
@@ -3367,6 +3454,40 @@ def _run_headcrab_shimmed() -> bool:
         else:
             _log("Could not obtain h3adcr-b (no network, no bundled copy)")
             return False
+
+    # Headcrab is a client compatibility tool, but its upstream script also
+    # downloads AceSLS's stock SLSsteam and copies it over the installed engine
+    # every time it starts Steam.  Stock SLSsteam has no depot-key support, so
+    # moon-added games then become 0 B downloads.  Make sure moon is available
+    # before touching the client and override only that unrelated copy step.
+    moon_before = ensure_moon_engine()
+    if not moon_before.get("success"):
+        _log(f"Refusing client repair without slsteam-moon: {moon_before.get('error')}")
+        return False
+    try:
+        with open(script, "r", encoding="utf-8", errors="ignore") as fh:
+            script_text = fh.read()
+        marker = "\n    main\n"
+        pos = script_text.rfind(marker)
+        if pos < 0:
+            marker = "\nmain\n"
+            pos = script_text.rfind(marker)
+        if pos < 0:
+            _log("Refusing unrecognised Headcrab script: final main call not found")
+            return False
+        preserve = (
+            "\n# SLSDeck: Headcrab may repair the client, but must not replace moon.\n"
+            "copySLSsteam(){\n"
+            "    echo 'SLSDeck: preserving installed slsteam-moon engine'\n"
+            "}\n"
+        )
+        script_text = script_text[:pos] + preserve + script_text[pos:]
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(script_text)
+        _log("Patched Headcrab to preserve slsteam-moon (stock engine copy disabled)")
+    except Exception as exc:
+        _log(f"Could not make Headcrab moon-safe: {exc}")
+        return False
     os.chmod(script, 0o755)
     # Cache the compatible-client version straight from the script we just fetched,
     # so our "client matches?" diagnostic uses the real target, not the stale const.
@@ -3378,6 +3499,11 @@ def _run_headcrab_shimmed() -> bool:
 
     shim = os.path.join(tmp, "bin")
     _write_shims(shim)
+
+    # As with the moon setup archive, this directory was made by Decky's root
+    # backend with mode 0700 and is then consumed (and written to) by `deck`.
+    # Give the complete staging tree to that user only after all shims exist.
+    _chown_to_user(tmp)
 
     # Our injection writes a steam.cfg with BootStrapperInhibitAll=enable to stop
     # Steam overwriting the wrapper — but that ALSO blocks client updates, which
@@ -3455,6 +3581,7 @@ def _run_headcrab_shimmed() -> bool:
         proc = subprocess.Popen(
             cmd, cwd=tmp, env=run_env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            start_new_session=True,
         )
         assert proc.stdout is not None
         # Watchdog: headcrab can stall silently (e.g. a network read that never
@@ -3472,9 +3599,13 @@ def _run_headcrab_shimmed() -> bool:
                 time.sleep(2)
             if p.poll() is None:
                 flag["v"] = True
-                for _kill in (p.terminate, p.kill):
+                # Kill the whole session, not just bash.  A surviving pacman,
+                # sudo or downloader child can inherit stdout and keep the
+                # reader loop blocked forever after its parent is gone.
+                import signal
+                for sig in (signal.SIGTERM, signal.SIGKILL):
                     try:
-                        _kill()
+                        os.killpg(p.pid, sig)
                     except Exception:
                         pass
                     try:
@@ -3528,7 +3659,16 @@ def _run_headcrab_shimmed() -> bool:
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass
-    return bool(find_installed_lib())
+    # An already-installed .so says nothing about whether this run succeeded.
+    # Returning it here used to turn permission errors and failed downgrades into
+    # a green "Done" state. The compatibility operation itself must exit cleanly.
+    if rc != 0:
+        return False
+    final_engine = installed_lib_is_moon()
+    if not final_engine.get("moon"):
+        _log("Client repair rejected: final engine is not slsteam-moon")
+        return False
+    return True
 
 
 def client_fix_needed() -> Dict[str, Any]:
@@ -3553,6 +3693,8 @@ def client_fix_needed() -> Dict[str, Any]:
     if marker in text:
         text = text[text.rfind(marker):]
     lowered = text.lower()
+    current = steam_client_version()
+    supported = headcrab_compatible_client()
 
     # "Loaded successfully" is DEFINITIVE: SLSsteam only reaches it after the
     # steamclient.so hash check, so the installed client is supported.
@@ -3569,16 +3711,177 @@ def client_fix_needed() -> Dict[str, Any]:
                           "(steamclient.so hash accepted) — no client change needed"}
     for bad in ("hash missmatch", "hash mismatch", "aborting", "refusing to load"):
         if bad in lowered:
+            if current and supported and current == supported:
+                return {
+                    "needed": True,
+                    "engineOnly": True,
+                    "reason": "SLSsteam aborted, but Steam already matches Headcrab's "
+                              "supported client build — repair the engine and launcher only",
+                }
             return {"needed": True,
                     "reason": f"SLSsteam reported '{bad}' against the current client"}
     return {"needed": True, "reason": "SLSsteam did not report a successful load"}
 
 
+def _gaming_mode_client_fix_entry(relaunch_desktop: bool = False) -> int:
+    """Finish Headcrab outside Decky's Steam-owned process tree.
+
+    In Gaming Mode Steam is the UI shell. Headcrab must stop it to replace the
+    client, which also takes Decky and an ordinary plugin worker down. The user
+    service running this entry survives that shell restart and restores the moon
+    engine after Headcrab temporarily installs stock SLSsteam.
+    """
+    try:
+        if not _run_headcrab_shimmed():
+            return 1
+        moon = ensure_moon_engine()
+        if not moon.get("success"):
+            _log(f"slsteam-moon restore failed: {moon.get('error')}")
+            return 1
+        ensure_config()
+        activate_injection()
+        _log("Gaming Mode client repair completed; the session may now reload Steam")
+        return 0
+    except Exception as exc:
+        _log(f"Gaming Mode client repair failed: {exc}")
+        return 1
+    finally:
+        if relaunch_desktop:
+            try:
+                subprocess.Popen(
+                    ["steam"], env=_rich_env(), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                _log("Restarted Steam after Desktop Mode client repair")
+            except Exception as exc:
+                _log(f"Could not restart Steam after Desktop Mode repair: {exc}")
+
+
+def _detached_repair_active(unit: str) -> bool:
+    """Whether the transient user service backing the UI's running state exists."""
+    if not unit:
+        return False
+    try:
+        import pwd
+        pw = pwd.getpwnam(_decky_user())
+        uid = pw.pw_uid
+        cmd = [
+            "sudo", "-u", pw.pw_name, "env",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            "systemctl", "--user", "is-active", unit,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return proc.returncode == 0 and (proc.stdout or "").strip() in ("active", "activating")
+    except Exception:
+        return False
+
+
+def _start_engine_only_repair() -> Dict[str, Any]:
+    """Repair moon + launch wrappers without letting Headcrab stop Steam."""
+    def _worker():
+        _INSTALL_LOG.clear()
+        _set_install({"status": "running", "stage": "repairing-engine",
+                      "startedAt": time.time(), "detached": False, "unit": ""})
+        try:
+            _log("Steam client already matches Headcrab; skipping the destructive client repair")
+            # Headcrab may have left its bootstrap steam.sh behind from an older
+            # failed attempt. Replace it with our known launcher immediately,
+            # before a moon download or pattern refresh can delay recovery.
+            act = activate_injection()
+            if not act.get("success"):
+                _set_install({"status": "failed", "success": False,
+                              "error": act.get("error") or "launcher restoration failed"})
+                return
+            moon = refresh_moon_engine()
+            if not moon.get("success"):
+                _set_install({"status": "failed", "success": False,
+                              "error": moon.get("error") or "slsteam-moon reinstall failed"})
+                return
+            # Re-assert after replacing the binary as well; idempotent.
+            act = activate_injection()
+            if not act.get("success"):
+                _set_install({"status": "failed", "success": False,
+                              "error": act.get("error") or "injection activation failed"})
+                return
+            patterns = refresh_patterns_now()
+            if not patterns.get("success"):
+                _set_install({
+                    "status": "failed", "success": False, "installed": True,
+                    "needsRestart": True,
+                    "error": "The launcher was restored, but the latest slsteam-moon "
+                             "still cannot match this Steam binary. Restart the Deck; "
+                             "if it still aborts, upstream moon pattern coverage is required.",
+                    "patternResult": patterns,
+                })
+                return
+            _set_install({"status": "done", "success": True, "installed": True,
+                          "needsRestart": True,
+                          "message": "Engine and launcher repaired. Restart the Deck once to load them."})
+            _log("Engine and launcher repaired — restart the Deck once to apply")
+        except Exception as exc:
+            _set_install({"status": "failed", "success": False, "error": str(exc)})
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"success": True, "engineOnly": True,
+            "message": "Repairing the engine without changing the Steam client."}
+
+
+def _start_gaming_mode_client_fix() -> Dict[str, Any]:
+    """Start repair in the user's systemd manager, independent of Steam/Decky."""
+    if not _is_root() or not shutil.which("systemd-run"):
+        return {"success": False, "error": "Gaming Mode user-service launcher unavailable"}
+    try:
+        import pwd
+        import sys
+        pw = pwd.getpwnam(_decky_user())
+        uid = pw.pw_uid
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        unit = f"slsdeck-headcrab-repair-{int(time.time())}"
+        # gamescope supervises and restarts Steam in Gaming Mode. Desktop Mode
+        # has no such supervisor, so the repair service must relaunch it itself.
+        gaming_mode = False
+        try:
+            probe = subprocess.run(["pgrep", "-fa", "gamescope-session"],
+                                   capture_output=True, text=True, timeout=3)
+            gaming_mode = probe.returncode == 0 and bool((probe.stdout or "").strip())
+        except Exception:
+            pass
+        code = (
+            "from py_modules.lt.slssteam import _gaming_mode_client_fix_entry; "
+            f"raise SystemExit(_gaming_mode_client_fix_entry({not gaming_mode!r}))"
+        )
+        cmd = [
+            "sudo", "-u", pw.pw_name, "env",
+            f"HOME={pw.pw_dir}",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            f"PYTHONPATH={project_root}",
+            "systemd-run", "--user", f"--unit={unit}", "--collect",
+            "--property=Type=exec", sys.executable, "-c", code,
+        ]
+        proc = subprocess.run(cmd, cwd=project_root, env=_rich_env(),
+                              capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "systemd-run failed").strip()
+            return {"success": False, "error": detail[:400]}
+        _log("Gaming Mode repair handed to an independent user service")
+        return {"success": True, "detached": True, "unit": unit,
+                "mode": "gaming" if gaming_mode else "desktop"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def start_client_fix(force: bool = False) -> Dict[str, Any]:
     # Guard the heavy path: without this, enabling injection re-downloads the
     # whole Steam client even when the installed one is already supported.
+    # Reconcile a previous transient service before honoring the in-memory lock.
+    # Without this, a service which exited while Steam/Decky was restarting left
+    # Repair permanently returning "A task is already running".
+    get_install_status()
+    chk = client_fix_needed()
     if not force:
-        chk = client_fix_needed()
         if not chk.get("needed"):
             logger.log(f"SLSsteam: skipping client fix — {chk.get('reason')}")
             return {"success": True, "skipped": True, "reason": chk.get("reason")}
@@ -3592,12 +3895,38 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
         pass
     _set_install({"status": "queued", "error": "", "log": "", "percent": 0})
 
+    # Force means "repair despite the banner", not "downgrade a client which is
+    # already exactly Headcrab's target". In that case Headcrab only replaces
+    # steam.sh, stops Steam, and creates a bootstrap loop; refresh moon + wrapper.
+    if chk.get("engineOnly"):
+        return _start_engine_only_repair()
+
+    # Headcrab deliberately stops Steam. In Gaming Mode that also destroys the
+    # Decky worker which started it, so hand the operation to the user's systemd
+    # manager first. The gamescope session owns restarting its Steam shell.
+    detached = _start_gaming_mode_client_fix()
+    if detached.get("success"):
+        _set_install({"status": "running", "success": True,
+                      "stage": "client-compatibility", "detached": True,
+                      "message": "Repair continues across the Gaming Mode Steam restart.",
+                      "unit": detached.get("unit"), "startedAt": time.time()})
+        return detached
+    _log(f"Independent Gaming Mode repair unavailable ({detached.get('error')}); using fallback")
+
     def _worker():
         _INSTALL_LOG.clear()
         _set_install({"status": "running", "error": "", "log": "",
                       "startedAt": time.time()})
         try:
             ok = _run_headcrab_shimmed()
+            if not ok:
+                _set_install({
+                    "status": "failed",
+                    "success": False,
+                    "installed": bool(find_installed_lib()),
+                    "error": "Steam client compatibility setup failed; see the install log",
+                })
+                return
             # headcrab installs stock AceSLS SLSsteam over whatever engine is
             # present, which silently downgrades slsteam-moon and kills depot-key
             # support. Put the fork back before declaring success.
@@ -3611,10 +3940,20 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
                     _log(f"WARNING: {moon.get('error')}")
             except Exception as mexc:
                 _log(f"slsteam-moon re-assert failed: {mexc}")
+            if not moon.get("success") or not installed_lib_is_moon().get("moon"):
+                _set_install({
+                    "status": "failed",
+                    "success": False,
+                    "installed": bool(find_installed_lib()),
+                    "engineIsMoon": False,
+                    "error": "Client repair finished, but slsteam-moon could not be verified; "
+                             "stock SLSsteam was not accepted",
+                })
+                return
             ensure_config()
             installed = bool(find_installed_lib())
             injected = is_injected()
-            _set_install({"status": "done", "success": ok or installed,
+            _set_install({"status": "done", "success": bool(ok and installed),
                           "installed": installed, "injected": injected,
                           "clientFixed": True,
                           "moonRestored": bool(moon.get("changed")),
@@ -3632,9 +3971,6 @@ def start_client_fix(force: bool = False) -> Dict[str, Any]:
 # genuinely unowned games download but stay encrypted. slsteam-moon reads the
 # depot decryption keys from config/stplug-in/<appid>.lua (which this plugin
 # already writes), so added games actually decrypt and launch.
-SLS_MOON_API = "https://api.github.com/repos/swwayps/slsteam-moon/releases/latest"
-
-
 _MOON_MARKERS = (b"stplug-in", b"addappid", b"depotkey", b"ManifestStore")
 
 
@@ -3782,7 +4118,9 @@ def refresh_moon_engine() -> Dict[str, Any]:
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
             return {"success": False, "error": "moon extract failed"}
-        _run_setup_script(root)
+        _chown_to_user(tmp)
+        # Decky owns launcher installation; upstream setup.sh is interactive and
+        # must not be run from the plugin repair path.
         _place_libraries(root)
         _record_engine_version()
         ok = installed_lib_is_moon()
@@ -3869,7 +4207,8 @@ def ensure_moon_engine() -> Dict[str, Any]:
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
             return {"success": False, "changed": False, "error": "moon extract failed"}
-        _run_setup_script(root)
+        _chown_to_user(tmp)
+        # Avoid upstream setup.sh here as well (sudo/pkexec + Steam restarts).
         # Always place the full bin/* (incl. pattern-refresh), not only when the
         # moon .so is missing — headcrab's AceSLS overlay strips pattern-refresh,
         # so re-asserting the .so alone would leave the helper gone.
@@ -3891,13 +4230,11 @@ def ensure_moon_engine() -> Dict[str, Any]:
 def _resolve_moon_zip_url() -> str:
     """Find the latest slsteam-moon-linux-*.zip download URL."""
     try:
-        import httpx
-        with httpx.Client(follow_redirects=True, timeout=30) as c:
-            r = c.get(SLS_MOON_API, headers={"Accept": "application/vnd.github+json",
-                                             "User-Agent": "SLSDeck"})
-            r.raise_for_status()
-            data = r.json()
-        assets = data.get("assets", []) or []
+        from . import ghrel
+        release = ghrel.latest("swwayps/slsteam-moon", force=True)
+        if not release.get("success"):
+            raise RuntimeError(release.get("error") or "GitHub release lookup failed")
+        assets = release.get("assets", []) or []
         zips = [a for a in assets
                 if str(a.get("name", "")).startswith("slsteam-moon-linux")
                 and str(a.get("name", "")).endswith(".zip")]
@@ -3910,7 +4247,7 @@ def _resolve_moon_zip_url() -> str:
         lumen = [a for a in zips if "lumen" in str(a.get("name", "")).lower()]
         chosen = (lumen or zips)[0]
         _log(f"slsteam-moon asset: {chosen.get('name')}")
-        return chosen.get("browser_download_url", "")
+        return chosen.get("url", "")
     except Exception as exc:
         _log(f"Could not resolve slsteam-moon release: {exc}")
         return ""
@@ -4194,9 +4531,12 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
         from . import steam as _steam
         installed_raw = _steam.get_installed_depots(appid) or {}
         installed = {int(d): str(g) for d, g in installed_raw.items() if str(d).isdigit()}
-        if installed and all(installed.get(d) == g for d, g in clean.items()):
-            already_on_build = True
-            changed = False
+        if installed:
+            already_on_build = all(installed.get(d) == g for d, g in clean.items())
+            # A pre-existing pin is not proof that the files on disk match it.
+            # If Steam stayed on latest, this must remain a build change and the
+            # fix must not be applied onto the wrong installed manifests.
+            changed = not already_on_build
     except Exception:
         pass
     lines = _config_lines()
