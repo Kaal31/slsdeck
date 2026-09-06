@@ -304,7 +304,7 @@ export function GameToolsSection() {
       if (enable) {
         const r = await smokeapiInstall(appid);
         if (r.success) {
-          if (r.overrides) applyFixRuntime(appid, r.overrides); // additive launch option
+          if (r.overrides) await applyFixRuntime(appid, r.overrides);
           setSmoke({ installed: true, supported: true });
           setNote(`DLC unlock (SmokeAPI ${r.tag || ""}) installed. Restart Steam.`);
         } else {
@@ -336,7 +336,13 @@ export function GameToolsSection() {
       if (enable) {
         const r = await dlcUnlockerInstall(appid, kind);
         if (r.success) {
-          if (r.overrides) applyFixRuntime(appid, r.overrides); // additive launch option
+          if (r.overrides) {
+            await applyFixRuntime(
+              appid,
+              r.overrides,
+              kind === "uplayr1" || kind === "uplayr2",
+            );
+          }
           setDlcU((s) => ({ ...s, [kind]: { installed: true, supported: true } }));
           const detail = kind === "cream"
             ? r.unlockAll ? " (unlock-all)" : r.dlcCount ? ` (${r.dlcCount} DLC)` : ""
