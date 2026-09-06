@@ -48,7 +48,7 @@ export function FixesSection() {
   const [installed, setInstalled] = useState<InstalledFix[]>([]);
   const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord[]>([]);
   const [openDesc, setOpenDesc] = useState<string | null>(null);
-  const [awaiting, setAwaiting] = useState<{ label: string; run: () => Promise<void> } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ label: string; run: () => Promise<void>; mode?: "download" | "reinstall" } | null>(null);
   const [dlComplete, setDlComplete] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dlRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -90,7 +90,7 @@ export function FixesSection() {
     appid: number,
     label: string,
     startExtract: () => Promise<{ success: boolean; error?: string }>,
-    pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean }>
+    pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean; error?: string }>
   ) => {
     setAwaiting(null);
     stopFlag.current = false;
@@ -122,14 +122,24 @@ export function FixesSection() {
         shouldStop: () => stopFlag.current,
         onPhase: (phase) => {
           if (phase === "pinning") setApplyState({ status: "pinning" } as AddState);
+          else if (phase === "pin_failed") {
+            setApplyState(null);
+            toaster.toast({ title: "SLSDeck", body: "This fix's paired manifest could not be loaded. Nothing was applied or pinned." });
+          }
           else if (phase === "updating") setApplyState({ status: "updating" } as AddState);
           else if (phase === "awaiting_download")
             setApplyState({ status: "awaiting download" } as AddState);
+          else if (phase === "awaiting_reinstall") {
+            setApplyState({ status: "reinstall required" } as AddState);
+            toaster.toast({ title: "SLSDeck", body: "Exact build pinned. Uninstall and reinstall the game, then apply this fix again." });
+          }
           else if (phase === "applying") setApplyState({ status: "queued" });
         },
       });
-      if (result === "awaiting") {
-        setAwaiting({ label, run: doApply });
+      if (result === "reinstall") {
+        setAwaiting({ label, run: doApply, mode: "reinstall" });
+      } else if (result === "awaiting") {
+        setAwaiting({ label, run: doApply, mode: "download" });
         startDlPoll(appid);
       }
     } catch {
@@ -230,7 +240,7 @@ export function FixesSection() {
           fix.appid, fix.id, pathRes.installPath!, fix.manifest_id || "", fix.depot_id || "",
           "lua.tools fix", gameName
         ),
-      () => pinForLuatoolsFix(fix.appid, fix.id)
+      fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id) : undefined
     );
   };
 
@@ -447,15 +457,16 @@ export function FixesSection() {
         <>
           <PanelSectionRow>
             <div style={{ fontSize: 12, opacity: 0.85, padding: "4px 0" }}>
-              Pinned — waiting for Steam to update the game.{" "}
-              {dlComplete ? "Download complete — press Apply now." : "Let the download finish, then Apply."}
+              {awaiting.mode === "reinstall"
+                ? "Exact build pinned — uninstall and reinstall the game, then select this fix again."
+                : <>Pinned — waiting for Steam to update the game. {dlComplete ? "Download complete — press Apply now." : "Let the download finish, then Apply."}</>}
             </div>
           </PanelSectionRow>
-          <PanelSectionRow>
+          {awaiting.mode !== "reinstall" && <PanelSectionRow>
             <ButtonItem layout="below" onClick={() => awaiting.run().catch(() => {})}>
               {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
             </ButtonItem>
-          </PanelSectionRow>
+          </PanelSectionRow>}
           <PanelSectionRow>
             <ButtonItem
               layout="below"
