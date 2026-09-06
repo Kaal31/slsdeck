@@ -654,31 +654,37 @@ export function TokeerSection() {
       // TLX1 -> Discord redemption code -> local Tokeer redemption -> vouch.
       if(!ticketUsesUbisoftVerifier(ctx)){
         let trackedTicket={...ctx};
+        const ticketAppid=ctx.appid;
+        const ticketUrl=ctx.url;
 
-        // Redemption codes are single-use. Once local redemption succeeds we
-        // persist this boundary and only retry the Discord confirmation.
-        if(stage==="checking-game"){
-          setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
-          const checked=await confirmTokeerLaunchedGameStarted(ctx.appid,stale);
-          if(stale())return;
-          if(!checked.confirmed){
-            const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
-            setAutomationError(body);setMessage(body);
-            checkpoint({automationStage:"checking-game",automationError:body,ticket:ctx});
+        // Both a fresh redemption and a restored session converge here. The
+        // caller enters only after the single-use code has been redeemed, so a
+        // resume at checking-game/confirming-worked can never redeem it twice.
+        const completeNonUbisoftActivation=async(completionStage:AutomationStage,tracked:TokeerTicketContext)=>{
+          if(completionStage==="checking-game"){
+            setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
+            const checked=await confirmTokeerLaunchedGameStarted(ticketAppid,stale);
+            if(stale())return;
+            if(!checked.confirmed){
+              const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
+              setAutomationError(body);setMessage(body);
+              checkpoint({automationStage:"checking-game",automationError:body,ticket:tracked});
+              return;
+            }
+            completionStage="confirming-worked";
+            checkpoint({automationStage:"confirming-worked",automationError:"",ticket:tracked});
+          }
+          if(completionStage!=="confirming-worked"){
+            fail(`Cannot complete a non-Ubisoft activation from stage ${completionStage}.`);
             return;
           }
-          stage="confirming-worked";
-          checkpoint({automationStage:"confirming-worked",automationError:"",ticket:ctx});
-        }
-
-        if(stage==="confirming-worked"){
           setAutomationStage("confirming-worked");setBusy("Confirming that the game worked in Discord…");
-          const vouched=await clickTokeerGameWorked(ctx.url,ctx.lastMessageId||"");
+          const vouched=await clickTokeerGameWorked(ticketUrl,tracked.lastMessageId||"");
           if(stale())return;
           if(!vouched.success){
             const body=`Tokeer activation succeeded, but Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
             setAutomationError(body);setMessage(body);
-            checkpoint({automationStage:"confirming-worked",automationError:body,ticket:ctx});
+            checkpoint({automationStage:"confirming-worked",automationError:body,ticket:tracked});
             return;
           }
           setAutomationStage("done");setAutomationError("");setMessage("Tokeer activation was redeemed and Game worked! was confirmed in Discord. Launch the game from Steam.");
@@ -687,6 +693,12 @@ export function TokeerSection() {
           selectedUbisoftRef.current=false;
           setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");setCodeExpiresAt(undefined);
           codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
+        };
+
+        // Redemption codes are single-use. Once local redemption succeeds we
+        // persist this boundary and resume only through the shared completion.
+        if(stage==="checking-game"||stage==="confirming-worked"){
+          await completeNonUbisoftActivation(stage,trackedTicket);
           return;
         }
 
@@ -700,10 +712,11 @@ export function TokeerSection() {
           void refreshBadges();
           stage="checking-game";
           checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
+          await completeNonUbisoftActivation(stage,trackedTicket);
+          return;
         }
 
-        if(stage!=="checking-game"){
-          if(stage!=="waiting-code"||!wasSubmitted){
+        if(stage!=="waiting-code"||!wasSubmitted){
             setAutomationStage("preparing");setAutomationError("");setBusy("Preparing and verifying Tokeer locally…");
             checkpoint({automationStage:"preparing",automationError:"",ticket:ctx});
             const preflight=await tokeerPreflight(ctx.appid,"");
@@ -725,55 +738,25 @@ export function TokeerSection() {
             setTicket((old)=>({...old,...trackedTicket}));
             setAutomationStage("waiting-code");
             checkpoint({automationStage:"waiting-code",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:trackedTicket});
-          }
-
-          setAutomationStage("waiting-code");setBusy("Waiting for Discord activation code…");
-          setMessage("Local verification passed and TLX1 was submitted. Waiting for Tokeer's six-character redemption code…");
-          const received=await waitForTokeerActivationCode(ctx.url,15*60*1000,trackedTicket.lastMessageId||ctx.lastMessageId||"",stale);
-          if(stale())return;
-          if(received.cancelled){abortTicketChain(`${received.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
-          if(!received.success||!received.code){fail(received.error||"No redemption code was detected.");return;}
-          trackedTicket={...trackedTicket,lastMessageId:received.lastMessageId||trackedTicket.lastMessageId};
-          setTicket((old)=>({...old,...trackedTicket}));
-          updateActivation(received.code);setAutomationStage("redeeming");setBusy("Redeeming Tokeer activation locally…");
-          checkpoint({automationStage:"redeeming",activation:received.code,codeReceivedAt:Date.now(),expiresAt:Date.now()+TOKEER_SESSION_MS,ticket:trackedTicket,tlxSubmitted:true,submittedTlx:tlx});
-          const redeemed=await tokeerRedeem(received.code);
-          if(stale())return;
-          if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}
-          await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
-          void refreshBadges();
-          stage="checking-game";
-          checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
         }
 
-        if(stage==="checking-game"){
-          setAutomationStage("checking-game");setBusy("Launching the game and waiting for Steam confirmation…");
-          const checked=await confirmTokeerLaunchedGameStarted(ctx.appid,stale);
-          if(stale())return;
-          if(!checked.confirmed){
-            const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
-            setAutomationError(body);setMessage(body);
-            checkpoint({automationStage:"checking-game",automationError:body,ticket:trackedTicket});
-            return;
-          }
-          checkpoint({automationStage:"confirming-worked",automationError:"",ticket:trackedTicket});
-        }
-
-        setAutomationStage("confirming-worked");setBusy("Confirming that the game worked in Discord…");
-        const vouched=await clickTokeerGameWorked(ctx.url,trackedTicket.lastMessageId||"");
+        setAutomationStage("waiting-code");setBusy("Waiting for Discord activation code…");
+        setMessage("Local verification passed and TLX1 was submitted. Waiting for Tokeer's six-character redemption code…");
+        const received=await waitForTokeerActivationCode(ctx.url,15*60*1000,trackedTicket.lastMessageId||ctx.lastMessageId||"",stale);
         if(stale())return;
-        if(!vouched.success){
-          const body=`Tokeer activation succeeded, but Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
-          setAutomationError(body);setMessage(body);
-          checkpoint({automationStage:"confirming-worked",automationError:body,ticket:trackedTicket});
-          return;
-        }
-        setAutomationStage("done");setAutomationError("");setMessage("Tokeer activation was redeemed and Game worked! was confirmed in Discord. Launch the game from Steam.");
-        toaster.toast({title:"SLSDeck · Tokeer",body:"Activation redeemed and Game worked! confirmed."});
-        try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
-        selectedUbisoftRef.current=false;
-        setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");setCodeExpiresAt(undefined);
-        codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
+        if(received.cancelled){abortTicketChain(`${received.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
+        if(!received.success||!received.code){fail(received.error||"No redemption code was detected.");return;}
+        trackedTicket={...trackedTicket,lastMessageId:received.lastMessageId||trackedTicket.lastMessageId};
+        setTicket((old)=>({...old,...trackedTicket}));
+        updateActivation(received.code);setAutomationStage("redeeming");setBusy("Redeeming Tokeer activation locally…");
+        checkpoint({automationStage:"redeeming",activation:received.code,codeReceivedAt:Date.now(),expiresAt:Date.now()+TOKEER_SESSION_MS,ticket:trackedTicket,tlxSubmitted:true,submittedTlx:tlx});
+        const redeemed=await tokeerRedeem(received.code);
+        if(stale())return;
+        if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}
+        await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+        void refreshBadges();
+        checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
+        await completeNonUbisoftActivation("checking-game",trackedTicket);
         return;
       }
 
