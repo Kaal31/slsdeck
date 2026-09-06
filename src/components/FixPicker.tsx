@@ -656,6 +656,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       if (unlocker === "uplay_r1" || unlocker === "uplay_r2") {
         const kind: UnlockerKind = unlocker === "uplay_r1" ? "uplayr1" : "uplayr2";
         const r = await dlcUnlockerInstall(appid, kind);
+        if (r?.success && r.overrides) {
+          await applyFixRuntime(appid, r.overrides, true);
+        }
         return r?.success ? `DLC unlock applied (${kind}).` : `Unlock failed: ${r?.error || kind}`;
       }
       if (unlocker === "smokeapi") {
@@ -749,7 +752,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       if (enable) {
         const r = await smokeapiInstall(appid);
         if (r.success) {
-          if (r.overrides) applyFixRuntime(appid, r.overrides); // additive
+          if (r.overrides) await applyFixRuntime(appid, r.overrides);
           setSmoke({ installed: true, supported: true });
           setMsg(`DLC unlock installed (SmokeAPI ${r.tag || ""}) — restart Steam`);
         } else {
@@ -782,7 +785,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       if (enable) {
         const r = await dlcUnlockerInstall(appid, kind);
         if (r.success) {
-          if (r.overrides) applyFixRuntime(appid, r.overrides); // additive
+          if (r.overrides) {
+            await applyFixRuntime(
+              appid,
+              r.overrides,
+              kind === "uplayr1" || kind === "uplayr2",
+            );
+          }
           setDlcU((s) => ({ ...s, [kind]: { installed: true, supported: true } }));
           const detail = kind === "cream"
             ? r.unlockAll ? " (unlock-all)" : r.dlcCount ? ` (${r.dlcCount} DLC)` : ""
