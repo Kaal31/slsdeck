@@ -547,29 +547,33 @@ export function TokeerSection() {
 
   const restoreActivationPanel=async(generation=ticketGenerationRef.current)=>{
     setRestoringSelectors(true);
-    let restored=false;
+    const finishBy=Date.now()+15000;
+    const within=<T,>(work:Promise<T>,fallback:T):Promise<T>=>Promise.race([
+      work,
+      sleep(Math.max(1,finishBy-Date.now())).then(()=>fallback),
+    ]);
     try{
-      if(!(await connectTokeerDiscordHidden()))return;
-      const deadline=Date.now()+20000;
-      let state=await readTokeerDiscord(true);
-      while((!state.found||!(state.selectors||[]).length)&&Date.now()<deadline){
+      if(!(await within(connectTokeerDiscordHidden(),false)))return;
+      let state=await within(readTokeerDiscord(true),{found:false,selectors:[]} as TokeerDiscordState);
+      while((!state.found||!(state.selectors||[]).length)&&Date.now()<finishBy){
         await sleep(500);
-        state=await readTokeerDiscord(true);
+        state=await within(readTokeerDiscord(true),{found:false,selectors:[]} as TokeerDiscordState);
       }
       if(generation!==ticketGenerationRef.current)return;
       if(state.found&&(state.selectors||[]).length){
         rememberDiscord(state);
-        restored=true;
         setDiscordSignedIn(true);
         setDiscordAuthChecked(true);
       }
     }catch{}
     finally{
-      if(generation===ticketGenerationRef.current)setRestoringSelectors(!restored&&!!selectorLayoutRef.current);
+      // Restoration is best-effort. Never leave every selector disabled merely
+      // because Discord was slow, logged out, or had already deleted a thread.
+      if(generation===ticketGenerationRef.current)setRestoringSelectors(false);
     }
   };
 
-  const abortTicketChain=(reason:string)=>{
+  const abortTicketChain=(reason:string,restorePanel=true)=>{
     ticketGenerationRef.current+=1;
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
@@ -588,7 +592,7 @@ export function TokeerSection() {
     // A deleted ticket leaves Discord parked on a dead child route. Reopen the
     // real Linux activation panel so its live selector buttons return without
     // requiring the user to leave and reopen SLSDeck.
-    void restoreActivationPanel(ticketGenerationRef.current);
+    if(restorePanel)void restoreActivationPanel(ticketGenerationRef.current);
   };
 
   useEffect(()=>{
@@ -1083,15 +1087,24 @@ export function TokeerSection() {
     expiryCleanupRef.current=true;
     ticketAbortedRef.current=true;
     automationRunningRef.current=false;
-    setBusy("Closing expired Tokeer ticket…");
+    const expiredTicketUrl=ticket?.url||"";
+    // The code is already unusable, so clear the local chain immediately. Do
+    // not make the UI wait while Discord searches for a button in a thread the
+    // user may already have closed manually.
+    abortTicketChain("The Tokeer activation code expired. The selected game and local cache were cleared.",false);
     void (async()=>{
       let closed=false;
-      if(ticket?.url){
-        try{closed=!!(await cancelTokeerTicket(ticket.url)).success;}catch{}
+      if(expiredTicketUrl){
+        try{
+          const visible=await checkTokeerTicketState(expiredTicketUrl);
+          // Only run the expensive Cancel-button search when the exact child
+          // thread is still rendered and demonstrably open.
+          if(visible.open)closed=!!(await cancelTokeerTicket(expiredTicketUrl)).success;
+          else closed=visible.closed;
+        }catch{}
       }
-      abortTicketChain(closed
-        ?"The Tokeer activation code expired. Its Discord ticket was closed and the selected game and local cache were cleared."
-        :"The Tokeer activation code expired. The selected game and local cache were cleared; close the ticket manually in Discord if it is still visible.");
+      if(closed)setMessage("The Tokeer activation code expired. Its Discord ticket was closed and the selected game and local cache were cleared.");
+      await restoreActivationPanel(ticketGenerationRef.current);
     })();
   },[codeExpiresAt,clockNow,ticket?.url]);
 
