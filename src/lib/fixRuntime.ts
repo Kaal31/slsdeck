@@ -189,13 +189,23 @@ function hasProtonLayer(appid: number): boolean {
 /**
  * Set the fix's WINEDLLOVERRIDES launch option — only if a Proton layer is
  * enabled for this game and the fix actually shipped overridable DLLs. Runs at
- * most once per apply (reset via resetFixRuntime on a new apply). No compat tool
- * is ever forced.
+ * most once per apply (reset via resetFixRuntime on a new apply). Uplay callers
+ * can request Proton when the Windows proxy DLL requires it.
  */
-export async function applyFixRuntime(appid: number, overrides?: string): Promise<void> {
+export async function applyFixRuntime(
+  appid: number,
+  overrides?: string,
+  ensureProton = false,
+): Promise<void> {
   if (!appid || configured.has(appid)) return;
   if (!overrides) return; // no DLLs to override
-  if (!hasProtonLayer(appid)) return; // native / no compat layer -> nothing to do
+  let protonReady = hasProtonLayer(appid);
+  if (!protonReady && ensureProton) {
+    // Steam's app-details cache can lag behind SpecifyCompatTool, so use the
+    // selected tool as the success signal for this invocation.
+    protonReady = !!(await ensureProtonSelected(appid));
+  }
+  if (!protonReady) return; // native / no compat layer -> nothing to do
   configured.add(appid);
   const SC: any = (window as any).SteamClient;
   try {
