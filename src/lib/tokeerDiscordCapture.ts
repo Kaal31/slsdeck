@@ -1680,9 +1680,18 @@ export async function waitForTokeerActivationCode(ticketUrl: string, timeoutMs =
         if(/TLX1\\./i.test(text))continue;
         var nodes=[].slice.call(a.querySelectorAll('code,pre')).map(function(n){return String(n.textContent||'').trim();});
         var contextual=strongContext||/(?:activation|redeem|single[- ]use|expires|30\\s*minutes?|verification\\s+(?:succeeded|complete))/i.test(text);
-        var matches=nodes.filter(function(v){return /^[A-Za-z0-9_-]{6}$/.test(v)&&!common.test(v);});
+        // Discord renders the redemption instruction as one code block, for
+        // example "~/.tokeer/tokeer 6JN745". Extract that explicit argument
+        // before considering standalone six-character text from the embed.
+        var commandCode=function(v){
+          var m=String(v||'').match(/(?:^|\\s)(?:~\\/\\.tokeer\\/tokeer|\\/home\\/[^\\/\\s]+\\/\\.tokeer\\/tokeer|\\.\\/\\.tokeer\\/tokeer|tokeer)\\s+([A-Za-z0-9_-]{6})(?=$|\\s)/i);
+          return m?m[1]:'';
+        };
+        var matches=nodes.map(commandCode).filter(Boolean);
+        if(!matches.length){var fromCommand=commandCode(text);if(fromCommand)matches=[fromCommand];}
+        if(!matches.length)matches=nodes.filter(function(v){return /^[A-Za-z0-9_-]{6}$/.test(v)&&!common.test(v);});
         if(!matches.length&&contextual){
-          matches=(text.match(/(?:^|\\s|[:#])([A-Za-z0-9_-]{6})(?=$|\\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v);});
+          matches=(text.match(/(?:^|\\s|[:#])([A-Za-z0-9_-]{6})(?=$|\\s|[.,!])/g)||[]).map(function(v){var m=v.match(/([A-Za-z0-9_-]{6})/);return m?m[1]:'';}).filter(function(v){return v&&!common.test(v)&&/[A-Za-z]/.test(v)&&/\\d/.test(v);});
         }
         if(matches.length&&contextual)return JSON.stringify({found:true,code:matches[0],lastMessageId:messageId});
       }
