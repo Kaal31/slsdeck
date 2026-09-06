@@ -1262,7 +1262,8 @@ def _download_and_extract_luatools_fix(appid, fix_id, manifest_id, depot_id,
     replaced_files: List[str] = []
     dest_zip = os.path.join(ensure_temp_download_dir(), f"fix_lt_{appid}.zip")
     try:
-        _set_fix_state(appid, {"status": "downloading", "bytesRead": 0, "totalBytes": 0, "error": None})
+        _set_fix_state(appid, {"status": "downloading", "bytesRead": 0, "totalBytes": 0,
+                               "percent": None, "error": None})
         dl = luatools.download_fix(str(fix_id), appid=int(appid), build=str(manifest_id or ""))
         data = dl.get("data") if isinstance(dl, dict) else None
         if not data:
@@ -1339,7 +1340,8 @@ def _download_and_extract_luatools_fix(appid, fix_id, manifest_id, depot_id,
             pin_warning = f"Fix applied, but version-locking failed ({exc})."
             logger.warn(f"SLSDeck: lua.tools pin failed: {exc}")
 
-        _set_fix_state(appid, {"status": "done", "success": True, "overrides": overrides,
+        _set_fix_state(appid, {"status": "done", "success": True, "percent": 100,
+                               "overrides": overrides,
                                "warning": pin_warning,
                                "repointExe": _repoint_target(install_path, extracted_files)})
         try:
