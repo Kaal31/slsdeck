@@ -1,19 +1,17 @@
-"""CrakFiles (KoriaPolis/CrakFiles) — general DRM-crack source, build-matched.
+"""CrakFiles (KoriaPolis/CrakFiles) — general DRM-crack source with build hints.
 
 crackfiles.json entries: ``{name, buildid, source_crack[], original_download[],
 fixes:[{href, filename, badges}]}``. Each crack targets a specific ``buildid``
-(cs.rin.ru "voices38"/0xZeOn cracks), so the flow is build-first (identical to
-HVAuto, minus the hypervisor module):
+(cs.rin.ru "voices38"/0xZeOn cracks), but that BuildID is a compatibility hint:
 
   1. match by title -> get the crack's buildid + fix href
-  2. resolve buildid -> depot gids and PIN (via the HVAuto resolver) so the
-     installed build == the crack's build
+  2. report whether the independently selected/installed build matches it
   3. download the crack (pixeldrain / buzzheavier / vikingfile)
   4. extract (plain, else pwd="cs.rin.ru") and drop the game-folder files in
 
 The manifest/lua (ownership + depot keys) comes from any lua source; we just
-override the pin to the crack's build. Reuses hvauto's resolver, downloader and
-game-files mirror.
+report the crack's compatible build without overriding the user's selected pin.
+Reuses hvauto's resolver, downloader and game-files mirror.
 """
 
 from __future__ import annotations
@@ -185,20 +183,13 @@ def apply(appid: int, install_path: str, name: str = "", href: str = "") -> Dict
     if not href:
         return {"success": False, "error": "CrakFiles entry has no download link"}
 
-    # 1) pin the game's build to the crack's build (all cs.rin.ru cracks are
-    #    build-specific). Resolvable via steamcmd.net when it's the current build.
+    # BuildID is a compatibility hint. Do not replace a pin selected in the
+    # specific-build menu and do not invent manifest GIDs from this crack entry.
     pinned = False
     build_status = ""
     if buildid:
         res = hvauto.resolve_build(appid, buildid)
         build_status = res.get("status", "")
-        if res.get("status") in ("current", "resolved") and res.get("gids"):
-            try:
-                from . import slssteam
-                gids = {int(d): str(g) for d, g in res["gids"].items()}
-                pinned = bool(slssteam.pin_app_gids(int(appid), gids).get("success"))
-            except Exception as exc:
-                logger.warn(f"crakfiles: pin failed: {exc}")
 
     # 2) get the crack archive. Check ~/Downloads first (so pressing Apply again
     #    after a manual download just works), then try every mirror in the entry.
@@ -238,16 +229,17 @@ def apply(appid: int, install_path: str, name: str = "", href: str = "") -> Dict
     src = "from your Downloads " if from_downloads else ""
     return {"success": True, "buildid": buildid, "pinned": pinned, "buildStatus": build_status,
             "installed": len(mir["extracted"]), "badges": match["badges"], "fromDownloads": bool(from_downloads),
-            "note": (f"Pinned + crack installed {src}.".replace("  ", " ") if build_status in ("current", "resolved")
-                     else f"Crack installed {src}; its older build couldn't be resolved — pin that build manually if it fails.")}
+            "note": (f"Crack installed {src}. Compatible build: {buildid}.".replace("  ", " ")
+                     if build_status == "current"
+                     else f"Crack installed {src}; it targets build {buildid}. "
+                          "Select that build separately if needed.")}
 
 
 def apply_local(appid: int, install_path: str, archive_path: str, name: str = "") -> Dict[str, Any]:
     """Apply a crack the user downloaded by hand (host blocked auto-download).
 
-    The build was already pinned during the first (failed-download) attempt, so
-    here we only extract the local archive into the game folder — same extract +
-    mirror path as apply()."""
+    Build selection is independent; this only extracts the local archive into
+    the game folder using the same mirror path as apply()."""
     if not install_path or not os.path.isdir(install_path):
         return {"success": False, "error": "game is not installed on disk"}
     if not archive_path or not os.path.isfile(archive_path):
