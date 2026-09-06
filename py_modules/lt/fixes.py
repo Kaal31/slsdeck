@@ -447,7 +447,8 @@ def _download_archive(client, download_url, dest_path, appid):
     """Download a fix archive with the SAME mechanism the desktop app uses:
     system curl, Steam runtime libs stripped, luatools User-Agent. ryuu.lol
     rejects other HTTP clients (401), so matching curl is required."""
-    _set_fix_state(appid, {"status": "downloading", "bytesRead": 0, "totalBytes": 0, "error": None})
+    _set_fix_state(appid, {"status": "downloading", "bytesRead": 0, "totalBytes": 0,
+                           "percent": None, "error": None})
     curl = shutil.which("curl") or "curl"
     env = dict(os.environ)
     for k in ("LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT",
@@ -501,7 +502,10 @@ def _download_archive(client, download_url, dest_path, appid):
                     " — ryuu rejected the API key (expired, or your account lacks access to this fix).")
         raise RuntimeError(f"download failed (curl rc={rc}).{hint} {err[:180]}")
     size = os.path.getsize(dest_path)
-    _set_fix_state(appid, {"bytesRead": size, "totalBytes": size})
+    # Downloading is only one phase of applying a fix.  Reserve the final 20%
+    # for extraction, file placement/configuration and an optional build pin so
+    # the UI never claims the whole operation is complete while work remains.
+    _set_fix_state(appid, {"bytesRead": size, "totalBytes": size, "percent": 80})
 
 
 
@@ -1055,11 +1059,13 @@ def _download_and_extract_fix(appid, download_url, install_path, fix_type, game_
     replaced_files: List[str] = []
     try:
         _download_archive(client, download_url, dest_zip, appid)
-        _set_fix_state(appid, {"status": "extracting"})
+        _set_fix_state(appid, {"status": "extracting", "percent": 82})
         if is_rar:
             _extract_rar_fix(dest_zip, install_path, appid, extracted_files, replaced_files)
         else:
             _extract_zip_fix(dest_zip, install_path, appid, extracted_files, replaced_files)
+
+        _set_fix_state(appid, {"status": "applying", "percent": 90})
 
         # Emulator DLLs only hijack when they sit next to the process that loads
         # steam_api — for UE/nested games that's Binaries/Win64/<Game>-Shipping.exe,
@@ -1094,6 +1100,7 @@ def _download_and_extract_fix(appid, download_url, install_path, fix_type, game_
             logger.warn(f"SLSDeck: online-fix username step failed: {exc}")
 
 
+        _set_fix_state(appid, {"status": "finalizing", "percent": 96})
         _write_fix_log(install_path, appid, game_name, fix_type, download_url,
                        extracted_files, replaced_files)
         log_path = _fix_log_path(install_path, appid)
@@ -1145,7 +1152,8 @@ def _download_and_extract_fix(appid, download_url, install_path, fix_type, game_
             pin_warning = ("Fix applied, but version-locking failed "
                            f"({exc}). A Steam update to the game may undo the fix.")
             logger.warn(f"SLSDeck: manifest pin on fix failed: {exc}")
-        _set_fix_state(appid, {"status": "done", "success": True, "overrides": overrides,
+        _set_fix_state(appid, {"status": "done", "success": True, "percent": 100,
+                               "overrides": overrides,
                                "warning": pin_warning,
                                "repointExe": _repoint_target(install_path, extracted_files)})
         try:
@@ -1262,13 +1270,15 @@ def _download_and_extract_luatools_fix(appid, fix_id, manifest_id, depot_id,
             raise RuntimeError(f"lua.tools fix download failed: {detail}")
         with open(dest_zip, "wb") as fh:
             fh.write(data)
-        _set_fix_state(appid, {"bytesRead": len(data), "totalBytes": len(data), "status": "extracting"})
+        _set_fix_state(appid, {"bytesRead": len(data), "totalBytes": len(data),
+                               "status": "extracting", "percent": 82})
         # lua.tools ships fixes as zips; if a bare .lua ever comes back, treat it
         # as a manifest pin only (no files to extract into the game folder).
         is_zip = data[:2] == b"PK"
         if is_zip:
             _extract_zip_fix(dest_zip, install_path, appid, extracted_files, replaced_files)
             # Mirror loose emulator files next to the game's real (often nested) exe.
+            _set_fix_state(appid, {"status": "applying", "percent": 90})
             try:
                 _mirror_fix_to_exe_dir(install_path, extracted_files, replaced_files)
             except Exception as exc:
@@ -1295,6 +1305,7 @@ def _download_and_extract_luatools_fix(appid, fix_id, manifest_id, depot_id,
             except Exception:
                 pin_from_lua = None
 
+        _set_fix_state(appid, {"status": "finalizing", "percent": 96})
         _write_fix_log(install_path, appid, game_name, fix_type,
                        f"lua.tools:fix/{fix_id}", extracted_files, replaced_files)
         log_path = _fix_log_path(install_path, appid)
