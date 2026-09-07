@@ -15,6 +15,7 @@ from .logger import logger
 
 
 _CR_PRELOAD = '$HOME/.local/share/CloudRedirect/cloud_redirect.so'
+_PRELOAD_MIGRATION = ".slsdeck-cloudredirect-preload-v1"
 
 
 def _patch_steam_wrappers(cloudredirect: Any) -> None:
@@ -72,6 +73,81 @@ def _patch_steam_wrappers(cloudredirect: Any) -> None:
 
     ensure_path_wrapper_with_cloudredirect._slsdeck_cloudredirect_preload = True
     slssteam._ensure_path_wrapper = ensure_path_wrapper_with_cloudredirect
+
+
+def _migrate_legacy_wrappers(cloudredirect: Any) -> None:
+    """Upgrade only an installed pre-LD_PRELOAD CloudRedirect setup once."""
+    if not _hook_present(cloudredirect):
+        return
+    marker = os.path.join(cloudredirect._native_config_dir(), _PRELOAD_MIGRATION)
+    if os.path.isfile(marker):
+        return
+
+    slssteam = cloudredirect.slssteam
+    legacy_desktop = False
+    for path in slssteam._steam_sh_candidates():
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+            if slssteam._WRAPPER_MARK in content and "cloud_redirect.so" not in content:
+                legacy_desktop = True
+                break
+        except OSError:
+            continue
+
+    path_wrapper = slssteam._path_wrapper()
+    legacy_path = False
+    try:
+        with open(path_wrapper, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+        legacy_path = ("LD_AUDIT" in content and
+                       "SLSsteam" in content and
+                       "cloud_redirect.so" not in content)
+    except OSError:
+        pass
+
+    # No legacy managed wrapper means this is either a fresh install or a
+    # custom/unmanaged launcher. The already-patched generators handle the
+    # former; this migration deliberately leaves the latter alone.
+    if not legacy_desktop and not legacy_path:
+        return
+
+    success = True
+    details: list[str] = []
+    if legacy_path:
+        try:
+            slssteam._ensure_path_wrapper()
+            with open(path_wrapper, "r", encoding="utf-8", errors="ignore") as fh:
+                success = "cloud_redirect.so" in fh.read() and success
+            details.append("Gaming Mode")
+        except Exception as exc:
+            success = False
+            logger.warn(f"CloudRedirect preload migration (Gaming Mode) failed: {exc}")
+    if legacy_desktop:
+        try:
+            result = slssteam._activate_steam_sh_wrapper()
+            success = bool(result.get("success")) and success
+            details.append("Desktop Mode")
+        except Exception as exc:
+            success = False
+            logger.warn(f"CloudRedirect preload migration (Desktop Mode) failed: {exc}")
+
+    if not success:
+        return
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        staged = marker + ".new"
+        with open(staged, "w", encoding="utf-8") as fh:
+            fh.write("cloudredirect LD_PRELOAD wrapper migration complete\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(staged, marker)
+        cloudredirect.chown_to_user(marker, recursive=False)
+        logger.log("CloudRedirect: migrated legacy wrappers: " + ", ".join(details))
+    except Exception as exc:
+        # Wrappers are already repaired. A missing marker merely permits a safe
+        # structural recheck next boot; it does not undo the successful repair.
+        logger.warn(f"CloudRedirect preload migration marker failed: {exc}")
 
 
 def _sync_registered_games(cloudredirect: Any) -> dict:
@@ -265,6 +341,7 @@ def patch(cloudredirect: Any) -> None:
     _patch_steam_wrappers(cloudredirect)
     cloudredirect.sync_registered_games = lambda: _sync_registered_games(cloudredirect)
     cloudredirect._download_cr_lib = lambda: _download_cr_lib(cloudredirect)
+    _migrate_legacy_wrappers(cloudredirect)
 
     def ensure_native() -> dict:
         cloudredirect.migrate_provider_data()
