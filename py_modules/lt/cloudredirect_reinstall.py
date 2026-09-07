@@ -67,13 +67,18 @@ def _install_moon_hook(cloudredirect: Any, log: list[str] | None = None) -> dict
             lines.append(f"mkdir {d}: {exc}")
     lines.append(cloudredirect._download_cr_lib())
     have_lib = _hook_present(cloudredirect)
+    synced = cloudredirect.sync_registered_games()
+    if synced.get("success"):
+        lines.append("registered games synchronized: %s" % synced.get("games", 0))
+    else:
+        lines.append("registered-game sync failed: %s" % synced.get("error", "unknown error"))
     try:
         (cloudredirect.settings.reset_dep_fail if have_lib else cloudredirect.settings.inc_dep_fail)("cloudredirect")
     except Exception:
         pass
     logger.log("CloudRedirect moon hook install: %s" % ("ok" if have_lib else "incomplete"))
     return _decorate(cloudredirect, {
-        "success": have_lib,
+        "success": have_lib and bool(synced.get("success")),
         "installed": have_lib,
         "hasLib": have_lib,
         "nativeMoon": True,
@@ -129,6 +134,10 @@ def patch(cloudredirect: Any) -> None:
                 "success": True, "installed": True, "hasLib": True,
                 "nativeMoon": True, "log": "",
             }
+            synced = cloudredirect.sync_registered_games()
+            if not synced.get("success"):
+                base["success"] = False
+                base["log"] = "registered-game sync failed: %s" % synced.get("error", "unknown error")
         else:
             base = _install_moon_hook(cloudredirect)
         if not base.get("success"):
@@ -157,5 +166,17 @@ def patch(cloudredirect: Any) -> None:
     cloudredirect.ensure_installed_auto = ensure_native
     cloudredirect.ensure_installed = reinstall
     cloudredirect.ensure_ui = ensure_ui
+    original_add_app = cloudredirect.slssteam.add_app
+    if not getattr(original_add_app, "_slsdeck_cloudredirect_sync", False):
+        def add_app_and_sync(*args, **kwargs):
+            result = original_add_app(*args, **kwargs)
+            if result.get("success"):
+                synced = cloudredirect.sync_registered_games()
+                if not synced.get("success"):
+                    logger.warn("CloudRedirect game-list sync after add failed: %s" %
+                                synced.get("error", "unknown error"))
+            return result
+        add_app_and_sync._slsdeck_cloudredirect_sync = True
+        cloudredirect.slssteam.add_app = add_app_and_sync
     cloudredirect._slsdeck_force_reinstall_patched = True
     logger.log("SLSDeck: CloudRedirect moon runtime is primary; login UI is setup-only")

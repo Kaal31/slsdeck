@@ -15,6 +15,7 @@ client) is handled by the client fix; this is just visibility/control.
 
 from __future__ import annotations
 
+import json
 import os
 from .paths import defaults_path, runtime_path
 import re
@@ -24,6 +25,8 @@ from .logger import logger
 from .httpc import ensure_http_client
 from .utils import chown_to_user
 from . import slssteam, settings
+
+_slssteam_add_app = slssteam.add_app
 
 CR_APP_ID = "org.cloudredirect.CloudRedirect"
 CR_REPO = "https://raw.githubusercontent.com/Selectively11/CloudRedirect/refs/heads/gh-pages/cloudredirect.flatpakrepo"
@@ -119,6 +122,103 @@ def provider_status() -> dict:
             continue
     providers = sorted(set(providers))
     return {"success": True, "configured": bool(providers), "providers": providers}
+
+
+def _recent_steam_account_id() -> str:
+    """Return the account-id CloudRedirect uses below ``storage/``.
+
+    The companion derives this from the low 32 bits of the MostRecent SteamID64
+    in loginusers.vdf.  Mirror that exact rule so its storage-first app list can
+    be seeded before a game performs its first cloud operation.
+    """
+    try:
+        from . import steam
+        paths = steam._loginusers_paths()
+    except Exception:
+        paths = []
+    block_re = re.compile(r'"(\d{17})"\s*\{(.*?)\}', re.DOTALL)
+    recent_re = re.compile(r'"MostRecent"\s*"1"', re.IGNORECASE)
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for match in block_re.finditer(text):
+            if recent_re.search(match.group(2)):
+                return str(int(match.group(1)) & 0xFFFFFFFF)
+    return ""
+
+
+def sync_registered_games() -> dict:
+    """Expose every SLSsteam game to both the Moon hook and companion UI.
+
+    New slsteam-moon discovers games primarily from ``stplug-in/*.lua`` while
+    CloudRedirect still reads ``AdditionalApps``.  Its current companion also
+    has an unused AdditionalApps loader and displays only directories already
+    present under its storage tree.  Keep the legacy list in sync and create
+    empty per-app directories (never save files or metadata) so registered games
+    are visible immediately.  The hook fills those directories normally later.
+    """
+    appids = [int(x) for x in slssteam.read_additional_apps() if int(x) > 0]
+    mirrored = 0
+    try:
+        content = slssteam._read() or ""
+        legacy = slssteam._read_additional_from(content)
+        for appid in appids:
+            if appid not in legacy:
+                result = _slssteam_add_app(appid)
+                if not result.get("success"):
+                    return {"success": False, "error": result.get("error") or
+                            f"could not mirror AppID {appid} into AdditionalApps"}
+                mirrored += 1
+                legacy.add(appid)
+    except Exception as exc:
+        return {"success": False, "error": f"could not synchronize AdditionalApps: {exc}"}
+
+    account_id = _recent_steam_account_id()
+    seeded = 0
+    if account_id:
+        config_root = os.path.join(slssteam._home(), ".config", "CloudRedirect")
+        root = os.path.join(config_root, "storage", account_id)
+        seed_index = os.path.join(config_root, ".slsdeck_seeded_apps.json")
+        try:
+            os.makedirs(root, exist_ok=True)
+            try:
+                with open(seed_index, "r", encoding="utf-8") as fh:
+                    tracked = {int(x) for x in json.load(fh) if int(x) > 0}
+            except Exception:
+                tracked = set()
+            current = set(appids)
+            # Remove only obsolete placeholders that are still empty. Once the
+            # hook writes anything, that directory is real user data and is
+            # deliberately left alone even if the game is removed from SLSsteam.
+            for appid in tracked - current:
+                old_dir = os.path.join(root, str(appid))
+                try:
+                    if os.path.isdir(old_dir) and not os.listdir(old_dir):
+                        os.rmdir(old_dir)
+                except OSError:
+                    pass
+            tracked &= current
+            for appid in appids:
+                app_dir = os.path.join(root, str(appid))
+                if not os.path.isdir(app_dir):
+                    os.makedirs(app_dir, exist_ok=True)
+                    tracked.add(appid)
+                    seeded += 1
+            with open(seed_index + ".tmp", "w", encoding="utf-8") as fh:
+                json.dump(sorted(tracked), fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(seed_index + ".tmp", seed_index)
+            chown_to_user(config_root, recursive=True)
+        except Exception as exc:
+            return {"success": False, "error": f"could not seed CloudRedirect app list: {exc}"}
+    logger.log(f"CloudRedirect: synchronized {len(appids)} game(s), "
+               f"mirrored={mirrored}, seeded={seeded}, account={account_id or 'unknown'}")
+    return {"success": True, "games": len(appids), "mirrored": mirrored,
+            "seeded": seeded, "accountId": account_id}
 
 
 def _download_cr_lib() -> str:
@@ -358,6 +458,10 @@ def set_enabled(enabled: bool) -> dict:
     # short.
     if not slssteam._atomic_write(new):
         return {"success": False, "error": "cannot write SLSsteam config"}
+    if enabled:
+        synced = sync_registered_games()
+        if not synced.get("success"):
+            return {"success": False, "error": synced.get("error"), "enabled": True}
     logger.log(f"CloudRedirect: DisableCloud -> {newval}")
     return {"success": True, "enabled": bool(enabled)}
 
@@ -429,6 +533,9 @@ def open_app() -> dict:
             return {"success": False,
                     "error": "CloudRedirect install failed (see below). Needs network + flatpak.\n"
                              + (r.get("log") or "")}
+    synced = sync_registered_games()
+    if not synced.get("success"):
+        return {"success": False, "error": synced.get("error")}
     try:
         env = slssteam._rich_env()
         try:
