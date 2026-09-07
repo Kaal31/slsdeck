@@ -87,16 +87,30 @@ async function confirmTokeerLaunchedGameStarted(appid:number,shouldAbort?:()=>bo
   }catch(e){return {confirmed:false,available:false,launched:false,error:`Steam game-lifetime confirmation could not be registered: ${String(e)}`};}
   try{
     const deadline=Date.now()+45000;
+    const fallbackAt=Date.now()+5000;
+    let fallbackRequested=false;
     while(Date.now()<deadline){
-      if(shouldAbort?.())return {confirmed:false,available:true,launched:true,error:"Game launch confirmation was paused."};
+      if(shouldAbort?.())return {confirmed:false,available:true,launched:fallbackRequested,error:"Game launch confirmation was paused."};
       try{
         const details=(window as any).appDetailsStore?.GetAppDetails?.(Number(appid));
         if(details?.bIsRunning||details?.bRunning||details?.bIsLaunching)return {confirmed:true,available:true,launched:true};
       }catch{}
       const confirmed=await Promise.race([started,sleep(500).then(()=>false)]);
       if(confirmed)return {confirmed:true,available:true,launched:true};
+      // The official Tokeer command normally opens steam://rungameid itself.
+      // Decky's backend may not inherit a usable graphical/session launch path
+      // on every SteamOS derivative, though. Give it a short grace period, then
+      // ask the already-running Steam client to launch the same AppID directly.
+      if(!fallbackRequested&&Date.now()>=fallbackAt)fallbackRequested=launchGame(appid);
     }
-    return {confirmed:false,available:true,launched:true,error:"Tokeer applied the activation, but Steam did not confirm that its game launch started."};
+    return {
+      confirmed:false,
+      available:true,
+      launched:fallbackRequested,
+      error:fallbackRequested
+        ?"Steam accepted SLSDeck's fallback launch request, but never reported the game as started. The activation therefore cannot be confirmed."
+        :"Neither Tokeer nor Steam started the game. The activation therefore cannot be confirmed.",
+    };
   }finally{try{subscription?.unregister?.();}catch{}}
 }
 
@@ -672,7 +686,7 @@ export function TokeerSection() {
             const checked=await confirmTokeerLaunchedGameStarted(ticketAppid,stale);
             if(stale())return;
             if(!checked.confirmed){
-              const body=`Tokeer activation succeeded, but SLSDeck could not prove that the game started, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
+              const body=`Tokeer accepted the redemption code, but SLSDeck could not prove that activation worked, so Game worked! was not pressed. ${checked.error||"Confirm it manually after testing the game."}`;
               setAutomationError(body);setMessage(body);
               checkpoint({automationStage:"checking-game",automationError:body,ticket:tracked});
               return;
@@ -688,7 +702,7 @@ export function TokeerSection() {
           const vouched=await clickTokeerGameWorked(ticketUrl,tracked.lastMessageId||"");
           if(stale())return;
           if(!vouched.success){
-            const body=`Tokeer activation succeeded, but Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
+            const body=`The game launch was confirmed after Tokeer accepted the code, but Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
             setAutomationError(body);setMessage(body);
             checkpoint({automationStage:"confirming-worked",automationError:body,ticket:tracked});
             return;
