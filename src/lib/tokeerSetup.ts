@@ -104,13 +104,19 @@ export async function setupAndVerifyTokeer(
   }
 
   onStatus?.("Checking the game setup…");
-  let verified = await tokeerVerify(appid, ubisoft, getCurrentLaunchOptions(appid));
+  // Steam's app-details/read-back cache can lag immediately after
+  // SetAppLaunchOptions even though the write was accepted (and is already
+  // visible in Settings). For this first verification, use the exact value we
+  // just submitted. Subsequent/manual verification still reads Steam live.
+  const justWrittenLaunchOptions = configured.options || getCurrentLaunchOptions(appid);
+  let verified = await tokeerVerify(appid, ubisoft, justWrittenLaunchOptions);
   if (!verified.success && !verified.checks?.prefix) {
     onStatus?.("Creating the Proton prefix with one game launch—Steam will stay open…");
     launchGame(appid);
     for (let attempt = 0; attempt < 30; attempt++) {
       await sleep(2000);
-      verified = await tokeerVerify(appid, ubisoft, getCurrentLaunchOptions(appid));
+      const liveLaunchOptions = getCurrentLaunchOptions(appid);
+      verified = await tokeerVerify(appid, ubisoft, liveLaunchOptions || justWrittenLaunchOptions);
       if (verified.success || verified.checks?.prefix) break;
     }
   }
