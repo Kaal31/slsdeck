@@ -158,7 +158,15 @@ function readSelectorLayout(): TokeerDiscordState|null {
   } catch { return null; }
 }
 
-export function TokeerSection() {
+export type TokeerActivationRequest = {
+  appid: number;
+  gameName: string;
+  availabilityLabel?: string;
+  remaining?: number;
+  total?: number;
+};
+
+export function TokeerSection({ headless = false, activationRequest }: { headless?: boolean; activationRequest?: TokeerActivationRequest } = {}) {
   useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
   const selectorLayoutRef=useRef<TokeerDiscordState|null>(readSelectorLayout());
@@ -204,6 +212,8 @@ export function TokeerSection() {
   const selectedUbisoftRef=useRef(!!savedRef.current?.selectedUbisoft);
   const loginPendingRef=useRef(false);
   const expiryCleanupRef=useRef(false);
+  const [headlessArmed,setHeadlessArmed]=useState(false);
+  const headlessSelectingRef=useRef(false);
 
   const checkpoint=(patch:Partial<SavedTokeerSession>)=>{
     try{
@@ -1073,6 +1083,53 @@ export function TokeerSection() {
     finally{if(generation===ticketGenerationRef.current)setBusy("");}
   };
 
+  // The Fixes menu uses this component without its full panel UI. It still
+  // drives the exact same selector/ticket/automation state machine and the
+  // same localStorage checkpoint as Advanced -> Tokeer helper. This prevents a
+  // second, subtly different activation implementation from developing.
+  useEffect(()=>{
+    if(!headless||!headlessArmed||!activationRequest||selectedGame||gate||ticket||headlessSelectingRef.current)return;
+    if(!discord?.found||(discord.selectors||[]).length===0)return;
+    let stopped=false;
+    const selectRequestedGame=async()=>{
+      headlessSelectingRef.current=true;
+      setBusy(`Finding ${activationRequest.gameName} in Tokeer…`);
+      setMessage("Reading the live Tokeer game selectors…");
+      try{
+        const wantedName=normalizeTokeerGameName(activationRequest.gameName);
+        for(const selector of discord.selectors||[]){
+          if(stopped)return;
+          let items:string[]=[];
+          const deadline=Date.now()+6000;
+          do{
+            items=await openSelectorAndReadOptions(selector.key||selector.index,2200);
+            if(items.length||Date.now()>=deadline)break;
+            await sleep(250);
+          }while(!stopped);
+          const match=items.find((label)=>{
+            const parsed=parseTokeerGameLabel(label);
+            return Number(parsed?.appid||0)===Number(activationRequest.appid)||normalizeTokeerGameName(parsed?.name||label)===wantedName;
+          });
+          if(match){
+            setOptions((old)=>({...old,[selector.key]:items}));
+            await choose(selector.key,match);
+            return;
+          }
+        }
+        if(!stopped)setMessage(`Tokeer is live, but ${activationRequest.gameName} was not found in its current game selectors. Refresh availability and try again.`);
+      }catch(e){if(!stopped)setMessage(`Could not start Tokeer activation: ${String(e)}`);}
+      finally{headlessSelectingRef.current=false;if(!stopped)setBusy("");}
+    };
+    void selectRequestedGame();
+    return()=>{stopped=true;};
+  },[headless,headlessArmed,activationRequest?.appid,activationRequest?.gameName,discord?.found,discord?.selectors?.length,selectedGame,gate?.found,ticket?.url]);
+
+  useEffect(()=>{
+    if(!headless||!headlessArmed||!gate?.found||ticket?.url||!selectedGame||busy)return;
+    const timer=setTimeout(()=>{void openTicket();},100);
+    return()=>clearTimeout(timer);
+  },[headless,headlessArmed,gate?.found,ticket?.url,selectedGame,busy]);
+
   useEffect(()=>{
     const saved=savedRef.current;
     if(!saved?.ticket?.found||!saved.ticket.appid||!saved.ticket.url)return;
@@ -1270,6 +1327,28 @@ export function TokeerSection() {
     finally{setBusy("");}
   };
   const c=checks(verify||undefined);
+
+  if(headless){
+    const savedGame=displayGameLabel(selectedGame||activationRequest?.availabilityLabel||activationRequest?.gameName||"");
+    const resumable=!!ticket?.url||!!gate?.found||!!selectedGame;
+    const resumeFromFixes=()=>{
+      setHeadlessArmed(true);
+      if(ticket?.url){void resumeTicket();return;}
+      if(gate?.found){void openTicket();return;}
+      if(selectedGame){void waitForGate();}
+    };
+    return <div style={{border:"1px solid rgba(202,168,255,.28)",borderRadius:8,padding:8,background:"rgba(202,168,255,.06)"}}>
+      <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>Tokeer activation{activationRequest?.remaining!==undefined?` · ${activationRequest.remaining}${activationRequest.total!==undefined?` / ${activationRequest.total}`:""} keys available`:""}</div>
+      <div style={{fontSize:11,opacity:.72,lineHeight:1.45,marginBottom:7}}>
+        {resumable?`Saved activation for ${savedGame||"this game"}. The same ticket and progress are available in Advanced → Tokeer helper.`:`Runs the complete ${selectedUbisoft?"Ubisoft":"Tokeer"} activation chain and shares its ticket state with Advanced → Tokeer helper.`}
+      </div>
+      <ButtonItem layout="below" disabled={!!busy||automationRunningRef.current} onClick={resumable?resumeFromFixes:()=>setHeadlessArmed(true)}>
+        {busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):(resumable?"Resume Tokeer ticket":"Activate with Tokeer")}
+      </ButtonItem>
+      {automationStage!=="idle"&&<div style={{fontSize:10,marginTop:6,opacity:.78}}>Stage: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}</div>}
+      {message&&<div style={{fontSize:10,marginTop:6,lineHeight:1.4,color:automationError?"#ff7b72":"inherit"}}>{message}</div>}
+    </div>;
+  }
 
   return <>
     <PanelSection title="Choose game in Tokeer">
