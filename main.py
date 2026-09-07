@@ -1780,6 +1780,24 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+    async def cr_set_provider(self, provider: str) -> Dict[str, Any]:
+        return await self._run(cloudredirect.set_provider, provider)
+
+    async def cr_set_provider_toggle(self, key: str, enabled: bool) -> Dict[str, Any]:
+        return await self._run(cloudredirect.set_provider_toggle, key, bool(enabled))
+
+    async def cr_sign_out(self, provider: str = "") -> Dict[str, Any]:
+        return await self._run(cloudredirect.sign_out, provider)
+
+    async def cr_auth_start(self, provider: str) -> Dict[str, Any]:
+        return await self._run(cloudredirect.auth_start, provider)
+
+    async def cr_auth_poll(self) -> Dict[str, Any]:
+        return await self._run(cloudredirect.auth_poll)
+
+    async def cr_list_local_apps(self) -> Dict[str, Any]:
+        return await self._run(cloudredirect.list_local_apps)
+
     async def cr_install_status(self) -> Dict[str, Any]:
         try:
             return await self._run(cloudredirect.install_status)

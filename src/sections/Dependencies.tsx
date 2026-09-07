@@ -2,7 +2,6 @@ import { PanelSection, PanelSectionRow, ButtonItem, Spinner } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { toaster } from "@decky/api";
 import { ScrollableResult } from "../components/ScrollableResult";
-import { rebindExistingCloudRedirectShortcut } from "../lib/cloudRedirectShortcut";
 import {
   SlsStatus,
   SlsInstallState,
@@ -263,8 +262,7 @@ export function DependenciesSection() {
     try {
       const r = await crEnsureInstalled();
       if (r.installed) {
-        const rebound = await rebindExistingCloudRedirectShortcut();
-        setN("cr", rebound ? "installed · shortcut rebound" : "installed");
+        setN("cr", "installed · Moon hook verified");
       } else {
         setN("cr", "failed — " + (r.log || "check network"));
       }

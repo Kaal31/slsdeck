@@ -242,6 +242,18 @@ export const crIconPath = callable<[], { success: boolean; path: string }>("cr_i
 export const crArtwork = callable<[], { success: boolean; cover: string; capsule: string; hero: string; logo: string }>("cr_artwork");
 export const crGetShortcut = callable<[], { success: boolean; appId: number }>("cr_get_shortcut");
 export const crSetShortcut = callable<[appId: number], { success: boolean }>("cr_set_shortcut");
+export type CloudRedirectProvider = "local" | "gdrive" | "onedrive";
+export interface CloudRedirectProviderStatus {
+  success: boolean; configured?: boolean; authenticated?: boolean;
+  provider?: CloudRedirectProvider; providers?: string[];
+  syncAchievements?: boolean; syncPlaytime?: boolean; native?: boolean; error?: string;
+}
+export const crSetProvider = callable<[provider: string], CloudRedirectProviderStatus>("cr_set_provider");
+export const crSetProviderToggle = callable<[key: string, enabled: boolean], CloudRedirectProviderStatus>("cr_set_provider_toggle");
+export const crSignOut = callable<[provider?: string], CloudRedirectProviderStatus>("cr_sign_out");
+export const crAuthStart = callable<[provider: string], { success: boolean; status?: string; authUrl?: string; error?: string }>("cr_auth_start");
+export const crAuthPoll = callable<[], { success: boolean; status?: string; provider?: string; authenticated?: boolean; error?: string }>("cr_auth_poll");
+export const crListLocalApps = callable<[], { success: boolean; apps?: Array<{ appid: number; account: number; files: number; size: number }>; storageRoot?: string; error?: string }>("cr_list_local_apps");
 
 // ── OpenSave (cloud saves engine) ───────────────────────────────────────────
 export type OsState = "synced" | "syncing" | "conflict" | "idle" | "untracked" | "unavailable" | "unknown";
@@ -616,7 +628,7 @@ export const clientFixNeeded = callable<[], { success: boolean; needed?: boolean
 // repairs in place after backing the file up.
 export const slsConfigHealth = callable<[], { success: boolean; present?: boolean; issues?: string[]; count?: number; changed?: boolean; error?: string }>("sls_config_health");
 export const healSlsConfig = callable<[], { success: boolean; issues?: string[]; count?: number; changed?: boolean; backup?: string; error?: string }>("heal_sls_config");
-export const crProviderStatus = callable<[], { success: boolean; configured?: boolean; providers?: string[] }>("cr_provider_status");
+export const crProviderStatus = callable<[], CloudRedirectProviderStatus>("cr_provider_status");
 export const crInstallStatus = callable<[], { success: boolean; installed: boolean; healthy?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean; allHookLocationsValid?: boolean; partial?: boolean }>("cr_install_status");
 export const fixStuckUpdate = callable<[appid: number], { success: boolean; copied?: number; note?: string; error?: string }>("fix_stuck_update");
 export const injectionHealth = callable<[], { success: boolean; installed: boolean; active: boolean }>("injection_health");

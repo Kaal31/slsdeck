@@ -131,6 +131,7 @@ const tokeerEnsureUbisoftPackages = callable("tokeer_ensure_ubisoft_packages");
 const tokeerApplyUbisoftPackage = callable("tokeer_apply_ubisoft_package");
 const tokeerFindUbisoftToken = callable("tokeer_find_ubisoft_token");
 const tokeerInstallUbisoftDbdata = callable("tokeer_install_ubisoft_dbdata");
+const tokeerUbisoftDbdataStatus = callable("tokeer_ubisoft_dbdata_status");
 const tokeerAppliedStatus = callable("tokeer_applied_status");
 const tokeerMarkApplied = callable("tokeer_mark_applied");
 // ── Callables ──────────────────────────────────────────────────────────────
@@ -163,13 +164,19 @@ const setOnlineUsername = callable("set_online_username");
 // CloudRedirect (cloud saves for added games)
 const crGetEnabled = callable("cr_get_enabled");
 const crSetEnabled = callable("cr_set_enabled");
-const crOpenApp = callable("cr_open_app");
+callable("cr_open_app");
 const crEnsureInstalledAuto = callable("cr_ensure_installed_auto");
 const crEnsureInstalled = callable("cr_ensure_installed");
-const crIconPath = callable("cr_icon_path");
-const crArtwork = callable("cr_artwork");
-const crGetShortcut = callable("cr_get_shortcut");
-const crSetShortcut = callable("cr_set_shortcut");
+callable("cr_icon_path");
+callable("cr_artwork");
+callable("cr_get_shortcut");
+callable("cr_set_shortcut");
+const crSetProvider = callable("cr_set_provider");
+const crSetProviderToggle = callable("cr_set_provider_toggle");
+const crSignOut = callable("cr_sign_out");
+const crAuthStart = callable("cr_auth_start");
+const crAuthPoll = callable("cr_auth_poll");
+const crListLocalApps = callable("cr_list_local_apps");
 callable("os_status");
 callable("os_ensure_cli");
 callable("os_ensure_daemon");
@@ -1057,6 +1064,593 @@ async function runBuildAccurateApply(h) {
     return "awaiting";
 }
 
+const EMOJI_BADGE_STORAGE_KEY = "slsdeck.emojiBadges";
+const EMOJI_BADGE_LABELS = {
+    sls: "🏴‍☠️",
+    legit: "💵",
+    fixed: "🔧",
+    tokeer: "🔑",
+    tokeercheck: "⚠️",
+    onlinefix: "🌐",
+    denuvo: "👺",
+    nonsteam: "❓",
+};
+function getEmojiBadgesEnabled() {
+    try {
+        return window.localStorage.getItem(EMOJI_BADGE_STORAGE_KEY) === "1";
+    }
+    catch {
+        return false;
+    }
+}
+function setEmojiBadgesEnabled(enabled) {
+    try {
+        window.localStorage.setItem(EMOJI_BADGE_STORAGE_KEY, enabled ? "1" : "0");
+        window.dispatchEvent(new CustomEvent("slsdeck-emoji-badges", { detail: enabled }));
+    }
+    catch {
+        /* ignore */
+    }
+}
+function badgeDisplayLabel(kind, fallback) {
+    return getEmojiBadgesEnabled() ? (EMOJI_BADGE_LABELS[kind] || fallback) : fallback;
+}
+
+/**
+ * Library capsule badges.
+ *
+ * Two independent badges, each toggleable in Advanced ▸ Options:
+ *   • SLS   — games registered through SLSsteam / lua (ours)
+ *   • LEGIT — real Steam library titles that are neither ours nor non-Steam
+ *             shortcuts (i.e. genuinely licensed)
+ *
+ * Steam renders the library grid in a separate gamepad-navigation window, so
+ * badges are injected into that window's DOM (the same approach the
+ * decky-nonsteam-badges plugin uses) rather than through a React patch.
+ */
+const BADGE_CLASS = "slsdeck-badge";
+const STYLE_ID = "slsdeck-badge-style";
+const POSITIONED_ATTR = "data-slsdeck-positioned";
+const BADGE_STATE_EVENT = "slsdeck-badge-state-changed";
+/** fixType strings vary by call site ("Online Fix", "online"…). */
+const ONLINE_RE = /online/i;
+const BADGE_LABELS = {
+    sls: "SLS",
+    legit: "LEGIT",
+    denuvo: "DENUVO",
+    onlinefix: "ONLINE FIX",
+    fixed: "FIXED",
+    tokeer: "TOKEER KEY",
+    tokeercheck: "TOKEER CHECK",
+    nonsteam: "NON-STEAM",
+    nonsteamname: "", // dynamic — filled per-app from the shortcut's exe folder
+};
+const BADGE_COLORS = {
+    sls: "linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%)",
+    legit: "linear-gradient(135deg, #1f7a3f 0%, #2fa85c 100%)",
+    denuvo: "linear-gradient(135deg, #a12a2a 0%, #e05252 100%)",
+    onlinefix: "linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%)",
+    fixed: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)",
+    tokeer: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)",
+    tokeercheck: "linear-gradient(135deg, #8b4d16 0%, #d97706 100%)",
+    nonsteam: "#000000",
+    nonsteamname: "linear-gradient(135deg, #3a3f4b 0%, #555b68 100%)",
+};
+let observer = null;
+let scanTimer = null;
+let retryTimer = null;
+let rafHandle = null;
+let cachedWindow = null;
+let slsIds = new Set();
+let slsLoaded = false;
+let everAddedIds = new Set();
+let denuvoIds = new Set();
+let onlineIds = new Set();
+let fixedIds = new Set();
+let tokeerIds = new Set();
+let tokeerCheckIds = new Set();
+let opts = {
+    sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true, tokeer: true,
+    nonSteam: true, nonSteamName: true, library: true,
+};
+let nonSteamNames = new Map();
+const pendingDenuvo = new Set();
+let denuvoFlushTimer = null;
+let refreshTimer = null;
+function getLibraryWindow() {
+    if (cachedWindow && !cachedWindow.closed)
+        return cachedWindow;
+    try {
+        const DFL = window.DFL;
+        if (!DFL?.getGamepadNavigationTrees)
+            return null;
+        for (const tree of DFL.getGamepadNavigationTrees()) {
+            try {
+                const doc = tree?.m_window?.document;
+                if (!doc)
+                    continue;
+                const n = doc.querySelectorAll('div[role="gridcell"]').length +
+                    doc.querySelectorAll('div[role="listitem"]').length;
+                if (n > 0) {
+                    cachedWindow = tree.m_window;
+                    return cachedWindow;
+                }
+            }
+            catch {
+                continue;
+            }
+        }
+    }
+    catch {
+        /* ignore */
+    }
+    return null;
+}
+function injectStyle(win) {
+    try {
+        if (win.document.getElementById(STYLE_ID))
+            return;
+        const el = win.document.createElement("style");
+        el.id = STYLE_ID;
+        el.textContent = `
+.${BADGE_CLASS}-box {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  right: 4px;
+  z-index: 9999;
+  pointer-events: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.${BADGE_CLASS} {
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.${BADGE_CLASS}[data-kind="sls"] { background: linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%); }
+.${BADGE_CLASS}[data-kind="legit"] { background: linear-gradient(135deg, #1f7a3f 0%, #2fa85c 100%); }
+.${BADGE_CLASS}[data-kind="denuvo"] { background: linear-gradient(135deg, #a12a2a 0%, #e05252 100%); }
+.${BADGE_CLASS}[data-kind="onlinefix"] { background: linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%); }
+.${BADGE_CLASS}[data-kind="fixed"] { background: linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%); }
+.${BADGE_CLASS}[data-kind="tokeer"] { background: linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%); }
+`;
+        win.document.head.appendChild(el);
+    }
+    catch {
+        /* ignore */
+    }
+}
+function appIdFromImage(img) {
+    if (!img?.src)
+        return null;
+    let m = img.src.match(/\/assets\/(\d+)\//);
+    if (m)
+        return m[1];
+    m = img.src.match(/\/customimages\/(\d+)p?\.(jpg|jpeg|png|webp)/i);
+    if (m)
+        return m[1];
+    m = img.src.match(/rungameid\/(\d+)/i);
+    if (m)
+        return m[1];
+    m = img.src.match(/\/(\d{6,})([p._-]?[a-z]*\.(jpg|png|webp))?/i);
+    if (m)
+        return m[1];
+    return null;
+}
+function getAppId(capsule) {
+    const dataId = capsule.getAttribute("data-id");
+    if (dataId && !dataId.startsWith("placeholder"))
+        return dataId;
+    const fromImg = appIdFromImage(capsule.querySelector("img"));
+    if (fromImg)
+        return fromImg;
+    try {
+        const anchor = capsule.tagName.toLowerCase() === "a" ? capsule : capsule.querySelector("a");
+        const href = anchor?.getAttribute("href");
+        if (href) {
+            const m = href.match(/\/app\/(\d+)/i) || href.match(/\/details\/(\d+)/i) || href.match(/run\/(\d+)/i);
+            if (m)
+                return m[1];
+        }
+    }
+    catch { /* ignore */ }
+    try {
+        for (const el of [capsule, ...Array.from(capsule.children)]) {
+            const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
+            if (!key)
+                continue;
+            let fiber = el[key];
+            let depth = 0;
+            while (fiber && depth < 5) {
+                const p = fiber.memoizedProps || fiber.return?.memoizedProps;
+                const id = p?.appid ?? p?.appId ?? p?.nAppID ?? p?.unAppID ?? p?.overview?.appid ?? p?.appOverview?.appid ?? p?.app?.appid ?? p?.item?.appid;
+                if (id)
+                    return String(id);
+                fiber = fiber.return;
+                depth++;
+            }
+        }
+    }
+    catch { /* ignore */ }
+    return null;
+}
+function classifyNonSteam(appid) {
+    if (!isNonSteamShortcut(appid))
+        return [];
+    const out = [];
+    if (opts.nonSteam)
+        out.push("nonsteam");
+    if (opts.nonSteamName && (nonSteamNames.get(appid) || "").trim())
+        out.push("nonsteamname");
+    return out;
+}
+function classifyPrimary(appid) {
+    if (slsIds.has(appid))
+        return opts.sls ? "sls" : null;
+    if (isNonSteamShortcut(appid))
+        return null;
+    if (!isInLibrary(appid))
+        return null;
+    if (!slsLoaded)
+        return null;
+    if (everAddedIds.has(appid))
+        return null;
+    if (onlineIds.has(appid) || fixedIds.has(appid))
+        return null;
+    return opts.legit ? "legit" : null;
+}
+function classifyApplied(appid) {
+    const out = [];
+    if (opts.onlineFix && onlineIds.has(appid))
+        out.push("onlinefix");
+    if (opts.fixed && fixedIds.has(appid))
+        out.push("fixed");
+    if (opts.tokeer && tokeerIds.has(appid))
+        out.push("tokeer");
+    if (opts.tokeer && tokeerCheckIds.has(appid))
+        out.push("tokeercheck");
+    return out;
+}
+function classifyDenuvo(appid) {
+    if (!opts.denuvo)
+        return false;
+    if (isNonSteamShortcut(appid))
+        return false;
+    if (denuvoIds.has(appid))
+        return true;
+    if (!pendingDenuvo.has(appid)) {
+        pendingDenuvo.add(appid);
+        scheduleDenuvoFlush();
+    }
+    return false;
+}
+function scheduleDenuvoFlush() {
+    if (denuvoFlushTimer)
+        return;
+    denuvoFlushTimer = setTimeout(async () => {
+        denuvoFlushTimer = null;
+        const batch = Array.from(pendingDenuvo).slice(0, 40);
+        if (!batch.length)
+            return;
+        batch.forEach((a) => pendingDenuvo.delete(a));
+        try {
+            const r = await denuvoResolve(batch);
+            if (r.success)
+                denuvoIds = new Set(r.denuvo || []);
+        }
+        catch { /* ignore */ }
+    }, 1200);
+}
+function badgeCapsule(capsule, win) {
+    const raw = getAppId(capsule);
+    const box = capsule.querySelector(`.${BADGE_CLASS}-box`);
+    const existing = Array.from(capsule.querySelectorAll(`.${BADGE_CLASS}`));
+    if (!raw) {
+        box?.remove();
+        existing.forEach((b) => b.remove());
+        return;
+    }
+    const appid = Number(raw);
+    const primary = classifyPrimary(appid);
+    const denuvo = classifyDenuvo(appid);
+    const wanted = [];
+    if (primary)
+        wanted.push(primary);
+    if (denuvo)
+        wanted.push("denuvo");
+    wanted.push(...classifyApplied(appid));
+    wanted.push(...classifyNonSteam(appid));
+    if (!wanted.length) {
+        box?.remove();
+        existing.forEach((b) => b.remove());
+        return;
+    }
+    const emojiMode = getEmojiBadgesEnabled();
+    const mode = emojiMode ? "emoji" : "text";
+    const current = existing
+        .filter((b) => b.getAttribute("data-appid") === String(appid))
+        .map((b) => b.getAttribute("data-kind"));
+    const currentMode = existing.every((b) => b.getAttribute("data-mode") === mode);
+    if (current.length === wanted.length && wanted.every((k) => current.includes(k)) && currentMode)
+        return;
+    box?.remove();
+    existing.forEach((b) => b.remove());
+    const img = capsule.querySelector("img");
+    const role = capsule.getAttribute("role");
+    let target = null;
+    if (role === "gridcell") {
+        // Keep badges out of Steam's overflow-clipped image layer. This is the
+        // working anchor for the normal Library grid.
+        target = img ? capsule.querySelector("div") : capsule;
+    }
+    else if (role === "listitem") {
+        // Steam Home uses a dedicated artwork wrapper. decky-nonsteam-badges uses
+        // this same partial class match because the generic nearest div can be
+        // Steam's native status/action overlay, while the whole listitem can clip
+        // overlays outside the artwork box.
+        target = img
+            ? (img.closest('div[class*="_1pwP4"]') ?? capsule)
+            : capsule;
+    }
+    if (!target)
+        target = capsule;
+    if (!target.hasAttribute(POSITIONED_ATTR)) {
+        try {
+            if (win.getComputedStyle(target).position === "static")
+                target.style.position = "relative";
+        }
+        catch { /* ignore */ }
+        target.setAttribute(POSITIONED_ATTR, "true");
+    }
+    const container = win.document.createElement("div");
+    container.className = `${BADGE_CLASS}-box`;
+    container.style.cssText =
+        (emojiMode
+            ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;"
+            : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +
+            `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;
+    for (const kind of wanted) {
+        const badge = win.document.createElement("div");
+        badge.className = BADGE_CLASS;
+        badge.setAttribute("data-appid", String(appid));
+        badge.setAttribute("data-kind", kind);
+        badge.setAttribute("data-mode", mode);
+        const normal = kind === "nonsteamname" ? (nonSteamNames.get(appid) || "APP") : BADGE_LABELS[kind];
+        badge.textContent = kind === "nonsteamname" ? normal : badgeDisplayLabel(kind, normal);
+        const standaloneEmoji = emojiMode && kind !== "nonsteamname";
+        badge.style.cssText = standaloneEmoji
+            ? "flex:0 0 auto;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;" +
+                "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
+                "padding:0;margin:0;border:0;border-radius:0;font-size:24px;line-height:27px;" +
+                "font-family:'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif;font-weight:400;letter-spacing:0;" +
+                "color:inherit;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;" +
+                "text-shadow:0 1px 3px rgba(0,0,0,0.75);overflow:visible;"
+            : "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
+                "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
+                "padding:2px 7px;border-radius:4px;font-size:11px;line-height:16px;" +
+                "font-family:'Motiva Sans',Arial,sans-serif;font-weight:700;letter-spacing:0.4px;" +
+                "color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.6);box-shadow:0 1px 4px rgba(0,0,0,0.4);" +
+                "background:" + (BADGE_COLORS[kind] || "#555") + ";";
+        container.appendChild(badge);
+    }
+    target.appendChild(container);
+}
+function scan() {
+    const win = getLibraryWindow();
+    if (!win)
+        return;
+    injectStyle(win);
+    const selectors = [
+        'div[role="tabpanel"] div[role="gridcell"]',
+        '.ReactVirtualized__Grid__innerScrollContainer div[role="listitem"]',
+    ];
+    for (const sel of selectors) {
+        win.document.querySelectorAll(sel).forEach((capsule) => {
+            if (!capsule.querySelector('div[role="link"]'))
+                return;
+            if (capsule.firstElementChild?.getAttribute("role") === "link")
+                return;
+            badgeCapsule(capsule, win);
+        });
+    }
+}
+function debouncedScan() {
+    if (rafHandle != null)
+        return;
+    rafHandle = requestAnimationFrame(() => {
+        rafHandle = null;
+        scan();
+    });
+}
+async function refreshData() {
+    const previousOnline = Array.from(onlineIds).sort((a, b) => a - b).join(",");
+    const previousFixed = Array.from(fixedIds).sort((a, b) => a - b).join(",");
+    const previousTokeer = Array.from(tokeerIds).sort((a, b) => a - b).join(",");
+    const previousTokeerCheck = Array.from(tokeerCheckIds).sort((a, b) => a - b).join(",");
+    try {
+        const r = await getBadgeOptions();
+        if (r.success) {
+            opts = {
+                sls: !!r.sls,
+                legit: !!r.legit,
+                denuvo: !!r.denuvo,
+                onlineFix: !!r.onlineFix,
+                fixed: !!r.fixed,
+                tokeer: !!r.tokeer,
+                nonSteam: !!r.nonSteam,
+                nonSteamName: !!r.nonSteamName,
+                library: !!r.library,
+            };
+        }
+    }
+    catch { /* keep previous */ }
+    try {
+        if (opts.nonSteamName) {
+            const r = await getNonSteamApps();
+            if (r.success) {
+                const m = new Map();
+                for (const [id, name] of Object.entries(r.apps || {})) {
+                    const n = Number(id);
+                    if (!Number.isNaN(n) && name)
+                        m.set(n, String(name));
+                }
+                nonSteamNames = m;
+            }
+        }
+    }
+    catch { /* keep previous names */ }
+    try {
+        const r = await getInstalledApps();
+        if (r.success) {
+            slsIds = new Set((r.apps || []).map((a) => Number(a.appid)));
+            slsLoaded = true;
+        }
+    }
+    catch { /* keep previous set */ }
+    try {
+        const r = await getEverAdded();
+        if (r.success)
+            everAddedIds = new Set((r.appids || []).map((a) => Number(a)));
+    }
+    catch { /* keep previous */ }
+    try {
+        const r = await denuvoKnown();
+        if (r.success)
+            denuvoIds = new Set(r.denuvo || []);
+    }
+    catch { /* keep previous */ }
+    try {
+        const r = await getInstalledFixes();
+        if (r.success) {
+            const perApp = new Map();
+            for (const f of r.fixes || []) {
+                const id = Number(f.appid);
+                (perApp.get(id) ?? perApp.set(id, []).get(id)).push(String(f.fixType || ""));
+            }
+            const on = new Set();
+            const fx = new Set();
+            for (const [id, types] of perApp) {
+                if (types.some((t) => ONLINE_RE.test(t)))
+                    on.add(id);
+                else
+                    fx.add(id);
+            }
+            onlineIds = on;
+            fixedIds = fx;
+            const nextOnline = Array.from(onlineIds).sort((a, b) => a - b).join(",");
+            const nextFixed = Array.from(fixedIds).sort((a, b) => a - b).join(",");
+            if (nextOnline !== previousOnline || nextFixed !== previousFixed) {
+                try {
+                    window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT));
+                }
+                catch { /* ignore */ }
+            }
+        }
+    }
+    catch { /* keep previous */ }
+    try {
+        const r = await tokeerAppliedStatus();
+        if (r.success) {
+            tokeerIds = new Set((r.records || [])
+                .filter((record) => record.health === "valid" && record.pinned && record.pinMatchesActivation)
+                .map((record) => Number(record.appid)));
+            tokeerCheckIds = new Set((r.records || [])
+                .filter((record) => record.health === "check" && record.pinned && record.pinMatchesActivation)
+                .map((record) => Number(record.appid)));
+            const nextTokeer = Array.from(tokeerIds).sort((a, b) => a - b).join(",");
+            const nextTokeerCheck = Array.from(tokeerCheckIds).sort((a, b) => a - b).join(",");
+            if (nextTokeer !== previousTokeer || nextTokeerCheck !== previousTokeerCheck) {
+                try {
+                    window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT));
+                }
+                catch { /* ignore */ }
+            }
+        }
+    }
+    catch { /* keep previous */ }
+}
+function removeAllBadges() {
+    const win = getLibraryWindow();
+    if (!win)
+        return;
+    try {
+        win.document.querySelectorAll(`.${BADGE_CLASS}`).forEach((b) => b.remove());
+        win.document.querySelectorAll(`.${BADGE_CLASS}-box`).forEach((b) => b.remove());
+    }
+    catch { /* ignore */ }
+}
+async function startBadges() {
+    stopBadges();
+    await refreshData();
+    if (!opts.library) {
+        removeAllBadges();
+        return;
+    }
+    if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.tokeer && !opts.nonSteam)
+        return;
+    const win = getLibraryWindow();
+    if (!win) {
+        retryTimer = setTimeout(() => {
+            retryTimer = null;
+            startBadges();
+        }, 1500);
+        return;
+    }
+    scan();
+    observer = new MutationObserver((muts) => {
+        if (muts.some((m) => m.addedNodes.length > 0))
+            debouncedScan();
+    });
+    win.document
+        .querySelectorAll('div[role="tabpanel"], div[class*="Panel"]')
+        .forEach((c) => observer?.observe(c, { childList: true, subtree: true }));
+    scanTimer = setInterval(scan, 2000);
+    refreshTimer = setInterval(refreshData, 20000);
+}
+function stopBadges() {
+    if (observer) {
+        observer.disconnect();
+        observer = null;
+    }
+    if (scanTimer) {
+        clearInterval(scanTimer);
+        scanTimer = null;
+    }
+    if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+    }
+    if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+    }
+    if (rafHandle != null) {
+        cancelAnimationFrame(rafHandle);
+        rafHandle = null;
+    }
+}
+async function refreshBadges() {
+    removeAllBadges();
+    await startBadges();
+    try {
+        window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT));
+    }
+    catch { /* ignore */ }
+}
+
 const _cache = new Map();
 let _cancelToken = 0;
 function cancelSteamdbBuildFetch() {
@@ -1504,7 +2098,7 @@ async function scrapeDepotManifests(depot, maxMs = 25000, onStatus, isCancelled)
     }
 }
 
-const sleep$2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep$3 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function cleanGids(gids) {
     const out = {};
     for (const [depot, gid] of Object.entries(gids || {})) {
@@ -1664,7 +2258,7 @@ async function prepareCatalogFixBuild(appid, buildid, gidsInput, onProgress) {
                 if (job.status === "failed")
                     throw new Error(job.error || "Build download failed.");
             }
-            await sleep$2(1000);
+            await sleep$3(1000);
         }
         throw new Error("Build download timed out after 30 minutes.");
     }
@@ -1707,7 +2301,7 @@ function launchGame(appid) {
     }
 }
 
-const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep$2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function describeTokeerFailure(result) {
     const checks = result.checks;
     // Dependency/preflight failures sometimes carry an all-false placeholder
@@ -1797,7 +2391,7 @@ async function setupAndVerifyTokeer(appid, onStatus, ubisoft = false) {
         onStatus?.("Creating the Proton prefix with one game launch—Steam will stay open…");
         launchGame(appid);
         for (let attempt = 0; attempt < 30; attempt++) {
-            await sleep$1(2000);
+            await sleep$2(2000);
             verified = await tokeerVerify(appid, ubisoft);
             if (verified.success || verified.checks?.prefix)
                 break;
@@ -2474,18 +3068,27 @@ async function chooseSelectorOption(index, label) {
     const expr = `(function(){try{var want=${JSON.stringify(label)};var o=[].slice.call(document.querySelectorAll('[role="listbox"] [role="option"],[role="option"]')).find(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&(e.innerText||e.textContent||e.getAttribute('aria-label')||'').trim()===want;});if(!o)return false;var r=o.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;o.dispatchEvent(new C(n,p));});return true;}catch(e){return false;}})()`;
     return !!(await evalJson(tab.webSocketDebuggerUrl, expr));
 }
+// Discord may render the interaction component in a sibling row rather than
+// inside the message article, and some builds expose it as role=button instead
+// of a literal <button>. Match the distinctive acknowledgement/tutorial label
+// globally in the exact activation channel; do not match generic Confirm or
+// Continue controls elsewhere in Discord.
 const TICKET_GATE_EXPR = `(function(){try{
-  var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-  for(var i=0;i<arts.length;i++){
-    var a=arts[i], bs=[].slice.call(a.querySelectorAll('button'));
-    for(var j=0;j<bs.length;j++){
-      var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
-      if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((a.innerText||'')+' '+label)){
-        return JSON.stringify({found:true,label:label,disabled:b.disabled||b.getAttribute('aria-disabled')==='true',messageText:(a.innerText||'').slice(0,5000)});
-      }
-    }
+  var text=function(e){return String(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();};
+  var rendered=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+  var all=[].slice.call(document.querySelectorAll('button,[role="button"]'));
+  var seen=[],matches=[];
+  for(var i=0;i<all.length;i++){
+    var b=all[i];if(seen.indexOf(b)>=0||!rendered(b))continue;seen.push(b);
+    var label=text(b);
+    if(/(?:tutorial|instruction(?:s)?|video)/i.test(label)&&/(?:read|agree|acknowledge|understand|watch(?:ed)?)/i.test(label))matches.push({button:b,label:label});
   }
-  return JSON.stringify({found:false,error:'Waiting for the newest Tokeer confirmation message…'});
+  if(!matches.length)return JSON.stringify({found:false,error:'Waiting for the agreement and tutorial confirmation button…'});
+  matches.sort(function(a,b){return a.button.getBoundingClientRect().top-b.button.getBoundingClientRect().top;});
+  var item=matches[matches.length-1],button=item.button;
+  try{button.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}
+  var r=button.getBoundingClientRect(),article=button.closest('[role="article"]'),context=article||(button.parentElement&&button.parentElement.parentElement)||button.parentElement;
+  return JSON.stringify({found:true,label:item.label,disabled:!!button.disabled||button.getAttribute('aria-disabled')==='true',x:r.left+r.width/2,y:r.top+r.height/2,messageText:String(context&&context.innerText||'').slice(0,5000)});
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
 async function readLatestTicketGate() {
     const tab = await findDiscordTab();
@@ -2505,21 +3108,28 @@ async function clickLatestTicketGate() {
         return { success: false, error: "Tokeer activation channel is not open." };
     // Snapshot the sidebar before Discord inserts the private ticket thread.
     const existingChannelIds = (await readSidebarChannels(tab)).map((item) => item.id);
-    const expr = `(function(){try{
-    var arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
-    for(var i=0;i<arts.length;i++){
-      var bs=[].slice.call(arts[i].querySelectorAll('button'));
-      for(var j=0;j<bs.length;j++){
-        var b=bs[j], label=(b.innerText||b.textContent||b.getAttribute('aria-label')||'').trim();
-        if(/(?:read|agree|watched|tutorial|continue|confirm)/i.test(label) && /(?:tokeer|activation|ticket|tutorial)/i.test((arts[i].innerText||'')+' '+label) && !b.disabled && b.getAttribute('aria-disabled')!=='true'){var r=b.getBoundingClientRect(),p={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,view:window};['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(n){var C=n.indexOf('pointer')===0&&window.PointerEvent?window.PointerEvent:MouseEvent;b.dispatchEvent(new C(n,p));});return true;}
-      }
+    const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_GATE_EXPR);
+    let gate = null;
+    try {
+        gate = JSON.parse(String(raw || ""));
     }
-    return false;
-  }catch(e){return false;}})()`;
-    const ok = !!(await evalJson(tab.webSocketDebuggerUrl, expr));
+    catch { }
+    if (!gate?.found)
+        return { success: false, error: gate?.error || "The agreement and tutorial confirmation button is not ready yet." };
+    if (gate.disabled)
+        return { success: false, error: "The agreement and tutorial confirmation button is currently disabled." };
+    const x = Number(gate.x), y = Number(gate.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y))
+        return { success: false, error: "The agreement and tutorial confirmation button could not be positioned." };
+    await cdpCommand(tab.webSocketDebuggerUrl, "Emulation.setFocusEmulationEnabled", { enabled: true }, 2000);
+    await cdpCommand(tab.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+    await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, 2000);
+    const down = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, 2000);
+    const up = await cdpCommand(tab.webSocketDebuggerUrl, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, 2000);
+    const ok = down !== null && up !== null;
     if (ok)
         invalidateDiscordCaptureCaches();
-    return ok ? { success: true, fromUrl: tab.url, existingChannelIds } : { success: false, error: "The green ticket confirmation button is not ready yet." };
+    return ok ? { success: true, fromUrl: tab.url, existingChannelIds } : { success: false, error: "Discord did not accept the agreement and tutorial confirmation click." };
 }
 const TICKET_CONTEXT_EXPR = `(function(){try{
   var articles=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40);
@@ -2785,6 +3395,122 @@ async function ticketTab(ticketUrl) {
         await new Promise((resolve) => setTimeout(resolve, 400));
     }
     return null;
+}
+async function forceTicketToNewest(tab) {
+    if (!tab?.webSocketDebuggerUrl)
+        return;
+    // Discord virtualizes old and new messages. A parked BrowserView can remain
+    // at the verification article forever, so a bot response exists on Discord
+    // but is not mounted in the DOM. Prefer Discord's own jump-to-present control,
+    // then force the article scroller to its newest edge as a structural fallback.
+    await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+    var visible=function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
+    var jump=[].slice.call(document.querySelectorAll('[class*="jumpToPresent"],button,[role="button"]')).filter(visible).filter(function(e){var t=String(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim();return /jump\\s+to\\s+present|new\\s+messages?/i.test(t)||String(e.className||'').indexOf('jumpToPresent')>=0;})[0];
+    if(jump){try{jump.click();}catch(e){}}
+    var arts=[].slice.call(document.querySelectorAll('[role="article"]')),last=arts[arts.length-1];
+    if(last){var s=last.parentElement;while(s&&!(s.scrollHeight>s.clientHeight+20))s=s.parentElement;if(s)s.scrollTop=s.scrollHeight;try{last.scrollIntoView({block:'end',inline:'nearest'});}catch(e){}}
+    return true;
+  }catch(e){return false;}})()`, 3000);
+    await new Promise((r) => setTimeout(r, 450));
+}
+function cdpClickAndCaptureDbdata(wsUrl, x, y, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+        let done = false, sock, nextId = 0;
+        const pending = new Map();
+        const trusted = (url, filename = "") => {
+            try {
+                const value = String(url || "");
+                return /^https:\/\/(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\//i.test(value)
+                    && (/db(?:ata|data)\.json/i.test(decodeURIComponent(value)) || /db(?:ata|data)\.json/i.test(String(filename || "")));
+            }
+            catch {
+                return false;
+            }
+        };
+        const finish = (value = "") => {
+            if (done)
+                return;
+            done = true;
+            clearTimeout(timer);
+            pending.clear();
+            try {
+                sock.close();
+            }
+            catch { }
+            resolve(value);
+        };
+        const send = (method, params = {}) => new Promise((resolveCommand) => {
+            if (done || sock.readyState !== WebSocket.OPEN) {
+                resolveCommand(null);
+                return;
+            }
+            const id = ++nextId;
+            pending.set(id, resolveCommand);
+            try {
+                sock.send(JSON.stringify({ id, method, params }));
+            }
+            catch {
+                pending.delete(id);
+                resolveCommand(null);
+            }
+        });
+        const timer = setTimeout(() => finish(""), timeoutMs);
+        try {
+            sock = new WebSocket(wsUrl);
+        }
+        catch {
+            finish("");
+            return;
+        }
+        sock.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(String(event.data));
+                if (msg?.id && pending.has(msg.id)) {
+                    const cb = pending.get(msg.id);
+                    pending.delete(msg.id);
+                    cb(msg.result ?? null);
+                    return;
+                }
+                const p = msg?.params || {};
+                const url = p?.response?.url || p?.request?.url || p?.url || "";
+                const filename = p?.suggestedFilename || "";
+                if (trusted(url, filename))
+                    finish(String(url));
+            }
+            catch { }
+        };
+        sock.onerror = () => finish("");
+        sock.onclose = () => finish("");
+        sock.onopen = async () => {
+            await send("Network.enable");
+            await send("Page.enable");
+            await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+            await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+        };
+    });
+}
+async function findPostedTokeerTicketFile(ticketUrl, expectedFilename) {
+    const filename = String(expectedFilename || "").trim();
+    if (!/^token_req_\d+\.txt$/i.test(filename))
+        return { success: false, found: false, error: "Invalid Ubisoft token request name." };
+    const tab = await ticketTab(ticketUrl);
+    if (!tab?.webSocketDebuggerUrl)
+        return { success: false, found: false, error: "The exact saved Discord ticket could not be opened." };
+    await forceTicketToNewest(tab);
+    const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
+    var expected=${JSON.stringify(filename)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-80).reverse();
+    for(var i=0;i<arts.length;i++){if(String(arts[i].innerText||'').indexOf(expected)<0)continue;var m=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
+    return JSON.stringify({found:false});
+  }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 3500);
+    try {
+        const value = JSON.parse(String(raw || ""));
+        if (value?.found)
+            return { success: true, found: true, lastMessageId: String(value.id || "") || undefined };
+        return { success: !value?.error, found: false, error: value?.error ? String(value.error) : undefined };
+    }
+    catch {
+        return { success: false, found: false, error: "Could not inspect the saved Discord ticket." };
+    }
 }
 /** Return the managed Discord view to a saved private ticket after a temporary
  * background vault scrape. */
@@ -3181,6 +3907,7 @@ async function waitForUbisoftDbdataLink(ticketUrl, afterMessageId = "", timeoutM
             await new Promise((r) => setTimeout(r, 1500));
             continue;
         }
+        await forceTicketToNewest(tab);
         const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
       var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-40).reverse();
       var trusted=function(value){try{var url=String(value||'');return /^https:\\/\\/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(url)&&/db(?:ata|data)\\.json/i.test(decodeURIComponent(url));}catch(e){return false;}};
@@ -3194,9 +3921,9 @@ async function waitForUbisoftDbdataLink(ticketUrl, afterMessageId = "", timeoutM
       };
       for(var i=0;i<arts.length;i++){
         var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
-        // The upload verifier can observe the bot response as its boundary.
-        // Re-read that message and skip only messages strictly older than it.
-        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        // This is the exact saved private ticket. Search its mounted messages
+        // idempotently instead of trusting one race-prone upload boundary: a
+        // retry must recover dbdata that arrived before SLSDeck confirmed send.
         // Discord renders link-style message components beside the article in
         // the same list item, not as ordinary anchors inside the article.
         var scope=a.closest('li')||a.parentElement||a;
@@ -3207,6 +3934,7 @@ async function waitForUbisoftDbdataLink(ticketUrl, afterMessageId = "", timeoutM
           var link=n.closest('a[href]')||n.querySelector&&n.querySelector('a[href]')||null,href=String(link&&link.href||n.getAttribute&&n.getAttribute('href')||'');
           if(!trusted(href))href=reactUrl(n);
           if(trusted(href))return JSON.stringify({found:true,url:href,id:id});
+          if(n.getBoundingClientRect){var rr=n.getBoundingClientRect();if(rr.width>0&&rr.height>0)return JSON.stringify({found:false,click:{x:rr.left+rr.width/2,y:rr.top+rr.height/2},id:id});}
         }
         var links=[].slice.call(scope.querySelectorAll('a[href]'));
         for(var l=0;l<links.length;l++){var direct=String(links[l].href||'');if(trusted(direct))return JSON.stringify({found:true,url:direct,id:id});}
@@ -3217,6 +3945,11 @@ async function waitForUbisoftDbdataLink(ticketUrl, afterMessageId = "", timeoutM
             const value = JSON.parse(String(raw || ""));
             if (value?.found && value.url)
                 return { success: true, url: String(value.url), lastMessageId: String(value.id || "") || undefined };
+            if (value?.click && Number.isFinite(value.click.x) && Number.isFinite(value.click.y)) {
+                const captured = await cdpClickAndCaptureDbdata(tab.webSocketDebuggerUrl, Number(value.click.x), Number(value.click.y));
+                if (captured)
+                    return { success: true, url: captured, lastMessageId: String(value.id || "") || undefined };
+            }
             if (value?.error)
                 return { success: false, error: String(value.error) };
         }
@@ -4110,6 +4843,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         onDone?.(st);
                         onReload?.();
                         refresh();
+                        void refreshBadges();
                     }
                 }
             }
@@ -4681,6 +5415,7 @@ function FixPicker({ appid, onReload, onClose }) {
         watch(() => getUnfixStatus(appid), "Fix reverted & unpinned — restart Steam", "Un-fix failed", () => {
             setPinned(false);
             clearFixLaunchOptions(appid); // strip repoint + WINEDLLOVERRIDES
+            void refreshBadges();
         });
     };
     // Unpin only — for when the game is pinned but no fix was actually applied
@@ -4911,17 +5646,19 @@ function FixPicker({ appid, onReload, onClose }) {
                                         setMsg("Cancelled — the pin is kept; you can apply later.");
                                     }, children: "Cancel" })] })] }))] }));
     };
-    return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: SP_JSX.jsxs("div", { children: [tokeerApplied ? "🔑 Tokeer key applied · " : "", "\uD83D\uDD12 Version pinned", pinInfo.buildid
-                            ? ` — Build ${pinInfo.buildid}`
-                            : (pinInfo.depots && Object.keys(pinInfo.depots).length
-                                ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
-                                : ""), " \u2014 the game won't update past the pinned version."] }) })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
+    return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: [SP_JSX.jsxs("div", { children: [tokeerApplied
+                                ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
+                                : "", "\uD83D\uDD12 Version pinned", pinInfo.buildid
+                                ? ` — Build ${pinInfo.buildid}`
+                                : (pinInfo.depots && Object.keys(pinInfo.depots).length
+                                    ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
+                                    : ""), " \u2014 the game won't update past the pinned version."] }), tokeerApplied && tokeerApplied.health !== "valid" && (SP_JSX.jsx("div", { style: { color: "#ffbf69" }, children: tokeerApplied.healthReason || "Tokeer activation needs verification." }))] })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
                     ? "🔒 Already pinned"
                     : busy === "game:manifest"
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), tokeerApplied && !pinned && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 4 }, children: "\uD83D\uDD11 Tokeer key applied" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.76, lineHeight: 1.45 }, children: [tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed", " \u00B7 Version not pinned"] })] }), tokeerGame && !tokeerApplied && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? `${tokeerPhase || "Setting up and validating"} · ${tokeerProgress}%` : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` }), (busy === "tokeer" || tokeerProgress > 0) && (SP_JSX.jsxs("div", { style: { marginTop: 7 }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, marginBottom: 4 }, children: [SP_JSX.jsx("span", { style: { opacity: 0.78 }, children: tokeerPhase || "Tokeer setup" }), SP_JSX.jsxs("span", { children: [tokeerProgress, "%"] })] }), SP_JSX.jsx("div", { style: { height: 8, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: {
+                            : "Pin this version" }), tokeerApplied && !pinned && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 4 }, children: tokeerApplied.health === "valid" ? "🔑 Tokeer key applied" : "⚠️ Tokeer verification needed" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.76, lineHeight: 1.45 }, children: [tokeerApplied.healthReason || (tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed"), " \u00B7 Version not pinned"] })] }), tokeerGame && !tokeerApplied && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,0.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,0.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer \u00B7 ", tokeerGame.remaining ?? "?", tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : "", " keys available", tokeerRefreshing ? " · refreshing…" : ""] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.68, marginBottom: 6 }, children: ["This game is present in the cached live Tokeer vault list. Configures GE-Proton10-34, merges the hook into live launch options, and validates AppID ", appid, "."] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working || !!awaiting, onClick: doTokeer, children: busy === "tokeer" ? `${tokeerPhase || "Setting up and validating"} · ${tokeerProgress}%` : `Tokeer · ${tokeerGame.remaining ?? "?"} keys` }), (busy === "tokeer" || tokeerProgress > 0) && (SP_JSX.jsxs("div", { style: { marginTop: 7 }, children: [SP_JSX.jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, marginBottom: 4 }, children: [SP_JSX.jsx("span", { style: { opacity: 0.78 }, children: tokeerPhase || "Tokeer setup" }), SP_JSX.jsxs("span", { children: [tokeerProgress, "%"] })] }), SP_JSX.jsx("div", { style: { height: 8, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,.14)" }, children: SP_JSX.jsx("div", { style: {
                                         height: "100%",
                                         width: `${Math.max(0, Math.min(100, tokeerProgress))}%`,
                                         background: tokeerFailed
@@ -5032,556 +5769,6 @@ function FixPicker({ appid, onReload, onClose }) {
                         }, children: msg }), msg.length > 140 && (SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, onClick: () => DFL.showModal(SP_JSX.jsx(FullStatusModal, { text: msg })), children: "View full error details" }))] }))] }));
 }
 
-const EMOJI_BADGE_STORAGE_KEY = "slsdeck.emojiBadges";
-const EMOJI_BADGE_LABELS = {
-    sls: "🏴‍☠️",
-    legit: "💵",
-    fixed: "🔧",
-    tokeer: "🔑",
-    onlinefix: "🌐",
-    denuvo: "👺",
-    nonsteam: "❓",
-};
-function getEmojiBadgesEnabled() {
-    try {
-        return window.localStorage.getItem(EMOJI_BADGE_STORAGE_KEY) === "1";
-    }
-    catch {
-        return false;
-    }
-}
-function setEmojiBadgesEnabled(enabled) {
-    try {
-        window.localStorage.setItem(EMOJI_BADGE_STORAGE_KEY, enabled ? "1" : "0");
-        window.dispatchEvent(new CustomEvent("slsdeck-emoji-badges", { detail: enabled }));
-    }
-    catch {
-        /* ignore */
-    }
-}
-function badgeDisplayLabel(kind, fallback) {
-    return getEmojiBadgesEnabled() ? (EMOJI_BADGE_LABELS[kind] || fallback) : fallback;
-}
-
-/**
- * Library capsule badges.
- *
- * Two independent badges, each toggleable in Advanced ▸ Options:
- *   • SLS   — games registered through SLSsteam / lua (ours)
- *   • LEGIT — real Steam library titles that are neither ours nor non-Steam
- *             shortcuts (i.e. genuinely licensed)
- *
- * Steam renders the library grid in a separate gamepad-navigation window, so
- * badges are injected into that window's DOM (the same approach the
- * decky-nonsteam-badges plugin uses) rather than through a React patch.
- */
-const BADGE_CLASS = "slsdeck-badge";
-const STYLE_ID = "slsdeck-badge-style";
-const POSITIONED_ATTR = "data-slsdeck-positioned";
-/** fixType strings vary by call site ("Online Fix", "online"…). */
-const ONLINE_RE = /online/i;
-const BADGE_LABELS = {
-    sls: "SLS",
-    legit: "LEGIT",
-    denuvo: "DENUVO",
-    onlinefix: "ONLINE FIX",
-    fixed: "FIXED",
-    tokeer: "TOKEER KEY",
-    nonsteam: "NON-STEAM",
-    nonsteamname: "", // dynamic — filled per-app from the shortcut's exe folder
-};
-const BADGE_COLORS = {
-    sls: "linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%)",
-    legit: "linear-gradient(135deg, #1f7a3f 0%, #2fa85c 100%)",
-    denuvo: "linear-gradient(135deg, #a12a2a 0%, #e05252 100%)",
-    onlinefix: "linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%)",
-    fixed: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)",
-    tokeer: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)",
-    nonsteam: "#000000",
-    nonsteamname: "linear-gradient(135deg, #3a3f4b 0%, #555b68 100%)",
-};
-let observer = null;
-let scanTimer = null;
-let retryTimer = null;
-let rafHandle = null;
-let cachedWindow = null;
-let slsIds = new Set();
-let slsLoaded = false;
-let everAddedIds = new Set();
-let denuvoIds = new Set();
-let onlineIds = new Set();
-let fixedIds = new Set();
-let tokeerIds = new Set();
-let opts = {
-    sls: true, legit: true, denuvo: true, onlineFix: true, fixed: true, tokeer: true,
-    nonSteam: true, nonSteamName: true, library: true,
-};
-let nonSteamNames = new Map();
-const pendingDenuvo = new Set();
-let denuvoFlushTimer = null;
-let refreshTimer = null;
-function getLibraryWindow() {
-    if (cachedWindow && !cachedWindow.closed)
-        return cachedWindow;
-    try {
-        const DFL = window.DFL;
-        if (!DFL?.getGamepadNavigationTrees)
-            return null;
-        for (const tree of DFL.getGamepadNavigationTrees()) {
-            try {
-                const doc = tree?.m_window?.document;
-                if (!doc)
-                    continue;
-                const n = doc.querySelectorAll('div[role="gridcell"]').length +
-                    doc.querySelectorAll('div[role="listitem"]').length;
-                if (n > 0) {
-                    cachedWindow = tree.m_window;
-                    return cachedWindow;
-                }
-            }
-            catch {
-                continue;
-            }
-        }
-    }
-    catch {
-        /* ignore */
-    }
-    return null;
-}
-function injectStyle(win) {
-    try {
-        if (win.document.getElementById(STYLE_ID))
-            return;
-        const el = win.document.createElement("style");
-        el.id = STYLE_ID;
-        el.textContent = `
-.${BADGE_CLASS}-box {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  right: 4px;
-  z-index: 9999;
-  pointer-events: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-}
-.${BADGE_CLASS} {
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  color: #fff;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
-}
-.${BADGE_CLASS}[data-kind="sls"] { background: linear-gradient(135deg, #7b4dd8 0%, #a855f7 100%); }
-.${BADGE_CLASS}[data-kind="legit"] { background: linear-gradient(135deg, #1f7a3f 0%, #2fa85c 100%); }
-.${BADGE_CLASS}[data-kind="denuvo"] { background: linear-gradient(135deg, #a12a2a 0%, #e05252 100%); }
-.${BADGE_CLASS}[data-kind="onlinefix"] { background: linear-gradient(135deg, #7b5fd0 0%, #caa8ff 100%); }
-.${BADGE_CLASS}[data-kind="fixed"] { background: linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%); }
-.${BADGE_CLASS}[data-kind="tokeer"] { background: linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%); }
-`;
-        win.document.head.appendChild(el);
-    }
-    catch {
-        /* ignore */
-    }
-}
-function appIdFromImage(img) {
-    if (!img?.src)
-        return null;
-    let m = img.src.match(/\/assets\/(\d+)\//);
-    if (m)
-        return m[1];
-    m = img.src.match(/\/customimages\/(\d+)p?\.(jpg|jpeg|png|webp)/i);
-    if (m)
-        return m[1];
-    m = img.src.match(/rungameid\/(\d+)/i);
-    if (m)
-        return m[1];
-    m = img.src.match(/\/(\d{6,})([p._-]?[a-z]*\.(jpg|png|webp))?/i);
-    if (m)
-        return m[1];
-    return null;
-}
-function getAppId(capsule) {
-    const dataId = capsule.getAttribute("data-id");
-    if (dataId && !dataId.startsWith("placeholder"))
-        return dataId;
-    const fromImg = appIdFromImage(capsule.querySelector("img"));
-    if (fromImg)
-        return fromImg;
-    try {
-        const anchor = capsule.tagName.toLowerCase() === "a" ? capsule : capsule.querySelector("a");
-        const href = anchor?.getAttribute("href");
-        if (href) {
-            const m = href.match(/\/app\/(\d+)/i) || href.match(/\/details\/(\d+)/i) || href.match(/run\/(\d+)/i);
-            if (m)
-                return m[1];
-        }
-    }
-    catch { /* ignore */ }
-    try {
-        for (const el of [capsule, ...Array.from(capsule.children)]) {
-            const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
-            if (!key)
-                continue;
-            let fiber = el[key];
-            let depth = 0;
-            while (fiber && depth < 5) {
-                const p = fiber.memoizedProps || fiber.return?.memoizedProps;
-                const id = p?.appid ?? p?.appId ?? p?.nAppID ?? p?.unAppID ?? p?.overview?.appid ?? p?.appOverview?.appid ?? p?.app?.appid ?? p?.item?.appid;
-                if (id)
-                    return String(id);
-                fiber = fiber.return;
-                depth++;
-            }
-        }
-    }
-    catch { /* ignore */ }
-    return null;
-}
-function classifyNonSteam(appid) {
-    if (!isNonSteamShortcut(appid))
-        return [];
-    const out = [];
-    if (opts.nonSteam)
-        out.push("nonsteam");
-    if (opts.nonSteamName && (nonSteamNames.get(appid) || "").trim())
-        out.push("nonsteamname");
-    return out;
-}
-function classifyPrimary(appid) {
-    if (slsIds.has(appid))
-        return opts.sls ? "sls" : null;
-    if (isNonSteamShortcut(appid))
-        return null;
-    if (!isInLibrary(appid))
-        return null;
-    if (!slsLoaded)
-        return null;
-    if (everAddedIds.has(appid))
-        return null;
-    if (onlineIds.has(appid) || fixedIds.has(appid))
-        return null;
-    return opts.legit ? "legit" : null;
-}
-function classifyApplied(appid) {
-    const out = [];
-    if (opts.onlineFix && onlineIds.has(appid))
-        out.push("onlinefix");
-    if (opts.fixed && fixedIds.has(appid))
-        out.push("fixed");
-    if (opts.tokeer && tokeerIds.has(appid))
-        out.push("tokeer");
-    return out;
-}
-function classifyDenuvo(appid) {
-    if (!opts.denuvo)
-        return false;
-    if (isNonSteamShortcut(appid))
-        return false;
-    if (denuvoIds.has(appid))
-        return true;
-    if (!pendingDenuvo.has(appid)) {
-        pendingDenuvo.add(appid);
-        scheduleDenuvoFlush();
-    }
-    return false;
-}
-function scheduleDenuvoFlush() {
-    if (denuvoFlushTimer)
-        return;
-    denuvoFlushTimer = setTimeout(async () => {
-        denuvoFlushTimer = null;
-        const batch = Array.from(pendingDenuvo).slice(0, 40);
-        if (!batch.length)
-            return;
-        batch.forEach((a) => pendingDenuvo.delete(a));
-        try {
-            const r = await denuvoResolve(batch);
-            if (r.success)
-                denuvoIds = new Set(r.denuvo || []);
-        }
-        catch { /* ignore */ }
-    }, 1200);
-}
-function badgeCapsule(capsule, win) {
-    const raw = getAppId(capsule);
-    const box = capsule.querySelector(`.${BADGE_CLASS}-box`);
-    const existing = Array.from(capsule.querySelectorAll(`.${BADGE_CLASS}`));
-    if (!raw) {
-        box?.remove();
-        existing.forEach((b) => b.remove());
-        return;
-    }
-    const appid = Number(raw);
-    const primary = classifyPrimary(appid);
-    const denuvo = classifyDenuvo(appid);
-    const wanted = [];
-    if (primary)
-        wanted.push(primary);
-    if (denuvo)
-        wanted.push("denuvo");
-    wanted.push(...classifyApplied(appid));
-    wanted.push(...classifyNonSteam(appid));
-    if (!wanted.length) {
-        box?.remove();
-        existing.forEach((b) => b.remove());
-        return;
-    }
-    const emojiMode = getEmojiBadgesEnabled();
-    const mode = emojiMode ? "emoji" : "text";
-    const current = existing
-        .filter((b) => b.getAttribute("data-appid") === String(appid))
-        .map((b) => b.getAttribute("data-kind"));
-    const currentMode = existing.every((b) => b.getAttribute("data-mode") === mode);
-    if (current.length === wanted.length && wanted.every((k) => current.includes(k)) && currentMode)
-        return;
-    box?.remove();
-    existing.forEach((b) => b.remove());
-    const img = capsule.querySelector("img");
-    const role = capsule.getAttribute("role");
-    let target = null;
-    if (role === "gridcell") {
-        // Keep badges out of Steam's overflow-clipped image layer. This is the
-        // working anchor for the normal Library grid.
-        target = img ? capsule.querySelector("div") : capsule;
-    }
-    else if (role === "listitem") {
-        // Steam Home uses a dedicated artwork wrapper. decky-nonsteam-badges uses
-        // this same partial class match because the generic nearest div can be
-        // Steam's native status/action overlay, while the whole listitem can clip
-        // overlays outside the artwork box.
-        target = img
-            ? (img.closest('div[class*="_1pwP4"]') ?? capsule)
-            : capsule;
-    }
-    if (!target)
-        target = capsule;
-    if (!target.hasAttribute(POSITIONED_ATTR)) {
-        try {
-            if (win.getComputedStyle(target).position === "static")
-                target.style.position = "relative";
-        }
-        catch { /* ignore */ }
-        target.setAttribute(POSITIONED_ATTR, "true");
-    }
-    const container = win.document.createElement("div");
-    container.className = `${BADGE_CLASS}-box`;
-    container.style.cssText =
-        (emojiMode
-            ? "position:absolute;top:6px;left:6px;z-index:9999;pointer-events:none;width:max-content;max-width:calc(100% - 12px);background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;"
-            : "position:absolute;top:4px;left:4px;right:4px;z-index:9999;pointer-events:none;") +
-            `display:flex;flex-wrap:wrap;gap:${emojiMode ? 7 : 3}px;align-items:center;`;
-    for (const kind of wanted) {
-        const badge = win.document.createElement("div");
-        badge.className = BADGE_CLASS;
-        badge.setAttribute("data-appid", String(appid));
-        badge.setAttribute("data-kind", kind);
-        badge.setAttribute("data-mode", mode);
-        const normal = kind === "nonsteamname" ? (nonSteamNames.get(appid) || "APP") : BADGE_LABELS[kind];
-        badge.textContent = kind === "nonsteamname" ? normal : badgeDisplayLabel(kind, normal);
-        const standaloneEmoji = emojiMode && kind !== "nonsteamname";
-        badge.style.cssText = standaloneEmoji
-            ? "flex:0 0 auto;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;" +
-                "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
-                "padding:0;margin:0;border:0;border-radius:0;font-size:24px;line-height:27px;" +
-                "font-family:'Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',sans-serif;font-weight:400;letter-spacing:0;" +
-                "color:inherit;background:transparent!important;box-shadow:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;" +
-                "text-shadow:0 1px 3px rgba(0,0,0,0.75);overflow:visible;"
-            : "flex:0 0 auto;white-space:nowrap;display:inline-block;overflow:visible;" +
-                "box-sizing:border-box;width:auto;height:auto;max-width:none;min-width:0;" +
-                "padding:2px 7px;border-radius:4px;font-size:11px;line-height:16px;" +
-                "font-family:'Motiva Sans',Arial,sans-serif;font-weight:700;letter-spacing:0.4px;" +
-                "color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.6);box-shadow:0 1px 4px rgba(0,0,0,0.4);" +
-                "background:" + (BADGE_COLORS[kind] || "#555") + ";";
-        container.appendChild(badge);
-    }
-    target.appendChild(container);
-}
-function scan() {
-    const win = getLibraryWindow();
-    if (!win)
-        return;
-    injectStyle(win);
-    const selectors = [
-        'div[role="tabpanel"] div[role="gridcell"]',
-        '.ReactVirtualized__Grid__innerScrollContainer div[role="listitem"]',
-    ];
-    for (const sel of selectors) {
-        win.document.querySelectorAll(sel).forEach((capsule) => {
-            if (!capsule.querySelector('div[role="link"]'))
-                return;
-            if (capsule.firstElementChild?.getAttribute("role") === "link")
-                return;
-            badgeCapsule(capsule, win);
-        });
-    }
-}
-function debouncedScan() {
-    if (rafHandle != null)
-        return;
-    rafHandle = requestAnimationFrame(() => {
-        rafHandle = null;
-        scan();
-    });
-}
-async function refreshData() {
-    try {
-        const r = await getBadgeOptions();
-        if (r.success) {
-            opts = {
-                sls: !!r.sls,
-                legit: !!r.legit,
-                denuvo: !!r.denuvo,
-                onlineFix: !!r.onlineFix,
-                fixed: !!r.fixed,
-                tokeer: !!r.tokeer,
-                nonSteam: !!r.nonSteam,
-                nonSteamName: !!r.nonSteamName,
-                library: !!r.library,
-            };
-        }
-    }
-    catch { /* keep previous */ }
-    try {
-        if (opts.nonSteamName) {
-            const r = await getNonSteamApps();
-            if (r.success) {
-                const m = new Map();
-                for (const [id, name] of Object.entries(r.apps || {})) {
-                    const n = Number(id);
-                    if (!Number.isNaN(n) && name)
-                        m.set(n, String(name));
-                }
-                nonSteamNames = m;
-            }
-        }
-    }
-    catch { /* keep previous names */ }
-    try {
-        const r = await getInstalledApps();
-        if (r.success) {
-            slsIds = new Set((r.apps || []).map((a) => Number(a.appid)));
-            slsLoaded = true;
-        }
-    }
-    catch { /* keep previous set */ }
-    try {
-        const r = await getEverAdded();
-        if (r.success)
-            everAddedIds = new Set((r.appids || []).map((a) => Number(a)));
-    }
-    catch { /* keep previous */ }
-    try {
-        const r = await denuvoKnown();
-        if (r.success)
-            denuvoIds = new Set(r.denuvo || []);
-    }
-    catch { /* keep previous */ }
-    try {
-        const r = await getInstalledFixes();
-        if (r.success) {
-            const perApp = new Map();
-            for (const f of r.fixes || []) {
-                const id = Number(f.appid);
-                (perApp.get(id) ?? perApp.set(id, []).get(id)).push(String(f.fixType || ""));
-            }
-            const on = new Set();
-            const fx = new Set();
-            for (const [id, types] of perApp) {
-                if (types.some((t) => ONLINE_RE.test(t)))
-                    on.add(id);
-                else
-                    fx.add(id);
-            }
-            onlineIds = on;
-            fixedIds = fx;
-        }
-    }
-    catch { /* keep previous */ }
-    try {
-        const r = await tokeerAppliedStatus();
-        if (r.success)
-            tokeerIds = new Set((r.records || []).map((record) => Number(record.appid)));
-    }
-    catch { /* keep previous */ }
-}
-function removeAllBadges() {
-    const win = getLibraryWindow();
-    if (!win)
-        return;
-    try {
-        win.document.querySelectorAll(`.${BADGE_CLASS}`).forEach((b) => b.remove());
-        win.document.querySelectorAll(`.${BADGE_CLASS}-box`).forEach((b) => b.remove());
-    }
-    catch { /* ignore */ }
-}
-async function startBadges() {
-    stopBadges();
-    await refreshData();
-    if (!opts.library) {
-        removeAllBadges();
-        return;
-    }
-    if (!opts.sls && !opts.legit && !opts.denuvo && !opts.onlineFix && !opts.fixed && !opts.tokeer && !opts.nonSteam)
-        return;
-    const win = getLibraryWindow();
-    if (!win) {
-        retryTimer = setTimeout(() => {
-            retryTimer = null;
-            startBadges();
-        }, 1500);
-        return;
-    }
-    scan();
-    observer = new MutationObserver((muts) => {
-        if (muts.some((m) => m.addedNodes.length > 0))
-            debouncedScan();
-    });
-    win.document
-        .querySelectorAll('div[role="tabpanel"], div[class*="Panel"]')
-        .forEach((c) => observer?.observe(c, { childList: true, subtree: true }));
-    scanTimer = setInterval(scan, 2000);
-    refreshTimer = setInterval(refreshData, 20000);
-}
-function stopBadges() {
-    if (observer) {
-        observer.disconnect();
-        observer = null;
-    }
-    if (scanTimer) {
-        clearInterval(scanTimer);
-        scanTimer = null;
-    }
-    if (refreshTimer) {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
-    }
-    if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-    }
-    if (rafHandle != null) {
-        cancelAnimationFrame(rafHandle);
-        rafHandle = null;
-    }
-}
-async function refreshBadges() {
-    removeAllBadges();
-    await startBadges();
-}
-
 const HistoryModule$1 = DFL.findModuleExport((e) => e?.m_history !== undefined);
 const History$1 = HistoryModule$1?.m_history;
 let mounted$1 = false;
@@ -5600,6 +5787,7 @@ let poll = null;
 let reconnectTimer$1 = null;
 let bgTimer$1 = null;
 let histUnlisten$1 = null;
+let badgeListener = null;
 // ── CDP helpers ─────────────────────────────────────────────────────────────
 function cdp$1(method, params) {
     if (!ws$1 || ws$1.readyState !== WebSocket.OPEN)
@@ -5824,8 +6012,10 @@ async function storeBadges(appid, installed) {
         if (o.tokeer) {
             try {
                 const status = await tokeerAppliedStatus(appid);
-                if (status.success && status.applied)
-                    kinds.push("tokeer");
+                const record = status.record;
+                if (status.success && status.applied && record?.pinned && record.pinMatchesActivation && record.health !== "changed") {
+                    kinds.push(status.record?.health === "valid" ? "tokeer" : "tokeercheck");
+                }
             }
             catch { /* */ }
         }
@@ -6135,6 +6325,8 @@ async function onAction$1(payloadStr) {
                     setStatus$1("Un-fix: " + (st.status || ""));
                     if (["done", "failed", "cancelled"].includes(st.status || "")) {
                         clearPoll();
+                        if (st.status === "done")
+                            await refreshBadges();
                         setStatus$1(st.status === "done" ? "Fix reverted — restart Steam" : st.error || "Un-fix failed");
                     }
                 }
@@ -6291,6 +6483,11 @@ function handleLocation(pathname) {
 }
 function initStorePatch() {
     mounted$1 = true;
+    badgeListener = () => {
+        if (currentAppId && wsReady$1)
+            void reinject(Number(currentAppId));
+    };
+    window.addEventListener(BADGE_STATE_EVENT, badgeListener);
     console.log("===LT=== initStorePatch: store injection starting");
     getStoreDisabled()
         .then((r) => {
@@ -6341,6 +6538,10 @@ function initStorePatch() {
         if (histUnlisten$1) {
             histUnlisten$1();
             histUnlisten$1 = null;
+        }
+        if (badgeListener) {
+            window.removeEventListener(BADGE_STATE_EVENT, badgeListener);
+            badgeListener = null;
         }
         if (ws$1) {
             try {
@@ -7917,104 +8118,6 @@ function AddGameSection({ onChanged, refreshToken = 0, showInstalled = true }) {
                                             ` · DLC included: ${state.contentCheckResult.dlc.included.length}, missing: ${state.contentCheckResult.dlc.missing.length}`] }))] }) })), busy && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: onCancel, children: "Cancel" }) }))] }), showInstalled && SP_JSX.jsx(InstalledSection, { refreshToken: refreshToken, onChanged: onChanged }), SP_JSX.jsx(CustomManifestsPanel, {})] }));
 }
 
-const CR_FLATPAK$1 = "org.cloudredirect.CloudRedirect";
-async function applyArtwork(appId) {
-    const SC = window.SteamClient;
-    if (!SC?.Apps)
-        return;
-    try {
-        const a = await crArtwork();
-        if (a?.success && SC.Apps.SetCustomArtworkForApp) {
-            const jobs = [
-                [a.cover, 0],
-                [a.hero, 1],
-                [a.capsule, 3],
-                [a.logo, 2],
-            ];
-            for (const [b64, kind] of jobs) {
-                if (!b64)
-                    continue;
-                try {
-                    await SC.Apps.SetCustomArtworkForApp(appId, b64, "png", kind);
-                }
-                catch { /* best effort */ }
-            }
-        }
-    }
-    catch { /* best effort */ }
-    try {
-        const ic = await crIconPath();
-        if (ic?.success && ic.path && SC.Apps.SetShortcutIcon) {
-            await SC.Apps.SetShortcutIcon(appId, ic.path);
-        }
-    }
-    catch { /* best effort */ }
-}
-/** Ensure the provider-login UI has a Steam shortcut and native-looking art.
- * Creates it when missing; otherwise rebinds the existing shortcut in place.
- */
-async function ensureCloudRedirectShortcut(launch = false) {
-    const SC = window.SteamClient;
-    if (!SC?.Apps)
-        throw new Error("SteamClient unavailable");
-    let appId = 0;
-    try {
-        const g = await crGetShortcut();
-        appId = Number(g?.appId || 0);
-    }
-    catch { /* create below */ }
-    if (appId) {
-        try {
-            const ov = window.appStore?.GetAppOverviewByAppID?.(appId);
-            if (!ov)
-                appId = 0;
-        }
-        catch {
-            appId = 0;
-        }
-    }
-    if (!appId) {
-        if (!SC.Apps.AddShortcut)
-            throw new Error("Steam shortcut API unavailable");
-        const created = await SC.Apps.AddShortcut("CloudRedirect", "/usr/bin/flatpak", "", "");
-        appId = Number(created);
-        if (!appId || Number.isNaN(appId))
-            throw new Error("AddShortcut returned no appId");
-    }
-    try {
-        await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK$1}`);
-    }
-    catch { /* best effort */ }
-    try {
-        await SC.Apps.SetShortcutName(appId, "CloudRedirect");
-    }
-    catch { /* best effort */ }
-    try {
-        await crSetShortcut(appId);
-    }
-    catch { /* best effort */ }
-    await applyArtwork(appId);
-    if (launch) {
-        if (!SC.Apps.RunGame)
-            throw new Error("Steam launch API unavailable");
-        const gameId = ((BigInt(appId) << 32n) | 0x02000000n).toString();
-        SC.Apps.RunGame(gameId, "", -1, 100);
-    }
-    return appId;
-}
-/** Historical name kept for callers. It now creates the login shortcut when it
- * does not exist, then rebinds artwork/launch metadata when it does.
- */
-async function rebindExistingCloudRedirectShortcut() {
-    try {
-        await ensureCloudRedirectShortcut(false);
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
-
 function Dot({ health }) {
     const color = health === "ok" ? "#58c578" : health === "warn" ? "#f5a623" : health === "off" ? "#c85c5c" : "#8b929a";
     return (SP_JSX.jsx("span", { style: {
@@ -8128,7 +8231,9 @@ function DependenciesSection() {
                 const st = await getSlssteamInstallStatus();
                 const state = st.state || {};
                 const s = state.status;
-                setN(id, s === "running" ? `installing… ${state.percent ? state.percent + "%" : ""}` : (s || ""));
+                setN(id, s === "running"
+                    ? `installing${state.stage ? `: ${state.stage.replace(/-/g, " ")}` : ""}… ${state.percent ? state.percent + "%" : ""}`
+                    : (s || ""));
                 if (s === "done" || s === "failed") {
                     if (pollRef.current)
                         clearInterval(pollRef.current);
@@ -8258,8 +8363,7 @@ function DependenciesSection() {
         try {
             const r = await crEnsureInstalled();
             if (r.installed) {
-                const rebound = await rebindExistingCloudRedirectShortcut();
-                setN("cr", rebound ? "installed · shortcut rebound" : "installed");
+                setN("cr", "installed · Moon hook verified");
             }
             else {
                 setN("cr", "failed — " + (r.log || "check network"));
@@ -8361,7 +8465,7 @@ const TOPICS = [
             { name: "SLSsteam / slsteam-moon", desc: "Core steamclient hook that makes added games appear owned. First install is always offered when missing; Reinstall is a separate repair action once installed." },
             { name: "Steam client fix", desc: "Pins/downgrades the Steam client with h3adcr-b when a Steam update breaks the engine's supported patterns." },
             { name: "CloudRedirect runtime", desc: "The required cloudredirect-moon cloud_redirect.so hook. Reinstall refreshes the moon runtime without treating the optional setup UI as the runtime itself." },
-            { name: "CloudRedirect setup UI", desc: "Optional Flatpak companion used when a provider still needs to be configured. Its Steam shortcut is created/rebound when needed and gets cover, hero, wide capsule, logo and icon artwork." },
+            { name: "CloudRedirect provider setup", desc: "Native SLSDeck controls write the moon fork's provider configuration and handle Google Drive or OneDrive sign-in. No Flatpak companion is required." },
             { name: "DepotDownloader / .NET", desc: "Direct downloader used for specific builds and content DLC. First use can prepare a local .NET runtime; status/progress is shown in the current game's QAM tools." },
             { name: "Activate / Deactivate injection", desc: "Turns the SLSsteam launch hook on or off. Deactivate returns the next Steam launch to vanilla Steam." },
             { name: "Run diagnostics", desc: "Shows engine type, injection state and config health when adds stop working or a Steam update changes something." },
@@ -8436,9 +8540,9 @@ const TOPICS = [
         blurb: "Use cloudredirect-moon for SLS game save redirection.",
         items: [
             { name: "cloudredirect-moon runtime", desc: "The actual redirect engine is cloud_redirect.so loaded into Steam. It does not require the setup Flatpak to remain running." },
-            { name: "Provider setup UI", desc: "If no provider is configured yet, the optional CloudRedirect UI/Flatpak is used to sign in and write provider configuration." },
-            { name: "Reinstall CloudRedirect", desc: "Refreshes the moon runtime hook while preserving provider configuration. It does not blindly replace a working setup UI." },
-            { name: "Steam shortcut", desc: "When the setup UI is needed, SLSDeck creates or repairs its Steam shortcut and reapplies cover, hero, wide capsule, logo and icon artwork." },
+            { name: "Provider setup", desc: "Choose Local folder, Google Drive, or OneDrive directly in SLSDeck. Existing Flatpak tokens are migrated non-destructively." },
+            { name: "Reinstall CloudRedirect", desc: "Refreshes and verifies the moon runtime hook while preserving native provider configuration and tokens." },
+            { name: "Legacy Flatpak", desc: "It is no longer required or launched. SLSDeck can import its existing provider tokens and save storage without deleting the originals." },
         ],
     },
     {
@@ -8642,6 +8746,7 @@ function FixesSection() {
                     autoRepointFromState(appid, res.state);
                     toaster.toast({ title: "SLSDeck", body: `Fix applied to ${name}` });
                     loadInstalled();
+                    void refreshBadges();
                 }
                 else if (["failed", "cancelled"].includes(res.state.status || "")) {
                     clearInterval(pollRef.current);
@@ -8681,8 +8786,10 @@ function FixesSection() {
                     const st = await getUnfixStatus(fix.appid);
                     if (st.success && ["done", "failed"].includes(st.state.status || "")) {
                         clearInterval(timer);
-                        if (st.state.status === "done")
+                        if (st.state.status === "done") {
                             clearFixLaunchOptions(fix.appid);
+                            void refreshBadges();
+                        }
                         toaster.toast({
                             title: "SLSDeck",
                             body: st.state.status === "done" ? "Fix removed" : st.state.error || "Failed",
@@ -8738,185 +8845,137 @@ function FixesSection() {
                     }, children: "Apply external fix\u2026" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }, children: "Pick a fix file (.zip/.rar/.7z or a loose .dll/.exe) and the game it's for. It shows as a \"Custom fix\" button in that game's Fixes menu and, once applied, in Applied fixes below (removable by tapping / Un-fix)." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: "Delete all custom fixes?", strDescription: "Removes every imported custom-fix file from ~/.local/share/SLSDeck/custom_fixes. Already-applied fixes stay on their games until you Un-fix them.", strOKButtonText: "Delete", onOK: async () => {
                             const r = await customDeleteFixes(0);
                             toaster.toast({ title: "SLSDeck", body: r.success ? "Custom fixes cleared" : r.error || "Failed" });
-                        } })), children: "Delete custom fixes" }) }), installed.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Applied fixes" }) }), installed.map((fix, i) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => confirmUnfix(fix), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: fix.gameName }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.6 }, children: [fix.fixType, " \u00B7 ", fix.date, " \u00B7 tap to undo"] })] }) }) }, `${fix.appid}-${fix.date}-${i}`)))] })), tokeerApplied.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Tokeer status" }) }), tokeerApplied.map((record) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left", padding: "7px 10px" }, children: [SP_JSX.jsxs("span", { style: { fontWeight: 600 }, children: ["\uD83D\uDD11 ", record.gameName || `AppID ${record.appid}`] }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.68 }, children: ["Key applied \u00B7 ", record.pinned ? "🔒 Version pinned" : "Version not pinned"] })] }) }, `tokeer-${record.appid}`)))] }))] }));
+                        } })), children: "Delete custom fixes" }) }), installed.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Applied fixes" }) }), installed.map((fix, i) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => confirmUnfix(fix), children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left" }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: fix.gameName }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.6 }, children: [fix.fixType, " \u00B7 ", fix.date, " \u00B7 tap to undo"] })] }) }) }, `${fix.appid}-${fix.date}-${i}`)))] })), tokeerApplied.length > 0 && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontWeight: 600, marginTop: 6 }, children: "Tokeer status" }) }), tokeerApplied.map((record) => (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", flexDirection: "column", textAlign: "left", padding: "7px 10px" }, children: [SP_JSX.jsxs("span", { style: { fontWeight: 600 }, children: [record.health === "valid" ? "🔑" : "⚠️", " ", record.gameName || `AppID ${record.appid}`] }), SP_JSX.jsxs("span", { style: { fontSize: 11, opacity: 0.68 }, children: [record.health === "valid" ? "Key applied" : (record.healthReason || "Verification needed"), " \u00B7 ", record.pinned ? "🔒 Version pinned" : "Version not pinned"] })] }) }, `tokeer-${record.appid}`)))] }))] }));
 }
 
-const CR_FLATPAK = "org.cloudredirect.CloudRedirect";
-// Launch CloudRedirect inside Game Mode by registering it as a non-Steam
-// shortcut and running it through Steam (gamescope has no desktop compositor,
-// so `flatpak run` alone can't draw a window). Returns the shortcut appId.
-// Apply the bundled CloudRedirect library art to the non-Steam shortcut so it
-// looks native in the library. assetType: 0 grid/cover, 1 hero, 3 wide capsule.
-async function applyCrArtwork(appId) {
-    const SC = window.SteamClient;
-    if (!SC?.Apps?.SetCustomArtworkForApp)
-        return;
-    try {
-        const a = await crArtwork();
-        if (!a?.success)
-            return;
-        const jobs = [
-            [a.cover, 0],
-            [a.hero, 1],
-            [a.capsule, 3],
-            [a.logo, 2],
-        ];
-        for (const [b64, kind] of jobs) {
-            if (b64) {
-                try {
-                    await SC.Apps.SetCustomArtworkForApp(appId, b64, "png", kind);
-                }
-                catch { /* */ }
-            }
-        }
-        // Shortcut icon is stored by file path, not artwork asset.
-        try {
-            const ic = await crIconPath();
-            if (ic?.success && ic.path && SC?.Apps?.SetShortcutIcon) {
-                await SC.Apps.SetShortcutIcon(appId, ic.path);
-            }
-        }
-        catch { /* */ }
-    }
-    catch {
-        /* best-effort */
-    }
-}
-async function launchInGameMode() {
-    const SC = window.SteamClient;
-    if (!SC?.Apps?.RunGame)
-        throw new Error("SteamClient unavailable");
-    let appId = 0;
-    try {
-        const g = await crGetShortcut();
-        appId = g?.appId || 0;
-    }
-    catch {
-        /* ignore */
-    }
-    // Drop a stale id if the shortcut no longer exists.
-    if (appId) {
-        const ov = window.appStore?.GetAppOverviewByAppID?.(appId);
-        if (!ov)
-            appId = 0;
-    }
-    if (!appId) {
-        // AddShortcut signatures vary across Steam builds; pass name+exe, then set
-        // the flatpak launch options separately.
-        const created = await SC.Apps.AddShortcut("CloudRedirect", "/usr/bin/flatpak", "", "");
-        appId = Number(created);
-        if (!appId || Number.isNaN(appId))
-            throw new Error("AddShortcut returned no appId");
-    }
-    // Rebind EVERY launch, including an already-existing shortcut. A Flatpak
-    // reinstall can leave Steam holding stale shortcut metadata; reasserting the
-    // executable/options/name makes the existing tile point at the fresh install.
-    try {
-        await SC.Apps.SetShortcutLaunchOptions(appId, `run --user ${CR_FLATPAK}`);
-    }
-    catch { /* */ }
-    try {
-        await SC.Apps.SetShortcutName(appId, "CloudRedirect");
-    }
-    catch { /* */ }
-    try {
-        await crSetShortcut(appId);
-    }
-    catch { /* */ }
-    try {
-        await applyCrArtwork(appId);
-    }
-    catch { /* */ }
-    // Non-Steam shortcuts launch by their 64-bit gameID, not the 32-bit appid.
-    const gameId = ((BigInt(appId) << 32n) | 0x02000000n).toString();
-    SC.Apps.RunGame(gameId, "", -1, 100);
-    return String(appId);
-}
-/**
- * CloudRedirect — real Steam Cloud for added ("lua") games, redirected to a
- * cloud provider or local folder. Installed by the client fix; this surface
- * exposes the DisableCloud toggle and a launcher for the sign-in app.
- */
+const PROVIDERS = [
+    { data: "local", label: "Local folder" },
+    { data: "gdrive", label: "Google Drive" },
+    { data: "onedrive", label: "OneDrive" },
+];
+const sleep$1 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Native control surface for cloudredirect-moon's config and OAuth contract. */
 function CloudRedirectSection() {
     const [enabled, setEnabled] = SP_REACT.useState(false);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [msg, setMsg] = SP_REACT.useState("");
-    const [provider, setProvider] = SP_REACT.useState(null);
+    const [state, setState] = SP_REACT.useState({ success: false });
+    const [saveCount, setSaveCount] = SP_REACT.useState(0);
+    const alive = SP_REACT.useRef(true);
     const load = async () => {
         try {
-            const r = await crGetEnabled();
-            setEnabled(!!r.enabled);
+            setEnabled(!!(await crGetEnabled()).enabled);
         }
-        catch {
-            /* ignore */
-        }
+        catch { /* best effort */ }
         try {
-            const p = await crProviderStatus();
-            setProvider(p.success ? { configured: !!p.configured, providers: p.providers || [] } : null);
+            setState(await crProviderStatus());
         }
-        catch {
-            /* ignore */
+        catch { /* best effort */ }
+        try {
+            setSaveCount((await crListLocalApps()).apps?.length || 0);
         }
+        catch { /* best effort */ }
     };
     SP_REACT.useEffect(() => {
+        alive.current = true;
         load();
+        return () => { alive.current = false; };
     }, []);
-    const onToggle = async (v) => {
-        setEnabled(v);
+    const changeEnabled = async (value) => {
         setBusy(true);
+        setEnabled(value);
         try {
-            const r = await crSetEnabled(v);
-            if (!r.success) {
-                setEnabled(!v);
-                setMsg(r.error || "Failed to update config");
+            const result = await crSetEnabled(value);
+            if (!result.success) {
+                setEnabled(!value);
+                setMsg(result.error || "Could not update CloudRedirect");
             }
-            else {
-                setMsg(v
-                    ? "Cloud saves on. Re-run the client fix to fully apply the CR client."
-                    : "Cloud saves off.");
-            }
+            else
+                setMsg(value ? "Cloud saves enabled for SLS-added games." : "Cloud saves disabled.");
         }
-        catch (e) {
-            setEnabled(!v);
-            setMsg(`Error: ${e}`);
+        catch (error) {
+            setEnabled(!value);
+            setMsg(`Error: ${error}`);
         }
         setBusy(false);
     };
-    const onOpen = async () => {
+    const selectProvider = async (value) => {
         setBusy(true);
-        setMsg("Checking CloudRedirect…");
         try {
-            // Opening the app is not a reinstall action. Auto-ensure returns immediately
-            // when the Flatpak is present; the Dependencies "Reinstall" button uses the
-            // manual endpoint, which now removes and reinstalls it first.
-            const ins = await crEnsureInstalledAuto();
-            if (!ins.installed) {
-                setMsg("Install failed:\n" + (ins.log || "check network + flatpak"));
-                setBusy(false);
-                return;
-            }
-            setMsg("Launching CloudRedirect in Game Mode…");
-            try {
-                const appId = await launchInGameMode();
-                setMsg(`Launched (as a Steam shortcut, id ${appId}). If it didn't appear, open "CloudRedirect" from your Library. ` +
-                    `Pick a provider — the Local-folder option needs no login and works fully in Game Mode.`);
-            }
-            catch (e) {
-                // Fall back to a direct flatpak launch (works in Desktop Mode).
-                const o = await crOpenApp();
-                setMsg(o.success
-                    ? "Opened (Desktop Mode). Game-Mode launch unavailable: " + String(e)
-                    : "Could not launch: " + String(e));
-            }
+            const result = await crSetProvider(value);
+            setState(result);
+            setMsg(value === "local" ? "Using CloudRedirect's local storage folder." :
+                result.authenticated ? "Existing sign-in restored." : "Provider selected. Connect it below.");
         }
-        catch (e) {
-            setMsg(`Error: ${e}`);
+        catch (error) {
+            setMsg(`Error: ${error}`);
         }
         setBusy(false);
     };
-    return (SP_JSX.jsxs(DFL.PanelSection, { title: "Cloud saves (CloudRedirect)", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Cloud saves for added games", description: "Redirects Steam Cloud for added games to your provider. Switching fully on/off needs a client-fix re-run.", checked: enabled, onChange: onToggle, disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: onOpen, disabled: busy, children: "Open CloudRedirect app (sign in)" }) }), provider && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, padding: "0 2px", color: provider.configured ? "#5ee6c4" : "#f5a623" }, children: provider.configured
-                        ? `✓ Provider configured: ${provider.providers.join(", ")}`
-                        : "No provider signed in yet — open the app and sign in." }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623", padding: "2px 2px" }, children: "\u26A0 Experimental \u2014 it can affect save files. Back up saves you care about. Open the app once to sign into Google Drive / OneDrive / a local folder." }) }), msg && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, padding: "0 2px" }, children: msg }) }))] }));
+    const connect = async () => {
+        const provider = state.provider;
+        if (!provider || provider === "local")
+            return;
+        setBusy(true);
+        setMsg("Preparing Moon CloudRedirect sign-in…");
+        try {
+            const installed = await crEnsureInstalledAuto();
+            if (!installed.installed)
+                throw new Error(installed.log || "Moon hook installation failed");
+            const start = await crAuthStart(provider);
+            if (!start.success || !start.authUrl)
+                throw new Error(start.error || "Could not start sign-in");
+            DFL.Navigation.NavigateToExternalWeb(start.authUrl);
+            setMsg("Finish sign-in in the browser; SLSDeck is waiting for the callback…");
+            for (let i = 0; alive.current && i < 300; i++) {
+                await sleep$1(1000);
+                const poll = await crAuthPoll();
+                if (poll.status === "waiting")
+                    continue;
+                if (poll.status === "done") {
+                    setMsg("Cloud provider connected.");
+                    await load();
+                    break;
+                }
+                if (poll.status === "idle")
+                    break;
+                throw new Error(poll.error || "Sign-in failed");
+            }
+        }
+        catch (error) {
+            setMsg(`Sign-in failed: ${error}`);
+        }
+        if (alive.current)
+            setBusy(false);
+    };
+    const toggleOption = async (key, value) => {
+        const field = key === "sync_achievements" ? "syncAchievements" : "syncPlaytime";
+        setState((old) => ({ ...old, [field]: value }));
+        try {
+            setState(await crSetProviderToggle(key, value));
+        }
+        catch (error) {
+            setMsg(`Error: ${error}`);
+            await load();
+        }
+    };
+    const disconnect = async () => {
+        setBusy(true);
+        try {
+            setState(await crSignOut(state.provider));
+            setMsg("Provider credentials removed from this device.");
+        }
+        catch (error) {
+            setMsg(`Error: ${error}`);
+        }
+        setBusy(false);
+    };
+    const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
+    return SP_JSX.jsxs(DFL.PanelSection, { title: "Cloud saves (CloudRedirect)", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Cloud saves for added games", description: "Uses the native cloudredirect-moon hook. No Flatpak companion is required.", checked: enabled, onChange: changeEnabled, disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Storage provider", description: "Configuration is read directly by cloudredirect-moon.", rgOptions: PROVIDERS, selectedOption: selected?.data || "local", strDefaultLabel: selected?.label || "Local folder", onChange: (option) => selectProvider(option.data), disabled: busy }) }), state.provider !== "local" && !state.authenticated &&
+                SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: connect, disabled: busy, children: "Connect provider" }) }), state.provider !== "local" && state.authenticated &&
+                SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: disconnect, disabled: busy, children: "Sign out" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Sync achievements", checked: !!state.syncAchievements, onChange: (v) => toggleOption("sync_achievements", v), disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Sync playtime", checked: !!state.syncPlaytime, onChange: (v) => toggleOption("sync_playtime", v), disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: state.authenticated || state.provider === "local" ? "#5ee6c4" : "#f5a623" }, children: state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
+                        state.authenticated ? `✓ ${selected?.label} connected · ${saveCount} local game save ${saveCount === 1 ? "folder" : "folders"}` :
+                            `${selected?.label || "Cloud provider"} needs sign-in.` }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: "#f5a623" }, children: "\u26A0 Experimental \u2014 back up important saves. Existing Flatpak credentials are migrated without deleting the originals." }) }), msg && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .78 }, children: msg }) })] });
 }
 
 /**
@@ -10075,16 +10134,19 @@ function TokeerSection() {
     };
     const waitForGate = async () => {
         setGate(null);
-        for (let i = 0; i < 20; i++) {
+        const deadline = Date.now() + 35000;
+        let lastError = "";
+        while (Date.now() < deadline) {
             const g = await readLatestTicketGate();
             if (g.found) {
                 setGate(g);
                 setMessage("Tokeer is ready to open your private activation ticket.");
                 return;
             }
+            lastError = g.error || lastError;
             await sleep(500);
         }
-        setMessage("The game was selected, but the green Tokeer confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
+        setMessage(lastError || "The game was selected, but the agreement and tutorial confirmation button did not appear yet. Keep the activation channel open and retry refresh.");
     };
     const choose = async (index, label) => {
         setBusy(`Checking whether ${label} is installed…`);
@@ -10473,53 +10535,70 @@ function TokeerSection() {
                 tokenPath = token.path;
                 setUbisoftTokenPath(tokenPath);
                 checkpoint({ automationStage: "uploading-token", ubisoftAppliedAt, ubisoftTokenPath: tokenPath, ubisoftTokenMessageId: "", ticket });
-                setBusy("Uploading the Ubisoft token request to Discord…");
-                const uploaded = await uploadTokeerTicketFile(ticket.url, tokenPath, token.filename);
+                setBusy("Checking the saved ticket for the Ubisoft token request…");
+                const alreadyPosted = await findPostedTokeerTicketFile(ticket.url, token.filename);
                 if (stale())
                     return;
-                if (uploaded.cancelled) {
-                    abortTicketChain(uploaded.error || "The Discord ticket was closed.");
-                    return;
+                if (alreadyPosted.success && alreadyPosted.found) {
+                    tokenMessageId = alreadyPosted.lastMessageId || ticket.lastMessageId || "";
                 }
-                if (!uploaded.success) {
-                    setAutomationStage("waiting-token");
-                    setMessage(uploaded.error || "The Ubisoft token request could not be uploaded.");
-                    return;
+                else {
+                    setBusy("Uploading the Ubisoft token request to Discord…");
+                    const uploaded = await uploadTokeerTicketFile(ticket.url, tokenPath, token.filename);
+                    if (stale())
+                        return;
+                    if (uploaded.cancelled) {
+                        abortTicketChain(uploaded.error || "The Discord ticket was closed.");
+                        return;
+                    }
+                    if (!uploaded.success) {
+                        setAutomationStage("waiting-token");
+                        setMessage(uploaded.error || "The Ubisoft token request could not be uploaded.");
+                        return;
+                    }
+                    tokenMessageId = uploaded.lastMessageId || ticket.lastMessageId || "";
                 }
-                tokenMessageId = uploaded.lastMessageId || ticket.lastMessageId || "";
                 setUbisoftTokenMessageId(tokenMessageId);
                 tracked = { ...ticket, lastMessageId: tokenMessageId || ticket.lastMessageId };
                 setTicket(tracked);
             }
-            setAutomationStage("waiting-dbdata");
-            setBusy("Waiting for Discord dbdata.json…");
-            setMessage("The Ubisoft token request was uploaded. Waiting for Discord's Download dbdata.json response…");
-            checkpoint({ automationStage: "waiting-dbdata", ubisoftAppliedAt, ubisoftTokenPath: tokenPath, ubisoftTokenMessageId: tokenMessageId, ticket: tracked });
-            const received = await waitForUbisoftDbdataLink(ticket.url, tokenMessageId, 15 * 60 * 1000, stale);
+            setBusy("Checking for already-installed Ubisoft activation data…");
+            let installed = await tokeerUbisoftDbdataStatus(ticket.appid, tokenPath);
             if (stale())
                 return;
-            if (received.cancelled) {
-                abortTicketChain(received.error || "The Discord ticket was closed.");
-                return;
+            let received = {};
+            if (!installed.success || !installed.installed) {
+                setAutomationStage("waiting-dbdata");
+                setBusy("Waiting for Discord dbdata.json…");
+                setMessage("The Ubisoft token request was uploaded. Waiting for Discord's Download dbdata.json response…");
+                checkpoint({ automationStage: "waiting-dbdata", ubisoftAppliedAt, ubisoftTokenPath: tokenPath, ubisoftTokenMessageId: tokenMessageId, ticket: tracked });
+                const response = await waitForUbisoftDbdataLink(ticket.url, tokenMessageId, 15 * 60 * 1000, stale);
+                if (stale())
+                    return;
+                if (response.cancelled) {
+                    abortTicketChain(response.error || "The Discord ticket was closed.");
+                    return;
+                }
+                if (!response.success || !response.url) {
+                    setAutomationStage("failed");
+                    setAutomationError(response.error || "Discord did not return dbdata.json.");
+                    setMessage(response.error || "Discord did not return dbdata.json.");
+                    return;
+                }
+                received = response;
+                setAutomationStage("installing-dbdata");
+                setBusy("Installing dbdata.json beside the token request…");
+                installed = await tokeerInstallUbisoftDbdata(ticket.appid, tokenPath, response.url);
+                if (stale())
+                    return;
+                if (!installed.success) {
+                    setAutomationStage("failed");
+                    setAutomationError(installed.error || "dbdata.json installation failed.");
+                    setMessage(installed.error || "dbdata.json installation failed.");
+                    return;
+                }
             }
-            if (!received.success || !received.url) {
-                setAutomationStage("failed");
-                setAutomationError(received.error || "Discord did not return dbdata.json.");
-                setMessage(received.error || "Discord did not return dbdata.json.");
-                return;
-            }
-            setAutomationStage("installing-dbdata");
-            setBusy("Installing dbdata.json beside the token request…");
-            const installed = await tokeerInstallUbisoftDbdata(ticket.appid, tokenPath, received.url);
-            if (stale())
-                return;
-            if (!installed.success) {
-                setAutomationStage("failed");
-                setAutomationError(installed.error || "dbdata.json installation failed.");
-                setMessage(installed.error || "dbdata.json installation failed.");
-                return;
-            }
-            const applied = await tokeerMarkApplied(ticket.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ticket.appid}`, "ubisoft", true);
+            const applied = await tokeerMarkApplied(ticket.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ticket.appid}`, "ubisoft", true, installed.path || "");
             void refreshBadges();
             const pinNote = applied.pin?.success
                 ? " The installed build was pinned."
@@ -10571,7 +10650,7 @@ function TokeerSection() {
         ticketAbortedRef.current = false;
         cancelTokeerAvailabilityRefresh();
         setBusy("Opening Tokeer ticket…");
-        setMessage("Pressing the real green Discord confirmation and waiting for the ticket/thread…");
+        setMessage("Pressing Discord's agreement and tutorial confirmation and waiting for the ticket/thread…");
         try {
             const installed = selectedGame ? await tokeerPreflight(0, selectedGame) : null;
             if (selectedGame && (!installed?.success || !installed.installed || !installed.appid)) {
@@ -12237,16 +12316,21 @@ const STYLES = {
     onlinefix: { label: "ONLINE FIX", background: "linear-gradient(135deg, #1f5f9e 0%, #3d8fd8 100%)" },
     fixed: { label: "FIXED", background: "linear-gradient(135deg, #0d7d7d 0%, #17b3b3 100%)" },
     tokeer: { label: "TOKEER KEY", background: "linear-gradient(135deg, #9b6b16 0%, #d7a52b 100%)" },
+    tokeercheck: { label: "TOKEER CHECK", background: "linear-gradient(135deg, #8b4d16 0%, #d97706 100%)" },
 };
 function GameDetailsBadge() {
     const params = DFL.useParams();
     const appid = params?.appid && /^\d+$/.test(params.appid) ? parseInt(params.appid, 10) : null;
     const [kinds, setKinds] = SP_REACT.useState([]);
-    const [emojiVersion, setEmojiVersion] = SP_REACT.useState(0);
+    const [badgeVersion, setBadgeVersion] = SP_REACT.useState(0);
     SP_REACT.useEffect(() => {
-        const onEmoji = () => setEmojiVersion((v) => v + 1);
-        window.addEventListener("slsdeck-emoji-badges", onEmoji);
-        return () => window.removeEventListener("slsdeck-emoji-badges", onEmoji);
+        const onBadgeChange = () => setBadgeVersion((v) => v + 1);
+        window.addEventListener("slsdeck-emoji-badges", onBadgeChange);
+        window.addEventListener(BADGE_STATE_EVENT, onBadgeChange);
+        return () => {
+            window.removeEventListener("slsdeck-emoji-badges", onBadgeChange);
+            window.removeEventListener(BADGE_STATE_EVENT, onBadgeChange);
+        };
     }, []);
     SP_REACT.useEffect(() => {
         if (appid == null) {
@@ -12345,8 +12429,10 @@ function GameDetailsBadge() {
             if (opts.tokeer) {
                 try {
                     const status = await tokeerAppliedStatus(appid);
-                    if (status.success && status.applied)
-                        out.push("tokeer");
+                    const record = status.record;
+                    if (status.success && status.applied && record?.pinned && record.pinMatchesActivation && record.health !== "changed") {
+                        out.push(status.record?.health === "valid" ? "tokeer" : "tokeercheck");
+                    }
                 }
                 catch { /* ignore */ }
             }
@@ -12358,7 +12444,7 @@ function GameDetailsBadge() {
         return () => {
             cancelled = true;
         };
-    }, [appid]);
+    }, [appid, badgeVersion]);
     if (appid == null || !kinds.length)
         return null;
     const emojiMode = getEmojiBadgesEnabled();
@@ -13089,32 +13175,34 @@ function RepairBanner() {
     const [cfgIssues, setCfgIssues] = SP_REACT.useState([]);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [done, setDone] = SP_REACT.useState("");
-    SP_REACT.useEffect(() => {
-        (async () => {
-            try {
-                // Only relevant once SLSsteam is actually installed — a fresh setup isn't
-                // "inactive", it's just not set up yet (the onboarding button handles that).
-                const st = await getSlssteamStatus();
-                if (!st?.installed)
-                    return;
-                const [fix, cfg] = await Promise.all([
-                    clientFixNeeded().catch(() => ({ success: false })),
-                    slsConfigHealth().catch(() => ({ success: false })),
-                ]);
-                const clientBad = !!(fix?.success && fix.needed);
-                const issues = (cfg?.success && cfg.changed ? cfg.issues : []) || [];
-                if (clientBad) {
-                    setNeeded(true);
-                    setReason(fix.reason || "");
-                }
-                if (issues.length) {
-                    setNeeded(true);
-                    setCfgIssues(issues);
-                }
+    const auditHealth = SP_REACT.useCallback(async () => {
+        try {
+            // Only relevant once SLSsteam is actually installed — a fresh setup isn't
+            // "inactive", it's just not set up yet (the onboarding button handles that).
+            const st = await getSlssteamStatus();
+            if (!st?.installed) {
+                setNeeded(false);
+                setReason("");
+                setCfgIssues([]);
+                return true;
             }
-            catch { /* ignore */ }
-        })();
+            const [fix, cfg] = await Promise.all([
+                clientFixNeeded().catch(() => ({ success: false })),
+                slsConfigHealth().catch(() => ({ success: false })),
+            ]);
+            const clientBad = !!(fix?.success && fix.needed);
+            const issues = (cfg?.success && cfg.changed ? cfg.issues : []) || [];
+            setReason(clientBad ? fix.reason || "" : "");
+            setCfgIssues(issues);
+            setNeeded(clientBad || issues.length > 0);
+            return !clientBad && issues.length === 0;
+        }
+        catch {
+            // An unavailable audit must never declare the system repaired.
+            return false;
+        }
     }, []);
+    SP_REACT.useEffect(() => { void auditHealth(); }, [auditHealth]);
     if (!needed)
         return null;
     const configOnly = cfgIssues.length > 0 && !reason;
@@ -13145,11 +13233,13 @@ function RepairBanner() {
                                     ? `Repair started${healed ? ` (fixed ${healed} config issue${healed === 1 ? "" : "s"})` : ""} — Steam will reconfigure and reload.`
                                     : (r.error || "Repair failed."));
                                 if (r.success)
-                                    setTimeout(() => setNeeded(false), 4000);
+                                    setTimeout(() => { void auditHealth(); }, 4000);
                             }
                             else {
-                                setDone(`Fixed ${healed} config issue${healed === 1 ? "" : "s"} — fully restart Steam to apply.`);
-                                setTimeout(() => setNeeded(false), 4000);
+                                const healthy = await auditHealth();
+                                setDone(healthy
+                                    ? `Fixed ${healed} config issue${healed === 1 ? "" : "s"} — fully restart Steam to apply.`
+                                    : "Repair completed, but the fresh health check still detects a problem.");
                             }
                         }
                         catch (e) {

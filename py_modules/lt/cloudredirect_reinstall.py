@@ -1,9 +1,8 @@
 """CloudRedirect install/reinstall policy for the moon runtime.
 
 The authoritative runtime used by slsteam-moon is swwayps/cloudredirect-moon's
-32-bit ``cloud_redirect.so`` loaded through LD_PRELOAD. The provider UI is a
-separate concern: preserve it when present, and only install it when provider
-setup is actually needed.
+32-bit ``cloud_redirect.so`` loaded through LD_PRELOAD. Provider setup is done
+through SLSDeck's native controls; the legacy Flatpak is never required.
 """
 from __future__ import annotations
 
@@ -30,7 +29,8 @@ def _remove_path(path: str, log: list[str]) -> None:
 
 def _hook_present(cloudredirect: Any) -> bool:
     try:
-        return any(os.path.isfile(os.path.join(d, "cloud_redirect.so")) for d in cloudredirect._cr_dirs())
+        return all(cloudredirect._valid_cr_lib(os.path.join(d, "cloud_redirect.so"))
+                   for d in cloudredirect._cr_dirs())
     except Exception:
         return False
 
@@ -49,9 +49,9 @@ def _decorate(cloudredirect: Any, result: dict) -> dict:
     out["providerConfigured"] = configured
     out["providers"] = providers
     out["setupRequired"] = not configured
-    out["uiInstalled"] = bool(cloudredirect._installed())
+    out["legacyFlatpakInstalled"] = bool(cloudredirect._installed())
     if not configured:
-        note = "Moon runtime ready; CloudRedirect login/provider setup is still required."
+        note = "Moon runtime ready; choose a provider in SLSDeck Cloud saves."
         out["note"] = note
         out["log"] = ((str(out.get("log") or "") + "\n" + note).strip())[-3200:]
     return out
@@ -67,35 +67,23 @@ def _install_moon_hook(cloudredirect: Any, log: list[str] | None = None) -> dict
             lines.append(f"mkdir {d}: {exc}")
     lines.append(cloudredirect._download_cr_lib())
     have_lib = _hook_present(cloudredirect)
+    synced = cloudredirect.sync_registered_games()
+    if synced.get("success"):
+        lines.append("registered games synchronized: %s" % synced.get("games", 0))
+    else:
+        lines.append("registered-game sync failed: %s" % synced.get("error", "unknown error"))
     try:
         (cloudredirect.settings.reset_dep_fail if have_lib else cloudredirect.settings.inc_dep_fail)("cloudredirect")
     except Exception:
         pass
     logger.log("CloudRedirect moon hook install: %s" % ("ok" if have_lib else "incomplete"))
     return _decorate(cloudredirect, {
-        "success": have_lib,
+        "success": have_lib and bool(synced.get("success")),
         "installed": have_lib,
         "hasLib": have_lib,
         "nativeMoon": True,
         "log": "\n".join(lines)[-3200:],
     })
-
-
-def _ensure_ui_if_needed(cloudredirect: Any, result: dict) -> dict:
-    """When provider setup is missing, make sure the companion login UI exists."""
-    out = _decorate(cloudredirect, result)
-    if not out.get("setupRequired") or out.get("uiInstalled"):
-        return out
-    ui = dict(cloudredirect.install_app())
-    merged = dict(out)
-    merged["uiInstalled"] = bool(cloudredirect._installed())
-    merged["uiInstallAttempted"] = True
-    if not merged["uiInstalled"]:
-        merged["success"] = False
-        merged["installed"] = bool(out.get("installed"))
-    if ui.get("log"):
-        merged["log"] = (str(out.get("log") or "") + "\n" + str(ui.get("log") or ""))[-3200:]
-    return _decorate(cloudredirect, merged)
 
 
 def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
@@ -120,6 +108,7 @@ def patch(cloudredirect: Any) -> None:
         return
 
     def ensure_native() -> dict:
+        cloudredirect.migrate_provider_data()
         if _hook_present(cloudredirect):
             try:
                 cloudredirect.settings.reset_dep_fail("cloudredirect")
@@ -129,33 +118,35 @@ def patch(cloudredirect: Any) -> None:
                 "success": True, "installed": True, "hasLib": True,
                 "nativeMoon": True, "log": "",
             }
+            synced = cloudredirect.sync_registered_games()
+            if not synced.get("success"):
+                base["success"] = False
+                base["log"] = "registered-game sync failed: %s" % synced.get("error", "unknown error")
         else:
             base = _install_moon_hook(cloudredirect)
-        if not base.get("success"):
-            return base
-        return _ensure_ui_if_needed(cloudredirect, base)
+        return _decorate(cloudredirect, base)
 
     def reinstall() -> dict:
         log: list[str] = []
         _remove_legacy_native(cloudredirect, log)
         result = _install_moon_hook(cloudredirect, log)
         result["replacedLegacy"] = True
-        if not result.get("success"):
-            return result
-        return _ensure_ui_if_needed(cloudredirect, result)
-
-    def ensure_ui() -> dict:
-        if cloudredirect._installed():
-            return _decorate(cloudredirect, {
-                "success": True, "installed": True, "uiInstalled": True,
-                "nativeMoon": _hook_present(cloudredirect), "log": "",
-            })
-        result = dict(cloudredirect.install_app())
-        result["uiInstalled"] = bool(cloudredirect._installed())
+        cloudredirect.migrate_provider_data()
         return _decorate(cloudredirect, result)
 
     cloudredirect.ensure_installed_auto = ensure_native
     cloudredirect.ensure_installed = reinstall
-    cloudredirect.ensure_ui = ensure_ui
+    original_add_app = cloudredirect.slssteam.add_app
+    if not getattr(original_add_app, "_slsdeck_cloudredirect_sync", False):
+        def add_app_and_sync(*args, **kwargs):
+            result = original_add_app(*args, **kwargs)
+            if result.get("success"):
+                synced = cloudredirect.sync_registered_games()
+                if not synced.get("success"):
+                    logger.warn("CloudRedirect game-list sync after add failed: %s" %
+                                synced.get("error", "unknown error"))
+            return result
+        add_app_and_sync._slsdeck_cloudredirect_sync = True
+        cloudredirect.slssteam.add_app = add_app_and_sync
     cloudredirect._slsdeck_force_reinstall_patched = True
-    logger.log("SLSDeck: CloudRedirect moon runtime is primary; login UI is setup-only")
+    logger.log("SLSDeck: CloudRedirect moon runtime and native provider setup enabled")
