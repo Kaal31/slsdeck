@@ -7,10 +7,165 @@ through SLSDeck's native controls; the legacy Flatpak is never required.
 from __future__ import annotations
 
 import os
+import json
 import shutil
 from typing import Any
 
 from .logger import logger
+
+
+_CR_PRELOAD = '$HOME/.local/share/CloudRedirect/cloud_redirect.so'
+
+
+def _patch_steam_wrappers(cloudredirect: Any) -> None:
+    """Teach SLSDeck's generated launchers to load cloudredirect-moon.
+
+    Keep this integration outside the credential-bearing slssteam module. The
+    Desktop launcher template is patched before it is rendered; the PATH
+    launcher is patched atomically after SLSsteam regenerates it.
+    """
+    slssteam = cloudredirect.slssteam
+    source_line = 'source "{client}" "$@"'
+    preload_block = (
+        '# Load cloudredirect-moon as a regular preload library.\n'
+        f'_cr="{_CR_PRELOAD}"\n'
+        '[ -f "$_cr" ] && export LD_PRELOAD="$_cr${{LD_PRELOAD:+:$LD_PRELOAD}}"\n'
+    )
+    if preload_block not in slssteam._WRAPPER_TEMPLATE:
+        slssteam._WRAPPER_TEMPLATE = slssteam._WRAPPER_TEMPLATE.replace(
+            source_line, preload_block + source_line
+        )
+
+    original = slssteam._ensure_path_wrapper
+    if getattr(original, "_slsdeck_cloudredirect_preload", False):
+        return
+
+    def ensure_path_wrapper_with_cloudredirect() -> str:
+        path = original()
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+            plain = '  LD_AUDIT="$AUD" exec "$REAL" "$@"'
+            injected = (
+                f'  CR="{_CR_PRELOAD}"\n'
+                '  if [ -f "$CR" ]; then\n'
+                '    LD_AUDIT="$AUD" LD_PRELOAD="$CR${LD_PRELOAD:+:$LD_PRELOAD}" exec "$REAL" "$@"\n'
+                '  fi\n'
+                + plain
+            )
+            if injected not in content and plain in content:
+                content = content.replace(plain, injected, 1)
+                staged = path + ".cloudredirect-new"
+                with open(staged, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.chmod(staged, 0o755)
+                try:
+                    slssteam._chown_file_to_user(staged)
+                except Exception:
+                    pass
+                os.replace(staged, path)
+        except Exception as exc:
+            logger.warn(f"CloudRedirect: could not add LD_PRELOAD to Steam PATH wrapper: {exc}")
+        return path
+
+    ensure_path_wrapper_with_cloudredirect._slsdeck_cloudredirect_preload = True
+    slssteam._ensure_path_wrapper = ensure_path_wrapper_with_cloudredirect
+
+
+def _sync_registered_games(cloudredirect: Any) -> dict:
+    """Mirror the legacy fallback without inventing fake save directories."""
+    appids = [int(x) for x in cloudredirect.slssteam.read_additional_apps() if int(x) > 0]
+    mirrored = 0
+    try:
+        content = cloudredirect.slssteam._read() or ""
+        legacy = cloudredirect.slssteam._read_additional_from(content)
+        for appid in appids:
+            if appid not in legacy:
+                result = cloudredirect._slssteam_add_app(appid)
+                if not result.get("success"):
+                    return {"success": False, "error": result.get("error") or
+                            f"could not mirror AppID {appid} into AdditionalApps"}
+                mirrored += 1
+                legacy.add(appid)
+    except Exception as exc:
+        return {"success": False, "error": f"could not synchronize AdditionalApps: {exc}"}
+
+    config_root = cloudredirect._native_config_dir()
+    seed_index = os.path.join(config_root, ".slsdeck_seeded_apps.json")
+    try:
+        with open(seed_index, "r", encoding="utf-8") as fh:
+            seeded_ids = {int(x) for x in json.load(fh) if int(x) > 0}
+    except Exception:
+        seeded_ids = set()
+    if seeded_ids:
+        storage_root = os.path.join(config_root, "storage")
+        try:
+            for account in os.listdir(storage_root):
+                if not account.isdigit():
+                    continue
+                for appid in seeded_ids:
+                    candidate = os.path.join(storage_root, account, str(appid))
+                    try:
+                        if os.path.isdir(candidate) and not os.listdir(candidate):
+                            os.rmdir(candidate)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        try:
+            os.remove(seed_index)
+        except OSError:
+            pass
+    logger.log(f"CloudRedirect: synchronized {len(appids)} game(s), mirrored={mirrored}")
+    return {"success": True, "games": len(appids), "mirrored": mirrored, "seeded": 0}
+
+
+def _download_cr_lib(cloudredirect: Any) -> str:
+    """Install the hook through a fresh inode, matching upstream's staged move."""
+    try:
+        url = cloudredirect._cr_lib_url()
+        src = "moon" if url == cloudredirect.CR_LIB_URL_MOON else "selectively11"
+        client = cloudredirect.ensure_http_client("cloudredirect: cloud_redirect.so")
+        response = client.get(url, follow_redirects=True, timeout=120)
+        if response.status_code != 200 or not response.content:
+            return f"cloud_redirect.so ({src}): HTTP {response.status_code}"
+        data = response.content
+        if data[:4] != b"\x7fELF":
+            return f"cloud_redirect.so ({src}): download was not an ELF (got an error page?)"
+        if len(data) < 5 or data[4] != 1:
+            elf_class = data[4] if len(data) > 4 else "?"
+            return f"cloud_redirect.so ({src}): not a 32-bit ELF (EI_CLASS={elf_class}) — wrong build, skipping"
+        wrote = 0
+        for directory in cloudredirect._cr_dirs():
+            staged = ""
+            try:
+                os.makedirs(directory, exist_ok=True)
+                target = os.path.join(directory, "cloud_redirect.so")
+                staged = os.path.join(directory, f".cloud_redirect.so.new.{os.getpid()}")
+                with open(staged, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.chmod(staged, 0o755)
+                try:
+                    cloudredirect.chown_to_user(staged, recursive=False)
+                    cloudredirect.chown_to_user(directory, recursive=False)
+                except Exception:
+                    pass
+                os.replace(staged, target)
+                wrote += 1
+            except Exception as exc:
+                logger.warn(f"CloudRedirect: writing .so to {directory} failed: {exc}")
+                try:
+                    if staged and os.path.exists(staged):
+                        os.remove(staged)
+                except OSError:
+                    pass
+        return f"cloud_redirect.so: {len(data)} bytes -> {wrote} dir(s)"
+    except Exception as exc:
+        return f"cloud_redirect.so download failed: {exc}"
 
 
 def _remove_path(path: str, log: list[str]) -> None:
@@ -106,6 +261,10 @@ def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
 def patch(cloudredirect: Any) -> None:
     if getattr(cloudredirect, "_slsdeck_force_reinstall_patched", False):
         return
+
+    _patch_steam_wrappers(cloudredirect)
+    cloudredirect.sync_registered_games = lambda: _sync_registered_games(cloudredirect)
+    cloudredirect._download_cr_lib = lambda: _download_cr_lib(cloudredirect)
 
     def ensure_native() -> dict:
         cloudredirect.migrate_provider_data()
