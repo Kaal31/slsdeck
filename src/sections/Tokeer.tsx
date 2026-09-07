@@ -11,7 +11,6 @@ import {
   probeTokeerTicketState,
   connectTokeerDiscordHidden,
   getDiscordSignInState,
-  hideTokeerDiscordEmbedded,
   waitForDiscordSignIn,
   openDedevisionDiscordLogin,
   openSelectorAndReadOptions,
@@ -586,9 +585,6 @@ export function TokeerSection() {
     finally{
       // Restoration is best-effort. Never leave every selector disabled merely
       // because Discord was slow, logged out, or had already deleted a thread.
-      // Also conceal the native BrowserView independently: the bounded race
-      // does not cancel a slower CDP navigation that may still be unwinding.
-      try{await hideTokeerDiscordEmbedded();}catch{}
       if(generation===ticketGenerationRef.current)setRestoringSelectors(false);
     }
   };
