@@ -1803,13 +1803,13 @@ export async function connectTokeerDiscordHidden(fastRestore = false): Promise<b
       // BrowserView that positionTokeerDiscordEmbedded() can move.
       const existing = await findManagedTokeerTab();
       if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing, fastRestore ? 3500 : 10000)) {
-        try { await parkTokeerBrowserView(); } catch {}
+        try { await (fastRestore ? hideTokeerBrowserView() : parkTokeerBrowserView()); } catch {}
         try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000); } catch {}
         return true;
       }
     } catch {}
     // Defence in depth for every unsuccessful navigation path.
-    try { await parkTokeerBrowserView(); } catch {}
+    try { await (fastRestore ? hideTokeerBrowserView() : parkTokeerBrowserView()); } catch {}
   }
   // A restore follows an already-created ticket surface. If that managed view
   // disappeared, unlock the UI promptly and let the next normal refresh rebuild
