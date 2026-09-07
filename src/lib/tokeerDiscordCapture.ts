@@ -1793,6 +1793,10 @@ export async function connectTokeerDiscordHidden(fastRestore = false): Promise<b
   // Reuse only our managed BrowserView. A normal Steam external-web tab may be
   // readable through CDP but cannot be repositioned inside the plugin page.
   if (await hasTokeerBrowserView()) {
+    // Hide it before any CDP lookup/navigation. Navigation may time out or
+    // replace the document, and waiting until success lets the formerly
+    // embedded Discord surface leak over the whole Steam UI on failure.
+    try { await parkTokeerBrowserView(); } catch {}
     try {
       // Reuse only the CDP target tagged by createTokeerDiscordBrowserView.
       // A user's manual/login Discord tab is readable too, but it is not the
@@ -1804,6 +1808,8 @@ export async function connectTokeerDiscordHidden(fastRestore = false): Promise<b
         return true;
       }
     } catch {}
+    // Defence in depth for every unsuccessful navigation path.
+    try { await parkTokeerBrowserView(); } catch {}
   }
   // A restore follows an already-created ticket surface. If that managed view
   // disappeared, unlock the UI promptly and let the next normal refresh rebuild
