@@ -547,17 +547,19 @@ export function TokeerSection() {
 
   const restoreActivationPanel=async(generation=ticketGenerationRef.current)=>{
     setRestoringSelectors(true);
-    const finishBy=Date.now()+15000;
+    // Returning from an expired/closed ticket is best-effort UI recovery. Keep
+    // its wait short; a normal Refresh still performs the full legacy fallback.
+    const finishBy=Date.now()+6000;
     const within=<T,>(work:Promise<T>,fallback:T):Promise<T>=>Promise.race([
       work,
       sleep(Math.max(1,finishBy-Date.now())).then(()=>fallback),
     ]);
     try{
-      if(!(await within(connectTokeerDiscordHidden(),false)))return;
-      let state=await within(readTokeerDiscord(true),{found:false,selectors:[]} as TokeerDiscordState);
+      if(!(await within(connectTokeerDiscordHidden(true),false)))return;
+      let state=await within(readTokeerDiscord(true,false),{found:false,selectors:[]} as TokeerDiscordState);
       while((!state.found||!(state.selectors||[]).length)&&Date.now()<finishBy){
-        await sleep(500);
-        state=await within(readTokeerDiscord(true),{found:false,selectors:[]} as TokeerDiscordState);
+        await sleep(300);
+        state=await within(readTokeerDiscord(true,false),{found:false,selectors:[]} as TokeerDiscordState);
       }
       if(generation!==ticketGenerationRef.current)return;
       if(state.found&&(state.selectors||[]).length){

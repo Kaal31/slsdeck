@@ -576,7 +576,7 @@ async function cdpDiagnostic(): Promise<string> {
   return `Steam CDP is active on ${ports || "an unknown port"} (${tabs.length} targets; SharedJSContext ${shared ? "found" : "missing"}).`;
 }
 
-async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
+async function navigateDiscordTabToTokeer(tab: CdpTab, readyTimeoutMs = 10000): Promise<boolean> {
   if (!tab.webSocketDebuggerUrl) return false;
   const liveUrl = await resolveTabUrl(tab);
   if (liveUrl.includes(TOKEER_CHANNEL)) return retainManagedTokeerTab(tab, TOKEER_DISCORD_URL, 2500);
@@ -586,7 +586,7 @@ async function navigateDiscordTabToTokeer(tab: CdpTab): Promise<boolean> {
   }, 4000);
   if (!nav) return false;
   invalidateDiscordCaptureCaches();
-  return retainManagedTokeerTab(tab, TOKEER_DISCORD_URL);
+  return retainManagedTokeerTab(tab, TOKEER_DISCORD_URL, readyTimeoutMs);
 }
 
 const SNAPSHOT_EXPR = `(function(){try{
@@ -633,14 +633,21 @@ let snapshotInFlight: Promise<TokeerDiscordState> | null = null;
 
 /** Coalesced/short-cached snapshot. `force` bypasses the reuse window but still
  * shares any scrape already running. */
-export async function readTokeerDiscord(force = false): Promise<TokeerDiscordState> {
+export async function readTokeerDiscord(force = false, allowLegacyFallback = true): Promise<TokeerDiscordState> {
   if (!force && snapshotCache && Date.now() - snapshotCache.at < SNAPSHOT_TTL_MS) {
     return snapshotCache.state;
+  }
+  // Fast restoration reads deliberately skip the expensive legacy-anchor jump.
+  // Do not make them wait behind (or replace) a normal full compatibility read.
+  if (!allowLegacyFallback) {
+    const state = await readTokeerDiscordUncached(false);
+    if (state.found) snapshotCache = { at: Date.now(), state };
+    return state;
   }
   if (snapshotInFlight) return snapshotInFlight;
   snapshotInFlight = (async () => {
     try {
-      const state = await readTokeerDiscordUncached();
+      const state = await readTokeerDiscordUncached(true);
       // Only cache a decisive answer; caching "not found" would make a genuine
       // retry loop spin on a stale negative.
       if (state.found) snapshotCache = { at: Date.now(), state };
@@ -653,7 +660,7 @@ export async function readTokeerDiscord(force = false): Promise<TokeerDiscordSta
   return snapshotInFlight;
 }
 
-async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
+async function readTokeerDiscordUncached(allowLegacyFallback = true): Promise<TokeerDiscordState> {
   // Availability refresh deliberately navigates the managed hidden view. A
   // separately-open manual ticket may also be a Discord CDP target; choosing
   // that target here returns ticket text instead of the live vault panel.
@@ -670,7 +677,7 @@ async function readTokeerDiscordUncached(): Promise<TokeerDiscordState> {
   // Discord's virtualized history that the exact article is not mounted when
   // the channel opens at its newest edge. Jump to the former anchor only after
   // the position-independent scan fails, then run the original indexed scrape.
-  if (!snap.error && (!snap.value || !snap.value.found)) {
+  if (allowLegacyFallback && !snap.error && (!snap.value || !snap.value.found)) {
     await cdpCommand(tab.webSocketDebuggerUrl, "Page.navigate", { url: LEGACY_TOKEER_DISCORD_URL, transitionType: "address_bar" }, 4000);
     const legacyReady = await retainManagedTokeerTab(tab, LEGACY_TOKEER_DISCORD_URL, 5000);
     if (legacyReady) {
@@ -1782,7 +1789,7 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
 /** Connect the automation surface without putting Discord on screen. The
  * BrowserView shares Steam CEF's Discord session, so a prior visible login is
  * reused. */
-export async function connectTokeerDiscordHidden(): Promise<boolean> {
+export async function connectTokeerDiscordHidden(fastRestore = false): Promise<boolean> {
   // Reuse only our managed BrowserView. A normal Steam external-web tab may be
   // readable through CDP but cannot be repositioned inside the plugin page.
   if (await hasTokeerBrowserView()) {
@@ -1791,13 +1798,17 @@ export async function connectTokeerDiscordHidden(): Promise<boolean> {
       // A user's manual/login Discord tab is readable too, but it is not the
       // BrowserView that positionTokeerDiscordEmbedded() can move.
       const existing = await findManagedTokeerTab();
-      if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing)) {
+      if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing, fastRestore ? 3500 : 10000)) {
         try { await parkTokeerBrowserView(); } catch {}
         try { await cdpCommand(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000); } catch {}
         return true;
       }
     } catch {}
   }
+  // A restore follows an already-created ticket surface. If that managed view
+  // disappeared, unlock the UI promptly and let the next normal refresh rebuild
+  // it instead of spending another 12 seconds creating a BrowserView here.
+  if (fastRestore) return false;
   try {
     const created = await createTokeerDiscordBrowserView();
     try { await parkTokeerBrowserView(); } catch {}
