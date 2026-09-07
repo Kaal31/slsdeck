@@ -194,6 +194,7 @@ export function TokeerSection() {
   const [maintenance,setMaintenance]=useState(!!savedRef.current?.maintenance);
   const [selectionExpiresAt,setSelectionExpiresAt]=useState<number|undefined>(savedRef.current?.selectionExpiresAt);
   const [restoringSelectors,setRestoringSelectors]=useState(!!selectorLayoutRef.current);
+  const menuReadsRef=useRef(new Set<string>());
   const [ubisoftContinuationRunning,setUbisoftContinuationRunning]=useState(false);
   const [ticketCompletionPaused,setTicketCompletionPaused]=useState(false);
   const automationRunningRef=useRef(false);
@@ -409,9 +410,18 @@ export function TokeerSection() {
   };
 
   const openMenu=async(selectorKey:string,showMenu?:()=>void)=>{
-    setBusy("Reading live game list…");
+    if(menuReadsRef.current.has(selectorKey))return;
+    menuReadsRef.current.add(selectorKey);
     try{
-      let items=await openSelectorAndReadOptions(selectorKey);
+      // Discord populates component menus lazily. Retry only the requested
+      // selector, keeping the rest of the Tokeer UI interactive.
+      let items:string[]=[];
+      const deadline=Date.now()+6000;
+      do{
+        items=await openSelectorAndReadOptions(selectorKey,2200);
+        if(items.length)break;
+        if(Date.now()<deadline)await sleep(250);
+      }while(Date.now()<deadline);
       const selector=(discord?.selectors||[]).find((entry)=>entry.key===selectorKey);
       if(/ubi(?:soft)?/i.test(String(selector?.label||""))){
         let catalog=hostedGames;
@@ -425,8 +435,15 @@ export function TokeerSection() {
         if(!items.length)setMessage(catalog.length?"No currently hosted Ubisoft games were present in Discord's live selector.":"The hosted Ubisoft package catalog could not be loaded.");
       }
       setOptions((old)=>({...old,[selectorKey]:items}));
-      setTimeout(()=>showMenu?.(),0);
-    }finally{setBusy("");}
+      if(items.length){
+        setMessage("");
+        setTimeout(()=>showMenu?.(),0);
+      }else{
+        // Calling showMenu with no rgOptions produces Steam's misleading
+        // Cancel-only dialog. Keep the panel open and report the real state.
+        setMessage("Discord found the live selector, but its game entries are still loading. No empty menu was opened; try this selector again in a moment.");
+      }
+    }finally{menuReadsRef.current.delete(selectorKey);}
   };
 
   const connectHidden=async()=>{
@@ -1299,7 +1316,7 @@ export function TokeerSection() {
       {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Returning to the Linux activation panel…":"Live game list from the Tokeer Discord panel"}
-        disabled={s.disabled||!!busy||restoringSelectors||ticketChainActive()}
+        disabled={s.disabled||!!busy||ticketChainActive()}
         rgOptions={(options[s.key]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
         selectedOption={selectedMenus[s.key]||selectedMenus[String(s.index)]||null}
         strDefaultLabel={s.label||"Choose a game"}

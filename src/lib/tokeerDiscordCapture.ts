@@ -718,7 +718,13 @@ function resolveSelectorRef(ref: TokeerSelectorRef, state: TokeerDiscordState): 
 export async function openSelectorAndReadOptions(ref: TokeerSelectorRef, timeoutMs = 5000): Promise<string[]> {
   const tab = (await findManagedTokeerTab()) || (await findDiscordTab());
   if (!tab?.webSocketDebuggerUrl || !tab.url?.includes(TOKEER_CHANNEL)) return [];
-  const state = await readTokeerDiscord(true);
+  // Current callers use semantic keys. Do not jump through the old fixed
+  // message anchor just to open one menu; that compatibility navigation can
+  // consume 10+ seconds and belongs to the explicit/full panel refresh.
+  const legacyRef = typeof ref === "number"
+    || (typeof ref === "string" && ref.startsWith("legacy:"))
+    || (typeof ref === "object" && String(ref?.key || "").startsWith("legacy:"));
+  const state = await readTokeerDiscord(true, legacyRef);
   const target = resolveSelectorRef(ref, state);
   if (!target) return [];
   const clickExpr = `(function(){try{
