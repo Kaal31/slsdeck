@@ -764,6 +764,10 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         }
 
         if(stage!=="waiting-code"||!wasSubmitted){
+        let prepared=resume?.verify||verify;
+        let sent: { success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string } = { success: true, lastMessageId: ctx.lastMessageId };
+        // A submitted Ubisoft ticket resumes confirmation; never submit another TLX1 on timeout.
+        if(!ticketUsesUbisoftVerifier(ctx)||!wasSubmitted){
             setAutomationStage("preparing");setAutomationError("");setBusy("Preparing and verifying Tokeer locally…");
             checkpoint({automationStage:"preparing",automationError:"",ticket:ctx});
             const preflight=await tokeerPreflight(ctx.appid,"");
@@ -826,18 +830,20 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         const preflight=await tokeerPreflight(ctx.appid,"");
         if(stale())return;
         if(!preflight.success||!preflight.installed){fail(preflight.error||"Game is not installed; Discord was not sent a verification result.");return;}
-        const prepared=await setupAndVerifyTokeer(ctx.appid,setMessage,ticketUsesUbisoftVerifier(ctx));
+        prepared=await setupAndVerifyTokeer(ctx.appid,setMessage,ticketUsesUbisoftVerifier(ctx));
         if(stale())return;
         if(!prepared.success||!prepared.code){fail(describeTokeerFailure(prepared));return;}
         tlx=prepared.code;setVerify(prepared);setSubmittedTlx(tlx);
         checkpoint({automationStage:"submitting",verify:prepared,submittedTlx:tlx,ticket:ctx});
 
         setAutomationStage("submitting");setBusy("Submitting verified TLX1 to the Discord ticket…");
-        const sent=await sendTokeerTicketMessage(ctx.url,tlx);
+        sent=await sendTokeerTicketMessage(ctx.url,tlx);
         if(stale())return;
         if(sent.cancelled){abortTicketChain(`${sent.error||"The Discord ticket was cancelled."} Tokeer automation was aborted.`);return;}
         if(!sent.success){fail(sent.error||"Could not submit TLX1 to Discord.");return;}
         wasSubmitted=true;setTlxSubmitted(true);
+        checkpoint({tlxSubmitted:true,ticket:{...ctx,lastMessageId:sent.lastMessageId||ctx.lastMessageId}});
+        }
         if(ticketUsesUbisoftVerifier(ctx)){
           let catalog=hostedGames;
           let hosted=catalog.find((game)=>Number(game.steamAppId)===Number(ctx.appid));
