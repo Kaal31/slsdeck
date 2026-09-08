@@ -1387,9 +1387,12 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
   if(headless){
     const savedGame=displayGameLabel(selectedGame||activationRequest?.availabilityLabel||activationRequest?.gameName||"");
     const resumable=!!ticket?.url||!!gate?.found||!!selectedGame;
-    const continueUbisoftFromFixes=!!ticket?.url&&ubisoftAppliedAt>0
-      &&(selectedUbisoft||ticketUsesUbisoftVerifier(ticket))
+    const isUbisoftTicket=!!ticket?.url&&(selectedUbisoft||ticketUsesUbisoftVerifier(ticket));
+    const continueUbisoftFromFixes=isUbisoftTicket&&ubisoftAppliedAt>0
       &&["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage);
+    const ticketProcessRunning=!!ticket?.url&&!ticketCompletionPaused
+      &&(automationRunningRef.current||ubisoftContinuationRunning||!!busy);
+    const cancelling=ticketAbortedRef.current&&!!busy;
     const resumeFromFixes=()=>{
       setHeadlessArmed(true);
       if(continueUbisoftFromFixes){void continueUbisoftTicket();return;}
@@ -1402,8 +1405,12 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       <div style={{fontSize:11,opacity:.72,lineHeight:1.45,marginBottom:7}}>
         {resumable?`Saved activation for ${savedGame||"this game"}. The same ticket and progress are available in Advanced → Tokeer helper.`:`Runs the complete ${selectedUbisoft?"Ubisoft":"Tokeer"} activation chain and shares its ticket state with Advanced → Tokeer helper.`}
       </div>
-      <ButtonItem layout="below" disabled={!!busy||automationRunningRef.current} onClick={resumable?resumeFromFixes:()=>setHeadlessArmed(true)}>
-        {busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):(continueUbisoftFromFixes?"Continue Ubisoft ticket":resumable?"Resume Tokeer ticket":"Activate with Tokeer")}
+      <ButtonItem
+        layout="below"
+        disabled={cancelling||((!!busy||automationRunningRef.current)&&!ticketProcessRunning)}
+        onClick={ticketProcessRunning?cancelTicket:(resumable?resumeFromFixes:()=>setHeadlessArmed(true))}
+      >
+        {cancelling?(busy||"Cancelling ticket…"):ticketProcessRunning?"Cancel ticket":busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):ticket?.url?(isUbisoftTicket?"Continue Ubisoft ticket":"Continue ticket"):"Activate with Tokeer"}
       </ButtonItem>
       {automationStage!=="idle"&&<div style={{fontSize:10,marginTop:6,opacity:.78}}>Stage: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}</div>}
       {message&&<div style={{fontSize:10,marginTop:6,lineHeight:1.4,color:automationError?"#ff7b72":"inherit"}}>{message}</div>}
