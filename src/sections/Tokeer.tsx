@@ -1332,6 +1332,8 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     finally{setBusy("");}
   };
   const c=checks(verify||undefined);
+  const activeUbisoftTicket=selectedUbisoft||ticketUsesUbisoftVerifier(ticket);
+  const ubisoftContinuationStage=["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage);
 
   if(headless){
     const savedGame=displayGameLabel(selectedGame||activationRequest?.availabilityLabel||activationRequest?.gameName||"");
@@ -1425,11 +1427,15 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       {maintenance&&<PanelSectionRow><div style={{fontSize:11,fontWeight:700,color:"#ffd166",lineHeight:1.45}}>Tokeer's activation system is currently under maintenance. Please try again later.</div></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><div style={{fontSize:10,opacity:.7}}>Private ticket saved. {codeExpiresAt?"Activation-code countdown is running.":"The 30-minute code timer has not started yet."}</div></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&(
-        (selectedUbisoft&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||ticketCompletionPaused||["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage)))||
-        (!selectedUbisoft&&ticket.appid&&(ticketCompletionPaused||["waiting-code","checking-game","confirming-worked"].includes(automationStage)))
-      )&&<PanelSectionRow><ButtonItem layout="below" onClick={ticketCompletionPaused
-        ?(selectedUbisoft?continueUbisoftTicket:resumeTicket)
-        :pauseTicketCompletion}>{ticketCompletionPaused?(selectedUbisoft?"Continue Ubisoft ticket":"Continue ticket"):"Pause ticket completion"}</ButtonItem></PanelSectionRow>}
+        (activeUbisoftTicket&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||ticketCompletionPaused||ubisoftContinuationStage))||
+        (!activeUbisoftTicket&&ticket.appid&&(ticketCompletionPaused||["waiting-code","checking-game","confirming-worked"].includes(automationStage)))
+      )&&<PanelSectionRow><ButtonItem layout="below" onClick={
+        activeUbisoftTicket
+          ?(ubisoftContinuationRunning&&!ticketCompletionPaused?pauseTicketCompletion:continueUbisoftTicket)
+          :(ticketCompletionPaused?resumeTicket:pauseTicketCompletion)
+      }>{activeUbisoftTicket
+        ?(ubisoftContinuationRunning&&!ticketCompletionPaused?"Pause ticket completion":"Continue Ubisoft ticket")
+        :(ticketCompletionPaused?"Continue ticket":"Pause ticket completion")}</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&!["Waiting for Discord activation code…","Waiting for Ubisoft verification confirmation…","Waiting for Discord dbdata.json…"].includes(busy)} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
       {ticket?.found&&ticket.appid&&<PanelSectionRow><div style={{fontSize:11}}>Ticket detected · Steam AppID <b>{ticket.appid}</b> (read automatically from Tokeer's commands)</div></PanelSectionRow>}
       {automationStage!=="idle"&&<PanelSectionRow><div style={{fontSize:11,lineHeight:1.45}}>Automation: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}{automationError?<div style={{color:"#ff7b72",marginTop:3}}>{automationError}</div>:null}</div></PanelSectionRow>}
