@@ -476,11 +476,12 @@ class Plugin:
             slssteam.remove_engine_and_headcrab_livesafe()
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: uninstall engine/headcrab removal failed: {exc}")
-        # CloudRedirect is installed as an SLSDeck dependency. A true Decky
-        # uninstall removes the Flatpak, Moon hooks, tokens/config and leftovers.
-        # This callback is not used for ordinary plugin updates/reloads.
+        # Remove only CloudRedirect's rebuildable native runtime. Provider
+        # configuration, credentials and local-provider saves are user data and
+        # survive normal plugin removal. The explicit "Remove everything" RPC
+        # below remains the destructive purge path.
         try:
-            result = await self._run(cloudredirect.uninstall_app, True)
+            result = await self._run(cloudredirect.uninstall_runtime_preserve_saves)
             if not result.get("success"):
                 decky.logger.warning(f"SLSDeck: CloudRedirect uninstall issues: {result.get('errors')}")
         except Exception as exc:

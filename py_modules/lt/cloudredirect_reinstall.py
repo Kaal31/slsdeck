@@ -372,6 +372,55 @@ def _remove_legacy_native(cloudredirect: Any, log: list[str]) -> None:
         _remove_path(p, log)
 
 
+def _uninstall_runtime_preserve_saves(cloudredirect: Any) -> dict:
+    """Remove rebuildable native components without touching user cloud data."""
+    removed: list[str] = []
+    errors: list[str] = []
+    for directory in cloudredirect._cr_dirs():
+        hook = os.path.join(directory, "cloud_redirect.so")
+        try:
+            if os.path.lexists(hook):
+                os.remove(hook)
+                removed.append(hook)
+            # Remove the runtime directory only when nothing else owns it.
+            try:
+                os.rmdir(directory)
+                removed.append(directory)
+            except OSError:
+                pass
+        except OSError as exc:
+            errors.append(f"{hook}: {exc}")
+
+    home = cloudredirect.slssteam._home()
+    for path in (
+        os.path.join(home, ".cache", "CloudRedirect"),
+        os.path.join(home, ".local", "state", "CloudRedirect"),
+    ):
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+                removed.append(path)
+            elif os.path.lexists(path):
+                os.remove(path)
+                removed.append(path)
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+
+    preserved = os.path.join(home, ".config", "CloudRedirect")
+    logger.log(
+        f"CloudRedirect live-safe uninstall: removed={len(removed)} "
+        f"errors={len(errors)} preserved={preserved}"
+    )
+    return {
+        "success": not errors,
+        "installed": False,
+        "removedPaths": removed,
+        "errors": errors,
+        "purgedData": False,
+        "preserved": [preserved],
+    }
+
+
 def patch(cloudredirect: Any) -> None:
     if getattr(cloudredirect, "_slsdeck_force_reinstall_patched", False):
         return
@@ -388,6 +437,9 @@ def patch(cloudredirect: Any) -> None:
         _cleanup_legacy_flatpak(cloudredirect)
         return original_install_status()
     cloudredirect.install_status = install_status_after_legacy_cleanup
+    cloudredirect.uninstall_runtime_preserve_saves = (
+        lambda: _uninstall_runtime_preserve_saves(cloudredirect)
+    )
 
     def ensure_native() -> dict:
         cloudredirect.migrate_provider_data()
