@@ -1820,7 +1820,27 @@ class Plugin:
         return await self._run(cloudredirect.auth_poll)
 
     async def cr_list_local_apps(self) -> Dict[str, Any]:
-        return await self._run(cloudredirect.list_local_apps)
+        result = await self._run(cloudredirect.list_local_apps)
+        if not result.get("success"):
+            return result
+        storage_root = str(result.get("storageRoot") or "")
+        for app in result.get("apps") or []:
+            newest = 0.0
+            try:
+                app_root = os.path.join(
+                    storage_root, str(int(app.get("account") or 0)),
+                    str(int(app.get("appid") or 0)),
+                )
+                for current, _, names in os.walk(app_root):
+                    for name in names:
+                        try:
+                            newest = max(newest, os.path.getmtime(os.path.join(current, name)))
+                        except OSError:
+                            pass
+            except Exception:
+                pass
+            app["lastModified"] = newest
+        return result
 
     async def cr_install_status(self) -> Dict[str, Any]:
         try:

@@ -253,7 +253,14 @@ export const crSetProviderToggle = callable<[key: string, enabled: boolean], Clo
 export const crSignOut = callable<[provider?: string], CloudRedirectProviderStatus>("cr_sign_out");
 export const crAuthStart = callable<[provider: string], { success: boolean; status?: string; authUrl?: string; error?: string }>("cr_auth_start");
 export const crAuthPoll = callable<[], { success: boolean; status?: string; provider?: string; authenticated?: boolean; error?: string }>("cr_auth_poll");
-export const crListLocalApps = callable<[], { success: boolean; apps?: Array<{ appid: number; account: number; files: number; size: number }>; storageRoot?: string; error?: string }>("cr_list_local_apps");
+export interface CloudRedirectLocalApp {
+  appid: number;
+  account: number;
+  files: number;
+  size: number;
+  lastModified?: number;
+}
+export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; error?: string }>("cr_list_local_apps");
 
 // ── OpenSave (cloud saves engine) ───────────────────────────────────────────
 export type OsState = "synced" | "syncing" | "conflict" | "idle" | "untracked" | "unavailable" | "unknown";
