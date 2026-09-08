@@ -207,6 +207,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
   const [ticketCompletionPaused,setTicketCompletionPaused]=useState(false);
   const automationRunningRef=useRef(false);
   const ticketCompletionPausedRef=useRef(false);
+  const ubisoftAutoContinueKeyRef=useRef("");
   const ticketAbortedRef=useRef(false);
   const ticketGenerationRef=useRef(0);
   const selectedUbisoftRef=useRef(!!savedRef.current?.selectedUbisoft);
@@ -887,8 +888,8 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           checkpoint({automationStage:"waiting-token",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:confirmedTicket,ubisoftAppliedAt:appliedAt,ubisoftTokenPath:"",ubisoftTokenMessageId:""});
           const launched=launchGame(ctx.appid);
           setMessage(launched
-            ? `Verification was accepted locally, the hosted package was applied, and ${hosted.name} was launched. Return after it generates a token request, then press Continue Ubisoft ticket.`
-            : `Verification was accepted locally and the hosted package was applied. Launch ${hosted.name}, return after it generates a token request, then press Continue Ubisoft ticket.`);
+            ? `Verification was accepted locally, the hosted package was applied, and ${hosted.name} was launched. SLSDeck is monitoring for its token request and will upload it automatically.`
+            : `Verification was accepted locally and the hosted package was applied. Launch ${hosted.name}; SLSDeck will monitor for its token request and upload it automatically.`);
           return;
         }
     }catch(e){if(!stale())fail(String(e));}
@@ -908,12 +909,28 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     try{
       let tokenPath=ubisoftTokenPath,tokenMessageId=ubisoftTokenMessageId,tracked={...ticket};
       if(!tokenMessageId){
-        setBusy("Finding the Ubisoft token request…");setAutomationStage("uploading-token");
-        const token=await tokeerFindUbisoftToken(ticket.appid,ubisoftAppliedAt);
-        if(stale())return;
-        if(!token.success||!token.found||!token.path||!token.filename){
-          setAutomationStage("waiting-token");setMessage(token.error||"No fresh Ubisoft token request was found yet. Run the game and retry Continue.");return;
+        setAutomationStage("waiting-token");
+        setBusy("Waiting for the Ubisoft token request…");
+        setMessage("The game is running. SLSDeck is monitoring for a fresh Ubisoft token request and will upload it automatically.");
+        const tokenDeadline=Date.now()+15*60*1000;
+        let token:any=null;
+        while(Date.now()<tokenDeadline&&!stale()){
+          const candidate=await tokeerFindUbisoftToken(ticket.appid,ubisoftAppliedAt);
+          if(stale())return;
+          if(candidate.success&&candidate.found&&candidate.path&&candidate.filename){
+            token=candidate;
+            break;
+          }
+          await new Promise((resolve)=>setTimeout(resolve,1500));
         }
+        if(stale())return;
+        if(!token){
+          setAutomationStage("waiting-token");
+          setMessage("Automatic token monitoring stopped after 15 minutes. If the request file now exists, press Continue Ubisoft ticket to resume.");
+          return;
+        }
+        setAutomationStage("uploading-token");
+        setBusy("Uploading the Ubisoft token request…");
         tokenPath=token.path;setUbisoftTokenPath(tokenPath);
         checkpoint({automationStage:"uploading-token",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:"",ticket});
         setBusy("Checking the saved ticket for the Ubisoft token request…");
@@ -973,6 +990,16 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       }
     }
   };
+
+  useEffect(()=>{
+    if(automationStage!=="waiting-token"||!ticket?.url||!ticket.appid||!ubisoftAppliedAt||ticketCompletionPausedRef.current)return;
+    const isUbisoft=selectedUbisoftRef.current||selectedUbisoft||ticketUsesUbisoftVerifier(ticket);
+    if(!isUbisoft)return;
+    const key=`${ticket.url}:${ubisoftAppliedAt}`;
+    if(ubisoftAutoContinueKeyRef.current===key)return;
+    ubisoftAutoContinueKeyRef.current=key;
+    void continueUbisoftTicket();
+  },[automationStage,ticket?.url,ticket?.appid,ubisoftAppliedAt,selectedUbisoft]);
 
   const pauseTicketCompletion=()=>{
     ticketCompletionPausedRef.current=true;
