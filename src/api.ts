@@ -258,7 +258,7 @@ export interface CloudRedirectLocalApp {
   account: number;
   files: number;
   size: number;
-  lastModified?: number;
+  remoteTime?: number;
 }
 export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; error?: string }>("cr_list_local_apps");
 

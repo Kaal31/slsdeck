@@ -21,14 +21,16 @@ function formatSize(bytes: number): string {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
-function formatLastSave(timestamp?: number): string {
-  if (!timestamp) return "Never synced locally";
+function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirectProvider | undefined): string {
+  const providerName = provider === "gdrive" ? "Google Drive" : provider === "onedrive" ? "OneDrive" : "local storage";
+  if (!timestamp) return provider === "local" ? "No stored save metadata yet" : `Not synced to ${providerName} yet`;
   try {
-    return `Last save ${new Date(timestamp * 1000).toLocaleString([], {
+    const date = new Date(timestamp * 1000).toLocaleString([], {
       month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    })}`;
+    });
+    return provider === "local" ? `Latest local save ${date}` : `Last ${providerName} sync ${date}`;
   } catch {
-    return "Save time unavailable";
+    return `${providerName} save time unavailable`;
   }
 }
 
@@ -47,7 +49,7 @@ function steamGame(appid: number): { title: string; header: string; wideCapsule:
   };
 }
 
-function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
+function CloudSaveCard({ app, provider }: { app: CloudRedirectLocalApp; provider?: CloudRedirectProvider }) {
   const game = steamGame(app.appid);
   const [artIndex, setArtIndex] = useState(0);
   const [logoOk, setLogoOk] = useState(true);
@@ -90,7 +92,7 @@ function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px 12px", marginTop: 13, fontSize: 11 }}>
         <span style={{ color: "#67c1f5", fontWeight: 650 }}>{formatSize(app.size)}</span>
         <span style={{ opacity: .82 }}>{app.files} {app.files === 1 ? "file" : "files"}</span>
-        <span style={{ opacity: .82 }}>{formatLastSave(app.lastModified)}</span>
+        <span style={{ opacity: .82 }}>{formatRemoteSave(app.remoteTime, provider)}</span>
       </div>
     </div>
   </DialogButton>;
@@ -180,7 +182,7 @@ export function CloudRedirectSection() {
     const aHasSaves = a.files > 0 || a.size > 0;
     const bHasSaves = b.files > 0 || b.size > 0;
     if (aHasSaves !== bHasSaves) return aHasSaves ? -1 : 1;
-    if ((b.lastModified || 0) !== (a.lastModified || 0)) return (b.lastModified || 0) - (a.lastModified || 0);
+    if ((b.remoteTime || 0) !== (a.remoteTime || 0)) return (b.remoteTime || 0) - (a.remoteTime || 0);
     return steamGame(a.appid).title.localeCompare(steamGame(b.appid).title);
   });
   return <PanelSection title="Cloud saves (CloudRedirect)">
@@ -210,7 +212,7 @@ export function CloudRedirectSection() {
         <span style={{ fontSize: 14, fontWeight: 700 }}>Cloud-managed games</span>
         <span style={{ fontSize: 10, opacity: .62 }}>{saveCount} {saveCount === 1 ? "game" : "games"}</span>
       </div>
-      {sortedSaves.length ? sortedSaves.map((app) => <CloudSaveCard key={`${app.account}:${app.appid}`} app={app} />) :
+      {sortedSaves.length ? sortedSaves.map((app) => <CloudSaveCard key={`${app.account}:${app.appid}`} app={app} provider={state.provider} />) :
         <div style={{ padding: "14px 12px", borderRadius: 8, background: "rgba(20, 33, 46, .72)", fontSize: 11, opacity: .72 }}>
           No CloudRedirect game folders have been created yet.
         </div>}

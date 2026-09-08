@@ -16,7 +16,9 @@ frontend via the ``*_status`` methods.
 
 import asyncio
 import functools
+import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
@@ -1825,21 +1827,48 @@ class Plugin:
             return result
         storage_root = str(result.get("storageRoot") or "")
         for app in result.get("apps") or []:
-            newest = 0.0
+            remote_time = 0
             try:
+                account = str(int(app.get("account") or 0))
+                appid = str(int(app.get("appid") or 0))
                 app_root = os.path.join(
-                    storage_root, str(int(app.get("account") or 0)),
-                    str(int(app.get("appid") or 0)),
+                    storage_root, account, appid,
                 )
-                for current, _, names in os.walk(app_root):
-                    for name in names:
-                        try:
-                            newest = max(newest, os.path.getmtime(os.path.join(current, name)))
-                        except OSError:
-                            pass
+                # Prefer Steam's own remote timestamps. CloudRedirect repairs
+                # remotecache.vdf from the same canonical timestamps it stores
+                # in its cloud manifest, so this is the closest equivalent to
+                # the date Steam displays for a cloud-backed save.
+                userdata_roots = []
+                steam_root = steam.detect_steam_install_path()
+                if steam_root:
+                    userdata_roots.append(os.path.join(steam_root, "userdata"))
+                userdata_roots.append(os.path.join(slssteam._home(), ".steam", "steam", "userdata"))
+                for userdata_root in dict.fromkeys(userdata_roots):
+                    cache_path = os.path.join(userdata_root, account, appid, "remotecache.vdf")
+                    try:
+                        with open(cache_path, "r", encoding="utf-8", errors="ignore") as fh:
+                            for value in re.findall(r'"remotetime"\s*"(\d+)"', fh.read(), re.IGNORECASE):
+                                remote_time = max(remote_time, int(value))
+                    except OSError:
+                        pass
+
+                # The canonical state (or legacy manifest) is the fallback when
+                # Steam has not written remotecache.vdf yet.
+                for filename in ("state.cloudredirect", "manifest.cloudredirect", "manifest.dat"):
+                    try:
+                        with open(os.path.join(app_root, filename), "r", encoding="utf-8") as fh:
+                            metadata = json.load(fh)
+                        entries = metadata.get("files", {}) if filename == "state.cloudredirect" else metadata
+                        if not isinstance(entries, dict):
+                            continue
+                        for entry in entries.values():
+                            if isinstance(entry, dict) and int(entry.get("ps") or 0) != 2:
+                                remote_time = max(remote_time, int(entry.get("ts") or 0))
+                    except (OSError, ValueError, TypeError):
+                        pass
             except Exception:
                 pass
-            app["lastModified"] = newest
+            app["remoteTime"] = remote_time
         return result
 
     async def cr_install_status(self) -> Dict[str, Any]:
