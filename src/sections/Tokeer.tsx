@@ -214,6 +214,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
   const selectedUbisoftRef=useRef(!!savedRef.current?.selectedUbisoft);
   const loginPendingRef=useRef(false);
   const expiryCleanupRef=useRef(false);
+  const vaultCarouselRef=useRef<HTMLDivElement|null>(null);
   const [headlessArmed,setHeadlessArmed]=useState(false);
   const headlessSelectingRef=useRef(false);
 
@@ -254,6 +255,38 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     const timer=setInterval(tick,250);
     return()=>clearInterval(timer);
   },[codeExpiresAt,quotaUntil,selectionExpiresAt]);
+
+  useEffect(()=>{
+    const viewport=vaultCarouselRef.current;
+    if(!viewport||(availability?.games.length||0)<2)return;
+    let frame=0;
+    let last=performance.now();
+    let paused=false;
+    const pause=()=>{paused=true;};
+    const resume=()=>{paused=false;last=performance.now();};
+    const rotate=(now:number)=>{
+      const elapsed=Math.min(64,now-last);
+      last=now;
+      if(!paused&&viewport.scrollHeight>viewport.clientHeight){
+        viewport.scrollTop+=elapsed*0.012;
+        const loopHeight=viewport.scrollHeight/2;
+        if(viewport.scrollTop>=loopHeight)viewport.scrollTop-=loopHeight;
+      }
+      frame=requestAnimationFrame(rotate);
+    };
+    viewport.addEventListener("pointerenter",pause);
+    viewport.addEventListener("pointerleave",resume);
+    viewport.addEventListener("focusin",pause);
+    viewport.addEventListener("focusout",resume);
+    frame=requestAnimationFrame(rotate);
+    return()=>{
+      cancelAnimationFrame(frame);
+      viewport.removeEventListener("pointerenter",pause);
+      viewport.removeEventListener("pointerleave",resume);
+      viewport.removeEventListener("focusin",pause);
+      viewport.removeEventListener("focusout",resume);
+    };
+  },[availability?.updatedAt,availability?.games.length]);
 
   const rememberDiscord=(state:TokeerDiscordState,markRestoringOnMiss=false)=>{
     if(state.found&&(state.selectors||[]).length){
@@ -1460,19 +1493,21 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           </div>)}
         </div>
         <div style={{marginTop:8,fontSize:10,opacity:.7}}>Updated {new Date(availability.updatedAt).toLocaleString()}</div>
-        <div style={{marginTop:7,maxHeight:150,overflowY:"auto",padding:"6px 7px",borderRadius:6,background:"rgba(0,0,0,.18)"}}>
-          {availability.games.map(game=><div key={game.appid||game.name} style={{padding:"2px 0",color:"#f2f5ff"}}>{game.name}{game.remaining!==undefined?<span style={{color:"#74e6a2",fontWeight:700}}>{` — ${game.remaining}/${game.total??"?"} keys`}</span>:""}</div>)}
+        <div ref={vaultCarouselRef} style={{marginTop:7,height:150,overflowY:"auto",padding:"6px 7px",borderRadius:6,background:"rgba(0,0,0,.18)",maskImage:"linear-gradient(to bottom,transparent 0,#000 12%,#000 88%,transparent 100%)",WebkitMaskImage:"linear-gradient(to bottom,transparent 0,#000 12%,#000 88%,transparent 100%)"}}>
+          {[0,1].map(copy=><div key={copy} aria-hidden={copy===1}>
+            {availability.games.map((game,index)=><div key={`${copy}:${game.appid||game.name}:${index}`} style={{padding:"2px 0",color:"#f2f5ff"}}>{game.name}{game.remaining!==undefined?<span style={{color:"#74e6a2",fontWeight:700}}>{` — ${game.remaining}/${game.total??"?"} keys`}</span>:""}</div>)}
+          </div>)}
         </div>
       </div></PanelSectionRow>}
-      {availability&&<PanelSectionRow><div style={{width:"100%",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
+      {availability&&<PanelSectionRow><div style={{width:"100%",margin:"8px auto 0",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
       <PanelSectionRow><div style={{width:"100%",marginTop:8,padding:"11px 12px",borderRadius:8,background:"linear-gradient(135deg,rgba(255,183,77,.13),rgba(96,125,139,.12))",border:"1px solid rgba(255,193,94,.32)",boxShadow:"0 4px 14px rgba(0,0,0,.16)",fontSize:11,lineHeight:1.55,color:"#f4f6fa"}}>
         <div style={{fontSize:12,fontWeight:850,marginBottom:5,color:"#ffd180",letterSpacing:.15}}>Before activation</div>
         <div>Finish preparing the game before redeeming it. Install any mods, texture packs, fixes, or other changes that modify the game files first.</div>
         <div style={{marginTop:5,opacity:.82}}>Changing game files after activation is not advised, because it may invalidate the activated setup and require you to verify or recover the files again.</div>
         <div style={{marginTop:7,paddingTop:7,borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.68}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID.</div>
       </div></PanelSectionRow>
-      {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
-      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
+      {discord?.found&&<PanelSectionRow><div style={{width:"calc(100% - 24px)",maxWidth:900,margin:"0 auto",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><div style={{width:"calc(100% - 24px)",maxWidth:900,margin:"0 auto"}}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Restoring the live game list; this cached selector is temporarily disabled.":"Live game list from the Tokeer Discord panel"}
         disabled={restoringSelectors||s.disabled||!!busy||ticketChainActive()}
@@ -1481,7 +1516,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         strDefaultLabel={s.label||"Choose a game"}
         onMenuWillOpen={(showMenu)=>openMenu(s.key,showMenu)}
         onChange={(o:any)=>choose(s.key,String(o.data))}
-      /></PanelSectionRow>)}
+      /></div></PanelSectionRow>)}
       {!discord?.found&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>{discord?.error||"Open the Linux activation message once and leave the Discord tab alive."}</div></PanelSectionRow>}
     </PanelSection>
 
