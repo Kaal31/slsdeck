@@ -9,7 +9,7 @@ import {
 
 const CACHE_KEY = "slsdeck.tokeerAvailability.v1";
 const SESSION_KEY = "slsdeck.tokeerSession.v1";
-export const TOKEER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+export const TOKEER_CACHE_TTL_MS = 60 * 60 * 1000;
 export const TOKEER_FIX_FRESH_MS = 2 * 60 * 1000;
 
 export function hasFreshTokeerFixCache(cache = readTokeerAvailabilityCache()): boolean {
@@ -87,6 +87,10 @@ export function readTokeerAvailabilityCache(): TokeerAvailabilityCache | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(CACHE_KEY) || "null");
     if (!value || value.version !== 1 || !Array.isArray(value.games)) return null;
+    if (!Number.isFinite(Number(value.updatedAt)) || Date.now() - Number(value.updatedAt) >= TOKEER_CACHE_TTL_MS) {
+      try { window.localStorage.removeItem(CACHE_KEY); } catch {}
+      return null;
+    }
     return value;
   } catch {
     return null;
