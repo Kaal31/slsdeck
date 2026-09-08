@@ -1105,7 +1105,15 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           }while(!stopped);
           const match=items.find((label)=>{
             const parsed=parseTokeerGameLabel(label);
-            return Number(parsed?.appid||0)===Number(activationRequest.appid)||normalizeTokeerGameName(parsed?.name||label)===wantedName;
+            // Discord has used several separators between the game name, access
+            // tier and key count. Recover the name even when the strict
+            // availability parser does not recognize the newest formatting.
+            const fallbackName=String(label||"")
+              .replace(/\s+(?:(?:Free|Donator|Premium|Elite)\s*)?[•·|/\\-]*\s*\d+\s+of\s+\d+\s+remaining(?:\s*\(\d+%\))?.*$/i,"")
+              .trim();
+            const candidateName=normalizeTokeerGameName(parsed?.name||fallbackName);
+            return Number(parsed?.appid||0)===Number(activationRequest.appid)
+              ||candidateName===wantedName;
           });
           if(match){
             setOptions((old)=>({...old,[selector.key]:items}));
