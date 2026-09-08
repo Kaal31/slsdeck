@@ -914,6 +914,18 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     automationRunningRef.current=true;
     try{
       let tokenPath=ubisoftTokenPath,tokenMessageId=ubisoftTokenMessageId,tracked={...activeTicket};
+      if(tokenMessageId&&tokenPath){
+        const savedFilename=String(tokenPath).split("/").pop()||"";
+        const posted=savedFilename?await findPostedTokeerTicketFile(activeTicket.url,savedFilename):null;
+        if(stale())return;
+        if(!posted?.success||!posted.found){
+          tokenMessageId="";
+          setUbisoftTokenMessageId("");
+          checkpoint({automationStage:"waiting-token",ubisoftAppliedAt:activeAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:"",ticket:activeTicket});
+        }else if(posted.lastMessageId){
+          tokenMessageId=posted.lastMessageId;
+        }
+      }
       if(!tokenMessageId){
         setAutomationStage("waiting-token");
         setBusy("Waiting for the Ubisoft token request…");
