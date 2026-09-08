@@ -451,18 +451,21 @@ class Plugin:
             pass
 
     async def _uninstall(self):
-        decky.logger.info("SLSDeck: uninstalled — live-safe deactivate only")
+        full_purge = settings.get_full_purge_on_uninstall()
+        decky.logger.info(
+            "SLSDeck: uninstalled — " +
+            ("full purge requested" if full_purge else "live-safe deactivate only")
+        )
         # IMPORTANT: Decky runs this while Steam is LIVE with moon injected. moon
         # keeps a CFileWatcher on ~/.config/SLSsteam/config.yaml inside the Steam
         # process, so rmtree-ing the moon data / stplug-in / added-game
         # appmanifests out from under the running client crashes Steam (and would
         # also wipe the user's added games unexpectedly on a mere plugin removal).
         #
-        # So uninstall now does only the reversible, live-safe part: restore
-        # steam.sh (next launch is vanilla, no injection) + drop the update block
-        # + stop our daemons. Leftover moon files are inert once injection is off.
-        # A deliberate, Steam-restarting "remove everything" flow is the place for
-        # the destructive nuke — never an in-session plugin uninstall.
+        # The default remains reversible and live-safe: restore steam.sh (next
+        # launch is vanilla), drop the update block and stop our daemons. Only
+        # the user's explicit Full purge on uninstall setting permits the later
+        # destructive configuration cleanup in this callback.
         try:
             slssteam.deactivate_injection()
         except Exception as exc:
@@ -476,12 +479,13 @@ class Plugin:
             slssteam.remove_engine_and_headcrab_livesafe()
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: uninstall engine/headcrab removal failed: {exc}")
-        # Remove only CloudRedirect's rebuildable native runtime. Provider
-        # configuration, credentials and local-provider saves are user data and
-        # survive normal plugin removal. The explicit "Remove everything" RPC
-        # below remains the destructive purge path.
+        # Normal removal preserves CloudRedirect user data. The explicitly
+        # enabled full-purge policy uses the existing destructive cleanup.
         try:
-            result = await self._run(cloudredirect.uninstall_runtime_preserve_saves)
+            if full_purge:
+                result = await self._run(cloudredirect.uninstall_app, True)
+            else:
+                result = await self._run(cloudredirect.uninstall_runtime_preserve_saves)
             if not result.get("success"):
                 decky.logger.warning(f"SLSDeck: CloudRedirect uninstall issues: {result.get('errors')}")
         except Exception as exc:
@@ -509,6 +513,17 @@ class Plugin:
                 decky.logger.warning(f"SLSDeck: GE-Proton uninstall issues: {result.get('errors')}")
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: GE-Proton uninstall failed: {exc}")
+        # The normal live-safe path deliberately leaves SLSsteam's watched
+        # configuration and added-game records. Full purge is an explicit user
+        # opt-in, so finish the existing destructive SLSsteam cleanup now that
+        # injection and its engine binaries have already been deactivated.
+        if full_purge:
+            try:
+                result = await self._run(slssteam.full_uninstall_cleanup)
+                if not result.get("success"):
+                    decky.logger.warning(f"SLSDeck: full SLSsteam purge issues: {result.get('errors')}")
+            except Exception as exc:
+                decky.logger.warning(f"SLSDeck: full SLSsteam purge failed: {exc}")
         # Stop background daemons/pools so nothing survives the removal.
         try:
             watchdog.stop_watchdog()
@@ -556,6 +571,13 @@ class Plugin:
         return {"success": bool(sls.get("success") and cloud.get("success") and ubi.get("success") and tk.get("success") and ge.get("success")),
                 "slssteam": sls, "cloudredirect": cloud, "tokeer": tk,
                 "ubisoftPackages": ubi, "geProton": ge, "geProtonPreserved": False}
+
+    async def get_full_purge_on_uninstall(self) -> Dict[str, Any]:
+        return {"success": True, "enabled": settings.get_full_purge_on_uninstall()}
+
+    async def set_full_purge_on_uninstall(self, enabled: bool) -> Dict[str, Any]:
+        settings.set_full_purge_on_uninstall(bool(enabled))
+        return {"success": True, "enabled": bool(enabled)}
 
     # ── helper ────────────────────────────────────────────────────────────
     async def _run(self, fn, *args):

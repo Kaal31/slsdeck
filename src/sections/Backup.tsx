@@ -8,7 +8,7 @@ import {
 } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
-import { createBackup, restoreBackup, listBackups } from "../api";
+import { createBackup, restoreBackup, getFullPurgeOnUninstall, listBackups, setFullPurgeOnUninstall } from "../api";
 
 function fmtSize(bytes: number): string {
   if (!bytes) return "0 B";
@@ -39,6 +39,7 @@ function fmtDate(mtime: number): string {
 export function BackupSection() {
   const [includeKeys, setIncludeKeys] = useState(false);
   const [includeSaves, setIncludeSaves] = useState(true);
+  const [fullPurge, setFullPurge] = useState(false);
   const [busy, setBusy] = useState(false);
   const [backups, setBackups] = useState<{ path: string; name: string; sizeBytes: number; mtime: number }[]>([]);
   const [confirmPath, setConfirmPath] = useState<string | null>(null);
@@ -54,6 +55,9 @@ export function BackupSection() {
 
   useEffect(() => {
     refresh();
+    getFullPurgeOnUninstall()
+      .then((r) => setFullPurge(!!r.enabled))
+      .catch(() => setFullPurge(false));
   }, []);
 
   const doExport = async () => {
@@ -109,11 +113,23 @@ export function BackupSection() {
       </PanelSectionRow>
       <PanelSectionRow>
         <ToggleField
-          label="Include game saves"
+          label="Backup local game saves"
           description="On (default): also back up each installed SLSDeck game's Proton-prefix saves (AppData, Saved Games, Documents). Can make the archive large."
           checked={includeSaves}
           disabled={busy}
           onChange={setIncludeSaves}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="Full purge on uninstall"
+          description="Off (default): preserve CloudRedirect saves, provider data, SLSsteam configuration and added-game records. On: uninstalling SLSDeck through Decky permanently removes all managed dependencies and data."
+          checked={fullPurge}
+          disabled={busy}
+          onChange={(enabled) => {
+            setFullPurge(enabled);
+            setFullPurgeOnUninstall(enabled).catch(() => setFullPurge(!enabled));
+          }}
         />
       </PanelSectionRow>
       <PanelSectionRow>

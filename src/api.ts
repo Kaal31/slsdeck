@@ -857,6 +857,8 @@ export const createBackup = callable<[destPath: string, includeKeys: boolean, in
 export const restoreBackup = callable<[archivePath: string], { success: boolean; restoredCount?: number; skipped?: string[]; archivePath?: string; error?: string }>("restore_backup");
 export interface BackupFile { path: string; name: string; sizeBytes: number; mtime: number }
 export const listBackups = callable<[], { success: boolean; backups: { path: string; name: string; sizeBytes: number; mtime: number }[] }>("list_backups");
+export const getFullPurgeOnUninstall = callable<[], { success: boolean; enabled: boolean }>("get_full_purge_on_uninstall");
+export const setFullPurgeOnUninstall = callable<[enabled: boolean], { success: boolean; enabled: boolean }>("set_full_purge_on_uninstall");
 
 // ── Tools & per-game utilities ─────────────────────────────────────────────
 // These backends all existed and worked but had no frontend reference, so

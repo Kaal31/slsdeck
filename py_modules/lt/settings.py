@@ -321,6 +321,15 @@ def set_check_dependencies_on_boot(value: bool) -> None:
     set_value("checkDependenciesOnBoot", bool(value))
 
 
+def get_full_purge_on_uninstall() -> bool:
+    """Opt-in destructive Decky uninstall policy. Safe/preserving by default."""
+    return bool(get_value("fullPurgeOnUninstall", False))
+
+
+def set_full_purge_on_uninstall(value: bool) -> None:
+    set_value("fullPurgeOnUninstall", bool(value))
+
+
 # ── hypervisor per-game flags (appid -> True) ────────────────────────────────
 HV_GAMES_FIELD = "hvGames"
 
