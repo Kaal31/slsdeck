@@ -1175,12 +1175,6 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
   },[headless,headlessArmed,activationRequest?.appid,activationRequest?.gameName,discord?.found,discord?.selectors?.length,selectedGame,gate?.found,ticket?.url]);
 
   useEffect(()=>{
-    if(!headless||!headlessArmed||!gate?.found||ticket?.url||!selectedGame||busy)return;
-    const timer=setTimeout(()=>{void openTicket();},100);
-    return()=>clearTimeout(timer);
-  },[headless,headlessArmed,gate?.found,ticket?.url,selectedGame,busy]);
-
-  useEffect(()=>{
     const saved=savedRef.current;
     if(!saved?.ticket?.found||!saved.ticket.appid||!saved.ticket.url)return;
     if(!["preparing","submitting","waiting-code","redeeming","checking-game","confirming-worked"].includes(saved.automationStage||""))return;
@@ -1399,7 +1393,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         {resumable?`Saved activation for ${savedGame||"this game"}. The same ticket and progress are available in Advanced → Tokeer helper.`:`Runs the complete ${selectedUbisoft?"Ubisoft":"Tokeer"} activation chain and shares its ticket state with Advanced → Tokeer helper.`}
       </div>
       <ButtonItem layout="below" disabled={!!busy||automationRunningRef.current} onClick={resumable?resumeFromFixes:()=>setHeadlessArmed(true)}>
-        {busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):(continueUbisoftFromFixes?"Continue Ubisoft ticket":resumable?"Resume Tokeer ticket":"Activate with Tokeer")}
+        {busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):(continueUbisoftFromFixes?"Continue Ubisoft ticket":ticket?.url?"Resume Tokeer ticket":gate?.found?"Create a ticket":selectedGame?"Prepare ticket":"Activate with Tokeer")}
       </ButtonItem>
       {automationStage!=="idle"&&<div style={{fontSize:10,marginTop:6,opacity:.78}}>Stage: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}</div>}
       {message&&<div style={{fontSize:10,marginTop:6,lineHeight:1.4,color:automationError?"#ff7b72":"inherit"}}>{message}</div>}
