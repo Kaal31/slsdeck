@@ -219,13 +219,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     try {
       const fullCheck = await checkFixesFull(appid);
       setCheck(fullCheck);
-      // A Tokeer action is exposed only after this Fixes opening completes a
-      // live Discord scrape. Never show a stale cached action while refreshing.
+      // Render the last successful cache immediately. A transient Discord/CDP
+      // failure must not turn a known game into a false unavailable result.
       const lookupName = appDisplayName(appid) || fullCheck?.gameName || "";
       const cached = readTokeerAvailabilityCache();
       setTokeerLookup({ name: lookupName, cachedGames: cached?.games.length || 0, updatedAt: cached?.updatedAt });
       const recent = hasFreshTokeerFixCache(cached);
-      setTokeerGame(recent ? getTokeerAvailabilityForGame(appid, lookupName) : null);
+      setTokeerGame(getTokeerAvailabilityForGame(appid, lookupName));
       if (tokeerRefreshApp.current !== appid) {
         tokeerRefreshApp.current = appid;
         const requestedAppid = appid;
@@ -234,9 +234,17 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           .then((live) => {
             if (tokeerRefreshApp.current === requestedAppid) {
               if (!live) {
-                setTokeerGame(null);
-                setMsg("Tokeer availability could not be refreshed from Discord. The Tokeer action is hidden until a live check succeeds.");
-                toaster.toast({ title: "SLSDeck · Tokeer", body: "Discord availability refresh failed; Tokeer action hidden for this game." });
+                // Keep the last confirmed match. Opening Fixes is a passive
+                // check, so a short Discord outage should not raise a toast.
+                resolveTokeerAvailabilityForGame(requestedAppid, lookupName)
+                  .then((game) => {
+                    if (tokeerRefreshApp.current === requestedAppid) setTokeerGame(game);
+                  })
+                  .catch(() => {
+                    if (tokeerRefreshApp.current === requestedAppid) {
+                      setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName));
+                    }
+                  });
                 return;
               }
               const fresh = readTokeerAvailabilityCache();
@@ -248,9 +256,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           })
           .catch(() => {
             if (tokeerRefreshApp.current === requestedAppid) {
-              setTokeerGame(null);
-              setMsg("Tokeer availability refresh failed. The Tokeer action remains hidden.");
-              toaster.toast({ title: "SLSDeck · Tokeer", body: "Discord availability refresh failed; Tokeer action hidden for this game." });
+              setTokeerGame(getTokeerAvailabilityForGame(requestedAppid, lookupName));
             }
           })
           .finally(() => {
