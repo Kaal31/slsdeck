@@ -1,4 +1,4 @@
-import { ButtonItem, DropdownItem, Navigation, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
+import { ButtonItem, DialogButton, DropdownItem, Navigation, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import {
   CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthPoll, crAuthStart,
@@ -48,11 +48,18 @@ function steamGame(appid: number): { title: string; header: string } {
 function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
   const game = steamGame(app.appid);
   const [imageOk, setImageOk] = useState(true);
-  return <div style={{
+  const hasSaves = app.files > 0 || app.size > 0;
+  const openGame = () => {
+    try {
+      Navigation.Navigate(`/library/app/${app.appid}`);
+      (Navigation as any).CloseSideMenus?.();
+    } catch { /* Steam may not have finished loading this app overview yet */ }
+  };
+  return <DialogButton onClick={openGame} style={{
     position: "relative", overflow: "hidden", minHeight: 112, borderRadius: 9,
     border: "1px solid rgba(103, 193, 245, .26)", marginBottom: 9,
     background: "linear-gradient(135deg, rgba(26, 45, 62, .98), rgba(13, 24, 35, .98))",
-    boxShadow: "0 7px 18px rgba(0, 0, 0, .22)",
+    boxShadow: "0 7px 18px rgba(0, 0, 0, .22)", padding: 0, textAlign: "left",
   }}>
     {imageOk && <img src={game.header} alt="" onError={() => setImageOk(false)} style={{
       position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover",
@@ -63,7 +70,13 @@ function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
       background: "linear-gradient(90deg, rgba(8, 16, 25, .96) 0%, rgba(8, 16, 25, .76) 54%, rgba(8, 16, 25, .28) 100%)",
     }} />
     <div style={{ position: "relative", padding: "13px 14px", textShadow: "0 1px 3px #000" }}>
-      <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.18, paddingRight: 16 }}>{game.title}</div>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8, paddingRight: 6 }}>
+        <div style={{ flex: 1, fontSize: 16, fontWeight: 700, lineHeight: 1.18 }}>{game.title}</div>
+        {hasSaves && <span style={{
+          flex: "0 0 auto", padding: "3px 6px", borderRadius: 10, fontSize: 9, fontWeight: 750,
+          color: "#b9f4d0", background: "rgba(55, 160, 96, .28)", border: "1px solid rgba(91, 214, 139, .32)",
+        }}>SAVED</span>}
+      </div>
       <div style={{ marginTop: 5, fontSize: 10, opacity: .7 }}>STEAM APPID {app.appid}</div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px 12px", marginTop: 13, fontSize: 11 }}>
         <span style={{ color: "#67c1f5", fontWeight: 650 }}>{formatSize(app.size)}</span>
@@ -71,7 +84,7 @@ function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
         <span style={{ opacity: .82 }}>{formatLastSave(app.lastModified)}</span>
       </div>
     </div>
-  </div>;
+  </DialogButton>;
 }
 
 /** Native control surface for cloudredirect-moon's config and OAuth contract. */
@@ -154,6 +167,13 @@ export function CloudRedirectSection() {
 
   const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
   const saveCount = saves.length;
+  const sortedSaves = [...saves].sort((a, b) => {
+    const aHasSaves = a.files > 0 || a.size > 0;
+    const bHasSaves = b.files > 0 || b.size > 0;
+    if (aHasSaves !== bHasSaves) return aHasSaves ? -1 : 1;
+    if ((b.lastModified || 0) !== (a.lastModified || 0)) return (b.lastModified || 0) - (a.lastModified || 0);
+    return steamGame(a.appid).title.localeCompare(steamGame(b.appid).title);
+  });
   return <PanelSection title="Cloud saves (CloudRedirect)">
     <PanelSectionRow><ToggleField label="Cloud saves for added games"
       description="Uses the native cloudredirect-moon hook. No Flatpak companion is required."
@@ -181,7 +201,7 @@ export function CloudRedirectSection() {
         <span style={{ fontSize: 14, fontWeight: 700 }}>Cloud-managed games</span>
         <span style={{ fontSize: 10, opacity: .62 }}>{saveCount} {saveCount === 1 ? "game" : "games"}</span>
       </div>
-      {saves.length ? saves.map((app) => <CloudSaveCard key={`${app.account}:${app.appid}`} app={app} />) :
+      {sortedSaves.length ? sortedSaves.map((app) => <CloudSaveCard key={`${app.account}:${app.appid}`} app={app} />) :
         <div style={{ padding: "14px 12px", borderRadius: 8, background: "rgba(20, 33, 46, .72)", fontSize: 11, opacity: .72 }}>
           No CloudRedirect game folders have been created yet.
         </div>}
