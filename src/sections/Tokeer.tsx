@@ -127,7 +127,8 @@ function readSavedSession(): SavedTokeerSession|null {
     );
     // Preserve an expired real ticket for one render so the lifecycle cleanup
     // can close it in Discord before removing the local session.
-    if(!parsed||orphanedTicket||pendingSelectionExpired){
+    const completedSession=parsed?.automationStage==="done";
+    if(!parsed||orphanedTicket||pendingSelectionExpired||completedSession){
       window.localStorage.removeItem(TOKEER_SESSION_KEY);
       return null;
     }
@@ -1391,7 +1392,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
   };
   const c=checks(verify||undefined);
   const activeUbisoftTicket=selectedUbisoft||ticketUsesUbisoftVerifier(ticket);
-  const ubisoftContinuationStage=["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage);
+  const ubisoftContinuationStage=["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","confirming-worked","failed"].includes(automationStage);
 
   if(headless){
     const savedGame=displayGameLabel(selectedGame||activationRequest?.availabilityLabel||activationRequest?.gameName||"");
