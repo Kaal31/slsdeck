@@ -261,16 +261,18 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     if(!viewport||(availability?.games.length||0)<2)return;
     let frame=0;
     let last=performance.now();
+    let position=viewport.scrollTop;
     let paused=false;
-    const pause=()=>{paused=true;};
-    const resume=()=>{paused=false;last=performance.now();};
+    const pause=()=>{paused=true;position=viewport.scrollTop;};
+    const resume=()=>{paused=false;position=viewport.scrollTop;last=performance.now();};
     const rotate=(now:number)=>{
       const elapsed=Math.min(64,now-last);
       last=now;
       if(!paused&&viewport.scrollHeight>viewport.clientHeight){
-        viewport.scrollTop+=elapsed*0.012;
+        position+=elapsed*0.012;
         const loopHeight=viewport.scrollHeight/2;
-        if(viewport.scrollTop>=loopHeight)viewport.scrollTop-=loopHeight;
+        if(position>=loopHeight)position-=loopHeight;
+        viewport.scrollTop=position;
       }
       frame=requestAnimationFrame(rotate);
     };
@@ -1506,8 +1508,8 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         <div style={{marginTop:5,opacity:.82}}>Changing game files after activation is not advised, because it may invalidate the activated setup and require you to verify or recover the files again.</div>
         <div style={{marginTop:7,paddingTop:7,borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.68}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID.</div>
       </div></PanelSectionRow>
-      {discord?.found&&<PanelSectionRow><div style={{width:"calc(100% - 24px)",maxWidth:900,margin:"0 auto",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
-      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><div style={{width:"calc(100% - 24px)",maxWidth:900,margin:"0 auto"}}><DropdownItem
+      {discord?.found&&<PanelSectionRow><div style={{width:"100%",margin:"0 auto",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><div style={{width:"100%",margin:"0 auto"}}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Restoring the live game list; this cached selector is temporarily disabled.":"Live game list from the Tokeer Discord panel"}
         disabled={restoringSelectors||s.disabled||!!busy||ticketChainActive()}
