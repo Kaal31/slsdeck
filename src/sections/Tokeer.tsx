@@ -1412,6 +1412,9 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       >
         {cancelling?(busy||"Cancelling ticket…"):ticketProcessRunning?"Cancel ticket":busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):ticket?.url?(isUbisoftTicket?"Continue Ubisoft ticket":"Continue ticket"):"Activate with Tokeer"}
       </ButtonItem>
+      {!!ticket?.url&&!ticketProcessRunning&&!cancelling&&<ButtonItem layout="below" disabled={!!busy} onClick={cancelTicket}>
+        Cancel ticket
+      </ButtonItem>}
       {automationStage!=="idle"&&<div style={{fontSize:10,marginTop:6,opacity:.78}}>Stage: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}</div>}
       {message&&<div style={{fontSize:10,marginTop:6,lineHeight:1.4,color:automationError?"#ff7b72":"inherit"}}>{message}</div>}
     </div>;
