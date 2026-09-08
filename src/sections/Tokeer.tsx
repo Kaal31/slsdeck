@@ -1487,8 +1487,10 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
 
     {(selectedGame||gate)&&<PanelSection title="Open activation ticket">
       {selectedGame&&<PanelSectionRow><div style={{fontSize:12}}>Selected: <b>{displayGameLabel(selectedGame)}</b> · Verifier: <b>{selectedUbisoft?"Ubisoft":"Steam"}</b></div></PanelSectionRow>}
-      {ticket?.opened&&!ticket.appid
-        ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
+      {ticket?.opened
+        ?(!ticket.appid
+          ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!ticket.url} onClick={resumeTicket}>Resume existing ticket / detect commands</ButtonItem></PanelSectionRow>
+          :null)
         :gate?.found
           ?<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={openTicket}>Create a ticket</ButtonItem></PanelSectionRow>
           :<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={waitForGate}>Refresh confirmation</ButtonItem></PanelSectionRow>}
