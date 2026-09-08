@@ -1465,7 +1465,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     </div>;
   }
 
-  return <>
+  return <div style={{position:"relative",left:-4,width:"100%"}}>
     <PanelSection title="Choose game in Tokeer">
       {!discordAuthChecked&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>Checking Discord connection…</div></PanelSectionRow>}
       {discordAuthChecked&&!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
@@ -1582,5 +1582,5 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       <PanelSectionRow><ButtonItem layout="below" disabled={!!busy||!activation} onClick={redeem}>Activate / write ticket</ButtonItem></PanelSectionRow>
       <PanelSectionRow><div style={{fontSize:10,opacity:.7,lineHeight:1.45}}>Codes are single-use and expire in about 30 minutes. Cooldowns are shared with UbiTokeer: Free 48h · Donator 24h · Lua Basic 12h · Lua Pro 6h · Elite/no-cooldown role: no standard cooldown.</div></PanelSectionRow>
     </PanelSection>}
-  </>;
+  </div>;
 }
