@@ -993,12 +993,21 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       setBusy("Confirming that the game worked in Discord…");
       const vouched=await clickTokeerGameWorked(activeTicket.url,received.lastMessageId||tracked.lastMessageId||"");
       if(stale())return;
-      const vouchNote=vouched.success
-        ? " The latest Game worked! button was pressed in Discord."
-        : ` Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
-      setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}.${pinNote}${vouchNote} Launch the game again.`);
-      checkpoint({automationStage:"done",automationError:"",ubisoftAppliedAt:activeAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
-      toaster.toast({title:"SLSDeck · Tokeer",body:vouched.success?"Ubisoft dbdata.json installed and Game worked! confirmed.":"Ubisoft dbdata.json installed successfully; Discord confirmation needs a manual press."});
+      if(!vouched.success){
+        const completionMessage=`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}.${pinNote} Discord could not press Game worked! automatically: ${vouched.error||"button not found"}. Continue the Ubisoft ticket to retry, or confirm it manually in Discord.`;
+        setAutomationStage("confirming-worked");setAutomationError("");setMessage(completionMessage);
+        checkpoint({automationStage:"confirming-worked",automationError:"",message:completionMessage,ubisoftAppliedAt:activeAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
+        toaster.toast({title:"SLSDeck · Tokeer",body:"Ubisoft activation data was installed; Discord confirmation still needs completion."});
+        return;
+      }
+      const completionMessage=`Ubisoft activation completed. dbdata.json was installed in ${installed.directory||"the token-request folder"}.${pinNote} Game worked! was confirmed in Discord.`;
+      setAutomationStage("done");setAutomationError("");setMessage(completionMessage);
+      toaster.toast({title:"SLSDeck · Tokeer",body:"Ubisoft dbdata.json installed and Game worked! confirmed."});
+      try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
+      selectedUbisoftRef.current=false;
+      setSelectedGame("");setSelectedUbisoft(false);setSelectedMenus({});setGate(null);setTicket(null);setVerify(null);setActivation("");
+      setCodeExpiresAt(undefined);setUbisoftAppliedAt(0);setUbisoftTokenPath("");setUbisoftTokenMessageId("");
+      codeReceivedAtRef.current=undefined;sessionStartedRef.current=Date.now();
     }catch(e){if(!stale()){setAutomationStage("failed");setAutomationError(String(e));setMessage(String(e));}}
     finally{
       if(generation===ticketGenerationRef.current){
@@ -1389,7 +1398,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     const resumable=!!ticket?.url||!!gate?.found||!!selectedGame;
     const isUbisoftTicket=!!ticket?.url&&(selectedUbisoft||ticketUsesUbisoftVerifier(ticket));
     const continueUbisoftFromFixes=isUbisoftTicket&&ubisoftAppliedAt>0
-      &&["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage);
+      &&["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","confirming-worked","failed"].includes(automationStage);
     const ticketProcessRunning=!!ticket?.url&&!ticketCompletionPaused
       &&(automationRunningRef.current||ubisoftContinuationRunning||!!busy);
     const cancelling=ticketAbortedRef.current&&!!busy;
