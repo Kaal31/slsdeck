@@ -17,8 +17,8 @@ from . import steam
 
 
 ASSET_NAME = "ubisoft-packages.zip"
-ASSET_URL = "https://github.com/Kaal31/slsdeck/releases/download/main-latest/ubisoft-packages.zip"
-RELEASE_API = "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/main-latest"
+ASSET_URL = "https://github.com/Kaal31/slsdeck/releases/download/tokeer-hoodless-latest/ubisoft-packages.zip"
+RELEASE_API = "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/tokeer-hoodless-latest"
 VERSION_FILE = ".asset-version"
 
 
@@ -45,6 +45,26 @@ def _load_manifest() -> Dict[str, Any]:
         value = json.load(handle)
     if int(value.get("schemaVersion") or 0) != 1 or not isinstance(value.get("games"), list):
         raise RuntimeError("The Ubisoft hosted-games manifest is invalid.")
+
+    # Package files live in the separately installed asset, but detection
+    # metadata ships with the plugin too. Overlay bundled entries so a corrected
+    # token ID works immediately for an in-progress ticket, even before the
+    # dependency asset is refreshed.
+    bundled = _bundled_manifest()
+    installed = os.path.realpath(_manifest_path())
+    if os.path.isfile(bundled) and os.path.realpath(bundled) != installed:
+        try:
+            with open(bundled, "r", encoding="utf-8") as handle:
+                current = json.load(handle)
+            if int(current.get("schemaVersion") or 0) == 1 and isinstance(current.get("games"), list):
+                merged = {int(game.get("steamAppId") or 0): game for game in value["games"]}
+                for game in current["games"]:
+                    appid = int(game.get("steamAppId") or 0)
+                    if appid:
+                        merged[appid] = {**merged.get(appid, {}), **game}
+                value = {**value, "games": list(merged.values())}
+        except (OSError, ValueError, TypeError):
+            pass
     return value
 
 
