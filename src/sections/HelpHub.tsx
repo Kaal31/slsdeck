@@ -20,7 +20,7 @@ const TOPICS: HelpTopic[] = [
       { name: "SLSsteam / slsteam-moon", desc: "Core steamclient hook that makes added games appear owned. First install is always offered when missing; Reinstall is a separate repair action once installed." },
       { name: "Steam client fix", desc: "Pins/downgrades the Steam client with h3adcr-b when a Steam update breaks the engine's supported patterns." },
       { name: "CloudRedirect runtime", desc: "The required cloudredirect-moon cloud_redirect.so hook. Reinstall refreshes the moon runtime without treating the optional setup UI as the runtime itself." },
-      { name: "CloudRedirect setup UI", desc: "Optional Flatpak companion used when a provider still needs to be configured. Its Steam shortcut is created/rebound when needed and gets cover, hero, wide capsule, logo and icon artwork." },
+      { name: "CloudRedirect provider setup", desc: "Native SLSDeck controls write the moon fork's provider configuration and handle Google Drive or OneDrive sign-in. No Flatpak companion is required." },
       { name: "DepotDownloader / .NET", desc: "Direct downloader used for specific builds and content DLC. First use can prepare a local .NET runtime; status/progress is shown in the current game's QAM tools." },
       { name: "Activate / Deactivate injection", desc: "Turns the SLSsteam launch hook on or off. Deactivate returns the next Steam launch to vanilla Steam." },
       { name: "Run diagnostics", desc: "Shows engine type, injection state and config health when adds stop working or a Steam update changes something." },
@@ -101,9 +101,9 @@ const TOPICS: HelpTopic[] = [
     blurb: "Use cloudredirect-moon for SLS game save redirection.",
     items: [
       { name: "cloudredirect-moon runtime", desc: "The actual redirect engine is cloud_redirect.so loaded into Steam. It does not require the setup Flatpak to remain running." },
-      { name: "Provider setup UI", desc: "If no provider is configured yet, the optional CloudRedirect UI/Flatpak is used to sign in and write provider configuration." },
-      { name: "Reinstall CloudRedirect", desc: "Refreshes the moon runtime hook while preserving provider configuration. It does not blindly replace a working setup UI." },
-      { name: "Steam shortcut", desc: "When the setup UI is needed, SLSDeck creates or repairs its Steam shortcut and reapplies cover, hero, wide capsule, logo and icon artwork." },
+      { name: "Provider setup", desc: "Choose Local folder, Google Drive, or OneDrive directly in SLSDeck. Existing Flatpak tokens are migrated non-destructively." },
+      { name: "Reinstall CloudRedirect", desc: "Refreshes and verifies the moon runtime hook while preserving native provider configuration and tokens." },
+      { name: "Legacy Flatpak", desc: "It is no longer required or launched. SLSDeck can import its existing provider tokens and save storage without deleting the originals." },
     ],
   },
   {

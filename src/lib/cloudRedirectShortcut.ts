@@ -1,4 +1,4 @@
-import { crArtwork, crGetShortcut, crIconPath, crSetShortcut } from "../api";
+import { crArtwork, crGetShortcut, crIconPath, crInstallStatus, crSetShortcut } from "../api";
 
 const CR_FLATPAK = "org.cloudredirect.CloudRedirect";
 
@@ -81,5 +81,25 @@ export async function rebindExistingCloudRedirectShortcut(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Remove only the legacy shortcut whose AppID was recorded when SLSDeck
+ * created it. The backend removes the Flatpak only after migrating its data;
+ * appInstalled=false is therefore the hand-off signal for CEF cleanup. */
+export async function cleanupLegacyCloudRedirectShortcut(): Promise<void> {
+  try {
+    const [{ appId }, status] = await Promise.all([crGetShortcut(), crInstallStatus()]);
+    const id = Number(appId || 0);
+    if (!id || status?.legacyFlatpakInstalled || status?.appInstalled) return;
+    const SC: any = (window as any).SteamClient;
+    if (!SC?.Apps?.RemoveShortcut) return;
+    // The stored ID is authoritative: SLSDeck records it immediately after its
+    // own AddShortcut call and never records arbitrary library applications.
+    await SC.Apps.RemoveShortcut(id);
+    await crSetShortcut(0);
+    console.info("SLSDeck: removed legacy CloudRedirect Steam shortcut");
+  } catch (e) {
+    console.warn("SLSDeck: legacy CloudRedirect shortcut cleanup deferred", e);
   }
 }

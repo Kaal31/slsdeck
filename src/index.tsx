@@ -18,6 +18,7 @@ import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
 import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
 import { archiveReconcileAll } from "./api";
+import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -442,6 +443,7 @@ function Content() {
 
 export default definePlugin(() => {
   console.log("SLSDeck (Decky) initializing");
+  void cleanupLegacyCloudRedirectShortcut();
 
   // Two button surfaces: (1) the library app-details bar, injected via a React
   // tree patch (always on while the plugin runs); and (2) the store-page button,
