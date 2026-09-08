@@ -888,11 +888,12 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           checkpoint({automationStage:"waiting-token",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:confirmedTicket,ubisoftAppliedAt:appliedAt,ubisoftTokenPath:"",ubisoftTokenMessageId:""});
           const continuationKey=`${confirmedTicket.url}:${appliedAt}`;
           ubisoftAutoContinueKeyRef.current=continuationKey;
+          // Start monitoring before RunGame can dismiss this panel. The
+          // continuation owns subsequent status text so a fast token upload is
+          // not overwritten by the older launch-stage message.
           void continueUbisoftTicket({ticket:confirmedTicket,appliedAt});
           const launched=launchGame(ctx.appid);
-          setMessage(launched
-            ? `Verification was accepted locally, the hosted package was applied, and ${hosted.name} was launched. SLSDeck is monitoring for its token request and will upload it automatically.`
-            : `Verification was accepted locally and the hosted package was applied. Launch ${hosted.name}; SLSDeck will monitor for its token request and upload it automatically.`);
+          if(!launched)setMessage(`Verification was accepted locally and the hosted package was applied. Launch ${hosted.name}; SLSDeck is already monitoring for its token request.`);
           return;
         }
     }catch(e){if(!stale())fail(String(e));}
