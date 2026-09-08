@@ -988,19 +988,13 @@ export async function waitForTicketContext(
       const isManagedTarget = !!(await evalJson(tab.webSocketDebuggerUrl,
         `(function(){try{return window.__SLSDECK_TOKEER_MANAGED===true;}catch(e){return false;}})()`, 1200));
       const sidebarNow = await readSidebarChannels(tab).catch(() => [] as DiscordSidebarChannel[]);
-      const routeChannel = discordRouteIdentity(String(tab.url || "")).channelId;
-      // Creation is identified structurally from the new sidebar thread (or
-      // its explicit link). Parse commands only after that exact channel ID is
-      // known and open; do not use message semantics to discover a ticket.
-      const exactDiscoveredTicket = !!wantedChannel && routeChannel === wantedChannel;
-      const raw = exactDiscoveredTicket
-        ? await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR)
-        : "";
+      const knownThreads = new Set(sidebarNow.filter((item) => item.thread).map((item) => item.id));
+      const raw = await evalJson(tab.webSocketDebuggerUrl, TICKET_CONTEXT_EXPR);
       try {
         const parsed = JSON.parse(String(raw || ""));
         const currentIdentity = ticketIdentity(String(tab.url || ""), parsed?.lastMessageId);
         const currentChannel = parsed?.ticketChannelId || currentIdentity.ticketChannelId;
-        const isPrivateTicket = exactDiscoveredTicket && currentChannel === wantedChannel;
+        const isPrivateTicket = !!currentChannel && !excludedChannels.has(currentChannel) && (currentChannel === wantedChannel || knownThreads.has(currentChannel));
         const foundGame = normalizeGame(String(parsed?.gameName || ""));
         const gameMatches = !wantedGame || !foundGame || wantedGame === foundGame;
         if (parsed?.found && parsed?.appid) {
@@ -1036,6 +1030,7 @@ export async function waitForTicketContext(
             }
           } catch {}
         }
+        if (parsed?.opened && isPrivateTicket) lastTicketUrl = canonicalDiscordChannelUrl(String(tab.url || ""));
         if (parsed?.error) lastError = parsed.error;
       } catch {}
 
@@ -1064,7 +1059,7 @@ export async function waitForTicketContext(
       // Ticket bots often post a private-channel link instead of changing the
       // current SPA route. Discover that link from recent messages and move the
       // same hidden target into it.
-      if (!lastTicketUrl) try {
+      try {
         const linkRaw = await evalJson(tab.webSocketDebuggerUrl, TICKET_LINK_EXPR);
         const link = JSON.parse(String(linkRaw || ""));
         if (link?.found && looksLikeDiscordUrl(link.url || "")) {
