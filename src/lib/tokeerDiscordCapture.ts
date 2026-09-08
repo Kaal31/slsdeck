@@ -1463,17 +1463,16 @@ export async function waitForUbisoftVerificationConfirmation(ticketUrl: string, 
       await new Promise((r) => setTimeout(r, 1000));
       continue;
     }
+    await forceTicketToNewest(tab);
     const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
-      var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-30);
+      var after=${JSON.stringify(afterMessageId)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).reverse();
       for(var i=0;i<arts.length;i++){
         var a=arts[i],m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),id=m&&m[2]||'';
-        // The bot's immediate reply quotes the submitted TLX1. The send
-        // verifier can therefore save this Verification Passed article itself
-        // as the boundary message. Re-read the boundary and skip only messages
-        // strictly older than it.
-        if(after&&id&&BigInt(id)<BigInt(after))continue;
+        // A retry can post after the bot has already accepted this ticket.
+        // Search newest-first and recover success before applying the send boundary.
         var text=String(a.innerText||'').replace(/\\s+/g,' ').trim();
         if(/verification\\s+passed|game\\s+files\\s+checked\\s+out|follow\\s+the\\s+next\\s+steps/i.test(text))return JSON.stringify({state:'passed',id:id});
+        if(after&&id&&BigInt(id)<BigInt(after))continue;
         if(/verification\\s+failed|didn['’]?t\\s+pass\\s+validation|steam\\s+setup\\s+code|run\\s+tokeer\\s+verify-ubi/i.test(text))return JSON.stringify({state:'failed',id:id,error:text.slice(0,500)});
       }
       return JSON.stringify({state:'waiting'});
