@@ -886,6 +886,9 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           if(!applied.success||!applied.appliedAt){fail(applied.error||"The hosted Ubisoft package could not be applied.");return;}
           const appliedAt=Number(applied.appliedAt);setUbisoftAppliedAt(appliedAt);setAutomationStage("waiting-token");
           checkpoint({automationStage:"waiting-token",tlxSubmitted:true,submittedTlx:tlx,verify:prepared,ticket:confirmedTicket,ubisoftAppliedAt:appliedAt,ubisoftTokenPath:"",ubisoftTokenMessageId:""});
+          const continuationKey=`${confirmedTicket.url}:${appliedAt}`;
+          ubisoftAutoContinueKeyRef.current=continuationKey;
+          void continueUbisoftTicket({ticket:confirmedTicket,appliedAt});
           const launched=launchGame(ctx.appid);
           setMessage(launched
             ? `Verification was accepted locally, the hosted package was applied, and ${hosted.name} was launched. SLSDeck is monitoring for its token request and will upload it automatically.`
@@ -898,8 +901,10 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     }
   };
 
-  const continueUbisoftTicket=async()=>{
-    if(!ticket?.url||!ticket.appid||!ubisoftAppliedAt)return setMessage("The saved Ubisoft activation state is incomplete; reopen the ticket flow.");
+  const continueUbisoftTicket=async(resume?:{ticket?:TokeerTicketContext;appliedAt?:number})=>{
+    const activeTicket=resume?.ticket||ticket;
+    const activeAppliedAt=Number(resume?.appliedAt||activeAppliedAt);
+    if(!activeTicket?.url||!activeTicket.appid||!activeAppliedAt)return setMessage("The saved Ubisoft activation state is incomplete; reopen the activeTicket flow.");
     const generation=ticketGenerationRef.current;
     ticketCompletionPausedRef.current=false;
     setTicketCompletionPaused(false);
@@ -907,7 +912,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     const stale=()=>ticketAbortedRef.current||ticketCompletionPausedRef.current||generation!==ticketGenerationRef.current;
     automationRunningRef.current=true;
     try{
-      let tokenPath=ubisoftTokenPath,tokenMessageId=ubisoftTokenMessageId,tracked={...ticket};
+      let tokenPath=ubisoftTokenPath,tokenMessageId=ubisoftTokenMessageId,tracked={...activeTicket};
       if(!tokenMessageId){
         setAutomationStage("waiting-token");
         setBusy("Waiting for the Ubisoft token request…");
@@ -915,7 +920,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         const tokenDeadline=Date.now()+15*60*1000;
         let token:any=null;
         while(Date.now()<tokenDeadline&&!stale()){
-          const candidate=await tokeerFindUbisoftToken(ticket.appid,ubisoftAppliedAt);
+          const candidate=await tokeerFindUbisoftToken(activeTicket.appid,activeAppliedAt);
           if(stale())return;
           if(candidate.success&&candidate.found&&candidate.path&&candidate.filename){
             token=candidate;
@@ -926,60 +931,60 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         if(stale())return;
         if(!token){
           setAutomationStage("waiting-token");
-          setMessage("Automatic token monitoring stopped after 15 minutes. If the request file now exists, press Continue Ubisoft ticket to resume.");
+          setMessage("Automatic token monitoring stopped after 15 minutes. If the request file now exists, press Continue Ubisoft activeTicket to resume.");
           return;
         }
         setAutomationStage("uploading-token");
         setBusy("Uploading the Ubisoft token request…");
         tokenPath=token.path;setUbisoftTokenPath(tokenPath);
-        checkpoint({automationStage:"uploading-token",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:"",ticket});
-        setBusy("Checking the saved ticket for the Ubisoft token request…");
-        const alreadyPosted=await findPostedTokeerTicketFile(ticket.url,token.filename);
+        checkpoint({automationStage:"uploading-token",activeAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:"",activeTicket});
+        setBusy("Checking the saved activeTicket for the Ubisoft token request…");
+        const alreadyPosted=await findPostedTokeerTicketFile(activeTicket.url,token.filename);
         if(stale())return;
         if(alreadyPosted.success&&alreadyPosted.found){
-          tokenMessageId=alreadyPosted.lastMessageId||ticket.lastMessageId||"";
+          tokenMessageId=alreadyPosted.lastMessageId||activeTicket.lastMessageId||"";
         }else{
           setBusy("Uploading the Ubisoft token request to Discord…");
-          const uploaded=await uploadTokeerTicketFile(ticket.url,tokenPath,token.filename);
+          const uploaded=await uploadTokeerTicketFile(activeTicket.url,tokenPath,token.filename);
           if(stale())return;
-          if(uploaded.cancelled){abortTicketChain(uploaded.error||"The Discord ticket was closed.");return;}
+          if(uploaded.cancelled){abortTicketChain(uploaded.error||"The Discord activeTicket was closed.");return;}
           if(!uploaded.success){setAutomationStage("waiting-token");setMessage(uploaded.error||"The Ubisoft token request could not be uploaded.");return;}
-          tokenMessageId=uploaded.lastMessageId||ticket.lastMessageId||"";
+          tokenMessageId=uploaded.lastMessageId||activeTicket.lastMessageId||"";
         }
         setUbisoftTokenMessageId(tokenMessageId);
-        tracked={...ticket,lastMessageId:tokenMessageId||ticket.lastMessageId};setTicket(tracked);
+        tracked={...activeTicket,lastMessageId:tokenMessageId||activeTicket.lastMessageId};setTicket(tracked);
       }
       setBusy("Checking for already-installed Ubisoft activation data…");
-      let installed:any=await tokeerUbisoftDbdataStatus(ticket.appid,tokenPath);
+      let installed:any=await tokeerUbisoftDbdataStatus(activeTicket.appid,tokenPath);
       if(stale())return;
       let received:{lastMessageId?:string}={};
       if(!installed.success||!installed.installed){
         setAutomationStage("waiting-dbdata");setBusy("Waiting for Discord dbdata.json…");
         setMessage("The Ubisoft token request was uploaded. Waiting for Discord's Download dbdata.json response…");
-        checkpoint({automationStage:"waiting-dbdata",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:tracked});
-        const response=await waitForUbisoftDbdataLink(ticket.url,tokenMessageId,15*60*1000,stale);
+        checkpoint({automationStage:"waiting-dbdata",activeAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,activeTicket:tracked});
+        const response=await waitForUbisoftDbdataLink(activeTicket.url,tokenMessageId,15*60*1000,stale);
         if(stale())return;
-        if(response.cancelled){abortTicketChain(response.error||"The Discord ticket was closed.");return;}
+        if(response.cancelled){abortTicketChain(response.error||"The Discord activeTicket was closed.");return;}
         if(!response.success||!response.url){setAutomationStage("failed");setAutomationError(response.error||"Discord did not return dbdata.json.");setMessage(response.error||"Discord did not return dbdata.json.");return;}
         received=response;
         setAutomationStage("installing-dbdata");setBusy("Installing dbdata.json beside the token request…");
-        installed=await tokeerInstallUbisoftDbdata(ticket.appid,tokenPath,response.url);
+        installed=await tokeerInstallUbisoftDbdata(activeTicket.appid,tokenPath,response.url);
         if(stale())return;
         if(!installed.success){setAutomationStage("failed");setAutomationError(installed.error||"dbdata.json installation failed.");setMessage(installed.error||"dbdata.json installation failed.");return;}
       }
-      const applied=await tokeerMarkApplied(ticket.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ticket.appid}`,"ubisoft",true,installed.path||"");
+      const applied=await tokeerMarkApplied(activeTicket.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${activeTicket.appid}`,"ubisoft",true,installed.path||"");
       void refreshBadges();
       const pinNote=applied.pin?.success
         ? " The installed build was pinned."
         : ` The key is applied, but version pinning failed${applied.pin?.error?`: ${applied.pin.error}`:"."}`;
       setBusy("Confirming that the game worked in Discord…");
-      const vouched=await clickTokeerGameWorked(ticket.url,received.lastMessageId||tracked.lastMessageId||"");
+      const vouched=await clickTokeerGameWorked(activeTicket.url,received.lastMessageId||tracked.lastMessageId||"");
       if(stale())return;
       const vouchNote=vouched.success
         ? " The latest Game worked! button was pressed in Discord."
         : ` Discord could not press Game worked! automatically: ${vouched.error||"button not found"}`;
       setAutomationStage("done");setAutomationError("");setMessage(`Ubisoft activation data was installed in ${installed.directory||"the token-request folder"}.${pinNote}${vouchNote} Launch the game again.`);
-      checkpoint({automationStage:"done",automationError:"",ubisoftAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,ticket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
+      checkpoint({automationStage:"done",automationError:"",activeAppliedAt,ubisoftTokenPath:tokenPath,ubisoftTokenMessageId:tokenMessageId,activeTicket:{...tracked,lastMessageId:received.lastMessageId||tracked.lastMessageId}});
       toaster.toast({title:"SLSDeck · Tokeer",body:vouched.success?"Ubisoft dbdata.json installed and Game worked! confirmed.":"Ubisoft dbdata.json installed successfully; Discord confirmation needs a manual press."});
     }catch(e){if(!stale()){setAutomationStage("failed");setAutomationError(String(e));setMessage(String(e));}}
     finally{
