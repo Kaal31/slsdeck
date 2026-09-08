@@ -1208,7 +1208,7 @@ export async function findPostedTokeerTicketFile(ticketUrl: string, expectedFile
   await forceTicketToNewest(tab);
   const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
     var expected=${JSON.stringify(filename)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-80).reverse();
-    for(var i=0;i<arts.length;i++){if(String(arts[i].innerText||'').indexOf(expected)<0)continue;var m=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
+    for(var i=0;i<arts.length;i++){var a=arts[i],scope=a.closest('li')||a.parentElement||a,links=[].slice.call(scope.querySelectorAll('a[href]')),attached=false;for(var j=0;j<links.length;j++){var href=String(links[j].href||links[j].getAttribute('href')||''),label=String(links[j].innerText||links[j].textContent||'');try{href=decodeURIComponent(href);}catch(e){}if(/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href)&&(href.indexOf(expected)>=0||label.indexOf(expected)>=0)){attached=true;break;}}if(!attached)continue;var m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
     return JSON.stringify({found:false});
   }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`, 3500);
   try {
@@ -1551,7 +1551,7 @@ export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string
   while (Date.now() < sentDeadline) {
     const raw = await evalJson(tab.webSocketDebuggerUrl, `(function(){try{
       var expected=${JSON.stringify(filename)},arts=[].slice.call(document.querySelectorAll('[role="article"]')).slice(-15).reverse();
-      for(var i=0;i<arts.length;i++){if(String(arts[i].innerText||'').indexOf(expected)<0)continue;var m=String(arts[i].id||arts[i].getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
+      for(var i=0;i<arts.length;i++){var a=arts[i],scope=a.closest('li')||a.parentElement||a,links=[].slice.call(scope.querySelectorAll('a[href]')),attached=false;for(var j=0;j<links.length;j++){var href=String(links[j].href||links[j].getAttribute('href')||''),label=String(links[j].innerText||links[j].textContent||'');try{href=decodeURIComponent(href);}catch(e){}if(/(?:cdn\\.discordapp\\.com|media\\.discordapp\\.net)\\/attachments\\//i.test(href)&&(href.indexOf(expected)>=0||label.indexOf(expected)>=0)){attached=true;break;}}if(!attached)continue;var m=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/);return JSON.stringify({found:true,id:m&&m[2]||''});}
       return JSON.stringify({found:false});
     }catch(e){return JSON.stringify({found:false});}})()`, 3000);
     try { const value = JSON.parse(String(raw || "")); if (value?.found) return { success: true, lastMessageId: String(value.id || "") || undefined }; } catch {}
