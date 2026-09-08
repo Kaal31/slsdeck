@@ -1328,8 +1328,12 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
   if(headless){
     const savedGame=displayGameLabel(selectedGame||activationRequest?.availabilityLabel||activationRequest?.gameName||"");
     const resumable=!!ticket?.url||!!gate?.found||!!selectedGame;
+    const continueUbisoftFromFixes=!!ticket?.url&&ubisoftAppliedAt>0
+      &&(selectedUbisoft||ticketUsesUbisoftVerifier(ticket))
+      &&["waiting-token","uploading-token","waiting-dbdata","installing-dbdata","failed"].includes(automationStage);
     const resumeFromFixes=()=>{
       setHeadlessArmed(true);
+      if(continueUbisoftFromFixes){void continueUbisoftTicket();return;}
       if(ticket?.url){void resumeTicket();return;}
       if(gate?.found){void openTicket();return;}
       if(selectedGame){void waitForGate();}
@@ -1340,7 +1344,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         {resumable?`Saved activation for ${savedGame||"this game"}. The same ticket and progress are available in Advanced → Tokeer helper.`:`Runs the complete ${selectedUbisoft?"Ubisoft":"Tokeer"} activation chain and shares its ticket state with Advanced → Tokeer helper.`}
       </div>
       <ButtonItem layout="below" disabled={!!busy||automationRunningRef.current} onClick={resumable?resumeFromFixes:()=>setHeadlessArmed(true)}>
-        {busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):(resumable?"Resume Tokeer ticket":"Activate with Tokeer")}
+        {busy||automationRunningRef.current?(busy||`Activation: ${automationStage.replace("-"," ")}`):(continueUbisoftFromFixes?"Continue Ubisoft ticket":resumable?"Resume Tokeer ticket":"Activate with Tokeer")}
       </ButtonItem>
       {automationStage!=="idle"&&<div style={{fontSize:10,marginTop:6,opacity:.78}}>Stage: <b>{automationStage.replace("-"," ")}</b>{tlxSubmitted?" · TLX1 submitted":""}</div>}
       {message&&<div style={{fontSize:10,marginTop:6,lineHeight:1.4,color:automationError?"#ff7b72":"inherit"}}>{message}</div>}
