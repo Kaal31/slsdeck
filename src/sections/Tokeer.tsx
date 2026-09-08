@@ -1435,10 +1435,10 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         <div style={{marginTop:7,paddingTop:7,borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.68}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID.</div>
       </div></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
-      {!restoringSelectors&&(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
-        description={restoringSelectors?"Returning to the Linux activation panel…":"Live game list from the Tokeer Discord panel"}
-        disabled={s.disabled||!!busy||ticketChainActive()}
+        description={restoringSelectors?"Restoring the live game list; this cached selector is temporarily disabled.":"Live game list from the Tokeer Discord panel"}
+        disabled={restoringSelectors||s.disabled||!!busy||ticketChainActive()}
         rgOptions={(options[s.key]||[]).map(x=>({data:x,label:displayGameLabel(x)}))}
         selectedOption={selectedMenus[s.key]||selectedMenus[String(s.index)]||null}
         strDefaultLabel={s.label||"Choose a game"}
