@@ -17,7 +17,7 @@
       "steamAppId": 2751000,
       "carePackageId": 6145,
       "ubisoftProductIds": {"native": 6145, "steam": null},
-      "tokenRequestIds": [6145],
+      "tokenRequestIds": [6145, 7021],
       "tokenDirectory": ".",
       "sourceSha256": "68c28eeeb6ff10679676c584bb9c4ac9b9b5a4b03d7b0f214afba57d18dcf5a6"
     },
