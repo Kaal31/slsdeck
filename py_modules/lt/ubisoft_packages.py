@@ -17,8 +17,8 @@ from . import steam
 
 
 ASSET_NAME = "ubisoft-packages.zip"
-ASSET_URL = "https://github.com/Kaal31/slsdeck/releases/download/tokeer-hoodless-latest/ubisoft-packages.zip"
-RELEASE_API = "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/tokeer-hoodless-latest"
+ASSET_URL = "https://github.com/Kaal31/slsdeck/releases/download/main-latest/ubisoft-packages.zip"
+RELEASE_API = "https://api.github.com/repos/Kaal31/slsdeck/releases/tags/main-latest"
 VERSION_FILE = ".asset-version"
 
 
