@@ -16,6 +16,7 @@ from .logger import logger
 
 _CR_PRELOAD = '$HOME/.local/share/CloudRedirect/cloud_redirect.so'
 _PRELOAD_MIGRATION = ".slsdeck-cloudredirect-preload-v1"
+_FLATPAK_CLEANUP = ".slsdeck-legacy-flatpak-cleanup-v1"
 
 
 def _patch_steam_wrappers(cloudredirect: Any) -> None:
@@ -148,6 +149,43 @@ def _migrate_legacy_wrappers(cloudredirect: Any) -> None:
         # Wrappers are already repaired. A missing marker merely permits a safe
         # structural recheck next boot; it does not undo the successful repair.
         logger.warn(f"CloudRedirect preload migration marker failed: {exc}")
+
+
+def _cleanup_legacy_flatpak(cloudredirect: Any) -> None:
+    """Remove the obsolete companion only after native state is safely copied."""
+    if not _hook_present(cloudredirect):
+        return
+    marker = os.path.join(cloudredirect._native_config_dir(), _FLATPAK_CLEANUP)
+    if os.path.isfile(marker):
+        return
+    try:
+        migrated = cloudredirect.migrate_provider_data()
+        if not migrated.get("success") or not os.path.isfile(cloudredirect._native_config_path()):
+            return
+        if cloudredirect._installed():
+            command = cloudredirect.slssteam._wrap_as_user([
+                "flatpak", "uninstall", "--user", "-y", "--noninteractive",
+                cloudredirect.CR_APP_ID,
+            ])
+            result = __import__("subprocess").run(
+                command, env=cloudredirect.slssteam._rich_env(),
+                capture_output=True, timeout=300,
+            )
+            if result.returncode != 0:
+                tail = (result.stderr or result.stdout).decode("utf-8", "replace")[-500:]
+                logger.warn(f"CloudRedirect legacy Flatpak cleanup failed: {tail}")
+                return
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        staged = marker + ".new"
+        with open(staged, "w", encoding="utf-8") as fh:
+            fh.write("legacy CloudRedirect Flatpak removed; frontend shortcut cleanup allowed\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(staged, marker)
+        cloudredirect.chown_to_user(marker, recursive=False)
+        logger.log("CloudRedirect: legacy Flatpak cleanup complete")
+    except Exception as exc:
+        logger.warn(f"CloudRedirect legacy Flatpak cleanup skipped: {exc}")
 
 
 def _sync_registered_games(cloudredirect: Any) -> dict:
@@ -342,6 +380,14 @@ def patch(cloudredirect: Any) -> None:
     cloudredirect.sync_registered_games = lambda: _sync_registered_games(cloudredirect)
     cloudredirect._download_cr_lib = lambda: _download_cr_lib(cloudredirect)
     _migrate_legacy_wrappers(cloudredirect)
+    original_install_status = cloudredirect.install_status
+    def install_status_after_legacy_cleanup() -> dict:
+        # Status RPCs run in the backend worker, so Flatpak removal cannot block
+        # module import or Decky startup. The frontend uses the returned state
+        # to remove the matching Steam shortcut immediately afterwards.
+        _cleanup_legacy_flatpak(cloudredirect)
+        return original_install_status()
+    cloudredirect.install_status = install_status_after_legacy_cleanup
 
     def ensure_native() -> dict:
         cloudredirect.migrate_provider_data()
