@@ -32,7 +32,7 @@ function formatLastSave(timestamp?: number): string {
   }
 }
 
-function steamGame(appid: number): { title: string; header: string } {
+function steamGame(appid: number): { title: string; header: string; wideCapsule: string; logo: string } {
   let title = `Steam App ${appid}`;
   try {
     const overview: any = (window as any).appStore?.GetAppOverviewByAppID?.(appid)
@@ -42,13 +42,17 @@ function steamGame(appid: number): { title: string; header: string } {
   return {
     title,
     header: `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/header.jpg`,
+    wideCapsule: `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/capsule_616x353.jpg`,
+    logo: `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/logo.png`,
   };
 }
 
 function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
   const game = steamGame(app.appid);
-  const [imageOk, setImageOk] = useState(true);
+  const [artIndex, setArtIndex] = useState(0);
+  const [logoOk, setLogoOk] = useState(true);
   const hasSaves = app.files > 0 || app.size > 0;
+  const artwork = [game.header, game.wideCapsule][artIndex];
   const openGame = () => {
     try {
       Navigation.Navigate(`/library/app/${app.appid}`);
@@ -61,7 +65,7 @@ function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
     background: "linear-gradient(135deg, rgba(26, 45, 62, .98), rgba(13, 24, 35, .98))",
     boxShadow: "0 7px 18px rgba(0, 0, 0, .22)", padding: 0, textAlign: "left",
   }}>
-    {imageOk && <img src={game.header} alt="" onError={() => setImageOk(false)} style={{
+    {artwork && <img src={artwork} alt="" onError={() => setArtIndex((current) => current + 1)} style={{
       position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover",
       opacity: .48,
     }} />}
@@ -71,7 +75,12 @@ function CloudSaveCard({ app }: { app: CloudRedirectLocalApp }) {
     }} />
     <div style={{ position: "relative", padding: "13px 14px", textShadow: "0 1px 3px #000" }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8, paddingRight: 6 }}>
-        <div style={{ flex: 1, fontSize: 16, fontWeight: 700, lineHeight: 1.18 }}>{game.title}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {logoOk ? <img src={game.logo} alt={game.title} onError={() => setLogoOk(false)} style={{
+            display: "block", maxWidth: "72%", width: "auto", height: 38, objectFit: "contain", objectPosition: "left center",
+            filter: "drop-shadow(0 2px 3px rgba(0, 0, 0, .88))",
+          }} /> : <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.18 }}>{game.title}</div>}
+        </div>
         {hasSaves && <span style={{
           flex: "0 0 auto", padding: "3px 6px", borderRadius: 10, fontSize: 9, fontWeight: 750,
           color: "#b9f4d0", background: "rgba(55, 160, 96, .28)", border: "1px solid rgba(91, 214, 139, .32)",
