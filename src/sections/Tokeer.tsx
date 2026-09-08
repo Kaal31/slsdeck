@@ -705,11 +705,12 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       let stage=resume?.automationStage||"preparing";
       let tlx=resume?.submittedTlx||"";
       let wasSubmitted=!!resume?.tlxSubmitted;
+      const ubisoftTicket=!!ctx.ubisoft||ticketUsesUbisoftVerifier(ctx);
 
       // Steam/non-Ubisoft tickets have their own linear protocol. Keep it
       // independent from Ubisoft's hosted-package/token-request continuation:
       // TLX1 -> Discord redemption code -> local Tokeer redemption -> vouch.
-      if(!ticketUsesUbisoftVerifier(ctx)){
+      if(!ubisoftTicket){
         let trackedTicket={...ctx};
         const ticketAppid=ctx.appid;
         const ticketUrl=ctx.url;
@@ -774,10 +775,6 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         }
 
         if(stage!=="waiting-code"||!wasSubmitted){
-        let prepared=resume?.verify||verify;
-        let sent: { success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string } = { success: true, lastMessageId: ctx.lastMessageId };
-        // A submitted Ubisoft ticket resumes confirmation; never submit another TLX1 on timeout.
-        if(!ticketUsesUbisoftVerifier(ctx)||!wasSubmitted){
             setAutomationStage("preparing");setAutomationError("");setBusy("Preparing and verifying Tokeer locally…");
             checkpoint({automationStage:"preparing",automationError:"",ticket:ctx});
             const preflight=await tokeerPreflight(ctx.appid,"");
@@ -834,13 +831,22 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         return;
       }
 
-      if(stage!=="waiting-code"||!wasSubmitted){
+      const savedTicketId=String(resume?.ticket?.url||"").match(/\/channels\/\d+\/(\d+)/)?.[1]||"";
+      const currentTicketId=String(ctx.url||"").match(/\/channels\/\d+\/(\d+)/)?.[1]||"";
+      const resumeSubmittedUbisoft=ubisoftTicket&&wasSubmitted&&!!tlx&&!!savedTicketId&&savedTicketId===currentTicketId;
+      let prepared=resume?.verify||verify;
+      let sent: { success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string } = {
+        success:true,lastMessageId:resumeSubmittedUbisoft?(resume?.ticket?.lastMessageId||ctx.lastMessageId):ctx.lastMessageId,
+      };
+      // Reuse a submission only for the same saved private Ubisoft ticket.
+      // Every newly opened ticket must generate and post its own TLX1.
+      if(!resumeSubmittedUbisoft){
         setAutomationStage("preparing");setAutomationError("");setBusy("Preparing and verifying Tokeer locally…");
         checkpoint({automationStage:"preparing",automationError:"",ticket:ctx});
         const preflight=await tokeerPreflight(ctx.appid,"");
         if(stale())return;
         if(!preflight.success||!preflight.installed){fail(preflight.error||"Game is not installed; Discord was not sent a verification result.");return;}
-        prepared=await setupAndVerifyTokeer(ctx.appid,setMessage,ticketUsesUbisoftVerifier(ctx));
+        prepared=await setupAndVerifyTokeer(ctx.appid,setMessage,true);
         if(stale())return;
         if(!prepared.success||!prepared.code){fail(describeTokeerFailure(prepared));return;}
         tlx=prepared.code;setVerify(prepared);setSubmittedTlx(tlx);
@@ -854,7 +860,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         wasSubmitted=true;setTlxSubmitted(true);
         checkpoint({tlxSubmitted:true,ticket:{...ctx,lastMessageId:sent.lastMessageId||ctx.lastMessageId}});
         }
-        if(ticketUsesUbisoftVerifier(ctx)){
+        if(ubisoftTicket){
           let catalog=hostedGames;
           let hosted=catalog.find((game)=>Number(game.steamAppId)===Number(ctx.appid));
           if(!hosted){
