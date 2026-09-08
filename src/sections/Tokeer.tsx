@@ -588,31 +588,41 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
 
   const restoreActivationPanel=async(generation=ticketGenerationRef.current)=>{
     setRestoringSelectors(true);
-    // Returning from an expired/closed ticket is best-effort UI recovery. Keep
-    // its wait short; a normal Refresh still performs the full legacy fallback.
-    const finishBy=Date.now()+6000;
+    // Discord may spend several seconds redirecting away from a deleted private
+    // thread before the Linux panel and its component menus are mounted.
+    const finishBy=Date.now()+20000;
     const within=<T,>(work:Promise<T>,fallback:T):Promise<T>=>Promise.race([
       work,
       sleep(Math.max(1,finishBy-Date.now())).then(()=>fallback),
     ]);
+    let restored=false;
     try{
-      if(!(await within(connectTokeerDiscordHidden(true),false)))return;
+      // Recreate the managed view if Steam discarded it while the ticket was
+      // open. Fast restore used to return immediately in that case.
+      if(!(await within(connectTokeerDiscordHidden(),false)))return;
       let state=await within(readTokeerDiscord(true,false),{found:false,selectors:[]} as TokeerDiscordState);
       while((!state.found||!(state.selectors||[]).length)&&Date.now()<finishBy){
-        await sleep(300);
+        await sleep(500);
         state=await within(readTokeerDiscord(true,false),{found:false,selectors:[]} as TokeerDiscordState);
       }
       if(generation!==ticketGenerationRef.current)return;
       if(state.found&&(state.selectors||[]).length){
+        restored=true;
         rememberDiscord(state);
         setDiscordSignedIn(true);
         setDiscordAuthChecked(true);
       }
     }catch{}
     finally{
-      // Restoration is best-effort. Never leave every selector disabled merely
-      // because Discord was slow, logged out, or had already deleted a thread.
-      if(generation===ticketGenerationRef.current)setRestoringSelectors(false);
+      if(generation===ticketGenerationRef.current){
+        setRestoringSelectors(false);
+        if(!restored){
+          // Do not expose cached selectors that point at controls from the old
+          // Discord document: opening one produces an empty modal with Cancel.
+          setDiscord((current)=>current?{...current,found:false,selectors:[]}:current);
+          setMessage("The ticket was cleared, but Discord did not restore the Linux activation panel yet. Press Refresh to reconnect the live game list.");
+        }
+      }
     }
   };
 
@@ -1398,7 +1408,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         <div style={{marginTop:7,paddingTop:7,borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.68}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID.</div>
       </div></PanelSectionRow>
       {discord?.found&&<PanelSectionRow><div style={{width:"100%",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
-      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
+      {!restoringSelectors&&(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Returning to the Linux activation panel…":"Live game list from the Tokeer Discord panel"}
         disabled={s.disabled||!!busy||ticketChainActive()}
