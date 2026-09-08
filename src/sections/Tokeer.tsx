@@ -1465,7 +1465,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     </div>;
   }
 
-  return <div style={{position:"relative",left:-4,width:"100%"}}>
+  return <div style={{width:"100%",maxWidth:"100%",boxSizing:"border-box",overflowX:"hidden"}}>
     <PanelSection title="Choose game in Tokeer">
       {!discordAuthChecked&&<PanelSectionRow><div style={{fontSize:11,opacity:.7}}>Checking Discord connection…</div></PanelSectionRow>}
       {discordAuthChecked&&!discordSignedIn&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={async()=>{
@@ -1481,7 +1481,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         }finally{loginPendingRef.current=false;setBusy("");}
       }}>Sign in to DeDevision Discord</ButtonItem></PanelSectionRow>}
       {discordAuthChecked&&discordSignedIn&&!autoConnect&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy} onClick={connectHidden}>Connect Tokeer silently</ButtonItem></PanelSectionRow>}
-      {availability&&<PanelSectionRow><div style={{width:"100%",padding:10,borderRadius:9,background:"linear-gradient(145deg,rgba(28,43,66,.96),rgba(38,25,58,.92))",border:"1px solid rgba(157,198,255,.28)",boxShadow:"0 5px 18px rgba(0,0,0,.22)",fontSize:11,lineHeight:1.55,color:"#f7f9ff"}}>
+      {availability&&<PanelSectionRow><div style={{width:"100%",maxWidth:"100%",boxSizing:"border-box",padding:10,borderRadius:9,background:"linear-gradient(145deg,rgba(28,43,66,.96),rgba(38,25,58,.92))",border:"1px solid rgba(157,198,255,.28)",boxShadow:"0 5px 18px rgba(0,0,0,.22)",fontSize:11,lineHeight:1.55,color:"#f7f9ff"}}>
         <div style={{fontSize:14,fontWeight:800,letterSpacing:.4,marginBottom:8,color:"#fff"}}>Tokeer Vault</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:7}}>
           {[
@@ -1501,15 +1501,15 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           </div>)}
         </div>
       </div></PanelSectionRow>}
-      {availability&&<PanelSectionRow><div style={{width:"100%",margin:"8px auto 0",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
-      <PanelSectionRow><div style={{width:"100%",marginTop:8,marginBottom:8,padding:"11px 12px",borderRadius:8,background:"linear-gradient(135deg,rgba(255,183,77,.13),rgba(96,125,139,.12))",border:"1px solid rgba(255,193,94,.32)",boxShadow:"0 4px 14px rgba(0,0,0,.16)",fontSize:11,lineHeight:1.55,color:"#f4f6fa"}}>
+      {availability&&<PanelSectionRow><div style={{width:"100%",maxWidth:"100%",boxSizing:"border-box",margin:"8px auto 0",padding:"10px 11px",borderRadius:7,border:"1px solid rgba(255,70,70,.55)",background:"rgba(145,20,20,.2)",color:"#ff6666",fontSize:11,fontWeight:750,lineHeight:1.5}}><div style={{fontSize:12,fontWeight:850,marginBottom:3}}>Account safety</div>Warning: attempts to abuse activation limits or share access may be detected through HWID and IP information and can result in account restrictions. Use only your own account and device.</div></PanelSectionRow>}
+      <PanelSectionRow><div style={{width:"100%",maxWidth:"100%",boxSizing:"border-box",marginTop:8,marginBottom:8,padding:"11px 12px",borderRadius:8,background:"linear-gradient(135deg,rgba(255,183,77,.13),rgba(96,125,139,.12))",border:"1px solid rgba(255,193,94,.32)",boxShadow:"0 4px 14px rgba(0,0,0,.16)",fontSize:11,lineHeight:1.55,color:"#f4f6fa"}}>
         <div style={{fontSize:12,fontWeight:850,marginBottom:5,color:"#ffd180",letterSpacing:.15}}>Before activation</div>
         <div>Finish preparing the game before redeeming it. Install any mods, texture packs, fixes, or other changes that modify the game files first.</div>
         <div style={{marginTop:5,opacity:.82}}>Changing game files after activation is not advised, because it may invalidate the activated setup and require you to verify or recover the files again.</div>
         <div style={{marginTop:7,paddingTop:7,borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.68}}>SLSDeck mirrors the real Linux activation panel in your logged-in Discord Steam-CEF tab. Discord remains the source of truth for availability, remaining keys, and the Steam AppID.</div>
       </div></PanelSectionRow>
-      {discord?.found&&<PanelSectionRow><div style={{width:"100%",margin:"0 auto",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
-      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><div style={{width:"calc(100% + 22px)",margin:"0 -22px 0 0"}}><DropdownItem
+      {discord?.found&&<PanelSectionRow><div style={{width:"100%",maxWidth:"100%",boxSizing:"border-box",margin:"0 auto",padding:"9px 11px",borderRadius:8,background:"linear-gradient(135deg,rgba(71,184,255,.18),rgba(88,220,143,.09))",border:"1px solid rgba(104,205,255,.35)",fontSize:12,lineHeight:1.6,color:"#f4fbff"}}><span style={{color:restoringSelectors?"#ffd166":"#65e69b",fontWeight:800}}>● {restoringSelectors?"RESTORING GAME LIST…":"LIVE"}</span> · Steam: <b style={{color:"#fff"}}>{discord.steamStatus||"Unknown"}</b></div></PanelSectionRow>}
+      {(discord?.selectors||[]).map(s=><PanelSectionRow key={s.key}><div style={{width:"100%",maxWidth:"100%",boxSizing:"border-box",margin:0}}><DropdownItem
         label={s.label||`Game menu ${s.index+1}`}
         description={restoringSelectors?"Restoring the live game list; this cached selector is temporarily disabled.":"Live game list from the Tokeer Discord panel"}
         disabled={restoringSelectors||s.disabled||!!busy||ticketChainActive()}
