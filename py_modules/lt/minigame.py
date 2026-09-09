@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-import json
-import os
+import html
 import random
+import re
 import time
 from typing import Any, Dict, List, Set, Tuple
 
 from .httpc import get_http_client
-from .paths import get_user_home
 
-_APP_LIST_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+_SEARCH_URL = "https://store.steampowered.com/search/results/"
 _DETAIL_URL = "https://store.steampowered.com/api/appdetails"
-_CACHE_SECONDS = 24 * 60 * 60
+_CACHE_SECONDS = 60 * 60
 _MEMORY: List[Tuple[int, str]] = []
-
-
-def _cache_path() -> str:
-    return os.path.join(get_user_home(), ".cache", "slsdeck", "minigame_apps.json")
+_MEMORY_AT = 0.0
+_TOTAL_RESULTS = 0
 
 
 def _usable(app: Any) -> Tuple[int, str] | None:
@@ -32,31 +29,53 @@ def _usable(app: Any) -> Tuple[int, str] | None:
         return None
 
 
-def _catalog() -> List[Tuple[int, str]]:
-    global _MEMORY
-    if _MEMORY:
-        return _MEMORY
-    path = _cache_path()
-    try:
-        if time.time() - os.path.getmtime(path) < _CACHE_SECONDS:
-            with open(path, "r", encoding="utf-8") as fh:
-                cached = json.load(fh)
-            _MEMORY = [item for raw in cached if (item := _usable(raw))]
-            if _MEMORY:
-                return _MEMORY
-    except (OSError, ValueError, TypeError):
-        pass
-
-    response = get_http_client().get(_APP_LIST_URL, timeout=45.0)
+def _search_page(start: int, count: int = 100) -> Tuple[List[Tuple[int, str]], int]:
+    response = get_http_client().get(_SEARCH_URL, params={
+        "query": "", "start": max(0, int(start)), "count": max(1, int(count)),
+        "sort_by": "_ASC", "category1": "998", "infinite": "1",
+        "ignore_preferences": "1", "ndl": "1", "cc": "US", "l": "english",
+    }, timeout=30.0)
     response.raise_for_status()
-    raw_apps = response.json().get("applist", {}).get("apps", [])
-    _MEMORY = [item for raw in raw_apps if (item := _usable(raw))]
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump([{"appid": appid, "name": name} for appid, name in _MEMORY], fh)
-    except OSError:
-        pass
+    payload = response.json()
+    markup = str(payload.get("results_html") or "")
+    total = int(payload.get("total_count") or 0)
+    found: List[Tuple[int, str]] = []
+    seen: Set[int] = set()
+    for match in re.finditer(r'<a\b(?P<attrs>[^>]*\bdata-ds-appid="(?P<appid>\d+)"[^>]*)>(?P<body>.*?)</a>', markup, re.I | re.S):
+        appid = int(match.group("appid"))
+        title_match = re.search(r'<span\b[^>]*class="[^"]*\btitle\b[^"]*"[^>]*>(.*?)</span>', match.group("body"), re.I | re.S)
+        if appid in seen or not title_match:
+            continue
+        title = html.unescape(re.sub(r"<[^>]+>", "", title_match.group(1))).strip()
+        if title:
+            seen.add(appid)
+            found.append((appid, title))
+    return found, total
+
+
+def _catalog() -> List[Tuple[int, str]]:
+    global _MEMORY, _MEMORY_AT, _TOTAL_RESULTS
+    if _MEMORY and time.time() - _MEMORY_AT < _CACHE_SECONDS:
+        return _MEMORY
+
+    # Steam retired the unauthenticated ISteamApps/GetAppList endpoint. Its
+    # replacement requires an API key, whereas the Store's own paginated
+    # search feed remains public. Read a random page from the Games category.
+    if not _TOTAL_RESULTS:
+        _, _TOTAL_RESULTS = _search_page(0, 1)
+    pool: List[Tuple[int, str]] = []
+    for _ in range(4):
+        upper = max(0, _TOTAL_RESULTS - 100)
+        page, reported_total = _search_page(random.randint(0, upper) if upper else 0, 100)
+        _TOTAL_RESULTS = max(_TOTAL_RESULTS, reported_total)
+        pool.extend(page)
+        if len({appid for appid, _ in pool}) >= 80:
+            break
+    deduplicated: Dict[int, str] = {}
+    for appid, name in pool:
+        deduplicated[appid] = name
+    _MEMORY = list(deduplicated.items())
+    _MEMORY_AT = time.time()
     return _MEMORY
 
 
