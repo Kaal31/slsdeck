@@ -71,12 +71,12 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
   return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
     <style>{`
       .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
-      @keyframes sls-winner-enter { 0% { opacity:0; transform:translateX(7vw) scale(.72) translateY(24px); } 65% { opacity:1; transform:translateX(7vw) scale(1.06) translateY(-7px); } 100% { transform:translateX(7vw) scale(1) translateY(0); } }
+      @keyframes sls-winner-enter { 0% { opacity:0; transform:translateX(12vw) scale(.72) translateY(24px); } 65% { opacity:1; transform:translateX(12vw) scale(1.06) translateY(-7px); } 100% { transform:translateX(12vw) scale(1) translateY(0); } }
       @keyframes sls-winner-idle { 0%,100% { transform:translateY(0) rotate(-.25deg); } 50% { transform:translateY(-9px) rotate(.25deg); } }
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
-      @keyframes sls-winner-exit { from { opacity:1; transform:translateX(7vw) scale(1); } to { opacity:0; transform:translateX(7vw) scale(.88) translateY(18px); } }
+      @keyframes sls-winner-exit { from { opacity:1; transform:translateX(12vw) scale(1); } to { opacity:0; transform:translateX(12vw) scale(.88) translateY(18px); } }
     `}</style>
-    <div onPointerDown={dismiss} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)", textAlign: "center", transform:"translateX(7vw)", animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both" }}>
+    <div onPointerDown={dismiss} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)", textAlign: "center", transform:"translateX(12vw)", animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both" }}>
       <div style={{ animation: "sls-winner-idle 3s ease-in-out 1s infinite" }}>
         <div style={{ position:"relative", width:"100%", aspectRatio:"16 / 9", overflow:"hidden", borderRadius:12, background:"linear-gradient(145deg,#23354a,#111c29)", boxShadow:"0 24px 58px rgba(0,0,0,.82),0 0 44px rgba(255,190,75,.48)" }}>
           <GameArtwork item={item} />
