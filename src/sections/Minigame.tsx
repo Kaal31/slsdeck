@@ -73,28 +73,29 @@ export function MinigameSection() {
 
   useEffect(() => {
     if (!revealVisible) return;
-    const dismiss = (event?: Event) => {
-      event?.preventDefault();
-      event?.stopPropagation();
+    const dismiss = () => {
       setRevealVisible(false);
     };
-    const watchedEvents: (keyof WindowEventMap)[] = ["keydown", "pointerdown", "touchstart"];
-    watchedEvents.forEach((name) => window.addEventListener(name, dismiss, true));
+    const watchedEvents: (keyof DocumentEventMap)[] = ["keydown", "pointerdown", "mousedown", "click", "touchstart", "touchend"];
+    watchedEvents.forEach((name) => document.addEventListener(name, dismiss, true));
 
-    const initialButtons = Array.from(navigator.getGamepads?.() || []).map((pad) =>
+    let previousButtons = Array.from(navigator.getGamepads?.() || []).map((pad) =>
       pad ? pad.buttons.map((button) => button.pressed) : [],
     );
     const watchGamepad = () => {
       const pads = Array.from(navigator.getGamepads?.() || []);
       const newlyPressed = pads.some((pad, padIndex) => pad?.buttons.some(
-        (button, buttonIndex) => button.pressed && !initialButtons[padIndex]?.[buttonIndex],
+        (button, buttonIndex) => button.pressed && !previousButtons[padIndex]?.[buttonIndex],
       ));
       if (newlyPressed) dismiss();
-      else gamepadWatch.current = requestAnimationFrame(watchGamepad);
+      else {
+        previousButtons = pads.map((pad) => pad ? pad.buttons.map((button) => button.pressed) : []);
+        gamepadWatch.current = requestAnimationFrame(watchGamepad);
+      }
     };
     gamepadWatch.current = requestAnimationFrame(watchGamepad);
     return () => {
-      watchedEvents.forEach((name) => window.removeEventListener(name, dismiss, true));
+      watchedEvents.forEach((name) => document.removeEventListener(name, dismiss, true));
       cancelAnimationFrame(gamepadWatch.current);
     };
   }, [revealVisible]);
@@ -139,18 +140,16 @@ export function MinigameSection() {
         setOffset(position);
         if (progress < 1) animation.current = requestAnimationFrame(frame);
         else {
+          setWinner(result.winner);
+          setRevealVisible(true);
+          setBusy(false);
           void addResult.then((added) => {
             if (!added.success) {
-              setWinner(result.winner);
               setWinnerAdded(false);
               setError(`Winner selected, but it was not added: ${added.error}`);
-              setBusy(false);
               return;
             }
-            setWinner(result.winner);
             setWinnerAdded(true);
-            setRevealVisible(true);
-            setBusy(false);
           });
         }
       };
@@ -164,7 +163,7 @@ export function MinigameSection() {
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)",
-  }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
+  }} onPointerDown={() => setRevealVisible(false)} onTouchStart={() => setRevealVisible(false)} onClick={() => setRevealVisible(false)}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
