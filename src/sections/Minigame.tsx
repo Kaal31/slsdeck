@@ -1,4 +1,4 @@
-import { ButtonItem, DialogButton, DialogCheckbox, ModalRoot, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
+import { ButtonItem, DialogButton, DialogCheckbox, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
@@ -31,6 +31,54 @@ function GameArtwork({ item }: { item: MinigameItem }) {
   }}>{item.name || "Steam game"}</div>;
   return <img src={sources[sourceIndex]} alt="" onError={() => setSourceIndex((index) => index + 1)}
     style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }} />;
+}
+
+function WinnerRevealModal({ item, closeModal }: { item: MinigameItem; closeModal?: () => void }) {
+  const gamepadFrame = useRef(0);
+  useEffect(() => {
+    let armed = false;
+    const armTimer = window.setTimeout(() => { armed = true; }, 350);
+    const dismiss = () => { if (armed) closeModal?.(); };
+    document.addEventListener("keydown", dismiss, true);
+    document.addEventListener("pointerdown", dismiss, true);
+    document.addEventListener("touchstart", dismiss, true);
+    let previous = Array.from(navigator.getGamepads?.() || []).map((pad) => pad?.buttons.map((button) => button.pressed) || []);
+    const watch = () => {
+      const pads = Array.from(navigator.getGamepads?.() || []);
+      if (armed && pads.some((pad, pi) => pad?.buttons.some((button, bi) => button.pressed && !previous[pi]?.[bi]))) closeModal?.();
+      else {
+        previous = pads.map((pad) => pad?.buttons.map((button) => button.pressed) || []);
+        gamepadFrame.current = requestAnimationFrame(watch);
+      }
+    };
+    gamepadFrame.current = requestAnimationFrame(watch);
+    return () => {
+      clearTimeout(armTimer);
+      document.removeEventListener("keydown", dismiss, true);
+      document.removeEventListener("pointerdown", dismiss, true);
+      document.removeEventListener("touchstart", dismiss, true);
+      cancelAnimationFrame(gamepadFrame.current);
+    };
+  }, [closeModal]);
+  return <ModalRoot closeModal={closeModal} onCancel={closeModal} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
+    <style>{`
+      .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
+      @keyframes sls-winner-enter { 0% { opacity:0; transform:scale(.72) translateY(24px); filter:blur(7px); } 65% { opacity:1; transform:scale(1.06) translateY(-7px); filter:blur(0); } 100% { transform:scale(1) translateY(0); } }
+      @keyframes sls-winner-idle { 0%,100% { transform:translateY(0) rotate(-.25deg); } 50% { transform:translateY(-9px) rotate(.25deg); } }
+      @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
+    `}</style>
+    <div onPointerDown={closeModal} style={{ width: "min(72vw,430px)", textAlign: "center", animation: "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both" }}>
+      <div style={{ animation: "sls-winner-idle 3s ease-in-out 1s infinite" }}>
+        <div style={{ position:"relative", width:"100%", aspectRatio:"16 / 9", overflow:"hidden", borderRadius:12, background:"linear-gradient(145deg,#23354a,#111c29)", boxShadow:"0 24px 58px rgba(0,0,0,.82),0 0 44px rgba(255,190,75,.48)" }}>
+          <GameArtwork item={item} />
+          <div style={{ position:"absolute", inset:"0 auto 0 0", width:"36%", animation:"sls-winner-shine 1.8s ease-in-out 600ms both", background:"linear-gradient(90deg,transparent,rgba(255,255,255,.62),transparent)", filter:"blur(2px)" }} />
+        </div>
+        <div style={{ marginTop:16, color:"#ffc95c", fontSize:13, fontWeight:900, letterSpacing:1.6 }}>GAME UNLOCKED</div>
+        <div style={{ marginTop:5, fontSize:23, fontWeight:900, textShadow:"0 3px 12px #000" }}>{item.name}</div>
+        <div style={{ marginTop:8, color:"#a7e7bb", fontSize:17, fontWeight:900, textShadow:"0 2px 9px #000" }}>SAVED {displayPrice(item)}</div>
+      </div>
+    </div>
+  </ModalRoot>;
 }
 
 function displayPrice(item: MinigameItem): string {
@@ -162,9 +210,10 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         if (progress < 1) animation.current = requestAnimationFrame(frame);
         else {
           setWinner(result.winner);
-          setRevealVisible(true);
+          setRevealVisible(false);
           setBusy(false);
           onBusyChange?.(false);
+          showModal(<WinnerRevealModal item={result.winner!} />);
           void addResult.then((added) => {
             if (!added.success) {
               setWinnerAdded(false);
