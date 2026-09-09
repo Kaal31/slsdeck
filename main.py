@@ -1834,6 +1834,9 @@ class Plugin:
     async def cr_auth_poll(self) -> Dict[str, Any]:
         return await self._run(cloudredirect.auth_poll)
 
+    async def cr_auth_callback(self, value: str) -> Dict[str, Any]:
+        return await self._run(cloudredirect.auth_callback, value)
+
     async def cr_list_local_apps(self) -> Dict[str, Any]:
         result = await self._run(cloudredirect.list_local_apps)
         if not result.get("success"):

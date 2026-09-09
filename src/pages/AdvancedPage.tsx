@@ -50,6 +50,7 @@ import { listLibraryAppIds } from "../lib/ownership";
 import { refreshBadges } from "../lib/badges";
 import { syncSlsCollection } from "../lib/collection";
 import { getEmojiBadgesEnabled, setEmojiBadgesEnabled } from "../lib/emojiBadges";
+import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY, ROULETTE_TAB_DISABLED_KEY, writeRouletteBool } from "../lib/storeRoulettePrefs";
 
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
@@ -344,6 +345,8 @@ function OptionsPane({
   const [hideToolsQam, setHideToolsQamState] = useState(true);
   const [achievements, setAchievementsState] = useState(true);
   const [achMoon, setAchMoon] = useState(true);
+  const [rouletteQam, setRouletteQam] = useState(() => readRouletteBool(ROULETTE_QAM_KEY));
+  const [rouletteTabDisabled, setRouletteTabDisabled] = useState(() => readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
 
   useEffect(() => {
     getDlcOption().then((r) => setDlc(!!r.enabled)).catch(() => {});
@@ -489,6 +492,14 @@ function OptionsPane({
       <PanelSection title="Quick Access menu">
         <PanelSectionRow>
           <ToggleField
+            label="Enable gambling in Quick Access"
+            description="Show a dice button beside Settings that opens Store Roulette as a centered overlay. Off by default."
+            checked={rouletteQam}
+            onChange={(v) => { setRouletteQam(v); writeRouletteBool(ROULETTE_QAM_KEY, v); }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
             label="Hide tools & diagnostics in Quick Access"
             description="Hide the Tools and Diagnostics sections from the Quick Access panel for a cleaner menu. They remain here in Advanced."
             checked={hideToolsQam}
@@ -523,6 +534,17 @@ function OptionsPane({
             description="When SLSsteam is installed, show its status and Reinstall section in Quick Access on store pages. Install still shows when it isn't installed yet."
             checked={reinstallQam}
             onChange={async (v) => { setReinstallQam(v); await setShowReinstallQam(v); }}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Store Roulette">
+        <PanelSectionRow>
+          <ToggleField
+            label="Disable gambling tab"
+            description="Hide Store Roulette from the Advanced sidebar. The Quick Access dice remains controlled separately above. Off by default."
+            checked={rouletteTabDisabled}
+            onChange={(v) => { setRouletteTabDisabled(v); writeRouletteBool(ROULETTE_TAB_DISABLED_KEY, v); }}
           />
         </PanelSectionRow>
       </PanelSection>
@@ -755,9 +777,13 @@ export function AdvancedPage() {
   const bump = () => setTok((t) => t + 1);
   const [gamesInQam, setGamesInQam2] = useState(false);
   const [showDeckyHv, setShowDeckyHv] = useState(readDeckyHvVisible);
+  const [rouletteTabDisabled, setRouletteTabDisabled] = useState(() => readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
 
   useEffect(() => {
     getGamesInQam().then((r) => setGamesInQam2(!!r.enabled)).catch(() => {});
+    const refreshRoulette = () => setRouletteTabDisabled(readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
+    window.addEventListener(ROULETTE_PREFS_EVENT, refreshRoulette);
+    return () => window.removeEventListener(ROULETTE_PREFS_EVENT, refreshRoulette);
   }, []);
 
   const setDeckyHvVisible = (enabled: boolean) => {
@@ -812,11 +838,6 @@ export function AdvancedPage() {
           content: <Body><CloudRedirectSection /></Body>,
         },
         {
-          title: "Store Roulette",
-          icon: <FaDice />,
-          content: <Body><MinigameSection /></Body>,
-        },
-        {
           title: "Tokeer helper",
           icon: <FaLock />,
           content: <Body><TokeerSection /></Body>,
@@ -831,6 +852,11 @@ export function AdvancedPage() {
           icon: <FaPuzzlePiece />,
           content: <Body><ModsSection /></Body>,
         },
+        ...(!rouletteTabDisabled ? [{
+          title: "Store Roulette",
+          icon: <FaDice />,
+          content: <Body><MinigameSection /></Body>,
+        }] : []),
         {
           title: "About",
           icon: <FaInfoCircle />,

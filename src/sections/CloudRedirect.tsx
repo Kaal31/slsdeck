@@ -1,7 +1,7 @@
-import { ButtonItem, DialogButton, DropdownItem, Navigation, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
+import { ButtonItem, DialogButton, DropdownItem, Navigation, PanelSection, PanelSectionRow, TextField, ToggleField } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import {
-  CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthPoll, crAuthStart,
+  CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthCallback, crAuthPoll, crAuthStart,
   crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crListLocalApps, crProviderStatus,
   crSetEnabled, crSetProvider, crSetProviderToggle, crSignOut,
 } from "../api";
@@ -105,7 +105,10 @@ export function CloudRedirectSection() {
   const [msg, setMsg] = useState("");
   const [state, setState] = useState<CloudRedirectProviderStatus>({ success: false });
   const [saves, setSaves] = useState<CloudRedirectLocalApp[]>([]);
+  const [callbackUrl, setCallbackUrl] = useState("");
+  const [authWaiting, setAuthWaiting] = useState(false);
   const alive = useRef(true);
+  const authWatch = useRef(0);
 
   const load = async () => {
     try { setEnabled(!!(await crGetEnabled()).enabled); } catch { /* best effort */ }
@@ -115,8 +118,26 @@ export function CloudRedirectSection() {
   useEffect(() => {
     alive.current = true;
     load();
-    return () => { alive.current = false; };
+    return () => { alive.current = false; authWatch.current += 1; };
   }, []);
+
+  const watchAutomaticCallback = async (watchId: number) => {
+    for (let i = 0; alive.current && authWatch.current === watchId && i < 300; i++) {
+      await sleep(1000);
+      try {
+        const poll = await crAuthPoll();
+        if (poll.status === "waiting") continue;
+        if (poll.status === "done") {
+          setMsg("Cloud provider connected."); setAuthWaiting(false); setCallbackUrl(""); await load();
+        } else if (poll.status !== "idle") {
+          setMsg(`Automatic callback unavailable. Paste the complete localhost URL below${poll.error ? `: ${poll.error}` : "."}`);
+        }
+        break;
+      } catch {
+        // Manual completion remains available; a polling failure must not lock UI.
+      }
+    }
+  };
 
   const changeEnabled = async (value: boolean) => {
     setBusy(true); setEnabled(value);
@@ -149,15 +170,22 @@ export function CloudRedirectSection() {
       const start = await crAuthStart(provider);
       if (!start.success || !start.authUrl) throw new Error(start.error || "Could not start sign-in");
       Navigation.NavigateToExternalWeb(start.authUrl);
-      setMsg("Finish sign-in in the browser; SLSDeck is waiting for the callback…");
-      for (let i = 0; alive.current && i < 300; i++) {
-        await sleep(1000);
-        const poll = await crAuthPoll();
-        if (poll.status === "waiting") continue;
-        if (poll.status === "done") { setMsg("Cloud provider connected."); await load(); break; }
-        if (poll.status === "idle") break;
-        throw new Error(poll.error || "Sign-in failed");
-      }
+      setAuthWaiting(true);
+      setMsg("Finish sign-in in the browser; SLSDeck is capturing the localhost callback automatically.");
+      const watchId = ++authWatch.current;
+      void watchAutomaticCallback(watchId);
+    } catch (error) { setMsg(`Sign-in failed: ${error}`); }
+    if (alive.current) setBusy(false);
+  };
+
+  const finishCallback = async () => {
+    if (!callbackUrl.trim()) return;
+    setBusy(true); setMsg("Completing CloudRedirect sign-in…");
+    try {
+      const result = await crAuthCallback(callbackUrl.trim());
+      if (!result.success || result.status !== "done") throw new Error(result.error || "Sign-in did not complete");
+      authWatch.current += 1;
+      setAuthWaiting(false); setCallbackUrl(""); setMsg("Cloud provider connected."); await load();
     } catch (error) { setMsg(`Sign-in failed: ${error}`); }
     if (alive.current) setBusy(false);
   };
@@ -196,6 +224,20 @@ export function CloudRedirectSection() {
       onChange={(option: any) => selectProvider(option.data)} disabled={busy} /></PanelSectionRow>
     {state.provider !== "local" && !state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={connect} disabled={busy}>Connect provider</ButtonItem></PanelSectionRow>}
+    {state.provider !== "local" && !state.authenticated && authWaiting && <>
+      <PanelSectionRow><div style={{ fontSize: 11, lineHeight: 1.45, opacity: .78 }}>
+        Automatic capture is active. If the browser still ends on an unreachable localhost page, copy its complete address-bar URL and paste it below.
+      </div></PanelSectionRow>
+      <PanelSectionRow><TextField
+        label="Callback URL"
+        description="Includes both ?code= and &state=."
+        value={callbackUrl}
+        onChange={(event: any) => setCallbackUrl(event?.target?.value ?? String(event || ""))}
+      /></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={finishCallback} disabled={busy || !callbackUrl.trim()}>
+        Finish sign-in
+      </ButtonItem></PanelSectionRow>
+    </>}
     {state.provider !== "local" && state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={disconnect} disabled={busy}>Sign out</ButtonItem></PanelSectionRow>}
     <PanelSectionRow><ToggleField label="Sync achievements" checked={!!state.syncAchievements}

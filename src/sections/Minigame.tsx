@@ -1,7 +1,8 @@
-import { ButtonItem, DialogCheckbox, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
+import { ButtonItem, DialogButton, DialogCheckbox, ModalRoot, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
+import { readRoulettePrice, writeRoulettePrice } from "../lib/storeRoulettePrefs";
 
 const CARD_WIDTH = 300;
 const CARD_GAP = 10;
@@ -41,7 +42,7 @@ async function addWinnerToSlsSteam(item: MinigameItem): Promise<void> {
   throw new Error("Timed out waiting for SLS Steam to add the winning game");
 }
 
-export function MinigameSection() {
+export function MinigameSection({ modalClose, onBusyChange }: { modalClose?: () => void; onBusyChange?: (busy: boolean) => void } = {}) {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
   const gamepadWatch = useRef(0);
@@ -52,7 +53,7 @@ export function MinigameSection() {
   const [winner, setWinner] = useState<MinigameItem>();
   const [winnerAdded, setWinnerAdded] = useState(false);
   const [error, setError] = useState("");
-  const [minPrice, setMinPrice] = useState(0);
+  const [minPrice, setMinPrice] = useState(readRoulettePrice);
   const [priceExpanded, setPriceExpanded] = useState(false);
   const [revealVisible, setRevealVisible] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
@@ -75,6 +76,7 @@ export function MinigameSection() {
     if (!revealVisible) return;
     const dismiss = () => {
       setRevealVisible(false);
+      modalClose?.();
     };
     const watchedEvents: (keyof DocumentEventMap)[] = ["keydown", "pointerdown", "mousedown", "click", "touchstart", "touchend"];
     watchedEvents.forEach((name) => document.addEventListener(name, dismiss, true));
@@ -98,7 +100,7 @@ export function MinigameSection() {
       watchedEvents.forEach((name) => document.removeEventListener(name, dismiss, true));
       cancelAnimationFrame(gamepadWatch.current);
     };
-  }, [revealVisible]);
+  }, [revealVisible, modalClose]);
 
   const openWinner = () => {
     if (!winner) return;
@@ -113,6 +115,7 @@ export function MinigameSection() {
     cancelAnimationFrame(animation.current);
     setRevealVisible(false);
     setBusy(true); setWinner(undefined); setWinnerAdded(false); setError(""); setItems([]); setOffset(0);
+    onBusyChange?.(true);
     try {
       const result = await minigameRoll(listLibraryAppIds(), minPrice);
       if (!result.success || !result.items?.length || result.winnerIndex === undefined || !result.winner) {
@@ -143,6 +146,7 @@ export function MinigameSection() {
           setWinner(result.winner);
           setRevealVisible(true);
           setBusy(false);
+          onBusyChange?.(false);
           void addResult.then((added) => {
             if (!added.success) {
               setWinnerAdded(false);
@@ -156,6 +160,7 @@ export function MinigameSection() {
       animation.current = requestAnimationFrame(frame);
     } catch (cause: any) {
       setError(String(cause?.message || cause)); setBusy(false);
+      onBusyChange?.(false);
     }
   };
 
@@ -201,7 +206,7 @@ export function MinigameSection() {
           border: minPrice === mode.cents ? "1px solid rgba(111,195,255,.5)" : "1px solid rgba(255,255,255,.08)",
         }}><DialogCheckbox label={mode.label}
           controlled checked={minPrice === mode.cents}
-          onChange={() => { setMinPrice(mode.cents); setError(""); }} /></div>)}
+          onChange={() => { setMinPrice(mode.cents); writeRoulettePrice(mode.cents); setError(""); }} /></div>)}
       </div>
     </div></PanelSectionRow>}
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
@@ -233,4 +238,26 @@ export function MinigameSection() {
       View {winner.name} in {winnerAdded ? "Library" : "Store"}
     </ButtonItem></PanelSectionRow>}
   </PanelSection></>;
+}
+
+export function StoreRouletteModal({ closeModal }: { closeModal?: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const close = () => { if (!busy) closeModal?.(); };
+  return (
+    <ModalRoot
+      closeModal={close}
+      onCancel={close}
+      onEscKeypress={close}
+      bDisableBackgroundDismiss={busy}
+      bHideCloseIcon={busy}
+      bAllowFullSize
+    >
+      <div style={{ width: "min(82vw, 820px)", maxHeight: "78vh", overflowY: "auto" }}>
+        <MinigameSection modalClose={closeModal} onBusyChange={setBusy} />
+        <DialogButton disabled={busy} onClick={close} style={{ width: "100%", marginTop: 8 }}>
+          {busy ? "Opening…" : "Close"}
+        </DialogButton>
+      </div>
+    </ModalRoot>
+  );
 }

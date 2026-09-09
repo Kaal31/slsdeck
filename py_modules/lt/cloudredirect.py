@@ -57,18 +57,17 @@ CR_LIB_URL = CR_LIB_URL_MOON
 _PROVIDERS = {
     "gdrive": {
         "client_id": "1072944905499-vm2v2i5dvn0a0d2o4ca36i1vge8cvbn0.apps.googleusercontent.com",
-        "client_secret": "v6V3fKV_zWU7iw1DrpO1rknX",
         "scope": "https://www.googleapis.com/auth/drive.file",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "fixed_port": None,
+        # CloudRedirect Moon's Linux UI uses this registered fixed callback.
+        "fixed_port": 53692,
         "redirect_path": "/callback",
         "access_type": "offline",
         "body_scope": False,
     },
     "onedrive": {
         "client_id": "b15665d9-eda6-4092-8539-0eec376afd59",
-        "client_secret": "qtyfaBBYA403=unZUP40~_#",
         "scope": "Files.ReadWrite offline_access",
         "auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
         "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -341,12 +340,16 @@ def auth_start(provider: str) -> dict:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Match CloudRedirect Moon's QHostAddress::LocalHost listener.
             listener.bind(("127.0.0.1", int(spec["fixed_port"] or 0)))
             listener.listen(1)
             listener.setblocking(False)
-            port = listener.getsockname()[1]
+            port = int(listener.getsockname()[1])
         except Exception as exc:
-            listener.close()
+            try:
+                listener.close()
+            except Exception:
+                pass
             return {"success": False, "status": "error", "error": f"callback bind failed: {exc}"}
         state = secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(48)
@@ -377,6 +380,63 @@ def _auth_finish(result: dict) -> dict:
         pass
     _AUTH_PENDING = None
     return result
+
+
+def _exchange_auth_code(pending: dict, code: str, state: str) -> dict:
+    """Validate a loopback response and exchange it for persistent tokens.
+
+    Shared by the automatic localhost listener and the Gaming Mode fallback
+    where the user pastes the failed callback URL from Steam's browser.
+    """
+    if state != pending["state"]:
+        return _auth_finish({"success": False, "status": "error", "error": "OAuth state mismatch"})
+    if not code:
+        return _auth_finish({"success": False, "status": "error", "error": "no authorization code"})
+    spec = _PROVIDERS[pending["provider"]]
+    form = {
+        "code": code, "client_id": spec["client_id"],
+        "redirect_uri": pending["redirect_uri"],
+        "grant_type": "authorization_code", "code_verifier": pending["verifier"],
+    }
+    if spec["body_scope"]:
+        form["scope"] = spec["scope"]
+    try:
+        response = ensure_http_client("CloudRedirect OAuth").post(spec["token_url"], data=form, timeout=30)
+        response.raise_for_status()
+        token = response.json()
+        refresh = str(token.get("refresh_token") or "")
+        if not refresh:
+            raise ValueError("provider returned no refresh token")
+        token_data = {
+            "access_token": str(token.get("access_token") or ""),
+            "refresh_token": refresh,
+            "expires_at": int(time.time()) + int(token.get("expires_in") or 3600),
+        }
+        cfg = _read_provider_config()
+        _write_json_atomic(_token_path(pending["provider"], cfg), token_data)
+        cfg["provider"] = pending["provider"]
+        _write_json_atomic(_native_config_path(), cfg)
+        return _auth_finish({"success": True, "status": "done",
+                             "provider": pending["provider"], "authenticated": True})
+    except Exception as exc:
+        return _auth_finish({"success": False, "status": "error", "error": f"token exchange failed: {exc}"})
+
+
+def auth_callback(value: str) -> dict:
+    """Finish a pending OAuth flow from a pasted code or callback URL."""
+    global _AUTH_PENDING
+    raw = str(value or "").strip()
+    with _AUTH_LOCK:
+        pending = _AUTH_PENDING
+        if not pending:
+            return {"success": False, "status": "idle", "error": "No CloudRedirect sign-in is waiting"}
+        params = parse_qs(urlsplit(raw).query) if "://" in raw or "?" in raw else {}
+        code = (params.get("code") or [raw])[0]
+        state = (params.get("state") or [""])[0]
+        if not state:
+            return {"success": False, "status": "error",
+                    "error": "Paste the complete localhost callback URL so its security state can be verified"}
+        return _exchange_auth_code(pending, code, state)
 
 
 def auth_poll() -> dict:
@@ -417,38 +477,9 @@ def auth_poll() -> dict:
         state = (params.get("state") or [""])[0]
         code = (params.get("code") or [""])[0]
         oauth_error = (params.get("error") or [""])[0]
-        if state != pending["state"]:
-            return _auth_finish({"success": False, "status": "error", "error": "OAuth state mismatch"})
         if not code:
             return _auth_finish({"success": False, "status": "error", "error": oauth_error or "no authorization code"})
-        spec = _PROVIDERS[pending["provider"]]
-        form = {
-            "code": code, "client_id": spec["client_id"],
-            "client_secret": spec["client_secret"], "redirect_uri": pending["redirect_uri"],
-            "grant_type": "authorization_code", "code_verifier": pending["verifier"],
-        }
-        if spec["body_scope"]:
-            form["scope"] = spec["scope"]
-        try:
-            response = ensure_http_client("CloudRedirect OAuth").post(spec["token_url"], data=form, timeout=30)
-            response.raise_for_status()
-            token = response.json()
-            refresh = str(token.get("refresh_token") or "")
-            if not refresh:
-                raise ValueError("provider returned no refresh token")
-            token_data = {
-                "access_token": str(token.get("access_token") or ""),
-                "refresh_token": refresh,
-                "expires_at": int(time.time()) + int(token.get("expires_in") or 3600),
-            }
-            cfg = _read_provider_config()
-            _write_json_atomic(_token_path(pending["provider"], cfg), token_data)
-            cfg["provider"] = pending["provider"]
-            _write_json_atomic(_native_config_path(), cfg)
-            return _auth_finish({"success": True, "status": "done",
-                                 "provider": pending["provider"], "authenticated": True})
-        except Exception as exc:
-            return _auth_finish({"success": False, "status": "error", "error": f"token exchange failed: {exc}"})
+        return _exchange_auth_code(pending, code, state)
 
 
 _STORAGE_META = {

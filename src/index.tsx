@@ -1,7 +1,7 @@
-import { staticClasses, DialogButton, Navigation, ButtonItem, PanelSectionRow } from "@decky/ui";
+import { staticClasses, DialogButton, Navigation, ButtonItem, PanelSectionRow, showModal } from "@decky/ui";
 import { definePlugin, routerHook, toaster } from "@decky/api";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FaPuzzlePiece, FaCog } from "react-icons/fa";
+import { FaPuzzlePiece, FaCog, FaDice } from "react-icons/fa";
 
 import { GameControlsSection } from "./sections/GameControls";
 import { InstalledSection } from "./sections/Installed";
@@ -19,6 +19,8 @@ import { syncSlsCollection } from "./lib/collection";
 import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
 import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
+import { StoreRouletteModal } from "./sections/Minigame";
+import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY } from "./lib/storeRoulettePrefs";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -35,6 +37,39 @@ const DEPENDENCY_STEP_GAP_MS = 20 * 1000;
 const DEPENDENCY_RETRY_MS = 30 * 60 * 1000;
 const DEPENDENCY_LOCK_KEY = "__slsdeckDependencyRepairPromise";
 const PENDING_ADD_VERIFY_KEY = "slsdeck.pendingAddVerification.v1";
+
+function QamTitle() {
+  const [rouletteEnabled, setRouletteEnabled] = useState(() => readRouletteBool(ROULETTE_QAM_KEY));
+  useEffect(() => {
+    const refresh = () => setRouletteEnabled(readRouletteBool(ROULETTE_QAM_KEY));
+    window.addEventListener(ROULETTE_PREFS_EVENT, refresh);
+    return () => window.removeEventListener(ROULETTE_PREFS_EVENT, refresh);
+  }, []);
+  const buttonStyle = {
+    height: "28px", width: "28px", minWidth: "28px", padding: "0",
+    display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "4px",
+  } as const;
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+      <div className={staticClasses.Title}>SLSDeck</div>
+      <div style={{ display: "flex", gap: 5 }}>
+        {rouletteEnabled && <DialogButton
+          onClick={() => showModal(<StoreRouletteModal />)}
+          style={buttonStyle}
+          aria-label="Open Store Roulette"
+        ><FaDice /></DialogButton>}
+        <DialogButton
+          onClick={() => {
+            try { Navigation.CloseSideMenus(); Navigation.Navigate(ADVANCED_ROUTE); }
+            catch (e) { console.error("SLSDeck: could not open Advanced page", e); }
+          }}
+          style={buttonStyle}
+          aria-label="Advanced settings"
+        ><FaCog /></DialogButton>
+      </div>
+    </div>
+  );
+}
 
 type PendingAddVerification = { appid: number; name: string; sessionOrigin: number; createdAt: number; liveReady: boolean };
 
@@ -585,34 +620,7 @@ export default definePlugin(() => {
 
   return {
     name: "SLSDeck",
-    titleView: (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-        <div className={staticClasses.Title}>SLSDeck</div>
-        <DialogButton
-          onClick={() => {
-            try {
-              Navigation.CloseSideMenus();
-              Navigation.Navigate(ADVANCED_ROUTE);
-            } catch (e) {
-              console.error("SLSDeck: could not open Advanced page", e);
-            }
-          }}
-          style={{
-            height: "28px",
-            width: "28px",
-            minWidth: "28px",
-            padding: "0",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: "4px",
-          }}
-          aria-label="Advanced settings"
-        >
-          <FaCog />
-        </DialogButton>
-      </div>
-    ),
+    titleView: <QamTitle />,
     content: <Content />,
     icon: <FaPuzzlePiece />,
     onDismount() {

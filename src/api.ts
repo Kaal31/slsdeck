@@ -263,6 +263,7 @@ export const crSetProviderToggle = callable<[key: string, enabled: boolean], Clo
 export const crSignOut = callable<[provider?: string], CloudRedirectProviderStatus>("cr_sign_out");
 export const crAuthStart = callable<[provider: string], { success: boolean; status?: string; authUrl?: string; error?: string }>("cr_auth_start");
 export const crAuthPoll = callable<[], { success: boolean; status?: string; provider?: string; authenticated?: boolean; error?: string }>("cr_auth_poll");
+export const crAuthCallback = callable<[value: string], { success: boolean; status?: string; provider?: string; authenticated?: boolean; error?: string }>("cr_auth_callback");
 export interface CloudRedirectLocalApp {
   appid: number;
   account: number;
