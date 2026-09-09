@@ -269,9 +269,11 @@ export interface MinigameItem {
   image: string;
   shortDescription?: string;
   isFree?: boolean;
+  priceCents?: number;
+  currency?: string;
 }
 export const minigameRoll = callable<
-  [excludedAppids: number[]],
+  [excludedAppids: number[], minPriceCents?: number],
   { success: boolean; items?: MinigameItem[]; winnerIndex?: number; winner?: MinigameItem; error?: string }
 >("minigame_roll");
 
