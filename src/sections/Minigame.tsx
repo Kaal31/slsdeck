@@ -1,5 +1,6 @@
 import { ButtonItem, DialogCheckbox, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { MinigameItem, minigameRoll } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 
@@ -28,6 +29,7 @@ function displayPrice(item: MinigameItem): string {
 export function MinigameSection() {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
+  const revealTimer = useRef(0);
   const caseSounds = useRef<HTMLAudioElement[]>([]);
   const [items, setItems] = useState<MinigameItem[]>([]);
   const [offset, setOffset] = useState(0);
@@ -36,6 +38,7 @@ export function MinigameSection() {
   const [error, setError] = useState("");
   const [minPrice, setMinPrice] = useState(0);
   const [priceExpanded, setPriceExpanded] = useState(true);
+  const [revealVisible, setRevealVisible] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
 
   useEffect(() => {
@@ -46,6 +49,7 @@ export function MinigameSection() {
     });
     return () => {
       cancelAnimationFrame(animation.current);
+      window.clearTimeout(revealTimer.current);
       caseSounds.current.forEach((sound) => sound.pause());
       caseSounds.current = [];
     };
@@ -59,6 +63,8 @@ export function MinigameSection() {
   const roll = async () => {
     if (busy) return;
     cancelAnimationFrame(animation.current);
+    window.clearTimeout(revealTimer.current);
+    setRevealVisible(false);
     setBusy(true); setWinner(undefined); setError(""); setItems([]); setOffset(0);
     try {
       const result = await minigameRoll(listLibraryAppIds(), minPrice);
@@ -84,6 +90,8 @@ export function MinigameSection() {
         if (progress < 1) animation.current = requestAnimationFrame(frame);
         else {
           setWinner(result.winner);
+          setRevealVisible(true);
+          revealTimer.current = window.setTimeout(() => setRevealVisible(false), 4200);
           setBusy(false);
         }
       };
@@ -93,7 +101,37 @@ export function MinigameSection() {
     }
   };
 
-  return <PanelSection title="Store Roulette">
+  return <>{winner && revealVisible && createPortal(<div style={{
+    position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
+    pointerEvents: "none", background: "radial-gradient(circle,rgba(12,24,38,.3),rgba(0,0,0,.12) 42%,transparent 70%)",
+  }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
+      <style>{`
+        @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes sls-unlock-overlay-out { 0%,82% { opacity: 1; } 100% { opacity: 0; transform: scale(1.04); } }
+        @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
+        @keyframes sls-unlock-flash { 0%,100% { opacity: 0; } 18% { opacity: .9; } 45% { opacity: 0; } }
+        @keyframes sls-unlock-particle { 0% { opacity: 0; transform: translateY(0) scale(.3); } 18% { opacity: 1; } 100% { opacity: 0; transform: translateY(-125px) scale(1); } }
+        @keyframes sls-cover-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+        @keyframes sls-cover-shine { 0% { transform: translateX(-170%) skewX(-22deg); } 48%,100% { transform: translateX(260%) skewX(-22deg); } }
+        @keyframes sls-unlock-title { 0% { opacity: 0; transform: scale(.75); text-shadow: 0 0 0 transparent; } 55% { opacity: 1; transform: scale(1.13); text-shadow: 0 0 18px #ffc95c; } 100% { transform: scale(1); text-shadow: 0 0 7px rgba(255,201,92,.45); } }
+      `}</style>
+      <div style={{ animation: "sls-unlock-overlay-out 4.2s ease-in both" }}>
+        <div style={{ position: "relative", width: "100%", minHeight: 240, display: "grid", placeItems: "center" }}>
+          <div style={{ position: "absolute", left: "50%", top: "50%", width: 310, height: 310, borderRadius: "50%", animation: "sls-unlock-burst 1.15s ease-out both", background: "repeating-conic-gradient(from 0deg, rgba(255,202,87,.75) 0deg 5deg, transparent 5deg 17deg)", filter: "blur(1px)" }} />
+          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", animation: "sls-unlock-flash 900ms ease-out both", background: "radial-gradient(circle,rgba(255,246,202,.85),rgba(255,193,73,.24) 35%,transparent 68%)" }} />
+          {Array.from({ length: 12 }, (_, index) => <span key={index} style={{ position: "absolute", left: "50%", top: "50%", width: 4, height: 4, transform: `rotate(${index * 30}deg)`, transformOrigin: "0 0" }}><span style={{ display: "block", width: index % 3 === 0 ? 7 : 4, height: index % 3 === 0 ? 7 : 4, borderRadius: index % 2 ? "50%" : 1, background: index % 2 ? "#fff1a4" : "#ffad3d", boxShadow: "0 0 8px #ffc45d", animation: `sls-unlock-particle ${760 + (index % 4) * 90}ms ease-out ${index * 24}ms both` }} /></span>)}
+          <div style={{ position: "relative", zIndex: 2, display: "inline-block", maxWidth: "76%", borderRadius: 10, overflow: "hidden", animation: "sls-game-unlocked 820ms cubic-bezier(.18,.82,.2,1) both", boxShadow: "0 22px 48px rgba(0,0,0,.72), 0 0 40px rgba(255,190,75,.38)" }}>
+            <div style={{ position: "relative", animation: "sls-cover-float 3s ease-in-out 1.15s infinite" }}>
+              <img src={`https://cdn.cloudflare.steamstatic.com/steam/apps/${winner.appid}/library_600x900_2x.jpg`} alt="" onError={(event) => { if (event.currentTarget.dataset.fallback) return; event.currentTarget.dataset.fallback = "1"; event.currentTarget.src = winner.image; }} style={{ display: "block", width: "100%", maxHeight: 330, objectFit: "contain" }} />
+              <div style={{ position: "absolute", zIndex: 3, top: 0, bottom: 0, left: 0, width: "38%", animation: "sls-cover-shine 1.8s ease-in-out 700ms both", background: "linear-gradient(90deg,transparent,rgba(255,255,255,.65),transparent)", filter: "blur(2px)" }} />
+            </div>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: "#ffc95c", fontWeight: 900, letterSpacing: 1.5, animation: "sls-unlock-title 850ms ease-out 250ms both" }}>GAME UNLOCKED</div>
+        <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
+        <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>{displayPrice(winner)}</div>
+      </div>
+    </div></div>, document.body)}<PanelSection title="Store Roulette">
     <PanelSectionRow><ButtonItem layout="below" onClick={() => setPriceExpanded((expanded) => !expanded)}>
       Price mode · {activePriceLabel} {priceExpanded ? "▲" : "▼"}
     </ButtonItem></PanelSectionRow>
@@ -131,28 +169,8 @@ export function MinigameSection() {
         </div>)}
       </div>
     </div></PanelSectionRow>
-    {winner && <PanelSectionRow><div style={{ width: "100%", padding: "18px 10px 15px", textAlign: "center", boxSizing: "border-box" }}>
-      <style>{`@keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(24px) scale(.9); filter: blur(5px); } 65% { transform: translateY(-5px) scale(1.025); } 100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); } }`}</style>
-      <img
-        src={`https://cdn.cloudflare.steamstatic.com/steam/apps/${winner.appid}/library_600x900_2x.jpg`}
-        alt=""
-        onError={(event) => {
-          if (event.currentTarget.dataset.fallback) return;
-          event.currentTarget.dataset.fallback = "1";
-          event.currentTarget.src = winner.image;
-        }}
-        style={{
-          display: "block", maxWidth: "76%", maxHeight: 300, margin: "0 auto 14px", borderRadius: 10,
-          objectFit: "contain", animation: "sls-game-unlocked 620ms cubic-bezier(.2,.8,.2,1) both",
-          boxShadow: "0 18px 38px rgba(0,0,0,.58), 0 0 28px rgba(91,174,236,.2)",
-        }}
-      />
-      <div style={{ fontSize: 10, color: "#77c9ff", fontWeight: 800, letterSpacing: 1.2 }}>GAME UNLOCKED</div>
-      <div style={{ fontSize: 19, fontWeight: 800, marginTop: 4 }}>{winner.name}</div>
-      <div style={{ fontSize: 15, color: "#a7e7bb", fontWeight: 800, marginTop: 7 }}>{displayPrice(winner)}</div>
-    </div></PanelSectionRow>}
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
     <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
     {winner && <PanelSectionRow><ButtonItem layout="below" onClick={openWinner}>View {winner.name} in Store</ButtonItem></PanelSectionRow>}
-  </PanelSection>;
+  </PanelSection></>;
 }
