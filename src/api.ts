@@ -261,6 +261,7 @@ export interface CloudRedirectLocalApp {
   remoteTime?: number;
 }
 export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; error?: string }>("cr_list_local_apps");
+export const crGameArtwork = callable<[appid: number], { success: boolean; image?: string; error?: string }>("cr_game_artwork");
 
 // ── OpenSave (cloud saves engine) ───────────────────────────────────────────
 export type OsState = "synced" | "syncing" | "conflict" | "idle" | "untracked" | "unavailable" | "unknown";
