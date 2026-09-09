@@ -15,8 +15,10 @@ frontend via the ``*_status`` methods.
 """
 
 import asyncio
+import base64
 import functools
 import json
+import mimetypes
 import os
 import re
 import time
@@ -1870,6 +1872,54 @@ class Plugin:
                 pass
             app["remoteTime"] = remote_time
         return result
+
+    async def cr_game_artwork(self, appid: int) -> Dict[str, Any]:
+        """Return Steam's local hero/wide artwork when public CDN art is absent.
+
+        Custom library art lives in userdata/*/config/grid and is frequently
+        available for shortcuts/private apps whose numeric IDs have no public
+        Steam store assets. Keep this lazy so the game list RPC does not carry
+        every image at once.
+        """
+        try:
+            appid = int(appid)
+            if appid <= 0:
+                return {"success": False, "error": "invalid AppID"}
+            steam_roots = []
+            detected = steam.detect_steam_install_path()
+            if detected:
+                steam_roots.append(detected)
+            steam_roots.append(os.path.join(slssteam._home(), ".steam", "steam"))
+            extensions = ("jpg", "jpeg", "png", "webp")
+            candidates = []
+            for steam_root in dict.fromkeys(steam_roots):
+                userdata_root = os.path.join(steam_root, "userdata")
+                try:
+                    accounts = os.listdir(userdata_root)
+                except OSError:
+                    accounts = []
+                for account in accounts:
+                    grid = os.path.join(userdata_root, account, "config", "grid")
+                    for suffix in ("_hero", ""):
+                        for extension in extensions:
+                            candidates.append(os.path.join(grid, f"{appid}{suffix}.{extension}"))
+                cache = os.path.join(steam_root, "appcache", "librarycache", str(appid))
+                for stem in ("library_hero", "header", "library_capsule"):
+                    for extension in extensions:
+                        candidates.append(os.path.join(cache, f"{stem}.{extension}"))
+            for path in candidates:
+                try:
+                    if not os.path.isfile(path) or os.path.getsize(path) > 12 * 1024 * 1024:
+                        continue
+                    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+                    with open(path, "rb") as image_file:
+                        encoded = base64.b64encode(image_file.read()).decode("ascii")
+                    return {"success": True, "image": f"data:{mime};base64,{encoded}"}
+                except OSError:
+                    continue
+            return {"success": False, "error": "local artwork not found"}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     async def cr_install_status(self) -> Dict[str, Any]:
         try:
