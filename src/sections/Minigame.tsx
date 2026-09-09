@@ -42,7 +42,7 @@ async function addWinnerToSlsSteam(item: MinigameItem): Promise<void> {
   throw new Error("Timed out waiting for SLS Steam to add the winning game");
 }
 
-export function MinigameSection({ modalClose, onBusyChange }: { modalClose?: () => void; onBusyChange?: (busy: boolean) => void } = {}) {
+export function MinigameSection({ modalClose, onBusyChange, quickAccess = false }: { modalClose?: () => void; onBusyChange?: (busy: boolean) => void; quickAccess?: boolean } = {}) {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
   const gamepadWatch = useRef(0);
@@ -164,6 +164,27 @@ export function MinigameSection({ modalClose, onBusyChange }: { modalClose?: () 
     }
   };
 
+  const rouletteWindow = <div ref={viewport} style={{
+    position: "relative", width: "100%", height: quickAccess ? 210 : 160, overflow: "hidden", borderRadius: 11,
+    border: "1px solid rgba(115, 190, 255, .34)", background: "linear-gradient(180deg, #0b1420, #111d2b)",
+    boxShadow: "inset 0 0 36px rgba(0,0,0,.65), 0 8px 24px rgba(0,0,0,.26)",
+  }}>
+    <div style={{ position: "absolute", zIndex: 4, left: "50%", top: 0, bottom: 0, width: 2, transform: "translateX(-1px)", background: "linear-gradient(#ffd86a, #ff9c32, #ffd86a)", boxShadow: "0 0 13px #ffb23f" }} />
+    <div style={{ position: "absolute", zIndex: 5, left: "50%", top: 0, transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: "11px solid #ffd86a" }} />
+    {!items.length && <div style={{ height: "100%", display: "grid", placeItems: "center", textAlign: "center", opacity: .62, letterSpacing: .5 }}>
+      {busy ? "LOADING THE STEAM STORE…" : "A RANDOM GAME AWAITS"}
+    </div>}
+    <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "10px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
+      {items.map((item, index) => <div key={`${item.appid}-${index}`} style={{
+        position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: quickAccess ? 190 : 140, overflow: "hidden", borderRadius: 8,
+        border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}`,
+        background: "linear-gradient(145deg,#23354a,#111c29)", boxSizing: "border-box",
+      }}>
+        <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "contain", opacity: .92 }} />
+      </div>)}
+    </div>
+  </div>;
+
   return <>{winner && revealVisible && <div style={{
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
@@ -194,7 +215,16 @@ export function MinigameSection({ modalClose, onBusyChange }: { modalClose?: () 
         <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
         <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>SAVED {displayPrice(winner)}</div>
       </div>
-    </div></div>}<PanelSection title="Store Roulette">
+    </div></div>}{quickAccess ? <div style={{
+      position: "fixed", zIndex: 10000, left: "50%", top: "50%", transform: "translate(-50%, -50%)",
+      width: "min(76vw, 820px)", margin: 0,
+    }}>
+      {rouletteWindow}
+      {error && <div style={{ color: "#ff8b83", fontSize: 11, marginTop: 8 }}>{error}</div>}
+      <DialogButton disabled={busy} onClick={roll} style={{ width: "100%", marginTop: 10 }}>
+        {busy ? "Rolling…" : "Roll a game"}
+      </DialogButton>
+    </div> : <PanelSection title="Store Roulette">
     <PanelSectionRow><ButtonItem layout="below" onClick={() => setPriceExpanded((expanded) => !expanded)}>
       Price mode · {activePriceLabel} {priceExpanded ? "▲" : "▼"}
     </ButtonItem></PanelSectionRow>
@@ -212,32 +242,13 @@ export function MinigameSection({ modalClose, onBusyChange }: { modalClose?: () 
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
       Crack open the entire Steam Store. Games already in your library are excluded, and the winner is automatically added with SLS Steam.
     </div></PanelSectionRow>
-    <PanelSectionRow><div ref={viewport} style={{
-      position: "relative", width: "100%", height: 160, overflow: "hidden", borderRadius: 11,
-      border: "1px solid rgba(115, 190, 255, .34)", background: "linear-gradient(180deg, #0b1420, #111d2b)",
-      boxShadow: "inset 0 0 36px rgba(0,0,0,.65), 0 8px 24px rgba(0,0,0,.26)",
-    }}>
-      <div style={{ position: "absolute", zIndex: 4, left: "50%", top: 0, bottom: 0, width: 2, transform: "translateX(-1px)", background: "linear-gradient(#ffd86a, #ff9c32, #ffd86a)", boxShadow: "0 0 13px #ffb23f" }} />
-      <div style={{ position: "absolute", zIndex: 5, left: "50%", top: 0, transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: "11px solid #ffd86a" }} />
-      {!items.length && <div style={{ height: "100%", display: "grid", placeItems: "center", textAlign: "center", opacity: .62, letterSpacing: .5 }}>
-        {busy ? "LOADING THE STEAM STORE…" : "A RANDOM GAME AWAITS"}
-      </div>}
-      <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "10px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
-        {items.map((item, index) => <div key={`${item.appid}-${index}`} style={{
-          position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: 140, overflow: "hidden", borderRadius: 8,
-          border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}`,
-          background: "linear-gradient(145deg,#23354a,#111c29)", boxSizing: "border-box",
-        }}>
-          <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "contain", opacity: .92 }} />
-        </div>)}
-      </div>
-    </div></PanelSectionRow>
+    <PanelSectionRow>{rouletteWindow}</PanelSectionRow>
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
-    <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
+    <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Rolling…" : "Roll a game"}</ButtonItem></PanelSectionRow>
     {winner && <PanelSectionRow><ButtonItem layout="below" onClick={openWinner}>
       View {winner.name} in {winnerAdded ? "Library" : "Store"}
     </ButtonItem></PanelSectionRow>}
-  </PanelSection></>;
+  </PanelSection>}</>;
 }
 
 export function StoreRouletteModal({ closeModal }: { closeModal?: () => void }) {
@@ -249,15 +260,15 @@ export function StoreRouletteModal({ closeModal }: { closeModal?: () => void }) 
       onCancel={close}
       onEscKeypress={close}
       bDisableBackgroundDismiss={busy}
-      bHideCloseIcon={busy}
+      bHideCloseIcon
       bAllowFullSize
+      className="sls-roulette-modal"
+      modalClassName="sls-roulette-modal"
     >
-      <div style={{ width: "min(82vw, 820px)", maxHeight: "78vh", overflowY: "auto" }}>
-        <MinigameSection modalClose={closeModal} onBusyChange={setBusy} />
-        <DialogButton disabled={busy} onClick={close} style={{ width: "100%", marginTop: 8 }}>
-          {busy ? "Opening…" : "Close"}
-        </DialogButton>
-      </div>
+      <style>{`
+        .sls-roulette-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; }
+      `}</style>
+      <MinigameSection modalClose={closeModal} onBusyChange={setBusy} quickAccess />
     </ModalRoot>
   );
 }
