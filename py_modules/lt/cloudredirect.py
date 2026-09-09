@@ -53,6 +53,13 @@ KDE_RUNTIME = "org.kde.Platform//6.10"
 CR_LIB_URL_MOON = "https://raw.githubusercontent.com/swwayps/cloudredirect-moon/master/cloud_redirect.so"
 # Back-compat alias (older call sites referenced CR_LIB_URL); both point at moon.
 CR_LIB_URL = CR_LIB_URL_MOON
+CR_OAUTH_SOURCE_URL = ("https://raw.githubusercontent.com/swwayps/cloudredirect-moon/"
+                       "67d2c81a2064718acbcd0351874c640295803525/ui-linux/src/oauthservice.cpp")
+_OAUTH_SECRET_NAMES = {
+    "gdrive": "GDRIVE_CLIENT_SECRET",
+    "onedrive": "ONEDRIVE_CLIENT_SECRET",
+}
+_OAUTH_SECRETS = {}
 
 _PROVIDERS = {
     "gdrive": {
@@ -323,6 +330,28 @@ def _pkce(value: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(value.encode("ascii")).digest()).decode("ascii").rstrip("=")
 
 
+def _oauth_client_secret(provider: str) -> str:
+    """Read Moon's public desktop-client credential from its immutable source.
+
+    This keeps third-party credentials out of SLSDeck while matching the exact
+    token exchange performed by the pinned CloudRedirect Moon implementation.
+    """
+    cached = _OAUTH_SECRETS.get(provider)
+    if cached:
+        return cached
+    response = ensure_http_client("CloudRedirect OAuth configuration").get(CR_OAUTH_SOURCE_URL, timeout=20)
+    response.raise_for_status()
+    source = response.text
+    for key, constant in _OAUTH_SECRET_NAMES.items():
+        match = re.search(rf'{constant}\s*=\s*"([^"]+)"', source)
+        if match:
+            _OAUTH_SECRETS[key] = match.group(1)
+    secret = _OAUTH_SECRETS.get(provider)
+    if not secret:
+        raise ValueError(f"CloudRedirect Moon {provider} OAuth configuration was not found")
+    return secret
+
+
 def auth_start(provider: str) -> dict:
     """Start a five-minute OAuth/PKCE loopback flow and return its browser URL."""
     global _AUTH_PENDING, _AUTH_RESULT
@@ -468,6 +497,7 @@ def _exchange_auth_code(pending: dict, code: str, state: str) -> dict:
     if spec["body_scope"]:
         form["scope"] = spec["scope"]
     try:
+        form["client_secret"] = _oauth_client_secret(pending["provider"])
         response = ensure_http_client("CloudRedirect OAuth").post(spec["token_url"], data=form, timeout=30)
         response.raise_for_status()
         token = response.json()

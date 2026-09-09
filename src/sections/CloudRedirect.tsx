@@ -112,7 +112,16 @@ export function CloudRedirectSection() {
 
   const load = async () => {
     try { setEnabled(!!(await crGetEnabled()).enabled); } catch { /* best effort */ }
-    try { setState(await crProviderStatus()); } catch { /* best effort */ }
+    try {
+      const provider = await crProviderStatus();
+      setState(provider);
+      const auth = await crAuthPoll();
+      if (auth.status === "done" && provider.authenticated) {
+        setMsg("Cloud provider connected."); setAuthWaiting(false); setCallbackUrl("");
+      } else if (auth.status && auth.status !== "idle" && auth.status !== "waiting") {
+        setMsg(`Cloud provider sign-in failed${auth.error ? `: ${auth.error}` : "."}`);
+      }
+    } catch { /* best effort */ }
     try { setSaves((await crListLocalApps()).apps || []); } catch { /* best effort */ }
   };
   useEffect(() => {
