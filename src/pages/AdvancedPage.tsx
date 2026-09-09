@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
 import {
   FaBoxOpen, FaDownload, FaWrench,
-  FaCloud, FaSlidersH, FaKey, FaInfoCircle, FaShieldAlt, FaLock, FaPuzzlePiece, FaArchive,
+  FaCloud, FaSlidersH, FaKey, FaInfoCircle, FaShieldAlt, FaLock, FaPuzzlePiece, FaArchive, FaDice,
 } from "react-icons/fa";
 
 import { AddGameSection } from "../sections/AddGame";
@@ -18,6 +18,7 @@ import { TokeerSection } from "../sections/Tokeer";
 import { ModsSection } from "../sections/Mods";
 import { BackupSection } from "../sections/Backup";
 import { ArchiveSection } from "../sections/Archive";
+import { MinigameSection } from "../sections/Minigame";
 import {
   getDlcOption, setDlcOption,
   getDlcOwnedOnly, setDlcOwnedOnly,
@@ -809,6 +810,11 @@ export function AdvancedPage() {
           title: "Cloud saves",
           icon: <FaCloud />,
           content: <Body><CloudRedirectSection /></Body>,
+        },
+        {
+          title: "Minigame",
+          icon: <FaDice />,
+          content: <Body><MinigameSection /></Body>,
         },
         {
           title: "Tokeer helper",
