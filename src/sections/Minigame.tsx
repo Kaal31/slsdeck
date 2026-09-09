@@ -131,6 +131,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [minPrice, setMinPrice] = useState(readRoulettePrice);
   const [priceExpanded, setPriceExpanded] = useState(false);
   const [revealVisible, setRevealVisible] = useState(false);
+  const [tabRevealDismissing, setTabRevealDismissing] = useState(false);
   const [returningFromWinner, setReturningFromWinner] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
 
@@ -151,8 +152,13 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   useEffect(() => {
     if (!revealVisible) return;
     const dismiss = () => {
-      setRevealVisible(false);
-      modalClose?.();
+      if (tabRevealDismissing) return;
+      setTabRevealDismissing(true);
+      window.setTimeout(() => {
+        setRevealVisible(false);
+        setTabRevealDismissing(false);
+        modalClose?.();
+      }, 320);
     };
     const watchedEvents: (keyof DocumentEventMap)[] = ["keydown", "pointerdown", "mousedown", "click", "touchstart", "touchend"];
     watchedEvents.forEach((name) => document.addEventListener(name, dismiss, true));
@@ -176,7 +182,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
       watchedEvents.forEach((name) => document.removeEventListener(name, dismiss, true));
       cancelAnimationFrame(gamepadWatch.current);
     };
-  }, [revealVisible, modalClose]);
+  }, [revealVisible, tabRevealDismissing, modalClose]);
 
   const openWinner = () => {
     if (!winner) return;
@@ -228,7 +234,10 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
               setReturningFromWinner(true);
               window.setTimeout(() => setReturningFromWinner(false), 520);
             }} />);
-          } else setRevealVisible(true);
+          } else {
+            setTabRevealDismissing(false);
+            setRevealVisible(true);
+          }
           void addResult.then((added) => {
             if (!added.success) {
               setWinnerAdded(false);
@@ -281,7 +290,8 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)", isolation: "isolate",
-  }} onPointerDown={() => setRevealVisible(false)} onTouchStart={() => setRevealVisible(false)} onClick={() => setRevealVisible(false)}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
+    animation: tabRevealDismissing ? "sls-tab-reveal-exit 300ms ease-in both" : undefined,
+  }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
@@ -290,6 +300,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         @keyframes sls-cover-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
         @keyframes sls-cover-shine { 0% { transform: translateX(-170%) skewX(-22deg); } 48%,100% { transform: translateX(260%) skewX(-22deg); } }
         @keyframes sls-unlock-title { 0% { opacity: 0; transform: scale(.75); text-shadow: 0 0 0 transparent; } 55% { opacity: 1; transform: scale(1.13); text-shadow: 0 0 18px #ffc95c; } 100% { transform: scale(1); text-shadow: 0 0 7px rgba(255,201,92,.45); } }
+        @keyframes sls-tab-reveal-exit { from { opacity:1; } to { opacity:0; transform:scale(.9) translateY(18px); } }
       `}</style>
       <div>
         <div style={{ position: "relative", width: "100%", minHeight: 240, display: "grid", placeItems: "center" }}>
