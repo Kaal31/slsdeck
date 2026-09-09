@@ -812,7 +812,7 @@ export function AdvancedPage() {
           content: <Body><CloudRedirectSection /></Body>,
         },
         {
-          title: "Minigame",
+          title: "Store Roulette",
           icon: <FaDice />,
           content: <Body><MinigameSection /></Body>,
         },
