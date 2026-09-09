@@ -36,7 +36,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .logger import logger
 from .paths import defaults_path, get_user_home
@@ -2263,6 +2263,35 @@ def _steam_root_and_sh():
     return None, None
 
 
+def _steam_cfg_paths() -> List[str]:
+    """Return every distinct Steam bootstrap config which can affect startup.
+
+    Older SLSDeck/Headcrab versions did not consistently use the same Steam-root
+    alias. On a Deck, ``~/.steam/steam`` and ``~/.local/share/Steam`` usually
+    resolve together, but a migrated install can leave two real directories and
+    therefore two independently effective ``steam.cfg`` files. Clearing only
+    the first detected launcher lets the stale one keep blocking the downgrade.
+    """
+    home = _home()
+    roots = [
+        os.path.join(home, ".steam", "steam"),
+        os.path.join(home, ".local", "share", "Steam"),
+        os.path.join(home, ".steam", "root"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".steam", "steam"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
+    ]
+    paths: List[str] = []
+    seen = set()
+    for root in roots:
+        cfg = os.path.realpath(os.path.join(root, "steam.cfg"))
+        if cfg in seen:
+            continue
+        seen.add(cfg)
+        if os.path.isfile(cfg):
+            paths.append(cfg)
+    return paths
+
+
 # ── Pre-install conflict repair (borrowed from luatools-moon install.sh) ──────
 # Two things silently break our moon/Lumen engine and are worth clearing before
 # an install: a pre-existing Millennium framework, and an Arch system slssteam
@@ -3517,35 +3546,48 @@ def _run_headcrab_shimmed() -> bool:
     # plugin think injection broke and offer to run this fix again -- a loop that
     # re-downloads the Steam client indefinitely. So we restore it ourselves in a
     # finally, and treat headcrab re-creating it as a bonus rather than a promise.
-    _cfg_removed = None
+    _cfg_suspended: List[Tuple[str, str]] = []
     try:
-        _root, _sh = _steam_root_and_sh()
-        if _sh:
-            _cfg = os.path.join(os.path.dirname(_sh), "steam.cfg")
-            if os.path.isfile(_cfg):
-                _cfg_removed = _cfg
+        for _cfg in _steam_cfg_paths():
+            try:
+                with open(_cfg, "r", encoding="utf-8", errors="ignore") as _fh:
+                    _content = _fh.read()
+                if not _HEADCRAB_CFG_RE.search(_content):
+                    continue
+                _custom = _HEADCRAB_CFG_RE.sub("", _content)
+                _custom = re.sub(r"\n{3,}", "\n\n", _custom).strip()
+                _cfg_suspended.append((_cfg, (_custom + "\n") if _custom else ""))
                 os.remove(_cfg)
-                _log("Temporarily removed steam.cfg so the client downgrade isn't blocked")
-    except Exception:
-        pass
+                _log(f"Temporarily removed stale Steam update block: {_cfg}")
+            except Exception as exc:
+                _log(f"Could not suspend Steam update block at {_cfg}: {exc}")
+    except Exception as exc:
+        _log(f"Could not enumerate stale steam.cfg files: {exc}")
 
     def _restore_update_block():
         """Put the update block back no matter how this function exits."""
-        if not _cfg_removed:
+        if not _cfg_suspended:
             return
-        try:
-            if os.path.isfile(_cfg_removed):
-                return  # headcrab already recreated it
-            with open(_cfg_removed, "w", encoding="utf-8") as fh:
-                fh.write(_STEAM_CFG)
+        for _cfg_path, _custom in _cfg_suspended:
             try:
-                from .utils import chown_to_user as _c
-                _c(_cfg_removed, recursive=False)
-            except Exception:
-                pass
-            _log("Restored steam.cfg update block")
-        except Exception as exc:
-            logger.warn(f"SLSsteam: could not restore steam.cfg: {exc}")
+                # Headcrab may have recreated the active file. Normalize it as
+                # well: preserve unrelated user settings, but never preserve an
+                # old or duplicated BootStrapper directive.
+                if os.path.isfile(_cfg_path):
+                    with open(_cfg_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        _now = _HEADCRAB_CFG_RE.sub("", fh.read()).strip()
+                    if _now:
+                        _custom = _now + "\n"
+                with open(_cfg_path, "w", encoding="utf-8") as fh:
+                    fh.write(_custom + _STEAM_CFG)
+                try:
+                    from .utils import chown_to_user as _c
+                    _c(_cfg_path, recursive=False)
+                except Exception:
+                    pass
+                _log(f"Restored normalized Steam update block: {_cfg_path}")
+            except Exception as exc:
+                logger.warn(f"SLSsteam: could not restore steam.cfg at {_cfg_path}: {exc}")
 
     home = _home()
     base_path = f"{shim}:/usr/bin:/bin:/usr/local/bin:/sbin:/usr/sbin"
@@ -3663,6 +3705,12 @@ def _run_headcrab_shimmed() -> bool:
     # Returning it here used to turn permission errors and failed downgrades into
     # a green "Done" state. The compatibility operation itself must exit cleanly.
     if rc != 0:
+        return False
+    installed_client = steam_client_version()
+    compatible_client = headcrab_compatible_client()
+    if installed_client and compatible_client and installed_client != compatible_client:
+        _log("Client repair rejected: Steam client build "
+             f"{installed_client} does not match Headcrab target {compatible_client}")
         return False
     final_engine = installed_lib_is_moon()
     if not final_engine.get("moon"):
