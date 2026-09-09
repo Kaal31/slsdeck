@@ -2,7 +2,7 @@ import { ButtonItem, DialogButton, DropdownItem, Navigation, PanelSection, Panel
 import { useEffect, useRef, useState } from "react";
 import {
   CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthPoll, crAuthStart,
-  crEnsureInstalledAuto, crGetEnabled, crListLocalApps, crProviderStatus,
+  crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crListLocalApps, crProviderStatus,
   crSetEnabled, crSetProvider, crSetProviderToggle, crSignOut,
 } from "../api";
 
@@ -34,7 +34,7 @@ function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirect
   }
 }
 
-function steamGame(appid: number): { title: string; header: string; wideCapsule: string; logo: string } {
+function steamGame(appid: number): { title: string; header: string; wideCapsule: string } {
   let title = `Steam App ${appid}`;
   try {
     const overview: any = (window as any).appStore?.GetAppOverviewByAppID?.(appid)
@@ -45,16 +45,28 @@ function steamGame(appid: number): { title: string; header: string; wideCapsule:
     title,
     header: `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/header.jpg`,
     wideCapsule: `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/capsule_616x353.jpg`,
-    logo: `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appid}/logo.png`,
   };
 }
 
 function CloudSaveCard({ app, provider }: { app: CloudRedirectLocalApp; provider?: CloudRedirectProvider }) {
   const game = steamGame(app.appid);
   const [artIndex, setArtIndex] = useState(0);
-  const [logoOk, setLogoOk] = useState(true);
-  const hasSaves = app.files > 0 || app.size > 0;
-  const artwork = [game.header, game.wideCapsule][artIndex];
+  const [localArtwork, setLocalArtwork] = useState("");
+  const [localArtworkChecked, setLocalArtworkChecked] = useState(false);
+  const artwork = localArtwork || [game.header, game.wideCapsule][artIndex];
+  const advanceArtwork = async () => {
+    if (localArtwork) { setLocalArtwork(""); setLocalArtworkChecked(true); return; }
+    if (artIndex === 0) { setArtIndex(1); return; }
+    if (!localArtworkChecked) {
+      setLocalArtworkChecked(true);
+      try {
+        const result = await crGameArtwork(app.appid);
+        if (result.success && result.image) setLocalArtwork(result.image);
+      } catch { /* leave the card's gradient fallback */ }
+      return;
+    }
+    setArtIndex(2);
+  };
   const openGame = () => {
     try {
       Navigation.Navigate(`/library/app/${app.appid}`);
@@ -67,7 +79,7 @@ function CloudSaveCard({ app, provider }: { app: CloudRedirectLocalApp; provider
     background: "linear-gradient(135deg, rgba(26, 45, 62, .98), rgba(13, 24, 35, .98))",
     boxShadow: "0 7px 18px rgba(0, 0, 0, .22)", padding: 0, textAlign: "left",
   }}>
-    {artwork && <img src={artwork} alt="" onError={() => setArtIndex((current) => current + 1)} style={{
+    {artwork && <img src={artwork} alt="" onError={advanceArtwork} style={{
       position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover",
       opacity: .48,
     }} />}
@@ -76,19 +88,7 @@ function CloudSaveCard({ app, provider }: { app: CloudRedirectLocalApp; provider
       background: "linear-gradient(90deg, rgba(8, 16, 25, .96) 0%, rgba(8, 16, 25, .76) 54%, rgba(8, 16, 25, .28) 100%)",
     }} />
     <div style={{ position: "relative", padding: "13px 14px", textShadow: "0 1px 3px #000" }}>
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 8, paddingRight: 6 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {logoOk ? <img src={game.logo} alt={game.title} onError={() => setLogoOk(false)} style={{
-            display: "block", maxWidth: "72%", width: "auto", height: 38, objectFit: "contain", objectPosition: "left center",
-            filter: "drop-shadow(0 2px 3px rgba(0, 0, 0, .88))",
-          }} /> : <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.18 }}>{game.title}</div>}
-        </div>
-        {hasSaves && <span style={{
-          flex: "0 0 auto", padding: "3px 6px", borderRadius: 10, fontSize: 9, fontWeight: 750,
-          color: "#b9f4d0", background: "rgba(55, 160, 96, .28)", border: "1px solid rgba(91, 214, 139, .32)",
-        }}>SAVED</span>}
-      </div>
-      <div style={{ marginTop: 5, fontSize: 10, opacity: .7 }}>STEAM APPID {app.appid}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.18 }}>{game.title}</div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px 12px", marginTop: 13, fontSize: 11 }}>
         <span style={{ color: "#67c1f5", fontWeight: 650 }}>{formatSize(app.size)}</span>
         <span style={{ opacity: .82 }}>{app.files} {app.files === 1 ? "file" : "files"}</span>
