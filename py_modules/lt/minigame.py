@@ -13,8 +13,7 @@ from .httpc import get_http_client
 _SEARCH_URL = "https://store.steampowered.com/search/results/"
 _DETAIL_URL = "https://store.steampowered.com/api/appdetails"
 _CACHE_SECONDS = 60 * 60
-_MEMORY: List[Tuple[int, str]] = []
-_MEMORY_AT = 0.0
+_MEMORY: Dict[int, Tuple[float, List[Tuple[int, str]]]] = {}
 _TOTAL_RESULTS = 0
 
 
@@ -29,10 +28,10 @@ def _usable(app: Any) -> Tuple[int, str] | None:
         return None
 
 
-def _search_page(start: int, count: int = 100) -> Tuple[List[Tuple[int, str]], int]:
+def _search_page(start: int, count: int = 100, sort_by: str = "_ASC") -> Tuple[List[Tuple[int, str]], int]:
     response = get_http_client().get(_SEARCH_URL, params={
         "query": "", "start": max(0, int(start)), "count": max(1, int(count)),
-        "sort_by": "_ASC", "category1": "998", "infinite": "1",
+        "sort_by": sort_by, "category1": "998", "infinite": "1",
         "ignore_preferences": "1", "ndl": "1", "cc": "US", "l": "english",
     }, timeout=30.0)
     response.raise_for_status()
@@ -53,10 +52,11 @@ def _search_page(start: int, count: int = 100) -> Tuple[List[Tuple[int, str]], i
     return found, total
 
 
-def _catalog() -> List[Tuple[int, str]]:
-    global _MEMORY, _MEMORY_AT, _TOTAL_RESULTS
-    if _MEMORY and time.time() - _MEMORY_AT < _CACHE_SECONDS:
-        return _MEMORY
+def _catalog(min_price_cents: int = 0) -> List[Tuple[int, str]]:
+    global _MEMORY, _TOTAL_RESULTS
+    cached = _MEMORY.get(min_price_cents)
+    if cached and time.time() - cached[0] < _CACHE_SECONDS:
+        return cached[1]
 
     # Steam retired the unauthenticated ISteamApps/GetAppList endpoint. Its
     # replacement requires an API key, whereas the Store's own paginated
@@ -64,9 +64,11 @@ def _catalog() -> List[Tuple[int, str]]:
     if not _TOTAL_RESULTS:
         _, _TOTAL_RESULTS = _search_page(0, 1)
     pool: List[Tuple[int, str]] = []
-    for _ in range(4):
+    expensive = min_price_cents > 0
+    for page_number in range(4):
         upper = max(0, _TOTAL_RESULTS - 100)
-        page, reported_total = _search_page(random.randint(0, upper) if upper else 0, 100)
+        start = page_number * 100 if expensive else (random.randint(0, upper) if upper else 0)
+        page, reported_total = _search_page(start, 100, "Price_DESC" if expensive else "_ASC")
         _TOTAL_RESULTS = max(_TOTAL_RESULTS, reported_total)
         pool.extend(page)
         if len({appid for appid, _ in pool}) >= 80:
@@ -74,12 +76,12 @@ def _catalog() -> List[Tuple[int, str]]:
     deduplicated: Dict[int, str] = {}
     for appid, name in pool:
         deduplicated[appid] = name
-    _MEMORY = list(deduplicated.items())
-    _MEMORY_AT = time.time()
-    return _MEMORY
+    result = list(deduplicated.items())
+    _MEMORY[min_price_cents] = (time.time(), result)
+    return result
 
 
-def _store_game(appid: int) -> Dict[str, Any] | None:
+def _store_game(appid: int, min_price_cents: int = 0) -> Dict[str, Any] | None:
     try:
         response = get_http_client().get(
             _DETAIL_URL,
@@ -96,6 +98,10 @@ def _store_game(appid: int) -> Dict[str, Any] | None:
             or bool(data.get("is_free"))
         ):
             return None
+        price = data.get("price_overview") or {}
+        current_price = int(price.get("final") or 0)
+        if current_price < max(1, min_price_cents):
+            return None
         online_markers = ("massively multiplayer", "mmo")
         classifications = []
         for group in (data.get("categories") or [], data.get("genres") or []):
@@ -107,14 +113,17 @@ def _store_game(appid: int) -> Dict[str, Any] | None:
             "name": str(data["name"]),
             "image": str(data.get("header_image") or ""),
             "shortDescription": str(data.get("short_description") or ""),
+            "priceCents": current_price,
+            "currency": str(price.get("currency") or "USD"),
         }
     except Exception:
         return None
 
 
-def roll(excluded_appids: List[int] | None = None, count: int = 36) -> Dict[str, Any]:
+def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_cents: int = 0) -> Dict[str, Any]:
     excluded: Set[int] = {int(value) for value in (excluded_appids or []) if int(value) > 0}
-    catalog = [(appid, name) for appid, name in _catalog() if appid not in excluded]
+    min_price_cents = max(0, int(min_price_cents or 0))
+    catalog = [(appid, name) for appid, name in _catalog(min_price_cents) if appid not in excluded]
     if len(catalog) < 40:
         return {"success": False, "error": "Steam Store catalog is unavailable"}
 
@@ -123,7 +132,7 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36) -> Dict[str,
     candidates = random.sample(catalog, min(48, len(catalog)))
     winner = None
     for appid, _ in candidates:
-        winner = _store_game(appid)
+        winner = _store_game(appid, min_price_cents)
         if winner:
             break
     if not winner:
