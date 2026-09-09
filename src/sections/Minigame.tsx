@@ -102,11 +102,12 @@ export function MinigameSection() {
 
   return <>{winner && revealVisible && <div style={{
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
-    pointerEvents: "none", background: "radial-gradient(circle,rgba(12,24,38,.3),rgba(0,0,0,.12) 42%,transparent 70%)",
+    pointerEvents: "none", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
+    backdropFilter: "blur(2px)",
   }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
-        @keyframes sls-unlock-overlay-out { 0%,82% { opacity: 1; } 100% { opacity: 0; transform: scale(1.04); } }
+        @keyframes sls-unlock-overlay-out { 0%,90% { opacity: 1; } 100% { opacity: 0; transform: scale(1.025); } }
         @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
         @keyframes sls-unlock-flash { 0%,100% { opacity: 0; } 18% { opacity: .9; } 45% { opacity: 0; } }
         @keyframes sls-unlock-particle { 0% { opacity: 0; transform: translateY(0) scale(.3); } 18% { opacity: 1; } 100% { opacity: 0; transform: translateY(-125px) scale(1); } }
@@ -128,7 +129,7 @@ export function MinigameSection() {
         </div>
         <div style={{ fontSize: 12, color: "#ffc95c", fontWeight: 900, letterSpacing: 1.5, animation: "sls-unlock-title 850ms ease-out 250ms both" }}>GAME UNLOCKED</div>
         <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
-        <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>{displayPrice(winner)}</div>
+        <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>SAVED {displayPrice(winner)}</div>
       </div>
     </div></div>}<PanelSection title="Store Roulette">
     <PanelSectionRow><ButtonItem layout="below" onClick={() => setPriceExpanded((expanded) => !expanded)}>
