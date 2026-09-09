@@ -50,6 +50,7 @@ export function MinigameSection() {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [winner, setWinner] = useState<MinigameItem>();
+  const [winnerAdded, setWinnerAdded] = useState(false);
   const [error, setError] = useState("");
   const [minPrice, setMinPrice] = useState(0);
   const [priceExpanded, setPriceExpanded] = useState(false);
@@ -100,14 +101,17 @@ export function MinigameSection() {
 
   const openWinner = () => {
     if (!winner) return;
-    try { Navigation.NavigateToExternalWeb(`https://store.steampowered.com/app/${winner.appid}`); } catch { /* ignore */ }
+    try {
+      if (winnerAdded) Navigation.Navigate(`/library/app/${winner.appid}`);
+      else Navigation.NavigateToExternalWeb(`https://store.steampowered.com/app/${winner.appid}`);
+    } catch { /* ignore */ }
   };
 
   const roll = async () => {
     if (busy) return;
     cancelAnimationFrame(animation.current);
     setRevealVisible(false);
-    setBusy(true); setWinner(undefined); setError(""); setItems([]); setOffset(0);
+    setBusy(true); setWinner(undefined); setWinnerAdded(false); setError(""); setItems([]); setOffset(0);
     try {
       const result = await minigameRoll(listLibraryAppIds(), minPrice);
       if (!result.success || !result.items?.length || result.winnerIndex === undefined || !result.winner) {
@@ -137,11 +141,14 @@ export function MinigameSection() {
         else {
           void addResult.then((added) => {
             if (!added.success) {
+              setWinner(result.winner);
+              setWinnerAdded(false);
               setError(`Winner selected, but it was not added: ${added.error}`);
               setBusy(false);
               return;
             }
             setWinner(result.winner);
+            setWinnerAdded(true);
             setRevealVisible(true);
             setBusy(false);
           });
@@ -223,6 +230,8 @@ export function MinigameSection() {
     </div></PanelSectionRow>
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
     <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
-    {winner && <PanelSectionRow><ButtonItem layout="below" onClick={openWinner}>View {winner.name} in Store</ButtonItem></PanelSectionRow>}
+    {winner && <PanelSectionRow><ButtonItem layout="below" onClick={openWinner}>
+      View {winner.name} in {winnerAdded ? "Library" : "Store"}
+    </ButtonItem></PanelSectionRow>}
   </PanelSection></>;
 }
