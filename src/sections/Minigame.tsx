@@ -24,6 +24,8 @@ export function MinigameSection() {
   const [winner, setWinner] = useState<MinigameItem>();
   const [error, setError] = useState("");
   const [minPrice, setMinPrice] = useState(0);
+  const [priceExpanded, setPriceExpanded] = useState(true);
+  const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
 
   useEffect(() => {
     caseSounds.current = [new Audio(CASE_SOUND_URL), new Audio(CASE_SOUND_URL)];
@@ -81,8 +83,10 @@ export function MinigameSection() {
   };
 
   return <PanelSection title="Store Roulette">
-    <PanelSectionRow><div style={{ width: "100%" }}>
-      <div style={{ fontSize: 10, fontWeight: 800, opacity: .68, letterSpacing: .8, marginBottom: 4 }}>PRICE MODE</div>
+    <PanelSectionRow><ButtonItem layout="below" onClick={() => setPriceExpanded((expanded) => !expanded)}>
+      Price mode · {activePriceLabel} {priceExpanded ? "▲" : "▼"}
+    </ButtonItem></PanelSectionRow>
+    {priceExpanded && <PanelSectionRow><div style={{ width: "100%" }}>
       <div style={{ display: "grid", width: "100%", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
         {PRICE_MODES.map((mode) => <div key={mode.cents} style={{
           minWidth: 0, minHeight: 42, borderRadius: 6, overflow: "hidden",
@@ -92,7 +96,7 @@ export function MinigameSection() {
           controlled checked={minPrice === mode.cents}
           onChange={() => { setMinPrice(mode.cents); setError(""); }} /></div>)}
       </div>
-    </div></PanelSectionRow>
+    </div></PanelSectionRow>}
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
       Crack open the entire Steam Store. The winning game is selected from live Store AppIDs and games already in your library are excluded.
     </div></PanelSectionRow>
