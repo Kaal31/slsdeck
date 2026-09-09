@@ -57,7 +57,7 @@ def _hv_norm(r: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Plugin:
-    async def minigame_roll(self, excluded_appids: Optional[List[int]] = None) -> Dict[str, Any]:
+    async def minigame_roll(self, excluded_appids: Optional[List[int]] = None, min_price_cents: int = 0) -> Dict[str, Any]:
         excluded = {int(value) for value in (excluded_appids or []) if int(value) > 0}
         # Steam's collection store can lag behind SLSsteam after an add. Merge
         # the backend's canonical list so the roulette never awards an AppID
@@ -66,7 +66,7 @@ class Plugin:
             excluded.update(int(value) for value in slssteam.read_additional_apps())
         except Exception:
             pass
-        return await self._run_slow(minigame.roll, sorted(excluded))
+        return await self._run_slow(minigame.roll, sorted(excluded), 36, min_price_cents)
 
     # ── Tokeer / Anti-Denuvo ────────────────────────────────────────────────
     async def tokeer_quota_probe(self) -> Dict[str, Any]:
@@ -2198,163 +2198,3 @@ class Plugin:
     async def os_resolve(self, appid: int, choice: str) -> Dict[str, Any]:
         return await self._run(opensave.resolve, int(appid), str(choice))
 
-    async def os_export_all(self, folder: str) -> Dict[str, Any]:
-        return await self._run(opensave.export_all, str(folder))
-
-    # ── OpenSave cloud providers (native, via daemon API) ──────────────────
-    async def os_cloud_auth_start(self, provider: str) -> Dict[str, Any]:
-        return await self._run(opensave.cloud_auth_start, str(provider))
-
-    async def os_cloud_auth_callback(self, code: str) -> Dict[str, Any]:
-        return await self._run(opensave.cloud_auth_callback, str(code))
-
-    async def os_cloud_disconnect(self) -> Dict[str, Any]:
-        return await self._run(opensave.cloud_disconnect)
-
-    async def os_cloud_webdav(self, url: str, username: str = "", password: str = "") -> Dict[str, Any]:
-        return await self._run(opensave.cloud_set_webdav, str(url), str(username), str(password))
-
-    async def os_cloud_enabled(self, enabled: bool) -> Dict[str, Any]:
-        return await self._run(opensave.cloud_set_enabled, bool(enabled))
-
-    async def os_cloud_push_all(self) -> Dict[str, Any]:
-        return await self._run(opensave.cloud_push_all)
-
-    async def os_relay_join(self, code: str) -> Dict[str, Any]:
-        return await self._run(opensave.relay_join, str(code))
-
-    async def os_relay_status(self) -> Dict[str, Any]:
-        return await self._run(opensave.relay_status)
-
-    async def os_relay_leave(self) -> Dict[str, Any]:
-        return await self._run(opensave.relay_leave)
-
-    async def os_diagnostics(self) -> Dict[str, Any]:
-        return await self._run(opensave.diagnostics)
-
-    # ── dependency updates (latest-version + boot check) ───────────────────
-    async def updates_check(self) -> Dict[str, Any]:
-        return await self._run(updates.check_all)
-
-    async def updates_update_all(self, includeHeavy: bool = False) -> Dict[str, Any]:
-        return await self._run(updates.update_all, bool(includeHeavy))
-
-    async def updates_update_one(self, name: str, includeHeavy: bool = True) -> Dict[str, Any]:
-        return await self._run(updates.update_one, str(name), bool(includeHeavy))
-
-    async def get_auto_update(self) -> Dict[str, Any]:
-        return {"success": True, "enabled": settings.get_auto_update()}
-
-    async def set_auto_update(self, enabled: bool) -> Dict[str, Any]:
-        settings.set_auto_update(bool(enabled))
-        return {"success": True, "enabled": bool(enabled)}
-
-
-    async def open_game_folder(self, path: str) -> Dict[str, Any]:
-        ok = await self._run(steam.open_game_folder, path)
-        return {"success": ok}
-
-    # ── UI Customization & Maintenance ──────────────────────────────────
-    async def get_ui_settings(self) -> Dict[str, Any]:
-        return {"success": True, "settings": settings.get_ui_settings()}
-
-    async def set_ui_setting(self, key: str, value: Any) -> Dict[str, Any]:
-        return settings.set_ui_setting(key, value)
-
-    async def run_full_system_maintenance(self) -> Dict[str, Any]:
-        """One-touch QoL utility: runs audit, auto-repairs system, cleans temp downloads, and syncs artwork."""
-        def _maint():
-            repair_res = audit.auto_repair_system()
-            clean_res = storage.clean_temp_downloads()
-            art_res = art.sync_all_added_art(overwrite=False)
-            return {
-                "success": True,
-                "autoRepair": repair_res,
-                "tempClean": clean_res,
-                "artSync": art_res,
-            }
-        return await self._run(_maint)
-
-    # ── Steam Workshop Mod Engine (SteamCMD) ────────────────────────────
-    # The engine is now SteamCMD-based (+workshop_download_item) rather than the
-    # old third-party mirror, and it tracks a manifest of the mods WE installed
-    # so it never disturbs items Steam is managing. The ws_* methods are the new
-    # surface; the workshop_* methods below stay as adapters so the existing UI
-    # keeps working.
-    async def ws_resolve(self, text: str) -> Dict[str, Any]:
-        return await self._run(workshop.resolve_mod, text)
-
-    async def ws_download(self, text: str) -> Dict[str, Any]:
-        return await self._run(workshop.start_download, text)
-
-    async def ws_download_state(self, job: str) -> Dict[str, Any]:
-        return await self._run(workshop.get_download_state, job)
-
-    async def ws_search(self, text: str, limit: int = 40) -> Dict[str, Any]:
-        return await self._run(workshop.search_workshop, text, limit)
-
-    async def ws_list_mods(self, appid: int) -> Dict[str, Any]:
-        return await self._run(workshop.list_mods, appid)
-
-    async def ws_list_games(self) -> Dict[str, Any]:
-        return await self._run(workshop.list_mod_games)
-
-    async def ws_set_enabled(self, appid: int, modid: str, enabled: bool) -> Dict[str, Any]:
-        return await self._run(workshop.set_mod_enabled, appid, modid, enabled)
-
-    async def ws_remove(self, appid: int, modid: str) -> Dict[str, Any]:
-        return await self._run(workshop.remove_mod, appid, modid)
-
-    async def ws_ensure_steamcmd(self) -> Dict[str, Any]:
-        return await self._run(workshop.ensure_steamcmd)
-
-    async def ws_get_steam_key(self) -> Dict[str, Any]:
-        try:
-            return {"success": True, "key": settings.get_steam_web_key()}
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-
-    async def ws_set_steam_key(self, key: str = "") -> Dict[str, Any]:
-        try:
-            settings.set_steam_web_key(key)
-            return {"success": True}
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-
-    async def workshop_search(self, appid: int, query: str = "", limit: int = 15) -> Dict[str, Any]:
-        # Adapter: the new engine searches across the whole installed SLS pool
-        # rather than one appid, and returns "results" instead of "items".
-        r = await self._run(workshop.search_workshop, query, limit)
-        if isinstance(r, dict) and "items" not in r:
-            r = dict(r)
-            r["items"] = r.get("results", [])
-        return r
-
-    async def get_steam_web_api_key(self) -> Dict[str, Any]:
-        """Workshop search needs the user's own Steam Web API key."""
-        try:
-            return {"success": True, "key": settings.get_steam_web_api_key()}
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-
-    async def set_steam_web_api_key(self, key: str = "") -> Dict[str, Any]:
-        try:
-            settings.set_steam_web_api_key(key)
-            return {"success": True}
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
-
-    async def workshop_download(self, appid: int, published_file_id: str) -> Dict[str, Any]:
-        # The engine resolves the owning game from the mod id itself, so the
-        # appid argument is no longer needed -- kept for call compatibility.
-        return await self._run(workshop.start_download, str(published_file_id))
-
-    async def workshop_list(self, appid: int) -> Dict[str, Any]:
-        r = await self._run(workshop.list_mods, appid)
-        if isinstance(r, dict) and "items" not in r:
-            r = dict(r)
-            r["items"] = r.get("mods", [])
-        return r
-
-    async def workshop_remove(self, appid: int, published_file_id: str) -> Dict[str, Any]:
-        return await self._run(workshop.remove_mod, appid, published_file_id)
