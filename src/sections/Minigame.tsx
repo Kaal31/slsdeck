@@ -1,6 +1,5 @@
 import { ButtonItem, DialogCheckbox, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { MinigameItem, minigameRoll } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 
@@ -101,7 +100,7 @@ export function MinigameSection() {
     }
   };
 
-  return <>{winner && revealVisible && createPortal(<div style={{
+  return <>{winner && revealVisible && <div style={{
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "none", background: "radial-gradient(circle,rgba(12,24,38,.3),rgba(0,0,0,.12) 42%,transparent 70%)",
   }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
@@ -131,7 +130,7 @@ export function MinigameSection() {
         <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
         <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>{displayPrice(winner)}</div>
       </div>
-    </div></div>, document.body)}<PanelSection title="Store Roulette">
+    </div></div>}<PanelSection title="Store Roulette">
     <PanelSectionRow><ButtonItem layout="below" onClick={() => setPriceExpanded((expanded) => !expanded)}>
       Price mode · {activePriceLabel} {priceExpanded ? "▲" : "▼"}
     </ButtonItem></PanelSectionRow>
