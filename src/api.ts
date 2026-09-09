@@ -263,6 +263,18 @@ export interface CloudRedirectLocalApp {
 export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; error?: string }>("cr_list_local_apps");
 export const crGameArtwork = callable<[appid: number], { success: boolean; image?: string; error?: string }>("cr_game_artwork");
 
+export interface MinigameItem {
+  appid: number;
+  name: string;
+  image: string;
+  shortDescription?: string;
+  isFree?: boolean;
+}
+export const minigameRoll = callable<
+  [excludedAppids: number[]],
+  { success: boolean; items?: MinigameItem[]; winnerIndex?: number; winner?: MinigameItem; error?: string }
+>("minigame_roll");
+
 // ── OpenSave (cloud saves engine) ───────────────────────────────────────────
 export type OsState = "synced" | "syncing" | "conflict" | "idle" | "untracked" | "unavailable" | "unknown";
 export const osStatus = callable<
