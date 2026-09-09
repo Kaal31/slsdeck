@@ -89,8 +89,8 @@ export function MinigameSection() {
           background: minPrice === mode.cents ? "rgba(83,168,230,.18)" : "rgba(255,255,255,.035)",
           border: minPrice === mode.cents ? "1px solid rgba(111,195,255,.5)" : "1px solid rgba(255,255,255,.08)",
         }}><DialogCheckbox label={mode.label}
-          controlled checked={minPrice === mode.cents} disabled={busy}
-          onChange={() => setMinPrice(mode.cents)} /></div>)}
+          controlled checked={minPrice === mode.cents}
+          onChange={() => { setMinPrice(mode.cents); setError(""); }} /></div>)}
       </div>
     </div></PanelSectionRow>
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
@@ -122,7 +122,7 @@ export function MinigameSection() {
       {winner.shortDescription && <div style={{ fontSize: 10, opacity: .7, marginTop: 5, lineHeight: 1.35 }}>{winner.shortDescription}</div>}
     </div></PanelSectionRow>}
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
-    <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
+    <PanelSectionRow><ButtonItem layout="below" onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
     {winner && <PanelSectionRow><ButtonItem layout="below" onClick={openWinner}>View {winner.name} in Store</ButtonItem></PanelSectionRow>}
   </PanelSection>;
 }
