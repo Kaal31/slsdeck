@@ -7,6 +7,7 @@ import {
   Spinner,
   showModal,
   ConfirmModal,
+  Navigation,
 } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { toaster } from "@decky/api";
@@ -349,7 +350,15 @@ export function FixesSection() {
               </ButtonItem>
             </PanelSectionRow>
           )}
-          {!check.genericFix.available && !check.onlineFix.available && (
+          {((check as any).neraiFixes || []).map((fix: any, i: number) => (
+            <PanelSectionRow key={`nerai-${fix.category}-${fix.id || i}`}>
+              <ButtonItem layout="below" onClick={() => Navigation.NavigateToExternalWeb(fix.url)}>
+                {fix.category === "online" ? "Open Online Fix (NERAI)" :
+                  fix.category === "game" ? "Open Game Fix (NERAI)" : "Open Bypass (NERAI)"}
+              </ButtonItem>
+            </PanelSectionRow>
+          ))}
+          {!check.genericFix.available && !check.onlineFix.available && !((check as any).neraiFixes || []).length && (
             <PanelSectionRow>
               <div style={{ fontSize: 12, opacity: 0.6 }}>
                 No fixes available for this game.
