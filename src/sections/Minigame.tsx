@@ -121,6 +121,8 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
   const gamepadWatch = useRef(0);
+  const tabDismissTimer = useRef(0);
+  const tabDismissingRef = useRef(false);
   const caseSounds = useRef<HTMLAudioElement[]>([]);
   const [items, setItems] = useState<MinigameItem[]>([]);
   const [offset, setOffset] = useState(0);
@@ -134,6 +136,17 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [tabRevealDismissing, setTabRevealDismissing] = useState(false);
   const [returningFromWinner, setReturningFromWinner] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
+  const dismissTabReveal = () => {
+    if (tabDismissingRef.current) return;
+    tabDismissingRef.current = true;
+    setTabRevealDismissing(true);
+    tabDismissTimer.current = window.setTimeout(() => {
+      setRevealVisible(false);
+      setTabRevealDismissing(false);
+      tabDismissingRef.current = false;
+      modalClose?.();
+    }, 320);
+  };
 
   useEffect(() => {
     caseSounds.current = [new Audio(CASE_SOUND_URL), new Audio(CASE_SOUND_URL)];
@@ -144,6 +157,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     return () => {
       cancelAnimationFrame(animation.current);
       cancelAnimationFrame(gamepadWatch.current);
+      clearTimeout(tabDismissTimer.current);
       caseSounds.current.forEach((sound) => sound.pause());
       caseSounds.current = [];
     };
@@ -151,15 +165,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
 
   useEffect(() => {
     if (!revealVisible) return;
-    const dismiss = () => {
-      if (tabRevealDismissing) return;
-      setTabRevealDismissing(true);
-      window.setTimeout(() => {
-        setRevealVisible(false);
-        setTabRevealDismissing(false);
-        modalClose?.();
-      }, 320);
-    };
+    const dismiss = () => dismissTabReveal();
     const watchedEvents: (keyof DocumentEventMap)[] = ["keydown", "pointerdown", "mousedown", "click", "touchstart", "touchend"];
     watchedEvents.forEach((name) => document.addEventListener(name, dismiss, true));
 
@@ -235,6 +241,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
               window.setTimeout(() => setReturningFromWinner(false), 520);
             }} />);
           } else {
+            tabDismissingRef.current = false;
             setTabRevealDismissing(false);
             setRevealVisible(true);
           }
@@ -291,7 +298,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)", isolation: "isolate",
     animation: tabRevealDismissing ? "sls-tab-reveal-exit 300ms ease-in both" : undefined,
-  }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
+  }} onPointerDown={dismissTabReveal} onTouchStart={dismissTabReveal} onClick={dismissTabReveal}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
