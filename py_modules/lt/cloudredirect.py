@@ -80,6 +80,7 @@ _PROVIDERS = {
 _AUTH_TIMEOUT = 5 * 60
 _AUTH_LOCK = threading.Lock()
 _AUTH_PENDING = None
+_AUTH_RESULT = None
 
 
 def _native_config_dir() -> str:
@@ -324,13 +325,14 @@ def _pkce(value: str) -> str:
 
 def auth_start(provider: str) -> dict:
     """Start a five-minute OAuth/PKCE loopback flow and return its browser URL."""
-    global _AUTH_PENDING
+    global _AUTH_PENDING, _AUTH_RESULT
     provider = str(provider or "").lower()
     spec = _PROVIDERS.get(provider)
     if not spec:
         return {"success": False, "status": "error", "error": "unknown provider"}
     migrate_provider_data()
     with _AUTH_LOCK:
+        _AUTH_RESULT = None
         if _AUTH_PENDING:
             try:
                 _AUTH_PENDING["listener"].close()
@@ -367,19 +369,84 @@ def auth_start(provider: str) -> dict:
             "verifier": verifier, "redirect_uri": redirect_uri,
             "deadline": time.time() + _AUTH_TIMEOUT,
         }
+        threading.Thread(target=_auth_listener_worker, args=(_AUTH_PENDING,),
+                         name="cloudredirect-oauth", daemon=True).start()
         return {"success": True, "status": "waiting",
                 "authUrl": spec["auth_url"] + "?" + urlencode(query)}
 
 
 def _auth_finish(result: dict) -> dict:
-    global _AUTH_PENDING
+    global _AUTH_PENDING, _AUTH_RESULT
     try:
         if _AUTH_PENDING:
             _AUTH_PENDING["listener"].close()
     except Exception:
         pass
     _AUTH_PENDING = None
+    _AUTH_RESULT = result
     return result
+
+
+def _auth_listener_worker(pending: dict) -> None:
+    """Accept the OAuth redirect independently of the Decky/React page.
+
+    Steam's browser hides or unmounts the plugin UI. Callback handling must
+    therefore live in the backend instead of depending on a frontend poll RPC.
+    """
+    listener = pending["listener"]
+    while time.time() <= pending["deadline"]:
+        with _AUTH_LOCK:
+            if _AUTH_PENDING is not pending:
+                return
+        try:
+            client, _ = listener.accept()
+        except BlockingIOError:
+            time.sleep(0.1)
+            continue
+        except OSError as exc:
+            with _AUTH_LOCK:
+                if _AUTH_PENDING is pending:
+                    _auth_finish({"success": False, "status": "error", "error": str(exc)})
+            return
+        params = {}
+        try:
+            client.settimeout(3)
+            request = client.recv(16384).decode("utf-8", "replace")
+            first = request.splitlines()[0] if request else ""
+            target = first.split(" ", 2)[1] if first.startswith("GET ") else ""
+            params = parse_qs(urlsplit(target).query)
+            html = ("<html><body style='font-family:sans-serif;background:#1e1e1e;color:white;"
+                    "text-align:center;padding:60px'><h1>Signed in</h1>"
+                    "<p>You can close this window and return to Steam.</p></body></html>")
+            response = ("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                        f"Content-Length: {len(html.encode('utf-8'))}\r\nConnection: close\r\n\r\n{html}")
+            client.sendall(response.encode("utf-8"))
+        except Exception as exc:
+            with _AUTH_LOCK:
+                if _AUTH_PENDING is pending:
+                    _auth_finish({"success": False, "status": "error",
+                                  "error": f"callback failed: {exc}"})
+            return
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+        state = (params.get("state") or [""])[0]
+        code = (params.get("code") or [""])[0]
+        oauth_error = (params.get("error") or [""])[0]
+        with _AUTH_LOCK:
+            if _AUTH_PENDING is not pending:
+                return
+            if not code:
+                _auth_finish({"success": False, "status": "error",
+                              "error": oauth_error or "no authorization code"})
+            else:
+                _exchange_auth_code(pending, code, state)
+        return
+    with _AUTH_LOCK:
+        if _AUTH_PENDING is pending:
+            _auth_finish({"success": False, "status": "timeout", "error": "sign-in timed out"})
 
 
 def _exchange_auth_code(pending: dict, code: str, state: str) -> dict:
@@ -424,12 +491,12 @@ def _exchange_auth_code(pending: dict, code: str, state: str) -> dict:
 
 def auth_callback(value: str) -> dict:
     """Finish a pending OAuth flow from a pasted code or callback URL."""
-    global _AUTH_PENDING
+    global _AUTH_PENDING, _AUTH_RESULT
     raw = str(value or "").strip()
     with _AUTH_LOCK:
         pending = _AUTH_PENDING
         if not pending:
-            return {"success": False, "status": "idle", "error": "No CloudRedirect sign-in is waiting"}
+            return _AUTH_RESULT or {"success": False, "status": "idle", "error": "No CloudRedirect sign-in is waiting"}
         params = parse_qs(urlsplit(raw).query) if "://" in raw or "?" in raw else {}
         code = (params.get("code") or [raw])[0]
         state = (params.get("state") or [""])[0]
@@ -440,46 +507,15 @@ def auth_callback(value: str) -> dict:
 
 
 def auth_poll() -> dict:
-    """Poll the nonblocking callback and exchange the code when it arrives."""
-    global _AUTH_PENDING
+    """Read backend-owned OAuth progress; callback handling runs independently."""
+    global _AUTH_PENDING, _AUTH_RESULT
     with _AUTH_LOCK:
+        if _AUTH_RESULT:
+            return dict(_AUTH_RESULT)
         pending = _AUTH_PENDING
         if not pending:
             return {"success": True, "status": "idle"}
-        if time.time() > pending["deadline"]:
-            return _auth_finish({"success": False, "status": "timeout", "error": "sign-in timed out"})
-        try:
-            client, _ = pending["listener"].accept()
-        except BlockingIOError:
-            return {"success": True, "status": "waiting"}
-        except Exception as exc:
-            return _auth_finish({"success": False, "status": "error", "error": str(exc)})
-        try:
-            client.settimeout(2)
-            request = client.recv(16384).decode("utf-8", "replace")
-            first = request.splitlines()[0] if request else ""
-            target = first.split(" ", 2)[1] if first.startswith("GET ") else ""
-            params = parse_qs(urlsplit(target).query)
-            html = ("<html><body style='font-family:sans-serif;background:#1e1e1e;color:white;"
-                    "text-align:center;padding:60px'><h1>Signed in</h1>"
-                    "<p>You can close this window and return to Steam.</p></body></html>")
-            response = ("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-                        f"Content-Length: {len(html.encode('utf-8'))}\r\nConnection: close\r\n\r\n{html}")
-            client.sendall(response.encode("utf-8"))
-        except Exception as exc:
-            client.close()
-            return _auth_finish({"success": False, "status": "error", "error": f"callback failed: {exc}"})
-        finally:
-            try:
-                client.close()
-            except Exception:
-                pass
-        state = (params.get("state") or [""])[0]
-        code = (params.get("code") or [""])[0]
-        oauth_error = (params.get("error") or [""])[0]
-        if not code:
-            return _auth_finish({"success": False, "status": "error", "error": oauth_error or "no authorization code"})
-        return _exchange_auth_code(pending, code, state)
+        return {"success": True, "status": "waiting"}
 
 
 _STORAGE_META = {
