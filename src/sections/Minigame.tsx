@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { MinigameItem, minigameRoll } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 
-const CARD_WIDTH = 220;
+const CARD_WIDTH = 300;
 const CARD_GAP = 10;
 const DURATION = 5700;
 const CASE_SOUND_URL = "https://raw.githubusercontent.com/buzacristian/Case-Simulator/main/Audio/CSGO%20Case%20Opening%20Sound%20Effect.mp3";
@@ -17,7 +17,7 @@ const PRICE_MODES = [
 export function MinigameSection() {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
-  const caseSound = useRef<HTMLAudioElement | null>(null);
+  const caseSounds = useRef<HTMLAudioElement[]>([]);
   const [items, setItems] = useState<MinigameItem[]>([]);
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -26,12 +26,15 @@ export function MinigameSection() {
   const [minPrice, setMinPrice] = useState(0);
 
   useEffect(() => {
-    caseSound.current = new Audio(CASE_SOUND_URL);
-    caseSound.current.preload = "auto";
+    caseSounds.current = [new Audio(CASE_SOUND_URL), new Audio(CASE_SOUND_URL)];
+    caseSounds.current.forEach((sound) => {
+      sound.preload = "auto";
+      sound.volume = 1;
+    });
     return () => {
       cancelAnimationFrame(animation.current);
-      caseSound.current?.pause();
-      caseSound.current = null;
+      caseSounds.current.forEach((sound) => sound.pause());
+      caseSounds.current = [];
     };
   }, []);
 
@@ -52,10 +55,10 @@ export function MinigameSection() {
       setItems(result.items);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       try {
-        if (caseSound.current) {
-          caseSound.current.currentTime = 0;
-          void caseSound.current.play();
-        }
+        caseSounds.current.forEach((sound) => {
+          sound.currentTime = 0;
+          void sound.play();
+        });
       } catch { /* visual opening still works if remote audio is unavailable */ }
       const width = viewport.current?.clientWidth || 760;
       const target = Math.max(0, result.winnerIndex * (CARD_WIDTH + CARD_GAP) + CARD_WIDTH / 2 - width / 2);
@@ -80,17 +83,21 @@ export function MinigameSection() {
   return <PanelSection title="Store Roulette">
     <PanelSectionRow><div style={{ width: "100%" }}>
       <div style={{ fontSize: 10, fontWeight: 800, opacity: .68, letterSpacing: .8, marginBottom: 4 }}>PRICE MODE</div>
-      <div style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
-        {PRICE_MODES.map((mode) => <DialogCheckbox key={mode.cents} label={mode.label}
+      <div style={{ display: "grid", width: "100%", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+        {PRICE_MODES.map((mode) => <div key={mode.cents} style={{
+          minWidth: 0, minHeight: 42, borderRadius: 6, overflow: "hidden",
+          background: minPrice === mode.cents ? "rgba(83,168,230,.18)" : "rgba(255,255,255,.035)",
+          border: minPrice === mode.cents ? "1px solid rgba(111,195,255,.5)" : "1px solid rgba(255,255,255,.08)",
+        }}><DialogCheckbox label={mode.label}
           controlled checked={minPrice === mode.cents} disabled={busy}
-          onChange={() => setMinPrice(mode.cents)} />)}
+          onChange={() => setMinPrice(mode.cents)} /></div>)}
       </div>
     </div></PanelSectionRow>
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
       Crack open the entire Steam Store. The winning game is selected from live Store AppIDs and games already in your library are excluded.
     </div></PanelSectionRow>
     <PanelSectionRow><div ref={viewport} style={{
-      position: "relative", width: "100%", height: 224, overflow: "hidden", borderRadius: 11,
+      position: "relative", width: "100%", height: 160, overflow: "hidden", borderRadius: 11,
       border: "1px solid rgba(115, 190, 255, .34)", background: "linear-gradient(180deg, #0b1420, #111d2b)",
       boxShadow: "inset 0 0 36px rgba(0,0,0,.65), 0 8px 24px rgba(0,0,0,.26)",
     }}>
@@ -101,11 +108,11 @@ export function MinigameSection() {
       </div>}
       <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "10px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
         {items.map((item, index) => <div key={`${item.appid}-${index}`} style={{
-          position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: 204, overflow: "hidden", borderRadius: 8,
+          position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: 140, overflow: "hidden", borderRadius: 8,
           border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}`,
           background: "linear-gradient(145deg,#23354a,#111c29)", boxSizing: "border-box",
         }}>
-          <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover", opacity: .92 }} />
+          <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "contain", opacity: .92 }} />
         </div>)}
       </div>
     </div></PanelSectionRow>
