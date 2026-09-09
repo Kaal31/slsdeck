@@ -100,6 +100,7 @@ interface RowDef {
   fixType: string;
   info?: FixInfo;
   description?: string;
+  manualDownload?: boolean;
 }
 
 // Colour a source badge (Ryuu / luatools ship Online / Bypass / Crack / Tested /
@@ -593,6 +594,12 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       setMsg("Game not installed — press “Pin this version” to add it, then download the game in Steam to install the fix.");
       return;
     }
+    if (row.manualDownload) {
+      Navigation.NavigateToExternalWeb(row.info.url);
+      setManualDl({ url: row.info.url, kind: "crak" });
+      setMsg("NERAI download opened. Save the archive to Downloads, then press “Apply from Downloads”.");
+      return;
+    }
     await runApply(`${row.key}:fix`, row.label, () =>
       applyFix(appid, row.info!.url!, installPath, row.fixType, check?.gameName || "")
     );
@@ -1064,6 +1071,20 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       description: e.description,
     });
   });
+  const neraiList = ((check as any).neraiFixes || []) as Array<{
+    id: string; category: string; name: string; url: string; file?: string;
+  }>;
+  neraiList.forEach((e, i) => {
+    const online = e.category === "online";
+    rows.push({
+      key: `nerai:${e.category}:${e.id || i}`,
+      label: online ? "Online Fix (NERAI)" : e.category === "game" ? "Game Fix (NERAI)" : "Bypass (NERAI)",
+      fixType: online ? "Online Fix (NERAI)" : e.category === "game" ? "NERAI Game Fix" : "NERAI Bypass",
+      info: { status: 200, available: true, url: e.url, file: e.file, badge: online ? "online" : "bypass" } as any,
+      description: e.name && e.name !== check?.gameName ? `NERAI catalogue: ${e.name}` : undefined,
+      manualDownload: true,
+    });
+  });
   rows.push({
     key: "unsteam",
     label: "Online Fix (Unsteam) · Universal",
@@ -1351,7 +1372,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             )}
             <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
               <DialogButton style={bs} disabled={working || !!awaiting || !avail} onClick={() => doFix(row)}>
-                {busy.startsWith(flowKey) ? "Working…" : avail ? "Apply this fix" : "No fix"}
+                {busy.startsWith(flowKey) ? "Working…" : avail ? (row.manualDownload ? "Download NERAI fix" : "Apply this fix") : "No fix"}
               </DialogButton>
             </Focusable>
             {renderFixFlow(flowKey)}
