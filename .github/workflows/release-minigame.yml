@@ -1,0 +1,124 @@
+name: Release minigame
+
+on:
+  push:
+    branches:
+      - minigame
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-minigame
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout minigame
+        uses: actions/checkout@v4
+        with:
+          ref: minigame
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Stamp unique rolling version
+        env:
+          ROLLING_VERSION: 0.9.61-minigame.${{ github.run_number }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const expectedName = 'SLSDeckUniversal';
+          for (const file of ['plugin.json', 'package.json']) {
+            const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (value.name !== expectedName) {
+              throw new Error(`${file} plugin name is ${value.name}, expected ${expectedName}`);
+            }
+            value.version = process.env.ROLLING_VERSION;
+            fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+          }
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          if (lock.name !== expectedName || lock.packages?.['']?.name !== expectedName) {
+            throw new Error('package-lock.json plugin name does not match SLSDeckUniversal');
+          }
+          NODE
+          grep -q '"name": "SLSDeckUniversal"' plugin.json
+          grep -q "\"version\": \"$ROLLING_VERSION\"" plugin.json
+      - name: Build frontend
+        run: npm run build
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+      - name: Verify minigame is compiled
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/index.js
+          grep -q 'Store Roulette' dist/index.js
+          grep -q 'Open Store case' dist/index.js
+          grep -q 'minigame_roll' dist/index.js
+      - name: Restore tracked dist support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Build Ubisoft package dependency
+        run: |
+          python3 .github/scripts/build-ubisoft-packages.py
+          unzip -t ubisoft-packages.zip
+          unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-minigame.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          test -f artifact/SLSDeckUniversal/package.json
+          test -f artifact/SLSDeckUniversal/plugin.json
+          node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") process.exit(1)'
+          cd artifact
+          zip -qr ../SLSDeckUniversal-minigame.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-minigame.zip | grep -q 'SLSDeckUniversal/plugin.json'
+          test "$(unzip -Z1 SLSDeckUniversal-minigame.zip | awk -F/ 'NF {print $1}' | sort -u)" = "SLSDeckUniversal"
+      - name: Update rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="minigame-latest"
+          TITLE="SLSDeck Minigame"
+          NOTES="Rolling prerelease built automatically from the minigame branch."
+          git fetch origin --tags --force
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target minigame
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-minigame.zip ubisoft-packages.zip --clobber
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-minigame
+          path: SLSDeckUniversal-minigame.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Ubisoft dependency artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubisoft-packages
+          path: ubisoft-packages.zip
+          if-no-files-found: error
+          retention-days: 14
