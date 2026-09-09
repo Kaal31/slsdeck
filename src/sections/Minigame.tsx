@@ -1,6 +1,6 @@
 import { ButtonItem, DialogCheckbox, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
-import { MinigameItem, minigameRoll } from "../api";
+import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 
 const CARD_WIDTH = 300;
@@ -23,6 +23,22 @@ function displayPrice(item: MinigameItem): string {
   } catch {
     return `$${(item.priceCents / 100).toFixed(2)}`;
   }
+}
+
+async function addWinnerToSlsSteam(item: MinigameItem): Promise<void> {
+  const started = await startAdd(item.appid);
+  if (!started.success) throw new Error(started.error || "SLS Steam could not start adding the winner");
+  for (let attempt = 0; attempt < 240; attempt++) {
+    await new Promise((resolve) => window.setTimeout(resolve, 750));
+    const result = await getAddStatus(item.appid);
+    if (!result.success) continue;
+    const status = result.state?.status || "";
+    if (status === "done") return;
+    if (status === "failed" || status === "cancelled") {
+      throw new Error(result.state?.error || `SLS Steam add ${status}`);
+    }
+  }
+  throw new Error("Timed out waiting for SLS Steam to add the winning game");
 }
 
 export function MinigameSection() {
@@ -97,6 +113,10 @@ export function MinigameSection() {
       if (!result.success || !result.items?.length || result.winnerIndex === undefined || !result.winner) {
         throw new Error(result.error || "The Steam Store did not return a game");
       }
+      const addResult = addWinnerToSlsSteam(result.winner).then(
+        () => ({ success: true as const }),
+        (cause: any) => ({ success: false as const, error: String(cause?.message || cause) }),
+      );
       setItems(result.items);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       try {
@@ -115,9 +135,16 @@ export function MinigameSection() {
         setOffset(position);
         if (progress < 1) animation.current = requestAnimationFrame(frame);
         else {
-          setWinner(result.winner);
-          setRevealVisible(true);
-          setBusy(false);
+          void addResult.then((added) => {
+            if (!added.success) {
+              setError(`Winner selected, but it was not added: ${added.error}`);
+              setBusy(false);
+              return;
+            }
+            setWinner(result.winner);
+            setRevealVisible(true);
+            setBusy(false);
+          });
         }
       };
       animation.current = requestAnimationFrame(frame);
@@ -172,7 +199,7 @@ export function MinigameSection() {
       </div>
     </div></PanelSectionRow>}
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
-      Crack open the entire Steam Store. The winning game is selected from live Store AppIDs and games already in your library are excluded.
+      Crack open the entire Steam Store. Games already in your library are excluded, and the winner is automatically added with SLS Steam.
     </div></PanelSectionRow>
     <PanelSectionRow><div ref={viewport} style={{
       position: "relative", width: "100%", height: 160, overflow: "hidden", borderRadius: 11,
