@@ -1,4 +1,4 @@
-import { ButtonItem, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
+import { ButtonItem, DialogCheckbox, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { MinigameItem, minigameRoll } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
@@ -7,6 +7,12 @@ const CARD_WIDTH = 220;
 const CARD_GAP = 10;
 const DURATION = 5700;
 const CASE_SOUND_URL = "https://raw.githubusercontent.com/buzacristian/Case-Simulator/main/Audio/CSGO%20Case%20Opening%20Sound%20Effect.mp3";
+const PRICE_MODES = [
+  { label: "Random", cents: 0 },
+  { label: "$60+", cents: 6000 },
+  { label: "$100+", cents: 10000 },
+  { label: "$1000+", cents: 100000 },
+];
 
 export function MinigameSection() {
   const viewport = useRef<HTMLDivElement>(null);
@@ -17,6 +23,7 @@ export function MinigameSection() {
   const [busy, setBusy] = useState(false);
   const [winner, setWinner] = useState<MinigameItem>();
   const [error, setError] = useState("");
+  const [minPrice, setMinPrice] = useState(0);
 
   useEffect(() => {
     caseSound.current = new Audio(CASE_SOUND_URL);
@@ -38,7 +45,7 @@ export function MinigameSection() {
     cancelAnimationFrame(animation.current);
     setBusy(true); setWinner(undefined); setError(""); setItems([]); setOffset(0);
     try {
-      const result = await minigameRoll(listLibraryAppIds());
+      const result = await minigameRoll(listLibraryAppIds(), minPrice);
       if (!result.success || !result.items?.length || result.winnerIndex === undefined || !result.winner) {
         throw new Error(result.error || "The Steam Store did not return a game");
       }
@@ -71,6 +78,14 @@ export function MinigameSection() {
   };
 
   return <PanelSection title="Store Roulette">
+    <PanelSectionRow><div style={{ width: "100%" }}>
+      <div style={{ fontSize: 10, fontWeight: 800, opacity: .68, letterSpacing: .8, marginBottom: 4 }}>PRICE MODE</div>
+      <div style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+        {PRICE_MODES.map((mode) => <DialogCheckbox key={mode.cents} label={mode.label}
+          controlled checked={minPrice === mode.cents} disabled={busy}
+          onChange={() => setMinPrice(mode.cents)} />)}
+      </div>
+    </div></PanelSectionRow>
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
       Crack open the entire Steam Store. The winning game is selected from live Store AppIDs and games already in your library are excluded.
     </div></PanelSectionRow>
