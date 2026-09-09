@@ -31,6 +31,7 @@ from . import ryuu
 from . import slssteam
 from . import pinsource
 from . import luatools
+from . import nerai
 from . import settings as _settings
 
 FIX_STATE: Dict[int, Dict[str, Any]] = {}
@@ -344,6 +345,16 @@ def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
     except Exception as exc:
         logger.warn(f"SLSDeck: luatools fallback probe failed: {exc}")
     result["luatoolsFixes"] = luatools_fixes
+
+    # Public NERAI catalogue. Keep this provider independent in the response;
+    # only the final archive installation shares generic fix machinery.
+    try:
+        result["neraiFixes"] = nerai.find_for_game(
+            appid, game_name, backend_name, result["gameName"]
+        )
+    except Exception as exc:
+        logger.warn(f"SLSDeck: NERAI lookup failed: {exc}")
+        result["neraiFixes"] = []
 
     # lua.tools fix CATALOG — the account-gated full list (the desktop app's
     # FixesViewModel: /api/denuvo/fixes?appid=). Every release for this game, each
