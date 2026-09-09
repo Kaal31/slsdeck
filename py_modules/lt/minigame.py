@@ -89,14 +89,24 @@ def _store_game(appid: int) -> Dict[str, Any] | None:
         response.raise_for_status()
         entry = response.json().get(str(appid), {})
         data = entry.get("data") if entry.get("success") else None
-        if not isinstance(data, dict) or data.get("type") != "game" or not data.get("name"):
+        if (
+            not isinstance(data, dict)
+            or data.get("type") != "game"
+            or not data.get("name")
+            or bool(data.get("is_free"))
+        ):
+            return None
+        online_markers = ("massively multiplayer", "mmo")
+        classifications = []
+        for group in (data.get("categories") or [], data.get("genres") or []):
+            classifications.extend(str(item.get("description") or "").lower() for item in group if isinstance(item, dict))
+        if any(marker in label for label in classifications for marker in online_markers):
             return None
         return {
             "appid": appid,
             "name": str(data["name"]),
             "image": str(data.get("header_image") or ""),
             "shortDescription": str(data.get("short_description") or ""),
-            "isFree": bool(data.get("is_free")),
         }
     except Exception:
         return None
