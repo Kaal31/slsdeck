@@ -122,7 +122,7 @@ export function MinigameSection() {
       {winner.shortDescription && <div style={{ fontSize: 10, opacity: .7, marginTop: 5, lineHeight: 1.35 }}>{winner.shortDescription}</div>}
     </div></PanelSectionRow>}
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
-    <PanelSectionRow><ButtonItem layout="below" onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
+    <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
     {winner && <PanelSectionRow><ButtonItem layout="below" onClick={openWinner}>View {winner.name} in Store</ButtonItem></PanelSectionRow>}
   </PanelSection>;
 }
