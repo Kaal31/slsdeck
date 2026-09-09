@@ -14,6 +14,17 @@ const PRICE_MODES = [
   { label: "$1000+", cents: 100000 },
 ];
 
+function displayPrice(item: MinigameItem): string {
+  if (!item.priceCents) return "Store price unavailable";
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency", currency: item.currency || "USD",
+    }).format(item.priceCents / 100);
+  } catch {
+    return `$${(item.priceCents / 100).toFixed(2)}`;
+  }
+}
+
 export function MinigameSection() {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
@@ -120,10 +131,25 @@ export function MinigameSection() {
         </div>)}
       </div>
     </div></PanelSectionRow>
-    {winner && <PanelSectionRow><div style={{ padding: "11px 12px", borderRadius: 9, border: "1px solid rgba(255,188,77,.42)", background: "linear-gradient(120deg,rgba(95,56,17,.72),rgba(38,27,47,.8))" }}>
-      <div style={{ fontSize: 10, color: "#ffc765", fontWeight: 800, letterSpacing: 1 }}>UNLOCKED</div>
-      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>{winner.name}</div>
-      {winner.shortDescription && <div style={{ fontSize: 10, opacity: .7, marginTop: 5, lineHeight: 1.35 }}>{winner.shortDescription}</div>}
+    {winner && <PanelSectionRow><div style={{ width: "100%", padding: "18px 10px 15px", textAlign: "center", boxSizing: "border-box" }}>
+      <style>{`@keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(24px) scale(.9); filter: blur(5px); } 65% { transform: translateY(-5px) scale(1.025); } 100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); } }`}</style>
+      <img
+        src={`https://cdn.cloudflare.steamstatic.com/steam/apps/${winner.appid}/library_600x900_2x.jpg`}
+        alt=""
+        onError={(event) => {
+          if (event.currentTarget.dataset.fallback) return;
+          event.currentTarget.dataset.fallback = "1";
+          event.currentTarget.src = winner.image;
+        }}
+        style={{
+          display: "block", maxWidth: "76%", maxHeight: 300, margin: "0 auto 14px", borderRadius: 10,
+          objectFit: "contain", animation: "sls-game-unlocked 620ms cubic-bezier(.2,.8,.2,1) both",
+          boxShadow: "0 18px 38px rgba(0,0,0,.58), 0 0 28px rgba(91,174,236,.2)",
+        }}
+      />
+      <div style={{ fontSize: 10, color: "#77c9ff", fontWeight: 800, letterSpacing: 1.2 }}>GAME UNLOCKED</div>
+      <div style={{ fontSize: 19, fontWeight: 800, marginTop: 4 }}>{winner.name}</div>
+      <div style={{ fontSize: 15, color: "#a7e7bb", fontWeight: 800, marginTop: 7 }}>{displayPrice(winner)}</div>
     </div></PanelSectionRow>}
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
     <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
