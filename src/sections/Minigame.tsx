@@ -3,36 +3,30 @@ import { useEffect, useRef, useState } from "react";
 import { MinigameItem, minigameRoll } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 
-const CARD_WIDTH = 154;
-const CARD_GAP = 8;
+const CARD_WIDTH = 220;
+const CARD_GAP = 10;
 const DURATION = 5700;
-
-function tone(frequency: number, duration: number, gain = .035): void {
-  try {
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    const context = new AudioContextClass();
-    const oscillator = context.createOscillator();
-    const volume = context.createGain();
-    oscillator.type = "triangle";
-    oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-    volume.gain.setValueAtTime(gain, context.currentTime);
-    volume.gain.exponentialRampToValueAtTime(.0001, context.currentTime + duration);
-    oscillator.connect(volume); volume.connect(context.destination);
-    oscillator.start(); oscillator.stop(context.currentTime + duration);
-    oscillator.onended = () => context.close();
-  } catch { /* audio is ornamental */ }
-}
+const CASE_SOUND_URL = "https://raw.githubusercontent.com/buzacristian/Case-Simulator/main/Audio/CSGO%20Case%20Opening%20Sound%20Effect.mp3";
 
 export function MinigameSection() {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
+  const caseSound = useRef<HTMLAudioElement | null>(null);
   const [items, setItems] = useState<MinigameItem[]>([]);
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [winner, setWinner] = useState<MinigameItem>();
   const [error, setError] = useState("");
 
-  useEffect(() => () => cancelAnimationFrame(animation.current), []);
+  useEffect(() => {
+    caseSound.current = new Audio(CASE_SOUND_URL);
+    caseSound.current.preload = "auto";
+    return () => {
+      cancelAnimationFrame(animation.current);
+      caseSound.current?.pause();
+      caseSound.current = null;
+    };
+  }, []);
 
   const openWinner = () => {
     if (!winner) return;
@@ -50,22 +44,24 @@ export function MinigameSection() {
       }
       setItems(result.items);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      try {
+        if (caseSound.current) {
+          caseSound.current.currentTime = 0;
+          void caseSound.current.play();
+        }
+      } catch { /* visual opening still works if remote audio is unavailable */ }
       const width = viewport.current?.clientWidth || 760;
       const target = Math.max(0, result.winnerIndex * (CARD_WIDTH + CARD_GAP) + CARD_WIDTH / 2 - width / 2);
       const started = performance.now();
-      let previousCard = -1;
       const frame = (now: number) => {
         const progress = Math.min(1, (now - started) / DURATION);
         const eased = 1 - Math.pow(1 - progress, 4);
         const position = target * eased;
         setOffset(position);
-        const card = Math.floor((position + width / 2) / (CARD_WIDTH + CARD_GAP));
-        if (card !== previousCard) { previousCard = card; tone(260 + Math.min(card, 18) * 7, .035); }
         if (progress < 1) animation.current = requestAnimationFrame(frame);
         else {
           setWinner(result.winner);
           setBusy(false);
-          tone(523, .12, .05); window.setTimeout(() => tone(784, .2, .045), 115);
         }
       };
       animation.current = requestAnimationFrame(frame);
@@ -79,7 +75,7 @@ export function MinigameSection() {
       Crack open the entire Steam Store. The winning game is selected from live Store AppIDs and games already in your library are excluded.
     </div></PanelSectionRow>
     <PanelSectionRow><div ref={viewport} style={{
-      position: "relative", width: "100%", height: 154, overflow: "hidden", borderRadius: 11,
+      position: "relative", width: "100%", height: 224, overflow: "hidden", borderRadius: 11,
       border: "1px solid rgba(115, 190, 255, .34)", background: "linear-gradient(180deg, #0b1420, #111d2b)",
       boxShadow: "inset 0 0 36px rgba(0,0,0,.65), 0 8px 24px rgba(0,0,0,.26)",
     }}>
@@ -88,15 +84,13 @@ export function MinigameSection() {
       {!items.length && <div style={{ height: "100%", display: "grid", placeItems: "center", textAlign: "center", opacity: .62, letterSpacing: .5 }}>
         {busy ? "LOADING THE STEAM STORE…" : "A RANDOM GAME AWAITS"}
       </div>}
-      <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "9px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
+      <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "10px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
         {items.map((item, index) => <div key={`${item.appid}-${index}`} style={{
-          position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: 134, overflow: "hidden", borderRadius: 7,
-          border: "1px solid rgba(255,255,255,.14)", background: "linear-gradient(145deg,#23354a,#111c29)",
+          position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: 204, overflow: "hidden", borderRadius: 8,
+          border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}`,
+          background: "linear-gradient(145deg,#23354a,#111c29)", boxSizing: "border-box",
         }}>
-          <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: 86, objectFit: "cover", opacity: .86 }} />
-          <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, minHeight: 48, padding: "7px 8px 5px", boxSizing: "border-box", background: "linear-gradient(180deg,rgba(12,20,31,.87),#0b121d)", borderTop: `3px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}` }}>
-            <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.16, maxHeight: 25, overflow: "hidden" }}>{item.name}</div>
-          </div>
+          <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "cover", opacity: .92 }} />
         </div>)}
       </div>
     </div></PanelSectionRow>
@@ -104,7 +98,6 @@ export function MinigameSection() {
       <div style={{ fontSize: 10, color: "#ffc765", fontWeight: 800, letterSpacing: 1 }}>UNLOCKED</div>
       <div style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>{winner.name}</div>
       {winner.shortDescription && <div style={{ fontSize: 10, opacity: .7, marginTop: 5, lineHeight: 1.35 }}>{winner.shortDescription}</div>}
-      {winner.isFree && <div style={{ fontSize: 10, color: "#84e3a5", fontWeight: 700, marginTop: 5 }}>Free to play</div>}
     </div></PanelSectionRow>}
     {error && <PanelSectionRow><div style={{ color: "#ff8b83", fontSize: 11 }}>{error}</div></PanelSectionRow>}
     <PanelSectionRow><ButtonItem layout="below" disabled={busy} onClick={roll}>{busy ? "Opening…" : winner ? "Open another" : "Open Store case"}</ButtonItem></PanelSectionRow>
