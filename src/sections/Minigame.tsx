@@ -33,19 +33,28 @@ function GameArtwork({ item }: { item: MinigameItem }) {
     style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }} />;
 }
 
-function WinnerRevealModal({ item, closeModal }: { item: MinigameItem; closeModal?: () => void }) {
+function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem; onReturn?: () => void; closeModal?: () => void }) {
   const gamepadFrame = useRef(0);
+  const [dismissing, setDismissing] = useState(false);
+  const dismiss = () => {
+    if (dismissing) return;
+    setDismissing(true);
+    window.setTimeout(() => {
+      closeModal?.();
+      window.setTimeout(() => onReturn?.(), 0);
+    }, 320);
+  };
   useEffect(() => {
     let armed = false;
     const armTimer = window.setTimeout(() => { armed = true; }, 350);
-    const dismiss = () => { if (armed) closeModal?.(); };
-    document.addEventListener("keydown", dismiss, true);
-    document.addEventListener("pointerdown", dismiss, true);
-    document.addEventListener("touchstart", dismiss, true);
+    const dismissWhenArmed = () => { if (armed) dismiss(); };
+    document.addEventListener("keydown", dismissWhenArmed, true);
+    document.addEventListener("pointerdown", dismissWhenArmed, true);
+    document.addEventListener("touchstart", dismissWhenArmed, true);
     let previous = Array.from(navigator.getGamepads?.() || []).map((pad) => pad?.buttons.map((button) => button.pressed) || []);
     const watch = () => {
       const pads = Array.from(navigator.getGamepads?.() || []);
-      if (armed && pads.some((pad, pi) => pad?.buttons.some((button, bi) => button.pressed && !previous[pi]?.[bi]))) closeModal?.();
+      if (armed && pads.some((pad, pi) => pad?.buttons.some((button, bi) => button.pressed && !previous[pi]?.[bi]))) dismiss();
       else {
         previous = pads.map((pad) => pad?.buttons.map((button) => button.pressed) || []);
         gamepadFrame.current = requestAnimationFrame(watch);
@@ -54,20 +63,21 @@ function WinnerRevealModal({ item, closeModal }: { item: MinigameItem; closeModa
     gamepadFrame.current = requestAnimationFrame(watch);
     return () => {
       clearTimeout(armTimer);
-      document.removeEventListener("keydown", dismiss, true);
-      document.removeEventListener("pointerdown", dismiss, true);
-      document.removeEventListener("touchstart", dismiss, true);
+      document.removeEventListener("keydown", dismissWhenArmed, true);
+      document.removeEventListener("pointerdown", dismissWhenArmed, true);
+      document.removeEventListener("touchstart", dismissWhenArmed, true);
       cancelAnimationFrame(gamepadFrame.current);
     };
-  }, [closeModal]);
-  return <ModalRoot closeModal={closeModal} onCancel={closeModal} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
+  }, [closeModal, dismissing]);
+  return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
     <style>{`
       .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
-      @keyframes sls-winner-enter { 0% { opacity:0; transform:scale(.72) translateY(24px); filter:blur(7px); } 65% { opacity:1; transform:scale(1.06) translateY(-7px); filter:blur(0); } 100% { transform:scale(1) translateY(0); } }
+      @keyframes sls-winner-enter { 0% { opacity:0; transform:translateX(7vw) scale(.72) translateY(24px); } 65% { opacity:1; transform:translateX(7vw) scale(1.06) translateY(-7px); } 100% { transform:translateX(7vw) scale(1) translateY(0); } }
       @keyframes sls-winner-idle { 0%,100% { transform:translateY(0) rotate(-.25deg); } 50% { transform:translateY(-9px) rotate(.25deg); } }
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
+      @keyframes sls-winner-exit { from { opacity:1; transform:translateX(7vw) scale(1); } to { opacity:0; transform:translateX(7vw) scale(.88) translateY(18px); } }
     `}</style>
-    <div onPointerDown={closeModal} style={{ width: "min(72vw,430px)", textAlign: "center", animation: "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both" }}>
+    <div onPointerDown={dismiss} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)", textAlign: "center", transform:"translateX(7vw)", animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both" }}>
       <div style={{ animation: "sls-winner-idle 3s ease-in-out 1s infinite" }}>
         <div style={{ position:"relative", width:"100%", aspectRatio:"16 / 9", overflow:"hidden", borderRadius:12, background:"linear-gradient(145deg,#23354a,#111c29)", boxShadow:"0 24px 58px rgba(0,0,0,.82),0 0 44px rgba(255,190,75,.48)" }}>
           <GameArtwork item={item} />
@@ -122,6 +132,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [minPrice, setMinPrice] = useState(readRoulettePrice);
   const [priceExpanded, setPriceExpanded] = useState(false);
   const [revealVisible, setRevealVisible] = useState(false);
+  const [returningFromWinner, setReturningFromWinner] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
 
   useEffect(() => {
@@ -213,7 +224,10 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
           setRevealVisible(false);
           setBusy(false);
           onBusyChange?.(false);
-          showModal(<WinnerRevealModal item={result.winner!} />);
+          showModal(<WinnerRevealModal item={result.winner!} onReturn={() => {
+            setReturningFromWinner(true);
+            window.setTimeout(() => setReturningFromWinner(false), 520);
+          }} />);
           void addResult.then((added) => {
             if (!added.success) {
               setWinnerAdded(false);
@@ -235,7 +249,9 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     position: "relative", width: "100%", height: quickAccess ? 210 : 160, overflow: "hidden", borderRadius: 11,
     border: "1px solid rgba(115, 190, 255, .34)", background: "linear-gradient(180deg, #0b1420, #111d2b)",
     boxShadow: "inset 0 0 36px rgba(0,0,0,.65), 0 8px 24px rgba(0,0,0,.26)",
+    animation: returningFromWinner ? "sls-roulette-return 480ms ease-out both" : undefined,
   }}>
+    <style>{`@keyframes sls-roulette-return { from { opacity:.58; filter:blur(5px) brightness(.68); } to { opacity:1; filter:blur(0) brightness(1); } }`}</style>
     <div style={{ position: "absolute", zIndex: 4, left: "50%", top: 0, bottom: 0, width: 2, transform: "translateX(-1px)", background: "linear-gradient(#ffd86a, #ff9c32, #ffd86a)", boxShadow: "0 0 13px #ffb23f" }} />
     <div style={{ position: "absolute", zIndex: 5, left: "50%", top: 0, transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: "11px solid #ffd86a" }} />
     {!items.length && busy && <div style={{ position: "absolute", zIndex: 3, inset: 0, display: "grid", placeItems: "center", textAlign: "center", background: "rgba(5,10,17,.58)", letterSpacing: .5 }}>
