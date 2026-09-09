@@ -297,8 +297,8 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)", isolation: "isolate",
-    animation: tabRevealDismissing ? "sls-tab-reveal-exit 300ms ease-in both" : undefined,
-  }} onPointerDown={dismissTabReveal} onTouchStart={dismissTabReveal} onClick={dismissTabReveal}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
+    animation: tabRevealDismissing ? "sls-tab-backdrop-exit 300ms ease-in both" : undefined,
+  }} onPointerDown={dismissTabReveal} onTouchStart={dismissTabReveal} onClick={dismissTabReveal}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative", animation: tabRevealDismissing ? "sls-tab-card-exit 300ms ease-in both" : undefined }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
@@ -307,7 +307,8 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         @keyframes sls-cover-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
         @keyframes sls-cover-shine { 0% { transform: translateX(-170%) skewX(-22deg); } 48%,100% { transform: translateX(260%) skewX(-22deg); } }
         @keyframes sls-unlock-title { 0% { opacity: 0; transform: scale(.75); text-shadow: 0 0 0 transparent; } 55% { opacity: 1; transform: scale(1.13); text-shadow: 0 0 18px #ffc95c; } 100% { transform: scale(1); text-shadow: 0 0 7px rgba(255,201,92,.45); } }
-        @keyframes sls-tab-reveal-exit { from { opacity:1; } to { opacity:0; transform:scale(.9) translateY(18px); } }
+        @keyframes sls-tab-backdrop-exit { from { opacity:1; } to { opacity:0; } }
+        @keyframes sls-tab-card-exit { from { transform:scale(1) translateY(0); } to { transform:scale(.9) translateY(18px); } }
       `}</style>
       <div>
         <div style={{ position: "relative", width: "100%", minHeight: 240, display: "grid", placeItems: "center" }}>
