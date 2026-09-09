@@ -29,7 +29,7 @@ import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
+                nerai, opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
@@ -2197,4 +2197,3 @@ class Plugin:
 
     async def os_resolve(self, appid: int, choice: str) -> Dict[str, Any]:
         return await self._run(opensave.resolve, int(appid), str(choice))
-
