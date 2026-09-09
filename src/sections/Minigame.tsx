@@ -187,9 +187,9 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   </div>;
 
   return <>{winner && revealVisible && createPortal(<div style={{
-    position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
+    position: "fixed", zIndex: 2147483647, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
-    backdropFilter: "blur(2px)",
+    backdropFilter: "blur(2px)", isolation: "isolate",
   }} onPointerDown={() => setRevealVisible(false)} onTouchStart={() => setRevealVisible(false)} onClick={() => setRevealVisible(false)}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
@@ -216,7 +216,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
         <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>SAVED {displayPrice(winner)}</div>
       </div>
-    </div></div>, document.body)}{quickAccess ? <div style={{
+    </div></div>, document.documentElement)}{quickAccess ? <div style={{
       position: "fixed", zIndex: 10000, left: "50%", top: "50%", transform: "translate(-50%, -50%)",
       width: "min(76vw, 820px)", margin: 0,
     }}>
