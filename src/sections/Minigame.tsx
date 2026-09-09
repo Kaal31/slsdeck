@@ -1,6 +1,5 @@
 import { ButtonItem, DialogButton, DialogCheckbox, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { readRoulettePrice, writeRoulettePrice } from "../lib/storeRoulettePrefs";
@@ -221,13 +220,15 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         if (progress < 1) animation.current = requestAnimationFrame(frame);
         else {
           setWinner(result.winner);
-          setRevealVisible(false);
           setBusy(false);
           onBusyChange?.(false);
-          showModal(<WinnerRevealModal item={result.winner!} onReturn={() => {
-            setReturningFromWinner(true);
-            window.setTimeout(() => setReturningFromWinner(false), 520);
-          }} />);
+          if (quickAccess) {
+            setRevealVisible(false);
+            showModal(<WinnerRevealModal item={result.winner!} onReturn={() => {
+              setReturningFromWinner(true);
+              window.setTimeout(() => setReturningFromWinner(false), 520);
+            }} />);
+          } else setRevealVisible(true);
           void addResult.then((added) => {
             if (!added.success) {
               setWinnerAdded(false);
@@ -254,11 +255,12 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     <style>{`@keyframes sls-roulette-return { from { opacity:.58; filter:blur(5px) brightness(.68); } to { opacity:1; filter:blur(0) brightness(1); } }`}</style>
     <div style={{ position: "absolute", zIndex: 4, left: "50%", top: 0, bottom: 0, width: 2, transform: "translateX(-1px)", background: "linear-gradient(#ffd86a, #ff9c32, #ffd86a)", boxShadow: "0 0 13px #ffb23f" }} />
     <div style={{ position: "absolute", zIndex: 5, left: "50%", top: 0, transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: "11px solid #ffd86a" }} />
-    {!items.length && busy && <div style={{ position: "absolute", zIndex: 3, inset: 0, display: "grid", placeItems: "center", textAlign: "center", background: "rgba(5,10,17,.58)", letterSpacing: .5 }}>
+    {!items.length && busy && <div style={{ position: "absolute", zIndex: 3, inset: 0, display: "grid", placeItems: "center", textAlign: "center", background: quickAccess ? "rgba(5,10,17,.58)" : "transparent", letterSpacing: .5 }}>
       LOADING THE STEAM STORE…
     </div>}
+    {!quickAccess && !items.length && !busy && <div style={{ height: "100%", display: "grid", placeItems: "center", textAlign: "center", opacity: .62, letterSpacing: .5 }}>A RANDOM GAME AWAITS</div>}
     <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "10px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
-      {!items.length && PLACEHOLDER_CARDS.map((label, index) => <div key={`placeholder-${index}`} style={{
+      {quickAccess && !items.length && PLACEHOLDER_CARDS.map((label, index) => <div key={`placeholder-${index}`} style={{
         position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: quickAccess ? 190 : 140, overflow: "hidden", borderRadius: 8,
         border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index === 2 ? "#ffc95c" : "#5db7e8"}`,
         background: index === 2 ? "radial-gradient(circle at 50% 45%,rgba(255,196,76,.22),transparent 62%),linear-gradient(145deg,#26394d,#101a27)" : "linear-gradient(145deg,#23354a,#111c29)",
@@ -270,17 +272,13 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}`,
         background: "linear-gradient(145deg,#23354a,#111c29)", boxSizing: "border-box",
       }}>
-        <GameArtwork item={item} />
+        {quickAccess ? <GameArtwork item={item} /> : <img src={item.image} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} style={{ width: "100%", height: "100%", objectFit: "contain", opacity: .92 }} />}
       </div>)}
     </div>
   </div>;
 
-  const revealHost = quickAccess
-    ? (viewport.current?.closest('[role="dialog"]')?.parentElement || viewport.current?.parentElement?.parentElement || document.body)
-    : document.body;
-
-  return <>{winner && revealVisible && createPortal(<div style={{
-    position: "fixed", zIndex: 2147483647, inset: 0, display: "grid", placeItems: "center",
+  return <>{!quickAccess && winner && revealVisible && <div style={{
+    position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)", isolation: "isolate",
   }} onPointerDown={() => setRevealVisible(false)} onTouchStart={() => setRevealVisible(false)} onClick={() => setRevealVisible(false)}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
@@ -298,9 +296,9 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
           <div style={{ position: "absolute", left: "50%", top: "50%", width: 310, height: 310, borderRadius: "50%", animation: "sls-unlock-burst 1.15s ease-out both", background: "repeating-conic-gradient(from 0deg, rgba(255,202,87,.75) 0deg 5deg, transparent 5deg 17deg)", filter: "blur(1px)" }} />
           <div style={{ position: "absolute", inset: 0, borderRadius: "50%", animation: "sls-unlock-flash 900ms ease-out both", background: "radial-gradient(circle,rgba(255,246,202,.85),rgba(255,193,73,.24) 35%,transparent 68%)" }} />
           {Array.from({ length: 12 }, (_, index) => <span key={index} style={{ position: "absolute", left: "50%", top: "50%", width: 4, height: 4, transform: `rotate(${index * 30}deg)`, transformOrigin: "0 0" }}><span style={{ display: "block", width: index % 3 === 0 ? 7 : 4, height: index % 3 === 0 ? 7 : 4, borderRadius: index % 2 ? "50%" : 1, background: index % 2 ? "#fff1a4" : "#ffad3d", boxShadow: "0 0 8px #ffc45d", animation: `sls-unlock-particle ${760 + (index % 4) * 90}ms ease-out ${index * 24}ms both` }} /></span>)}
-          <div style={{ position: "relative", zIndex: 2, width: "100%", animation: "sls-game-unlocked 820ms cubic-bezier(.18,.82,.2,1) both" }}>
-            <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 9", borderRadius: 10, overflow: "hidden", animation: "sls-cover-float 3s ease-in-out 1.15s infinite", background: "linear-gradient(145deg,#23354a,#111c29)", boxShadow: "0 22px 48px rgba(0,0,0,.72), 0 0 40px rgba(255,190,75,.38)" }}>
-              <GameArtwork item={winner} />
+          <div style={{ position: "relative", zIndex: 2, display: "inline-block", maxWidth: "76%", borderRadius: 10, overflow: "hidden", animation: "sls-game-unlocked 820ms cubic-bezier(.18,.82,.2,1) both", boxShadow: "0 22px 48px rgba(0,0,0,.72), 0 0 40px rgba(255,190,75,.38)" }}>
+            <div style={{ position: "relative", animation: "sls-cover-float 3s ease-in-out 1.15s infinite" }}>
+              <img src={`https://cdn.cloudflare.steamstatic.com/steam/apps/${winner.appid}/library_600x900_2x.jpg`} alt="" onError={(event) => { if (event.currentTarget.dataset.fallback) return; event.currentTarget.dataset.fallback = "1"; event.currentTarget.src = winner.image; }} style={{ display: "block", width: "100%", maxHeight: 330, objectFit: "contain" }} />
               <div style={{ position: "absolute", zIndex: 3, top: 0, bottom: 0, left: 0, width: "38%", animation: "sls-cover-shine 1.8s ease-in-out 700ms both", background: "linear-gradient(90deg,transparent,rgba(255,255,255,.65),transparent)", filter: "blur(2px)" }} />
             </div>
           </div>
@@ -309,7 +307,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
         <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>SAVED {displayPrice(winner)}</div>
       </div>
-    </div></div>, revealHost)}{quickAccess ? <div style={{
+    </div></div>}{quickAccess ? <div style={{
       position: "fixed", zIndex: 10000, left: "50%", top: "50%", transform: "translate(-50%, -50%)",
       width: "min(76vw, 820px)", margin: 0,
     }}>
