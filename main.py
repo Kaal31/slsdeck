@@ -29,7 +29,7 @@ import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage,
+                opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
@@ -57,6 +57,17 @@ def _hv_norm(r: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Plugin:
+    async def minigame_roll(self, excluded_appids: Optional[List[int]] = None) -> Dict[str, Any]:
+        excluded = {int(value) for value in (excluded_appids or []) if int(value) > 0}
+        # Steam's collection store can lag behind SLSsteam after an add. Merge
+        # the backend's canonical list so the roulette never awards an AppID
+        # already registered through SLSDeck during that window.
+        try:
+            excluded.update(int(value) for value in slssteam.read_additional_apps())
+        except Exception:
+            pass
+        return await self._run_slow(minigame.roll, sorted(excluded))
+
     # ── Tokeer / Anti-Denuvo ────────────────────────────────────────────────
     async def tokeer_quota_probe(self) -> Dict[str, Any]:
         # Kept for compatibility with older frontends.
