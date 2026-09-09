@@ -28,7 +28,7 @@ function displayPrice(item: MinigameItem): string {
 export function MinigameSection() {
   const viewport = useRef<HTMLDivElement>(null);
   const animation = useRef(0);
-  const revealTimer = useRef(0);
+  const gamepadWatch = useRef(0);
   const caseSounds = useRef<HTMLAudioElement[]>([]);
   const [items, setItems] = useState<MinigameItem[]>([]);
   const [offset, setOffset] = useState(0);
@@ -36,7 +36,7 @@ export function MinigameSection() {
   const [winner, setWinner] = useState<MinigameItem>();
   const [error, setError] = useState("");
   const [minPrice, setMinPrice] = useState(0);
-  const [priceExpanded, setPriceExpanded] = useState(true);
+  const [priceExpanded, setPriceExpanded] = useState(false);
   const [revealVisible, setRevealVisible] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
 
@@ -48,11 +48,39 @@ export function MinigameSection() {
     });
     return () => {
       cancelAnimationFrame(animation.current);
-      window.clearTimeout(revealTimer.current);
+      cancelAnimationFrame(gamepadWatch.current);
       caseSounds.current.forEach((sound) => sound.pause());
       caseSounds.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    if (!revealVisible) return;
+    const dismiss = (event?: Event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      setRevealVisible(false);
+    };
+    const watchedEvents: (keyof WindowEventMap)[] = ["keydown", "pointerdown", "touchstart"];
+    watchedEvents.forEach((name) => window.addEventListener(name, dismiss, true));
+
+    const initialButtons = Array.from(navigator.getGamepads?.() || []).map((pad) =>
+      pad ? pad.buttons.map((button) => button.pressed) : [],
+    );
+    const watchGamepad = () => {
+      const pads = Array.from(navigator.getGamepads?.() || []);
+      const newlyPressed = pads.some((pad, padIndex) => pad?.buttons.some(
+        (button, buttonIndex) => button.pressed && !initialButtons[padIndex]?.[buttonIndex],
+      ));
+      if (newlyPressed) dismiss();
+      else gamepadWatch.current = requestAnimationFrame(watchGamepad);
+    };
+    gamepadWatch.current = requestAnimationFrame(watchGamepad);
+    return () => {
+      watchedEvents.forEach((name) => window.removeEventListener(name, dismiss, true));
+      cancelAnimationFrame(gamepadWatch.current);
+    };
+  }, [revealVisible]);
 
   const openWinner = () => {
     if (!winner) return;
@@ -62,7 +90,6 @@ export function MinigameSection() {
   const roll = async () => {
     if (busy) return;
     cancelAnimationFrame(animation.current);
-    window.clearTimeout(revealTimer.current);
     setRevealVisible(false);
     setBusy(true); setWinner(undefined); setError(""); setItems([]); setOffset(0);
     try {
@@ -90,7 +117,6 @@ export function MinigameSection() {
         else {
           setWinner(result.winner);
           setRevealVisible(true);
-          revealTimer.current = window.setTimeout(() => setRevealVisible(false), 4200);
           setBusy(false);
         }
       };
@@ -102,12 +128,11 @@ export function MinigameSection() {
 
   return <>{winner && revealVisible && <div style={{
     position: "fixed", zIndex: 999999, inset: 0, display: "grid", placeItems: "center",
-    pointerEvents: "none", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
+    pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)",
   }}><div style={{ width: "min(72vw, 430px)", textAlign: "center", position: "relative" }}>
       <style>{`
         @keyframes sls-game-unlocked { 0% { opacity: 0; transform: translateY(28px) scale(.78); filter: blur(7px); } 58% { opacity: 1; transform: translateY(-9px) scale(1.065); filter: blur(0); } 78% { transform: translateY(3px) scale(.985); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
-        @keyframes sls-unlock-overlay-out { 0%,90% { opacity: 1; } 100% { opacity: 0; transform: scale(1.025); } }
         @keyframes sls-unlock-burst { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.25) rotate(0); } 38% { opacity: .85; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.5) rotate(25deg); } }
         @keyframes sls-unlock-flash { 0%,100% { opacity: 0; } 18% { opacity: .9; } 45% { opacity: 0; } }
         @keyframes sls-unlock-particle { 0% { opacity: 0; transform: translateY(0) scale(.3); } 18% { opacity: 1; } 100% { opacity: 0; transform: translateY(-125px) scale(1); } }
@@ -115,7 +140,7 @@ export function MinigameSection() {
         @keyframes sls-cover-shine { 0% { transform: translateX(-170%) skewX(-22deg); } 48%,100% { transform: translateX(260%) skewX(-22deg); } }
         @keyframes sls-unlock-title { 0% { opacity: 0; transform: scale(.75); text-shadow: 0 0 0 transparent; } 55% { opacity: 1; transform: scale(1.13); text-shadow: 0 0 18px #ffc95c; } 100% { transform: scale(1); text-shadow: 0 0 7px rgba(255,201,92,.45); } }
       `}</style>
-      <div style={{ animation: "sls-unlock-overlay-out 4.2s ease-in both" }}>
+      <div>
         <div style={{ position: "relative", width: "100%", minHeight: 240, display: "grid", placeItems: "center" }}>
           <div style={{ position: "absolute", left: "50%", top: "50%", width: 310, height: 310, borderRadius: "50%", animation: "sls-unlock-burst 1.15s ease-out both", background: "repeating-conic-gradient(from 0deg, rgba(255,202,87,.75) 0deg 5deg, transparent 5deg 17deg)", filter: "blur(1px)" }} />
           <div style={{ position: "absolute", inset: 0, borderRadius: "50%", animation: "sls-unlock-flash 900ms ease-out both", background: "radial-gradient(circle,rgba(255,246,202,.85),rgba(255,193,73,.24) 35%,transparent 68%)" }} />
