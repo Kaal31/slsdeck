@@ -137,6 +137,16 @@ export interface FixCheck {
   hypervisorFix?: FixInfo;
   ryuuFixes?: Array<{ file: string; badge: string; url: string; description?: string }>;
   luatoolsFixes?: LuatoolsFix[];
+  neraiFixes?: Array<{
+    id: string;
+    category: "bypass" | "game" | "online" | string;
+    name: string;
+    url: string;
+    file?: string;
+    size?: number | string | null;
+    updatedAt?: string | null;
+    source: "nerai";
+  }>;
   luatoolsCatalog?: LuatoolsCatalogFix[];
   luatoolsAuthed?: boolean;
   luatoolsCatalogError?: string;
