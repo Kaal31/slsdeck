@@ -1,6 +1,5 @@
 import { ButtonItem, DialogButton, DialogCheckbox, ModalRoot, Navigation, PanelSection, PanelSectionRow } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { readRoulettePrice, writeRoulettePrice } from "../lib/storeRoulettePrefs";
@@ -15,6 +14,7 @@ const PRICE_MODES = [
   { label: "$100+", cents: 10000 },
   { label: "$1000+", cents: 100000 },
 ];
+const PLACEHOLDER_CARDS = ["?", "SLS", "?", "STORE", "?"];
 
 function displayPrice(item: MinigameItem): string {
   if (!item.priceCents) return "Store price unavailable";
@@ -172,10 +172,17 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   }}>
     <div style={{ position: "absolute", zIndex: 4, left: "50%", top: 0, bottom: 0, width: 2, transform: "translateX(-1px)", background: "linear-gradient(#ffd86a, #ff9c32, #ffd86a)", boxShadow: "0 0 13px #ffb23f" }} />
     <div style={{ position: "absolute", zIndex: 5, left: "50%", top: 0, transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "8px solid transparent", borderRight: "8px solid transparent", borderTop: "11px solid #ffd86a" }} />
-    {!items.length && <div style={{ height: "100%", display: "grid", placeItems: "center", textAlign: "center", opacity: .62, letterSpacing: .5 }}>
-      {busy ? "LOADING THE STEAM STORE…" : "A RANDOM GAME AWAITS"}
+    {!items.length && busy && <div style={{ position: "absolute", zIndex: 3, inset: 0, display: "grid", placeItems: "center", textAlign: "center", background: "rgba(5,10,17,.58)", letterSpacing: .5 }}>
+      LOADING THE STEAM STORE…
     </div>}
     <div style={{ display: "flex", gap: CARD_GAP, height: "100%", padding: "10px 0", transform: `translate3d(${-offset}px,0,0)`, willChange: "transform" }}>
+      {!items.length && PLACEHOLDER_CARDS.map((label, index) => <div key={`placeholder-${index}`} style={{
+        position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: quickAccess ? 190 : 140, overflow: "hidden", borderRadius: 8,
+        border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index === 2 ? "#ffc95c" : "#5db7e8"}`,
+        background: index === 2 ? "radial-gradient(circle at 50% 45%,rgba(255,196,76,.22),transparent 62%),linear-gradient(145deg,#26394d,#101a27)" : "linear-gradient(145deg,#23354a,#111c29)",
+        boxSizing: "border-box", display: "grid", placeItems: "center", color: index === 2 ? "#ffd878" : "rgba(255,255,255,.3)",
+        fontSize: label.length > 1 ? 24 : 54, fontWeight: 900, letterSpacing: label.length > 1 ? 3 : 0,
+      }}>{label}</div>)}
       {items.map((item, index) => <div key={`${item.appid}-${index}`} style={{
         position: "relative", flex: `0 0 ${CARD_WIDTH}px`, height: quickAccess ? 190 : 140, overflow: "hidden", borderRadius: 8,
         border: "1px solid rgba(255,255,255,.14)", borderBottom: `4px solid ${index % 11 === 0 ? "#d96cff" : index % 5 === 0 ? "#8d7bff" : "#5db7e8"}`,
@@ -186,7 +193,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     </div>
   </div>;
 
-  return <>{winner && revealVisible && createPortal(<div style={{
+  return <>{winner && revealVisible && <div style={{
     position: "fixed", zIndex: 2147483647, inset: 0, display: "grid", placeItems: "center",
     pointerEvents: "auto", background: "radial-gradient(circle,rgba(20,33,48,.68),rgba(0,0,0,.7) 58%,rgba(0,0,0,.78))",
     backdropFilter: "blur(2px)", isolation: "isolate",
@@ -216,7 +223,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         <div style={{ fontSize: 23, fontWeight: 900, marginTop: 5, textShadow: "0 3px 12px #000" }}>{winner.name}</div>
         <div style={{ fontSize: 17, color: "#a7e7bb", fontWeight: 900, marginTop: 8, textShadow: "0 2px 9px #000" }}>SAVED {displayPrice(winner)}</div>
       </div>
-    </div></div>, document.documentElement)}{quickAccess ? <div style={{
+    </div></div>}{quickAccess ? <div style={{
       position: "fixed", zIndex: 10000, left: "50%", top: "50%", transform: "translate(-50%, -50%)",
       width: "min(76vw, 820px)", margin: 0,
     }}>
