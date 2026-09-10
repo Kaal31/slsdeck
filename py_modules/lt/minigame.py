@@ -40,7 +40,14 @@ def _filters(value: Dict[str, Any] | None = None) -> Dict[str, Any]:
 
 
 def _search_key(value: Dict[str, Any]) -> str:
-    return json.dumps({key: value.get(key) for key in ("genre", "players", "deck")}, sort_keys=True)
+    return json.dumps({
+        "genre": value.get("genre"),
+        "players": value.get("players"),
+        "deck": value.get("deck"),
+        # Review-filtered catalogs deliberately use Reviews_DESC pages. Keep
+        # them separate from ordinary Random/price caches.
+        "reviewFiltered": bool(value.get("qualityMode") or value.get("minRating") or value.get("minReviews")),
+    }, sort_keys=True)
 
 
 def _usable(app: Any) -> Tuple[int, str] | None:
@@ -106,7 +113,21 @@ def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) ->
         _, _TOTAL_RESULTS[search_key] = _search_page(0, 1, "_ASC", selected)
     pool: List[Tuple[int, str, int]] = []
     expensive = min_price_cents > 0
-    if expensive:
+    review_filtered = bool(selected["qualityMode"] or selected["minRating"] or selected["minReviews"])
+    if review_filtered:
+        # Random Store pages are overwhelmingly populated by little-reviewed
+        # releases, so post-validating a small random batch frequently produces
+        # no winner. Draw from a broad slice of Steam's review-sorted catalog;
+        # the exact count/rating thresholds are still verified below against
+        # the live review-summary API.
+        page_count = max(1, (_TOTAL_RESULTS[search_key] + 99) // 100)
+        review_page_count = min(20, page_count)
+        sample_count = min(8, review_page_count)
+        for page_number in random.sample(range(review_page_count), sample_count):
+            page, reported_total = _search_page(page_number * 100, 100, "Reviews_DESC", selected)
+            _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS[search_key], reported_total)
+            pool.extend(page)
+    elif expensive:
         # Price_DESC is useful for finding the minimum-price boundary, but
         # always reading it from page zero heavily biases every tier toward the
         # Store's highest ($199.99 and above) listings. Binary-search the last
