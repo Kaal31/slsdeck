@@ -82,7 +82,7 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
           <GameArtwork item={item} />
           <div style={{ position:"absolute", inset:"0 auto 0 0", width:"36%", animation:"sls-winner-shine 1.8s ease-in-out 600ms both", background:"linear-gradient(90deg,transparent,rgba(255,255,255,.62),transparent)", filter:"blur(2px)" }} />
         </div>
-        <div style={{ marginTop:16, color:"#ffc95c", fontSize:13, fontWeight:900, letterSpacing:1.6 }}>GAME UNLOCKED</div>
+        <div style={{ marginTop:16, color:"#ffc95c", fontSize:13, fontWeight:900, letterSpacing:1.6 }}>WILL BE ADDED TO YOUR LIBRARY</div>
         <div style={{ marginTop:5, fontSize:23, fontWeight:900, textShadow:"0 3px 12px #000" }}>{item.name}</div>
         <div style={{ marginTop:8, color:"#a7e7bb", fontSize:17, fontWeight:900, textShadow:"0 2px 9px #000" }}>SAVED {displayPrice(item)}</div>
       </div>
