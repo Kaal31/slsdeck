@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -547,14 +547,20 @@ export default definePlugin(() => {
   const addNotifier = setInterval(async () => {
     try {
       const r = await popAddEvents();
-      (r.events || []).forEach((e) => {
+      const events = r.events || [];
+      let notifySuccessfulAdds = true;
+      if (events.some((event) => event.status === "done" && event.success && !(event as any).assella)) {
+        try { notifySuccessfulAdds = (await getNotifyGameAdd()).enabled !== false; } catch { /* default on */ }
+      }
+      events.forEach((e) => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
         const liveReady = !!(e as any).liveReady;
         const earlyNotified: Set<number> | undefined = (window as any).__slsdeckEarlyAddNotified;
         const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
         const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
-        if (!skipDuplicate) toaster.toast({
+        const suppressSuccessfulSlsAdd = e.status === "done" && e.success && !isAssella && !notifySuccessfulAdds;
+        if (!skipDuplicate && !suppressSuccessfulSlsAdd) toaster.toast({
           title: "SLSDeck",
           body:
             e.status === "done" && e.success

@@ -1,8 +1,8 @@
-import { ButtonItem, DialogButton, DialogCheckbox, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
+import { ButtonItem, DialogButton, DialogCheckbox, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
-import { readRoulettePrice, writeRoulettePrice } from "../lib/storeRoulettePrefs";
+import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, readRoulettePrice, StoreRouletteFilters, writeRouletteFilters, writeRoulettePrice } from "../lib/storeRoulettePrefs";
 
 const CARD_WIDTH = 300;
 const CARD_GAP = 10;
@@ -14,6 +14,27 @@ const PRICE_MODES = [
   { label: "$100+", cents: 10000 },
   { label: "$1000+", cents: 100000 },
 ];
+const GENRE_OPTIONS = [
+  { data: "", label: "Any genre" }, { data: "action", label: "Action" },
+  { data: "rpg", label: "RPG" }, { data: "strategy", label: "Strategy" },
+  { data: "simulation", label: "Simulation" }, { data: "adventure", label: "Adventure" },
+  { data: "horror", label: "Horror" }, { data: "racing", label: "Racing" },
+  { data: "sports", label: "Sports" },
+];
+const PLAYER_OPTIONS = [
+  { data: "", label: "Any player mode" }, { data: "singleplayer", label: "Single-player" },
+  { data: "multiplayer", label: "Multiplayer" }, { data: "coop", label: "Co-op" },
+];
+const DECK_OPTIONS = [
+  { data: "", label: "Any Deck status" }, { data: "playable", label: "Playable or Verified" },
+  { data: "verified", label: "Verified only" },
+];
+const RATING_OPTIONS = [0, 60, 70, 80, 90].map((data) => ({ data, label: data ? `${data}%+ positive` : "Any rating" }));
+const REVIEW_OPTIONS = [0, 100, 500, 1000, 5000].map((data) => ({ data, label: data ? `${data.toLocaleString()}+ reviews` : "Any review count" }));
+const YEAR_OPTIONS = [{ data: 0, label: "Any year" }, ...Array.from({ length: 47 }, (_, index) => {
+  const data = new Date().getFullYear() - index;
+  return { data, label: String(data) };
+})];
 const PLACEHOLDER_CARDS = ["?", "SLS", "?", "STORE", "?"];
 
 function GameArtwork({ item }: { item: MinigameItem }) {
@@ -131,11 +152,22 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [winnerAdded, setWinnerAdded] = useState(false);
   const [error, setError] = useState("");
   const [minPrice, setMinPrice] = useState(readRoulettePrice);
+  const [filters, setFilters] = useState<StoreRouletteFilters>(readRouletteFilters);
   const [priceExpanded, setPriceExpanded] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [revealVisible, setRevealVisible] = useState(false);
   const [tabRevealDismissing, setTabRevealDismissing] = useState(false);
   const [returningFromWinner, setReturningFromWinner] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
+  const activeFilterCount = Object.values(filters).filter((value) => Boolean(value)).length;
+  const changeFilter = <K extends keyof StoreRouletteFilters>(key: K, value: StoreRouletteFilters[K]) => {
+    const next = { ...filters, [key]: value };
+    if (next.releaseFrom && next.releaseTo && next.releaseFrom > next.releaseTo) {
+      if (key === "releaseFrom") next.releaseTo = next.releaseFrom;
+      else next.releaseFrom = next.releaseTo;
+    }
+    setFilters(next); writeRouletteFilters(next); setError("");
+  };
   const dismissTabReveal = () => {
     if (tabDismissingRef.current) return;
     tabDismissingRef.current = true;
@@ -205,7 +237,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     setBusy(true); setWinner(undefined); setWinnerAdded(false); setError(""); setItems([]); setOffset(0);
     onBusyChange?.(true);
     try {
-      const result = await minigameRoll(listLibraryAppIds(), minPrice);
+      const result = await minigameRoll(listLibraryAppIds(), minPrice, filters);
       if (!result.success || !result.items?.length || result.winnerIndex === undefined || !result.winner) {
         throw new Error(result.error || "The Steam Store did not return a game");
       }
@@ -350,6 +382,36 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
           onChange={() => { setMinPrice(mode.cents); writeRoulettePrice(mode.cents); setError(""); }} /></div>)}
       </div>
     </div></PanelSectionRow>}
+    <PanelSectionRow><ButtonItem layout="below" onClick={() => setFiltersExpanded((expanded) => !expanded)}>
+      Additional filters · {activeFilterCount ? `${activeFilterCount} active` : "Any"} {filtersExpanded ? "▲" : "▼"}
+    </ButtonItem></PanelSectionRow>
+    {filtersExpanded && <>
+      <PanelSectionRow><DropdownItem label="Genre" rgOptions={GENRE_OPTIONS}
+        selectedOption={filters.genre} strDefaultLabel={GENRE_OPTIONS.find((option) => option.data === filters.genre)?.label || "Any genre"}
+        onChange={(option: any) => changeFilter("genre", String(option.data || ""))} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="Players" rgOptions={PLAYER_OPTIONS}
+        selectedOption={filters.players} strDefaultLabel={PLAYER_OPTIONS.find((option) => option.data === filters.players)?.label || "Any player mode"}
+        onChange={(option: any) => changeFilter("players", String(option.data || ""))} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="Steam Deck" rgOptions={DECK_OPTIONS}
+        selectedOption={filters.deck} strDefaultLabel={DECK_OPTIONS.find((option) => option.data === filters.deck)?.label || "Any Deck status"}
+        onChange={(option: any) => changeFilter("deck", String(option.data || ""))} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="User rating" rgOptions={RATING_OPTIONS}
+        selectedOption={filters.minRating} strDefaultLabel={RATING_OPTIONS.find((option) => option.data === filters.minRating)?.label || "Any rating"}
+        onChange={(option: any) => changeFilter("minRating", Number(option.data) || 0)} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="Review count" rgOptions={REVIEW_OPTIONS}
+        selectedOption={filters.minReviews} strDefaultLabel={REVIEW_OPTIONS.find((option) => option.data === filters.minReviews)?.label || "Any review count"}
+        onChange={(option: any) => changeFilter("minReviews", Number(option.data) || 0)} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="Released from" rgOptions={YEAR_OPTIONS}
+        selectedOption={filters.releaseFrom} strDefaultLabel={filters.releaseFrom ? String(filters.releaseFrom) : "Any year"}
+        onChange={(option: any) => changeFilter("releaseFrom", Number(option.data) || 0)} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="Released through" rgOptions={YEAR_OPTIONS}
+        selectedOption={filters.releaseTo} strDefaultLabel={filters.releaseTo ? String(filters.releaseTo) : "Any year"}
+        onChange={(option: any) => changeFilter("releaseTo", Number(option.data) || 0)} /></PanelSectionRow>
+      {activeFilterCount > 0 && <PanelSectionRow><ButtonItem layout="below" onClick={() => {
+        const cleared = { ...DEFAULT_ROULETTE_FILTERS };
+        setFilters(cleared); writeRouletteFilters(cleared); setError("");
+      }}>Clear additional filters</ButtonItem></PanelSectionRow>}
+    </>}
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
       Crack open the entire Steam Store. Games already in your library are excluded, and the winner is automatically added with SLS Steam.
     </div></PanelSectionRow>

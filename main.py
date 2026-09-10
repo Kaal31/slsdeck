@@ -57,7 +57,8 @@ def _hv_norm(r: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Plugin:
-    async def minigame_roll(self, excluded_appids: Optional[List[int]] = None, min_price_cents: int = 0) -> Dict[str, Any]:
+    async def minigame_roll(self, excluded_appids: Optional[List[int]] = None, min_price_cents: int = 0,
+                            filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         excluded = {int(value) for value in (excluded_appids or []) if int(value) > 0}
         # Steam's collection store can lag behind SLSsteam after an add. Merge
         # the backend's canonical list so the roulette never awards an AppID
@@ -66,7 +67,7 @@ class Plugin:
             excluded.update(int(value) for value in slssteam.read_additional_apps())
         except Exception:
             pass
-        return await self._run_slow(minigame.roll, sorted(excluded), 36, min_price_cents)
+        return await self._run_slow(minigame.roll, sorted(excluded), 36, min_price_cents, filters or {})
 
     # ── Tokeer / Anti-Denuvo ────────────────────────────────────────────────
     async def tokeer_quota_probe(self) -> Dict[str, Any]:
@@ -1749,6 +1750,13 @@ class Plugin:
     async def set_group_collection(self, enabled: bool) -> Dict[str, Any]:
         settings.set_group_collection(enabled)
         return {"success": True}
+
+    async def get_notify_game_add(self) -> Dict[str, Any]:
+        value = settings.get_ui_settings().get("toastOnGameAdd", True)
+        return {"success": True, "enabled": bool(value)}
+
+    async def set_notify_game_add(self, enabled: bool) -> Dict[str, Any]:
+        return settings.set_ui_setting("toastOnGameAdd", bool(enabled))
 
     async def get_library_buttons(self) -> Dict[str, Any]:
         return {"success": True, "enabled": settings.get_library_buttons()}

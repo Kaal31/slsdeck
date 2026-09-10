@@ -14,6 +14,7 @@ import {
   unfix,
   getBadgeOptions,
   getInstalledFixes,
+  getNotifyGameAdd,
   denuvoKnown,
   denuvoResolve,
   applyLuatoolsFix,
@@ -412,12 +413,16 @@ async function onAction(payloadStr: string): Promise<void> {
         const st: any = r.state || {};
         if (!appearedInLibrary && !wasInLibrary && isInLibrary(appid)) {
           appearedInLibrary = true;
-          const early = ((window as any).__slsdeckEarlyAddNotified ||= new Set<number>());
-          early.add(appid);
           setStatus("Added — available in Steam");
           const overview: any = (window as any).appStore?.GetAppOverviewByAppID?.(appid);
           const gameName = overview?.display_name || overview?.sort_as || `AppID ${appid}`;
-          toaster.toast({ title: "SLSDeck", body: `Added ${gameName} — available in Steam` });
+          let notify = true;
+          try { notify = (await getNotifyGameAdd()).enabled !== false; } catch { /* default on */ }
+          if (notify) {
+            const early = ((window as any).__slsdeckEarlyAddNotified ||= new Set<number>());
+            early.add(appid);
+            toaster.toast({ title: "SLSDeck", body: `Added ${gameName} — available in Steam` });
+          }
           await refreshBadges();
         } else if (!appearedInLibrary) {
           setStatus(st.slssteam || st.status === "reconciling"

@@ -988,6 +988,7 @@ UI_SETTINGS_DEFAULTS = {
     "toastOnAutoRepair": True,
     "toastOnCloudSync": True,
     "toastOnArtSync": True,
+    "toastOnGameAdd": True,
     "uiViewMode": "detailed",  # "detailed" or "compact"
     "autoArtSyncOnAdd": True,
 }

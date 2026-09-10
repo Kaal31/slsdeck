@@ -17,6 +17,7 @@ import {
   cancelAdd,
   formatBytes,
   getAddStatus,
+  getNotifyGameAdd,
   searchGames,
   startAdd,
   customListAllManifests,
@@ -175,12 +176,14 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
           stopPolling();
           void refreshBadges();
           const live = !!(res.state as any).liveReady;
-          toaster.toast({
-            title: "SLSDeck",
-            body: live
-              ? `Added ${name} — available in Steam without restart`
-              : `Added ${name} — restart Steam to finish provisioning`,
-          });
+          let notify = true;
+          try { notify = (await getNotifyGameAdd()).enabled !== false; } catch { /* default on */ }
+          if (notify) toaster.toast({
+              title: "SLSDeck",
+              body: live
+                ? `Added ${name} — available in Steam without restart`
+                : `Added ${name} — restart Steam to finish provisioning`,
+            });
           onChanged();
         } else if (status === "failed") {
           markSlsAddPending(appid, false);

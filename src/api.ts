@@ -283,8 +283,17 @@ export interface MinigameItem {
   priceCents?: number;
   currency?: string;
 }
+export interface StoreRouletteFilters {
+  genre?: string;
+  players?: string;
+  deck?: string;
+  minRating?: number;
+  minReviews?: number;
+  releaseFrom?: number;
+  releaseTo?: number;
+}
 export const minigameRoll = callable<
-  [excludedAppids: number[], minPriceCents?: number],
+  [excludedAppids: number[], minPriceCents?: number, filters?: StoreRouletteFilters],
   { success: boolean; items?: MinigameItem[]; winnerIndex?: number; winner?: MinigameItem; error?: string }
 >("minigame_roll");
 
@@ -910,6 +919,8 @@ export const runSystemAudit = callable<[], { success: boolean; healthScore?: num
 export const runFullSystemMaintenance = callable<[], { success: boolean; steps?: string[] }>("run_full_system_maintenance");
 export const getUiSettings = callable<[], { success: boolean; settings?: Record<string, any> }>("get_ui_settings");
 export const setUiSetting = callable<[key: string, value: any], { success: boolean }>("set_ui_setting");
+export const getNotifyGameAdd = callable<[], { success: boolean; enabled: boolean }>("get_notify_game_add");
+export const setNotifyGameAdd = callable<[enabled: boolean], { success: boolean; error?: string }>("set_notify_game_add");
 
 // Per-game
 export const listInstalledProtonTools = callable<[], { success: boolean; tools: string[] }>("list_installed_proton_tools");
