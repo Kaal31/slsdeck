@@ -76,9 +76,25 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
         params["deck_compatibility"] = "verified"
     elif selected["deck"] == "playable":
         params["deck_compatibility"] = "verified,playable"
-    response = get_http_client().get(_SEARCH_URL, params=params, timeout=30.0)
-    response.raise_for_status()
-    payload = response.json()
+    payload: Dict[str, Any] | None = None
+    last_error = "Steam Store returned an invalid response"
+    for attempt in range(3):
+        try:
+            response = get_http_client().get(_SEARCH_URL, params=params, timeout=30.0)
+            response.raise_for_status()
+            if not str(getattr(response, "text", "") or "").strip():
+                raise ValueError("Steam Store returned an empty response")
+            decoded = response.json()
+            if not isinstance(decoded, dict):
+                raise ValueError("Steam Store returned an unexpected response")
+            payload = decoded
+            break
+        except Exception as exc:
+            last_error = str(exc) or last_error
+            if attempt < 2:
+                time.sleep(0.35 * (attempt + 1))
+    if payload is None:
+        raise RuntimeError(f"Steam Store search is temporarily unavailable: {last_error}")
     markup = str(payload.get("results_html") or "")
     total = int(payload.get("total_count") or 0)
     found: List[Tuple[int, str, int]] = []

@@ -36,6 +36,23 @@ const YEAR_OPTIONS = [{ data: 0, label: "Any year" }, ...Array.from({ length: 47
   return { data, label: String(data) };
 })];
 const PLACEHOLDER_CARDS = ["?", "SLS", "?", "STORE", "?"];
+const PREFETCH_DEPTH = 2;
+
+type RouletteResult = {
+  success: boolean;
+  items?: MinigameItem[];
+  winnerIndex?: number;
+  winner?: MinigameItem;
+  error?: string;
+};
+
+function isUsableRoll(result: RouletteResult | undefined): result is RouletteResult & {
+  items: MinigameItem[];
+  winnerIndex: number;
+  winner: MinigameItem;
+} {
+  return Boolean(result && result.success && result.items?.length && result.winnerIndex !== undefined && result.winner);
+}
 
 function GameArtwork({ item }: { item: MinigameItem }) {
   const sources = [
@@ -145,6 +162,10 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const tabDismissTimer = useRef(0);
   const tabDismissingRef = useRef(false);
   const caseSounds = useRef<HTMLAudioElement[]>([]);
+  const prefetchQueue = useRef<RouletteResult[]>([]);
+  const prefetchGeneration = useRef(0);
+  const prefetchRunningGeneration = useRef<number | null>(null);
+  const rolledAppids = useRef<Set<number>>(new Set());
   const [items, setItems] = useState<MinigameItem[]>([]);
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -160,6 +181,37 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [returningFromWinner, setReturningFromWinner] = useState(false);
   const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
   const activeFilterCount = Object.values(filters).filter((value) => Boolean(value)).length;
+  const filterKey = JSON.stringify(filters);
+
+  const excludedForFetch = () => Array.from(new Set([
+    ...listLibraryAppIds(),
+    ...Array.from(rolledAppids.current),
+    ...prefetchQueue.current.flatMap((result) => result.winner ? [result.winner.appid] : []),
+  ]));
+
+  const fillPrefetchQueue = async (generation = prefetchGeneration.current) => {
+    if (prefetchRunningGeneration.current === generation || generation !== prefetchGeneration.current) return;
+    prefetchRunningGeneration.current = generation;
+    try {
+      while (generation === prefetchGeneration.current && prefetchQueue.current.length < PREFETCH_DEPTH) {
+        let result: RouletteResult;
+        try {
+          result = await minigameRoll(excludedForFetch(), minPrice, filters);
+        } catch {
+          // Prefetch is deliberately silent. A later refill or a direct roll
+          // remains available when Steam has a transient failure.
+          break;
+        }
+        if (generation !== prefetchGeneration.current) break;
+        if (!isUsableRoll(result)) break;
+        if (rolledAppids.current.has(result.winner.appid)
+          || prefetchQueue.current.some((queued) => queued.winner?.appid === result.winner.appid)) continue;
+        prefetchQueue.current.push(result);
+      }
+    } finally {
+      if (prefetchRunningGeneration.current === generation) prefetchRunningGeneration.current = null;
+    }
+  };
   const changeFilter = <K extends keyof StoreRouletteFilters>(key: K, value: StoreRouletteFilters[K]) => {
     const next = { ...filters, [key]: value };
     if (next.releaseFrom && next.releaseTo && next.releaseFrom > next.releaseTo) {
@@ -194,6 +246,15 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
       caseSounds.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    const generation = ++prefetchGeneration.current;
+    prefetchQueue.current = [];
+    void fillPrefetchQueue(generation);
+    return () => {
+      if (prefetchGeneration.current === generation) ++prefetchGeneration.current;
+    };
+  }, [minPrice, filterKey]);
 
   useEffect(() => {
     if (!revealVisible) return;
@@ -237,10 +298,16 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     setBusy(true); setWinner(undefined); setWinnerAdded(false); setError(""); setItems([]); setOffset(0);
     onBusyChange?.(true);
     try {
-      const result = await minigameRoll(listLibraryAppIds(), minPrice, filters);
-      if (!result.success || !result.items?.length || result.winnerIndex === undefined || !result.winner) {
+      // Prefer an invisible prepared roll. If the user opens the UI and rolls
+      // before one is ready, preserve the original on-demand fetch behavior.
+      let result = prefetchQueue.current.shift();
+      if (!result) result = await minigameRoll(excludedForFetch(), minPrice, filters);
+      if (!isUsableRoll(result)) {
         throw new Error(result.error || "The Steam Store did not return a game");
       }
+      rolledAppids.current.add(result.winner.appid);
+      prefetchQueue.current = prefetchQueue.current.filter((queued) => queued.winner?.appid !== result.winner.appid);
+      void fillPrefetchQueue();
       const addResult = addWinnerToSlsSteam(result.winner).then(
         () => ({ success: true as const }),
         (cause: any) => ({ success: false as const, error: String(cause?.message || cause) }),
