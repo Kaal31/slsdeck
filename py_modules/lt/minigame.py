@@ -67,21 +67,47 @@ def _catalog(min_price_cents: int = 0) -> List[Tuple[int, str, int]]:
         _, _TOTAL_RESULTS = _search_page(0, 1)
     pool: List[Tuple[int, str, int]] = []
     expensive = min_price_cents > 0
-    page_limit = 6 if expensive else 4
-    for page_number in range(page_limit):
-        upper = max(0, _TOTAL_RESULTS - 100)
-        start = page_number * 100 if expensive else (random.randint(0, upper) if upper else 0)
-        page, reported_total = _search_page(start, 100, "Price_DESC" if expensive else "_ASC")
-        _TOTAL_RESULTS = max(_TOTAL_RESULTS, reported_total)
-        pool.extend(page)
-        # Expensive modes must sample beyond Steam's first highest-price page;
-        # that page is often dominated by many identically priced $199.99
-        # products. Stop only after the descending feed crosses the requested
-        # floor (or the bounded page limit is reached).
-        if expensive and page and min(price for _, _, price in page) < min_price_cents:
-            break
-        if not expensive and len({appid for appid, _, _ in pool}) >= 80:
-            break
+    if expensive:
+        # Price_DESC is useful for finding the minimum-price boundary, but
+        # always reading it from page zero heavily biases every tier toward the
+        # Store's highest ($199.99 and above) listings. Binary-search the last
+        # page that still contains an eligible price, then sample uniformly
+        # across the whole eligible page range.
+        page_count = max(1, (_TOTAL_RESULTS + 99) // 100)
+        pages: Dict[int, List[Tuple[int, str, int]]] = {}
+
+        def priced_page(page_number: int) -> List[Tuple[int, str, int]]:
+            global _TOTAL_RESULTS
+            if page_number not in pages:
+                page, reported_total = _search_page(page_number * 100, 100, "Price_DESC")
+                _TOTAL_RESULTS = max(_TOTAL_RESULTS, reported_total)
+                pages[page_number] = page
+            return pages[page_number]
+
+        low, high, last_eligible_page = 0, page_count - 1, -1
+        while low <= high:
+            middle = (low + high) // 2
+            page = priced_page(middle)
+            if any(price >= min_price_cents for _, _, price in page):
+                last_eligible_page = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+
+        if last_eligible_page >= 0:
+            sample_count = min(6, last_eligible_page + 1)
+            chosen_pages = random.sample(range(last_eligible_page + 1), sample_count)
+            for page_number in chosen_pages:
+                pool.extend(priced_page(page_number))
+    else:
+        for _ in range(4):
+            upper = max(0, _TOTAL_RESULTS - 100)
+            start = random.randint(0, upper) if upper else 0
+            page, reported_total = _search_page(start, 100, "_ASC")
+            _TOTAL_RESULTS = max(_TOTAL_RESULTS, reported_total)
+            pool.extend(page)
+            if len({appid for appid, _, _ in pool}) >= 80:
+                break
     deduplicated: Dict[int, Tuple[str, int]] = {}
     for appid, name, price_cents in pool:
         if price_cents >= max(1, min_price_cents):
