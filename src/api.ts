@@ -214,7 +214,7 @@ export const hasLua = callable<[appid: number], { success: boolean; exists: bool
 export const startAdd = callable<[appid: number], { success: boolean; error?: string }>("start_add");
 export const getAddStatus = callable<[appid: number], { success: boolean; state: AddState }>("get_add_status");
 export const cancelAdd = callable<[appid: number], { success: boolean }>("cancel_add");
-export const popAddEvents = callable<[], { success: boolean; events: Array<{ appid: number; name: string; status: string; success: boolean; autoDownload?: boolean; error?: string }> }>("pop_add_events");
+export const popAddEvents = callable<[], { success: boolean; events: Array<{ appid: number; name: string; status: string; success: boolean; autoDownload?: boolean; error?: string; sourceFailures?: Array<{ source: string; type: string; code?: number; detail?: string }> }> }>("pop_add_events");
 
 export const deleteLua = callable<[appid: number], { success: boolean; count: number; slssteamRemoved?: boolean }>("delete_lua");
 export const purgeAllAdded = callable<[], { success: boolean; removed: number; total: number }>("purge_all_added");
