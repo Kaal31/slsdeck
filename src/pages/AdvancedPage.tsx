@@ -45,7 +45,7 @@ import {
   getAutoAddDlc, setAutoAddDlc,
   getDisableCloud, setDisableCloud,
   getDisableDlcUnlockOwned, setDisableDlcUnlockOwned,
-  getNotifyGameAdd, setNotifyGameAdd,
+  getNotifyGameAdd, setNotifyGameAdd, getUiSettings, setUiSetting,
 } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { refreshBadges } from "../lib/badges";
@@ -347,6 +347,7 @@ function OptionsPane({
   const [achievements, setAchievementsState] = useState(true);
   const [achMoon, setAchMoon] = useState(true);
   const [notifyGameAdds, setNotifyGameAdds] = useState(true);
+  const [surfaceFailedSources, setSurfaceFailedSources] = useState(false);
   const [rouletteQam, setRouletteQam] = useState(() => readRouletteBool(ROULETTE_QAM_KEY));
   const [rouletteTabDisabled, setRouletteTabDisabled] = useState(() => readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
 
@@ -366,6 +367,7 @@ function OptionsPane({
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
     getShowReinstallQam().then((r) => setReinstallQam(!!r.enabled)).catch(() => {});
     getNotifyGameAdd().then((r) => setNotifyGameAdds(r.enabled !== false)).catch(() => {});
+    getUiSettings().then((r) => setSurfaceFailedSources(r.settings?.toastOnSourceFailure === true)).catch(() => {});
     try {
       const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
       setActionsFixesQam(raw == null ? true : raw === "1");
@@ -559,6 +561,14 @@ function OptionsPane({
             description="Show a notification after an SLSsteam game is successfully added. Add failures and verification warnings remain visible."
             checked={notifyGameAdds}
             onChange={async (value) => { setNotifyGameAdds(value); await setNotifyGameAdd(value); }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Surface failed sources"
+            description="Show one notification listing every manifest provider that failed and was skipped during an add attempt. Off by default."
+            checked={surfaceFailedSources}
+            onChange={async (value) => { setSurfaceFailedSources(value); await setUiSetting("toastOnSourceFailure", value); }}
           />
         </PanelSectionRow>
         <PanelSectionRow>
