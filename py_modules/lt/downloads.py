@@ -129,6 +129,20 @@ def _get_state(appid: int) -> dict:
         return DOWNLOAD_STATE.get(appid, {}).copy()
 
 
+def _record_source_error(appid: int, source: str, error_type: str,
+                         code: int | None = None, detail: str = "") -> None:
+    """Accumulate one concise failure per provider for the completion event."""
+    state = _get_state(appid)
+    errors = dict(state.get("apiErrors", {}) or {})
+    entry: Dict[str, Any] = {"type": str(error_type or "error")}
+    if code is not None:
+        entry["code"] = int(code)
+    if detail:
+        entry["detail"] = str(detail)[:240]
+    errors[str(source or "Unknown")] = entry
+    _set_state(appid, {"apiErrors": errors})
+
+
 # ── loaded-app bookkeeping ────────────────────────────────────────────────
 _LOADED_APPS_LOCK = threading.Lock()
 
@@ -952,10 +966,8 @@ def _download_zip_for_app(appid: int) -> None:
                     continue
                 if code != success_code:
                     record_api_failure(name)
-                    state = _get_state(appid)
-                    errs = state.get("apiErrors", {})
-                    errs[name] = {"type": "error", "code": code}
-                    _set_state(appid, {"apiErrors": errs})
+                    _record_source_error(appid, name, "http", code=code,
+                                         detail=f"HTTP {code}")
                     continue
                 total = int(resp.headers.get("Content-Length", "0") or "0")
                 _set_state(appid, {"status": "downloading", "bytesRead": 0, "totalBytes": total})
@@ -992,6 +1004,8 @@ def _download_zip_for_app(appid: int) -> None:
                 if magic not in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"):
                     logger.warn(f"SLSDeck: source '{name}' returned non-zip magic {magic!r}")
                     record_api_failure(name)
+                    _record_source_error(appid, name, "invalid_package",
+                                         detail="response was not a ZIP package")
                     try:
                         os.remove(dest_path)
                     except Exception:
@@ -1016,14 +1030,23 @@ def _download_zip_for_app(appid: int) -> None:
                     pass
                 logger.log(f"SLSDeck: Download cancelled for {appid}")
                 return
-            _set_state(appid, {"status": "failed", "error": str(cancel_exc)})
-            return
+            # A provider can return a valid ZIP containing the wrong/empty Lua.
+            # Treat that as a failure of this provider, not of the whole add;
+            # the remaining sources and the SLSsteam-only fallback still apply.
+            detail = str(cancel_exc)
+            record_api_failure(name)
+            _record_source_error(appid, name, "processing", detail=detail)
+            logger.warn(f"SLSDeck: source '{name}' unusable for {appid}: {detail}")
+            try:
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
+            except Exception:
+                pass
+            continue
         except Exception as err:
             error_type = "timeout" if isinstance(err, (httpx.TimeoutException,)) else "error"
-            state = _get_state(appid)
-            errs = state.get("apiErrors", {})
-            errs[name] = {"type": error_type}
-            _set_state(appid, {"apiErrors": errs})
+            record_api_failure(name)
+            _record_source_error(appid, name, error_type, detail=str(err))
             continue
 
     # Backup tier: Charon / BlissBlender github-raw lua DB (keyless), tried after
@@ -1180,6 +1203,10 @@ def _add_worker(appid: int) -> None:
                     "success": ok,
                     "autoDownload": auto_dl,
                     "error": st.get("error", ""),
+                    "sourceFailures": [
+                        {"source": source, **failure}
+                        for source, failure in (st.get("apiErrors", {}) or {}).items()
+                    ],
                 })
 
 
