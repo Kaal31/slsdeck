@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -26,6 +26,20 @@ const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
+const SLS_STATUS_CACHE_KEY = "slsdeck.slsStatusCache";
+
+function readCachedSlsStatus(): SlsStatus | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(SLS_STATUS_CACHE_KEY) || "null");
+    return value && typeof value.installed === "boolean" ? value as SlsStatus : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSlsStatus(status: SlsStatus) {
+  try { window.localStorage.setItem(SLS_STATUS_CACHE_KEY, JSON.stringify(status)); } catch { /* ignore */ }
+}
 
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
@@ -394,7 +408,22 @@ function Content() {
   const [hideToolsQam, setHideToolsQam] = useState(true);
   // Until SLSsteam is installed, the QAM shows only the setup block — no game
   // actions, game list or tools (there's nothing for them to act on yet).
-  const [installed, setInstalled] = useState<boolean>(false);
+  const [slsStatus, setSlsStatus] = useState<SlsStatus | null>(() => readCachedSlsStatus());
+  const [slsStatusChecked, setSlsStatusChecked] = useState(false);
+  const installed = slsStatus?.installed === true;
+
+  const refreshSlsStatus = useCallback(async () => {
+    try {
+      const status = await getSlssteamStatus();
+      setSlsStatus(status);
+      setSlsStatusChecked(true);
+      writeCachedSlsStatus(status);
+      return status;
+    } catch {
+      // A failed refresh must not turn an unknown state into "not installed".
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!installed) return;
@@ -423,16 +452,14 @@ function Content() {
     window.addEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes as EventListener);
     getGamesInQam().then((r) => setGamesInQam(!!r.enabled)).catch(() => {});
     getHideToolsQam().then((r) => setHideToolsQam(!!r.enabled)).catch(() => {});
-    const checkInstalled = () =>
-      getSlssteamStatus().then((s) => setInstalled(!!s?.installed)).catch(() => {});
-    checkInstalled();
+    refreshSlsStatus();
     // Re-check so the sections appear right after a first-time install completes.
-    const iv = setInterval(checkInstalled, 4000);
+    const iv = setInterval(refreshSlsStatus, 4000);
     return () => {
       clearInterval(iv);
       window.removeEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes as EventListener);
     };
-  }, []);
+  }, [refreshSlsStatus]);
 
   const anchor = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -464,7 +491,7 @@ function Content() {
     <>
       <div ref={anchor} style={{ height: 0 }} />
       <RepairBanner />
-      <SlsSteamCompact />
+      <SlsSteamCompact status={slsStatus} statusChecked={slsStatusChecked} onRefreshStatus={refreshSlsStatus} />
       {/* Per-game surfaces first: "This game" and "Actions & fixes" both act on
           whatever library page you came from, so they belong above the whole-
           library list rather than under it. */}
