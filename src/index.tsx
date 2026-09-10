@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, SlsStatus } from "./api";
+import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -579,6 +579,10 @@ export default definePlugin(() => {
       if (events.some((event) => event.status === "done" && event.success && !(event as any).assella)) {
         try { notifySuccessfulAdds = (await getNotifyGameAdd()).enabled !== false; } catch { /* default on */ }
       }
+      let surfaceFailedSources = false;
+      if (events.some((event) => (event.sourceFailures || []).length > 0)) {
+        try { surfaceFailedSources = (await getUiSettings()).settings?.toastOnSourceFailure === true; } catch { /* default off */ }
+      }
       events.forEach((e) => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
@@ -587,6 +591,17 @@ export default definePlugin(() => {
         const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
         const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
         const suppressSuccessfulSlsAdd = e.status === "done" && e.success && !isAssella && !notifySuccessfulAdds;
+        if (surfaceFailedSources && (e.sourceFailures || []).length > 0) {
+          const failures = (e.sourceFailures || []).map((failure) => {
+            const reason = failure.detail || (failure.code ? `HTTP ${failure.code}` : failure.type || "failed");
+            return `${failure.source}: ${reason}`;
+          });
+          toaster.toast({
+            title: "SLSDeck · manifest sources skipped",
+            body: `${e.name}: ${failures.join(" · ")}`,
+            duration: 12000,
+          });
+        }
         if (!skipDuplicate && !suppressSuccessfulSlsAdd) toaster.toast({
           title: "SLSDeck",
           body:
