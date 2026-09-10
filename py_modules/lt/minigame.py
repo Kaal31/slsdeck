@@ -28,6 +28,7 @@ _TAG_IDS = {
 def _filters(value: Dict[str, Any] | None = None) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     return {
+        "qualityMode": bool(raw.get("qualityMode", False)),
         "genre": str(raw.get("genre") or "").lower() if str(raw.get("genre") or "").lower() in _TAG_IDS else "",
         "players": str(raw.get("players") or "").lower() if str(raw.get("players") or "").lower() in ("singleplayer", "multiplayer", "coop") else "",
         "deck": str(raw.get("deck") or "").lower() if str(raw.get("deck") or "").lower() in ("playable", "verified") else "",
@@ -166,7 +167,7 @@ def _review_summary(appid: int) -> Tuple[int, int] | None:
         summary = response.json().get("query_summary") or {}
         total = int(summary.get("total_reviews") or 0)
         positive = int(summary.get("total_positive") or 0)
-        return total, round((positive * 100) / total) if total else 0
+        return total, (positive * 100) // total if total else 0
     except Exception:
         return None
 
@@ -210,19 +211,21 @@ def _store_game(appid: int, min_price_cents: int,
         if actual_price_cents < max(1, int(min_price_cents or 0)):
             return None
         selected = _filters(filters)
+        effective_min_reviews = max(selected["minReviews"], 300 if selected["qualityMode"] else 0)
+        effective_min_rating = max(selected["minRating"], 60 if selected["qualityMode"] else 0)
         release_match = re.search(r"\b(19|20)\d{2}\b", str((data.get("release_date") or {}).get("date") or ""))
         release_year = int(release_match.group(0)) if release_match else 0
         if selected["releaseFrom"] and (not release_year or release_year < selected["releaseFrom"]):
             return None
         if selected["releaseTo"] and (not release_year or release_year > selected["releaseTo"]):
             return None
-        if selected["minReviews"]:
+        if effective_min_reviews:
             recommendations = int((data.get("recommendations") or {}).get("total") or 0)
-            if recommendations < selected["minReviews"]:
+            if recommendations < effective_min_reviews:
                 return None
-        if selected["minRating"] or selected["minReviews"]:
+        if effective_min_rating or effective_min_reviews:
             reviews = _review_summary(appid)
-            if not reviews or reviews[0] < selected["minReviews"] or reviews[1] < selected["minRating"]:
+            if not reviews or reviews[0] < effective_min_reviews or reviews[1] < effective_min_rating:
                 return None
         if selected["deck"]:
             deck_category = _deck_category(appid)

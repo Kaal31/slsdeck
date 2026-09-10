@@ -284,6 +284,7 @@ export interface MinigameItem {
   currency?: string;
 }
 export interface StoreRouletteFilters {
+  qualityMode?: boolean;
   genre?: string;
   players?: string;
   deck?: string;

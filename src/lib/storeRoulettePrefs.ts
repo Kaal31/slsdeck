@@ -5,6 +5,7 @@ export const ROULETTE_FILTERS_KEY = "slsdeck.storeRoulette.filters";
 export const ROULETTE_PREFS_EVENT = "slsdeck-store-roulette-prefs";
 
 export interface StoreRouletteFilters {
+  qualityMode: boolean;
   genre: string;
   players: string;
   deck: string;
@@ -15,6 +16,7 @@ export interface StoreRouletteFilters {
 }
 
 export const DEFAULT_ROULETTE_FILTERS: StoreRouletteFilters = {
+  qualityMode: false,
   genre: "",
   players: "",
   deck: "",
@@ -50,6 +52,7 @@ export function readRouletteFilters(): StoreRouletteFilters {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(ROULETTE_FILTERS_KEY) || "{}");
     return {
+      qualityMode: parsed.qualityMode === true,
       genre: typeof parsed.genre === "string" ? parsed.genre : "",
       players: typeof parsed.players === "string" ? parsed.players : "",
       deck: typeof parsed.deck === "string" ? parsed.deck : "",

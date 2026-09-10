@@ -1,4 +1,4 @@
-import { ButtonItem, DialogButton, DialogCheckbox, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
+import { ButtonItem, DialogButton, DialogCheckbox, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, ToggleField } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
@@ -386,6 +386,9 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
       Additional filters · {activeFilterCount ? `${activeFilterCount} active` : "Any"} {filtersExpanded ? "▲" : "▼"}
     </ButtonItem></PanelSectionRow>
     {filtersExpanded && <>
+      <PanelSectionRow><ToggleField label="Quality mode"
+        description="Requires at least 300 reviews and 60% positive ratings. Stricter review filters below still take priority."
+        checked={filters.qualityMode} onChange={(value) => changeFilter("qualityMode", value)} /></PanelSectionRow>
       <PanelSectionRow><DropdownItem label="Genre" rgOptions={GENRE_OPTIONS}
         selectedOption={filters.genre} strDefaultLabel={GENRE_OPTIONS.find((option) => option.data === filters.genre)?.label || "Any genre"}
         onChange={(option: any) => changeFilter("genre", String(option.data || ""))} /></PanelSectionRow>
