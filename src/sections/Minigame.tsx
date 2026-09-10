@@ -1,5 +1,5 @@
 import { ButtonItem, DialogButton, DialogCheckbox, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, ToggleField } from "@decky/ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, readRoulettePrice, StoreRouletteFilters, writeRouletteFilters, writeRoulettePrice } from "../lib/storeRoulettePrefs";
@@ -72,7 +72,10 @@ function GameArtwork({ item }: { item: MinigameItem }) {
 
 function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem; onReturn?: () => void; closeModal?: () => void }) {
   const gamepadFrame = useRef(0);
+  const modalCenterProbe = useRef<HTMLDivElement>(null);
   const [dismissing, setDismissing] = useState(false);
+  const [horizontalShift, setHorizontalShift] = useState(0);
+  const [positionReady, setPositionReady] = useState(false);
   const dismiss = () => {
     if (dismissing) return;
     setDismissing(true);
@@ -106,15 +109,34 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       cancelAnimationFrame(gamepadFrame.current);
     };
   }, [closeModal, dismissing]);
+  useLayoutEffect(() => {
+    const centerOnViewport = () => {
+      const bounds = modalCenterProbe.current?.getBoundingClientRect();
+      if (!bounds) return;
+      // Decky centers nested modals in its active safe area. Compensate by
+      // measuring that area's real center instead of guessing from vw units.
+      const shift = window.innerWidth / 2 - (bounds.left + bounds.width / 2);
+      setHorizontalShift(Math.max(-320, Math.min(320, shift)));
+      setPositionReady(true);
+    };
+    centerOnViewport();
+    window.addEventListener("resize", centerOnViewport);
+    return () => window.removeEventListener("resize", centerOnViewport);
+  }, []);
   return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
     <style>{`
       .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
-      @keyframes sls-winner-enter { 0% { opacity:0; transform:translateX(12vw) scale(.72) translateY(24px); } 65% { opacity:1; transform:translateX(12vw) scale(1.06) translateY(-7px); } 100% { transform:translateX(12vw) scale(1) translateY(0); } }
+      @keyframes sls-winner-enter { 0% { opacity:0; transform:translateX(var(--sls-winner-shift)) scale(.72) translateY(24px); } 65% { opacity:1; transform:translateX(var(--sls-winner-shift)) scale(1.06) translateY(-7px); } 100% { transform:translateX(var(--sls-winner-shift)) scale(1) translateY(0); } }
       @keyframes sls-winner-idle { 0%,100% { transform:translateY(0) rotate(-.25deg); } 50% { transform:translateY(-9px) rotate(.25deg); } }
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
-      @keyframes sls-winner-exit { from { opacity:1; transform:translateX(12vw) scale(1); } to { opacity:0; transform:translateX(12vw) scale(.88) translateY(18px); } }
+      @keyframes sls-winner-exit { from { opacity:1; transform:translateX(var(--sls-winner-shift)) scale(1); } to { opacity:0; transform:translateX(var(--sls-winner-shift)) scale(.88) translateY(18px); } }
     `}</style>
-    <div onPointerDown={dismiss} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)", textAlign: "center", transform:"translateX(12vw)", animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both" }}>
+    <div ref={modalCenterProbe} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)" }}>
+    <div onPointerDown={dismiss} style={{
+      width: "100%", textAlign: "center", "--sls-winner-shift": `${horizontalShift}px`,
+      visibility: positionReady ? "visible" : "hidden",
+      animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both",
+    } as React.CSSProperties}>
       <div style={{ animation: "sls-winner-idle 3s ease-in-out 1s infinite" }}>
         <div style={{ position:"relative", width:"100%", aspectRatio:"16 / 9", overflow:"hidden", borderRadius:12, background:"linear-gradient(145deg,#23354a,#111c29)", boxShadow:"0 24px 58px rgba(0,0,0,.82),0 0 44px rgba(255,190,75,.48)" }}>
           <GameArtwork item={item} />
@@ -124,6 +146,7 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
         <div style={{ marginTop:5, fontSize:23, fontWeight:900, textShadow:"0 3px 12px #000" }}>{item.name}</div>
         <div style={{ marginTop:8, color:"#a7e7bb", fontSize:17, fontWeight:900, textShadow:"0 2px 9px #000" }}>SAVED {displayPrice(item)}</div>
       </div>
+    </div>
     </div>
   </ModalRoot>;
 }
