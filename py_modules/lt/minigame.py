@@ -211,8 +211,11 @@ def _store_game(appid: int, min_price_cents: int,
         if actual_price_cents < max(1, int(min_price_cents or 0)):
             return None
         selected = _filters(filters)
-        effective_min_reviews = max(selected["minReviews"], 300 if selected["qualityMode"] else 0)
-        effective_min_rating = max(selected["minRating"], 60 if selected["qualityMode"] else 0)
+        # Quality mode owns the two overlapping review constraints. Preserve
+        # the manual values in settings for later, but ignore them until the
+        # preset is turned off so the result cannot be ambiguous.
+        effective_min_reviews = 300 if selected["qualityMode"] else selected["minReviews"]
+        effective_min_rating = 60 if selected["qualityMode"] else selected["minRating"]
         release_match = re.search(r"\b(19|20)\d{2}\b", str((data.get("release_date") or {}).get("date") or ""))
         release_year = int(release_match.group(0)) if release_match else 0
         if selected["releaseFrom"] and (not release_year or release_year < selected["releaseFrom"]):

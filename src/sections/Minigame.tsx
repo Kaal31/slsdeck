@@ -387,7 +387,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
     </ButtonItem></PanelSectionRow>
     {filtersExpanded && <>
       <PanelSectionRow><ToggleField label="Quality mode"
-        description="Requires at least 300 reviews and 60% positive ratings. Stricter review filters below still take priority."
+        description="Requires at least 300 reviews and 60% positive ratings. This overrides the two manual review filters while enabled."
         checked={filters.qualityMode} onChange={(value) => changeFilter("qualityMode", value)} /></PanelSectionRow>
       <PanelSectionRow><DropdownItem label="Genre" rgOptions={GENRE_OPTIONS}
         selectedOption={filters.genre} strDefaultLabel={GENRE_OPTIONS.find((option) => option.data === filters.genre)?.label || "Any genre"}
@@ -399,9 +399,13 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         selectedOption={filters.deck} strDefaultLabel={DECK_OPTIONS.find((option) => option.data === filters.deck)?.label || "Any Deck status"}
         onChange={(option: any) => changeFilter("deck", String(option.data || ""))} /></PanelSectionRow>
       <PanelSectionRow><DropdownItem label="User rating" rgOptions={RATING_OPTIONS}
+        disabled={filters.qualityMode}
+        description={filters.qualityMode ? "Controlled by Quality mode: 60%+ positive" : "Optional minimum positive rating"}
         selectedOption={filters.minRating} strDefaultLabel={RATING_OPTIONS.find((option) => option.data === filters.minRating)?.label || "Any rating"}
         onChange={(option: any) => changeFilter("minRating", Number(option.data) || 0)} /></PanelSectionRow>
       <PanelSectionRow><DropdownItem label="Review count" rgOptions={REVIEW_OPTIONS}
+        disabled={filters.qualityMode}
+        description={filters.qualityMode ? "Controlled by Quality mode: 300+ reviews" : "Optional minimum number of reviews"}
         selectedOption={filters.minReviews} strDefaultLabel={REVIEW_OPTIONS.find((option) => option.data === filters.minReviews)?.label || "Any review count"}
         onChange={(option: any) => changeFilter("minReviews", Number(option.data) || 0)} /></PanelSectionRow>
       <PanelSectionRow><DropdownItem label="Released from" rgOptions={YEAR_OPTIONS}
