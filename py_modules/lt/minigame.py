@@ -67,13 +67,20 @@ def _catalog(min_price_cents: int = 0) -> List[Tuple[int, str, int]]:
         _, _TOTAL_RESULTS = _search_page(0, 1)
     pool: List[Tuple[int, str, int]] = []
     expensive = min_price_cents > 0
-    for page_number in range(4):
+    page_limit = 6 if expensive else 4
+    for page_number in range(page_limit):
         upper = max(0, _TOTAL_RESULTS - 100)
         start = page_number * 100 if expensive else (random.randint(0, upper) if upper else 0)
         page, reported_total = _search_page(start, 100, "Price_DESC" if expensive else "_ASC")
         _TOTAL_RESULTS = max(_TOTAL_RESULTS, reported_total)
         pool.extend(page)
-        if len({appid for appid, _, _ in pool}) >= 80:
+        # Expensive modes must sample beyond Steam's first highest-price page;
+        # that page is often dominated by many identically priced $199.99
+        # products. Stop only after the descending feed crosses the requested
+        # floor (or the bounded page limit is reached).
+        if expensive and page and min(price for _, _, price in page) < min_price_cents:
+            break
+        if not expensive and len({appid for appid, _, _ in pool}) >= 80:
             break
     deduplicated: Dict[int, Tuple[str, int]] = {}
     for appid, name, price_cents in pool:
@@ -84,7 +91,7 @@ def _catalog(min_price_cents: int = 0) -> List[Tuple[int, str, int]]:
     return result
 
 
-def _store_game(appid: int, price_cents: int) -> Dict[str, Any] | None:
+def _store_game(appid: int, min_price_cents: int) -> Dict[str, Any] | None:
     try:
         response = get_http_client().get(
             _DETAIL_URL,
@@ -102,6 +109,14 @@ def _store_game(appid: int, price_cents: int) -> Dict[str, Any] | None:
         ):
             return None
         price = data.get("price_overview") or {}
+        try:
+            actual_price_cents = int(price.get("final") or 0)
+        except (TypeError, ValueError):
+            return None
+        # Search-row prices can refer to stale package/bundle data. The app
+        # details price is authoritative for both eligibility and display.
+        if actual_price_cents < max(1, int(min_price_cents or 0)):
+            return None
         online_markers = ("massively multiplayer", "mmo")
         classifications = []
         for group in (data.get("categories") or [], data.get("genres") or []):
@@ -113,7 +128,7 @@ def _store_game(appid: int, price_cents: int) -> Dict[str, Any] | None:
             "name": str(data["name"]),
             "image": str(data.get("header_image") or ""),
             "shortDescription": str(data.get("short_description") or ""),
-            "priceCents": price_cents,
+            "priceCents": actual_price_cents,
             "currency": str(price.get("currency") or "USD"),
         }
     except Exception:
@@ -131,8 +146,8 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_ce
     # tool, DLC, soundtrack, demo, or removed catalog entry.
     candidates = random.sample(catalog, min(48, len(catalog)))
     winner = None
-    for appid, _, price_cents in candidates:
-        winner = _store_game(appid, price_cents)
+    for appid, _, _ in candidates:
+        winner = _store_game(appid, min_price_cents)
         if winner:
             break
     if not winner:
