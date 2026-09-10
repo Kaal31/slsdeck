@@ -4,7 +4,6 @@ import { toaster } from "@decky/api";
 import {
   SlsInstallState,
   SlsStatus,
-  getSlssteamStatus,
   installSlssteam,
   getSlssteamInstallStatus,
   reloadSteam,
@@ -43,8 +42,15 @@ function Chip({ ok, label }: { ok: boolean; label: string }) {
  * SLSsteam title / Installed / Injected chips / Reinstall control do not sit
  * above the per-game actions. Outside a game page the maintenance block remains.
  */
-export function SlsSteamCompact() {
-  const [status, setStatus] = useState<SlsStatus | null>(null);
+export function SlsSteamCompact({
+  status,
+  statusChecked,
+  onRefreshStatus,
+}: {
+  status: SlsStatus | null;
+  statusChecked: boolean;
+  onRefreshStatus: () => Promise<SlsStatus | null>;
+}) {
   const [inst, setInst] = useState<SlsInstallState | null>(null);
   const [busy, setBusy] = useState(false);
   const [showReinstall, setShowReinstall] = useState(false);
@@ -53,7 +59,7 @@ export function SlsSteamCompact() {
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = async () => {
-    try { setStatus(await getSlssteamStatus()); } catch { /* */ }
+    await onRefreshStatus();
     try { const s = await systemStatus(); if (s.success) setSys(s); } catch { /* */ }
   };
 
@@ -174,6 +180,22 @@ export function SlsSteamCompact() {
   // preference. Missing-engine onboarding remains visible on either surface.
   if (status?.installed && !working && (onLibraryGamePage || (onStoreGamePage && !showReinstall))) return null;
 
+  // Never interpret an absent or stale status as a confirmed missing install.
+  // Reserve the section while the first live check runs so the rest of QAM
+  // does not jump and no destructive/setup action is briefly exposed.
+  if (!statusChecked && !status?.installed && !working) {
+    return (
+      <PanelSection title="SLSsteam">
+        <PanelSectionRow>
+          <div style={{ minHeight: 34, display: "flex", alignItems: "center", fontSize: 12, opacity: 0.8 }}>
+            <Spinner style={{ width: 14, height: 14, marginRight: 8 }} />
+            Checking SLSDeck…
+          </div>
+        </PanelSectionRow>
+      </PanelSection>
+    );
+  }
+
   return (
     <PanelSection title="SLSsteam">
       <PanelSectionRow>
@@ -209,14 +231,14 @@ export function SlsSteamCompact() {
         </PanelSectionRow>
       )}
 
-      {!working && !status?.installed && (
+      {!working && statusChecked && status?.installed === false && (
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={quickInstall}>
             Install SLSDeck (one-tap setup)
           </ButtonItem>
         </PanelSectionRow>
       )}
-      {!working && !status?.installed && (
+      {!working && statusChecked && status?.installed === false && (
         <PanelSectionRow>
           <div style={{ fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }}>
             Installs slsteam-moon{sys?.foreignEngine ? " (disabling any other engine first)" : ""} + CloudRedirect and applies the client fix, in order.
