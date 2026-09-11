@@ -5,6 +5,7 @@ on:
     branches:
       - roulette-dev
       - multi-language
+      - manifest-sources
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
