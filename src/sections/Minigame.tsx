@@ -1,18 +1,16 @@
-import { ButtonItem, DialogButton, DialogCheckbox, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, ToggleField } from "@decky/ui";
+import { ButtonItem, DialogButton, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, SliderField, ToggleField } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
-import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, readRoulettePrice, StoreRouletteFilters, writeRouletteFilters, writeRoulettePrice } from "../lib/storeRoulettePrefs";
+import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, StoreRouletteFilters, writeRouletteFilters } from "../lib/storeRoulettePrefs";
 
 const CARD_WIDTH = 300;
 const CARD_GAP = 10;
 const DURATION = 5700;
 const CASE_SOUND_URL = "https://raw.githubusercontent.com/buzacristian/Case-Simulator/main/Audio/CSGO%20Case%20Opening%20Sound%20Effect.mp3";
-const PRICE_MODES = [
-  { label: "Random", cents: 0 },
-  { label: "$60+", cents: 6000 },
-  { label: "$100+", cents: 10000 },
-  { label: "$1000+", cents: 100000 },
+const PRICE_DIRECTION_OPTIONS = [
+  { data: "min", label: "At least" },
+  { data: "max", label: "At most" },
 ];
 const GENRE_OPTIONS = [
   { data: "", label: "Any genre" }, { data: "action", label: "Action" },
@@ -177,15 +175,17 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [winner, setWinner] = useState<MinigameItem>();
   const [winnerAdded, setWinnerAdded] = useState(false);
   const [error, setError] = useState("");
-  const [minPrice, setMinPrice] = useState(readRoulettePrice);
   const [filters, setFilters] = useState<StoreRouletteFilters>(readRouletteFilters);
-  const [priceExpanded, setPriceExpanded] = useState(false);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [revealVisible, setRevealVisible] = useState(false);
   const [tabRevealDismissing, setTabRevealDismissing] = useState(false);
   const [returningFromWinner, setReturningFromWinner] = useState(false);
-  const activePriceLabel = PRICE_MODES.find((mode) => mode.cents === minPrice)?.label || "Random";
-  const activeFilterCount = Object.values(filters).filter((value) => Boolean(value)).length;
+  const minPrice = filters.priceEnabled && filters.priceDirection === "min" ? filters.priceCents : 0;
+  const activeFilterCount = (filters.priceEnabled ? 1 : 0) + [
+    filters.qualityMode, filters.genre, filters.players, filters.deck,
+    ...(!filters.qualityMode ? [filters.minRating, filters.minReviews] : []),
+    filters.releaseFrom, filters.releaseTo,
+  ].filter(Boolean).length;
   const filterKey = JSON.stringify(filters);
 
   const excludedForFetch = () => Array.from(new Set([
@@ -255,11 +255,14 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   useEffect(() => {
     const generation = ++prefetchGeneration.current;
     prefetchQueue.current = [];
-    void fillPrefetchQueue(generation);
+    // SliderField emits continuously while it moves. Debounce invisible
+    // preparation so dragging it does not launch a request for every dollar.
+    const timer = window.setTimeout(() => void fillPrefetchQueue(generation), 350);
     return () => {
+      clearTimeout(timer);
       if (prefetchGeneration.current === generation) ++prefetchGeneration.current;
     };
-  }, [minPrice, filterKey]);
+  }, [filterKey]);
 
   useEffect(() => {
     if (!revealVisible) return;
@@ -440,24 +443,28 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
         {busy ? "Rolling…" : "Roll a game"}
       </DialogButton>
     </div> : <PanelSection title="Store Roulette">
-    <PanelSectionRow><ButtonItem layout="below" onClick={() => setPriceExpanded((expanded) => !expanded)}>
-      Price mode · {activePriceLabel} {priceExpanded ? "▲" : "▼"}
-    </ButtonItem></PanelSectionRow>
-    {priceExpanded && <PanelSectionRow><div style={{ width: "100%" }}>
-      <div style={{ display: "grid", width: "100%", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-        {PRICE_MODES.map((mode) => <div key={mode.cents} style={{
-          minWidth: 0, minHeight: 42, borderRadius: 6, overflow: "hidden",
-          background: minPrice === mode.cents ? "rgba(83,168,230,.18)" : "rgba(255,255,255,.035)",
-          border: minPrice === mode.cents ? "1px solid rgba(111,195,255,.5)" : "1px solid rgba(255,255,255,.08)",
-        }}><DialogCheckbox label={mode.label}
-          controlled checked={minPrice === mode.cents}
-          onChange={() => { setMinPrice(mode.cents); writeRoulettePrice(mode.cents); setError(""); }} /></div>)}
-      </div>
-    </div></PanelSectionRow>}
     <PanelSectionRow><ButtonItem layout="below" onClick={() => setFiltersExpanded((expanded) => !expanded)}>
-      Additional filters · {activeFilterCount ? `${activeFilterCount} active` : "Any"} {filtersExpanded ? "▲" : "▼"}
+      Roulette filters · {activeFilterCount ? `${activeFilterCount} active` : "Random"} {filtersExpanded ? "▲" : "▼"}
     </ButtonItem></PanelSectionRow>
     {filtersExpanded && <>
+      <PanelSectionRow><ToggleField label="Price filter"
+        description={filters.priceEnabled
+          ? `${filters.priceDirection === "min" ? "At least" : "At most"} $${filters.priceCents / 100}${filters.priceDirection === "min" && filters.priceCents === 100000 ? "+" : ""}`
+          : "Off keeps price random"}
+        checked={filters.priceEnabled} onChange={(value) => changeFilter("priceEnabled", value)} /></PanelSectionRow>
+      <PanelSectionRow><DropdownItem label="Price rule" rgOptions={PRICE_DIRECTION_OPTIONS}
+        disabled={!filters.priceEnabled}
+        selectedOption={filters.priceDirection}
+        strDefaultLabel={filters.priceDirection === "max" ? "At most" : "At least"}
+        onChange={(option: any) => changeFilter("priceDirection", option.data === "max" ? "max" : "min")} /></PanelSectionRow>
+      <PanelSectionRow><SliderField label="Price threshold"
+        description={filters.priceCents === 100000
+          ? (filters.priceDirection === "min" ? "$1000+ endpoint" : "$1000 maximum")
+          : `${filters.priceDirection === "min" ? "Games costing at least" : "Games costing at most"} $${filters.priceCents / 100}`}
+        value={Math.round(filters.priceCents / 100)} min={1} max={1000} step={1}
+        notchCount={5} notchTicksVisible showValue editableValue valueSuffix=" USD"
+        minimumDpadGranularity={1} disabled={!filters.priceEnabled}
+        onChange={(value) => changeFilter("priceCents", Math.max(1, Math.min(1000, Math.round(value))) * 100)} /></PanelSectionRow>
       <PanelSectionRow><ToggleField label="Quality mode"
         description="Requires at least 300 reviews and 60% positive ratings. This overrides the two manual review filters while enabled."
         checked={filters.qualityMode} onChange={(value) => changeFilter("qualityMode", value)} /></PanelSectionRow>
@@ -489,7 +496,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
       {activeFilterCount > 0 && <PanelSectionRow><ButtonItem layout="below" onClick={() => {
         const cleared = { ...DEFAULT_ROULETTE_FILTERS };
         setFilters(cleared); writeRouletteFilters(cleared); setError("");
-      }}>Clear additional filters</ButtonItem></PanelSectionRow>}
+      }}>Clear roulette filters</ButtonItem></PanelSectionRow>}
     </>}
     <PanelSectionRow><div style={{ fontSize: 11, opacity: .72, lineHeight: 1.45 }}>
       Crack open the entire Steam Store. Games already in your library are excluded, and the winner is automatically added with SLS Steam.

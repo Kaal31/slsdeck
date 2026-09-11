@@ -28,6 +28,9 @@ _TAG_IDS = {
 def _filters(value: Dict[str, Any] | None = None) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     return {
+        "priceEnabled": bool(raw.get("priceEnabled", False)),
+        "priceDirection": "max" if str(raw.get("priceDirection") or "").lower() == "max" else "min",
+        "priceCents": max(100, min(100000, int(raw.get("priceCents") or 6000))),
         "qualityMode": bool(raw.get("qualityMode", False)),
         "genre": str(raw.get("genre") or "").lower() if str(raw.get("genre") or "").lower() in _TAG_IDS else "",
         "players": str(raw.get("players") or "").lower() if str(raw.get("players") or "").lower() in ("singleplayer", "multiplayer", "coop") else "",
@@ -113,11 +116,12 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
     return found, total
 
 
-def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) -> List[Tuple[int, str, int]]:
+def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
+             filters: Dict[str, Any] | None = None) -> List[Tuple[int, str, int]]:
     global _MEMORY, _TOTAL_RESULTS
     selected = _filters(filters)
     search_key = _search_key(selected)
-    cache_key = f"{min_price_cents}:{search_key}"
+    cache_key = f"{min_price_cents}:{max_price_cents}:{search_key}"
     cached = _MEMORY.get(cache_key)
     if cached and time.time() - cached[0] < _CACHE_SECONDS:
         return cached[1]
@@ -186,7 +190,7 @@ def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) ->
                 break
     deduplicated: Dict[int, Tuple[str, int]] = {}
     for appid, name, price_cents in pool:
-        if price_cents >= max(1, min_price_cents):
+        if price_cents >= max(1, min_price_cents) and (not max_price_cents or price_cents <= max_price_cents):
             deduplicated[appid] = (name, price_cents)
     result = [(appid, name, price) for appid, (name, price) in deduplicated.items()]
     _MEMORY[cache_key] = (time.time(), result)
@@ -220,7 +224,7 @@ def _deck_category(appid: int) -> int:
         return 0
 
 
-def _store_game(appid: int, min_price_cents: int,
+def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
                 filters: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
     try:
         response = get_http_client().get(
@@ -246,6 +250,8 @@ def _store_game(appid: int, min_price_cents: int,
         # Search-row prices can refer to stale package/bundle data. The app
         # details price is authoritative for both eligibility and display.
         if actual_price_cents < max(1, int(min_price_cents or 0)):
+            return None
+        if max_price_cents and actual_price_cents > int(max_price_cents):
             return None
         selected = _filters(filters)
         # Quality mode owns the two overlapping review constraints. Preserve
@@ -296,16 +302,30 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_ce
     excluded: Set[int] = {int(value) for value in (excluded_appids or []) if int(value) > 0}
     min_price_cents = max(0, int(min_price_cents or 0))
     selected = _filters(filters)
-    catalog = [(appid, name, price) for appid, name, price in _catalog(min_price_cents, selected) if appid not in excluded]
+    # New slider settings supersede the legacy minimum-price argument. Keeping
+    # the argument supported lets older frontends continue to work.
+    max_price_cents = 0
+    if selected["priceEnabled"]:
+        if selected["priceDirection"] == "max":
+            min_price_cents = 0
+            max_price_cents = selected["priceCents"]
+        else:
+            min_price_cents = selected["priceCents"]
+    catalog = [(appid, name, price) for appid, name, price in _catalog(min_price_cents, max_price_cents, selected) if appid not in excluded]
     if not catalog:
         return {"success": False, "error": "No paid Steam games matched the selected price and filters; try broadening them"}
 
     # Validate the prize against Store appdetails so the reel cannot land on a
     # tool, DLC, soundtrack, demo, or removed catalog entry.
-    candidates = random.sample(catalog, min(72 if any(selected.values()) else 48, len(catalog)))
+    filters_active = bool(
+        selected["priceEnabled"] or selected["qualityMode"] or selected["genre"]
+        or selected["players"] or selected["deck"] or selected["minRating"]
+        or selected["minReviews"] or selected["releaseFrom"] or selected["releaseTo"]
+    )
+    candidates = random.sample(catalog, min(72 if filters_active else 48, len(catalog)))
     winner = None
     for appid, _, _ in candidates:
-        winner = _store_game(appid, min_price_cents, selected)
+        winner = _store_game(appid, min_price_cents, max_price_cents, selected)
         if winner:
             break
     if not winner:
@@ -315,7 +335,7 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_ce
     # Only the winning card must satisfy the selected price floor. Fill the
     # surrounding reel from the normal paid catalog so very rare tiers (such
     # as $1000+) still produce a full, varied animation.
-    filler_pool = [item for item in _catalog(0, {}) if item[0] not in excluded and item[0] != winner["appid"]]
+    filler_pool = [item for item in _catalog(0, 0, {}) if item[0] not in excluded and item[0] != winner["appid"]]
     if not filler_pool:
         return {"success": False, "error": "Steam Store catalog is unavailable"}
     filler = random.sample(filler_pool, count - 1) if len(filler_pool) >= count - 1 else random.choices(filler_pool, k=count - 1)
