@@ -6,6 +6,7 @@ import html
 import json
 import random
 import re
+import threading
 import time
 from typing import Any, Dict, List, Set, Tuple
 
@@ -18,6 +19,11 @@ _DECK_URL = "https://store.steampowered.com/saleaction/ajaxgetdeckappcompatibili
 _CACHE_SECONDS = 60 * 60
 _MEMORY: Dict[str, Tuple[float, List[Tuple[int, str, int]]]] = {}
 _TOTAL_RESULTS: Dict[str, int] = {}
+_SEARCH_PAGE_MEMORY: Dict[str, Tuple[float, List[Tuple[int, str, int]], int]] = {}
+_SEARCH_REQUEST_LOCK = threading.Lock()
+_LAST_SEARCH_REQUEST = 0.0
+_SEARCH_COOLDOWN_UNTIL = 0.0
+_SEARCH_REQUEST_INTERVAL = 0.65
 _TAG_IDS = {
     "action": 19, "rpg": 122, "strategy": 9, "simulation": 599,
     "adventure": 21, "horror": 1667, "racing": 699, "sports": 701,
@@ -66,6 +72,7 @@ def _usable(app: Any) -> Tuple[int, str] | None:
 
 def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
                  filters: Dict[str, Any] | None = None) -> Tuple[List[Tuple[int, str, int]], int]:
+    global _LAST_SEARCH_REQUEST, _SEARCH_COOLDOWN_UNTIL
     selected = _filters(filters)
     params: Dict[str, Any] = {
         "query": "", "start": max(0, int(start)), "count": max(1, int(count)),
@@ -79,11 +86,33 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
         params["deck_compatibility"] = "verified"
     elif selected["deck"] == "playable":
         params["deck_compatibility"] = "verified,playable"
+    page_key = json.dumps(params, sort_keys=True)
+    cached = _SEARCH_PAGE_MEMORY.get(page_key)
+    if cached and time.time() - cached[0] < _CACHE_SECONDS:
+        return list(cached[1]), cached[2]
     payload: Dict[str, Any] | None = None
     last_error = "Steam Store returned an invalid response"
-    for attempt in range(3):
+    with _SEARCH_REQUEST_LOCK:
+        # Another roulette worker may have filled this page while we waited.
+        cached = _SEARCH_PAGE_MEMORY.get(page_key)
+        if cached and time.time() - cached[0] < _CACHE_SECONDS:
+            return list(cached[1]), cached[2]
+        wait = max(_SEARCH_COOLDOWN_UNTIL - time.time(),
+                   _SEARCH_REQUEST_INTERVAL - (time.time() - _LAST_SEARCH_REQUEST))
+        if wait > 0:
+            time.sleep(min(wait, 30.0))
         try:
             response = get_http_client().get(_SEARCH_URL, params=params, timeout=30.0)
+            _LAST_SEARCH_REQUEST = time.time()
+            if response.status_code == 429:
+                try:
+                    retry_after = max(5, min(60, int(response.headers.get("Retry-After") or 15)))
+                except (TypeError, ValueError):
+                    retry_after = 15
+                _SEARCH_COOLDOWN_UNTIL = time.time() + retry_after
+                if cached:
+                    return list(cached[1]), cached[2]
+                raise RuntimeError(f"Steam Store is rate-limiting searches; retry in about {retry_after} seconds")
             response.raise_for_status()
             if not str(getattr(response, "text", "") or "").strip():
                 raise ValueError("Steam Store returned an empty response")
@@ -91,11 +120,8 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
             if not isinstance(decoded, dict):
                 raise ValueError("Steam Store returned an unexpected response")
             payload = decoded
-            break
         except Exception as exc:
             last_error = str(exc) or last_error
-            if attempt < 2:
-                time.sleep(0.35 * (attempt + 1))
     if payload is None:
         raise RuntimeError(f"Steam Store search is temporarily unavailable: {last_error}")
     markup = str(payload.get("results_html") or "")
@@ -113,6 +139,7 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
         if title and price_cents > 0:
             seen.add(appid)
             found.append((appid, title, price_cents))
+    _SEARCH_PAGE_MEMORY[page_key] = (time.time(), list(found), total)
     return found, total
 
 
@@ -165,7 +192,12 @@ def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
             return pages[page_number]
 
         low, high, last_eligible_page = 0, page_count - 1, -1
-        while low <= high:
+        # An exact boundary can require 10-12 rapid Store calls on the current
+        # catalog. A coarse five-probe boundary is enough for random selection
+        # and keeps one slider change well below Steam's anonymous rate limit.
+        probes = 0
+        while low <= high and probes < 5:
+            probes += 1
             middle = (low + high) // 2
             page = priced_page(middle)
             if any(price >= min_price_cents for _, _, price in page):
@@ -175,7 +207,7 @@ def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
                 high = middle - 1
 
         if last_eligible_page >= 0:
-            sample_count = min(6, last_eligible_page + 1)
+            sample_count = min(3, last_eligible_page + 1)
             chosen_pages = random.sample(range(last_eligible_page + 1), sample_count)
             for page_number in chosen_pages:
                 pool.extend(priced_page(page_number))

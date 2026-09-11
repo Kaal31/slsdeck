@@ -74,6 +74,11 @@ GAMES_DB_LOCK = threading.Lock()
 _CANCEL: Dict[int, "threading.Event"] = {}
 _CANCEL_LOCK = threading.Lock()
 
+# Serialize final registration against bulk purge. Network/manifest work may
+# stay concurrent, but a game must not be registered from a stale add after the
+# purge has taken its snapshot.
+_REGISTRATION_LOCK = threading.RLock()
+
 # Keep DOWNLOAD_STATE from growing for the life of the process. Only terminal
 # entries are pruned, and only the oldest, so an in-flight add is never dropped.
 _MAX_TRACKED_STATES = 64
@@ -99,6 +104,14 @@ def _request_cancel(appid: int) -> None:
 
 def _is_cancelled(appid: int) -> bool:
     return _cancel_event(appid).is_set()
+
+
+def _register_app(appid: int, name: str, cancel_appid: int | None = None) -> Dict[str, Any]:
+    """Register unless a concurrent bulk purge cancelled this add."""
+    with _REGISTRATION_LOCK:
+        if _is_cancelled(appid if cancel_appid is None else cancel_appid):
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+        return slssteam.add_app(appid, name)
 
 
 def _prune_states() -> None:
@@ -728,7 +741,11 @@ def _finalize_registration(appid: int, source_name: str) -> None:
     sls = {"success": False}
     sls_error = ""
     try:
-        sls = slssteam.add_app(appid, fetched)
+        sls = _register_app(appid, fetched)
+        if sls.get("cancelled"):
+            _set_state(appid, {"status": "cancelled", "success": False,
+                               "error": "Cancelled by purge"})
+            return
         if not sls.get("success"):
             sls_error = str(sls.get("error") or "SLSsteam registration failed")
     except Exception as sls_exc:
@@ -1061,7 +1078,11 @@ def _download_zip_for_app(appid: int) -> None:
         if _is_cancelled(appid):
             return
         fetched = _fetch_app_name(appid) or f"UNKNOWN ({appid})"
-        sls = slssteam.add_app(appid, fetched)
+        sls = _register_app(appid, fetched)
+        if sls.get("cancelled"):
+            _set_state(appid, {"status": "cancelled", "success": False,
+                               "error": "Cancelled by purge"})
+            return
         if sls.get("success"):
             try:
                 _append_loaded_app(appid, fetched)
@@ -1119,7 +1140,16 @@ def _add_worker(appid: int) -> None:
         # cancel and a "done" write must never surface as a successful add.
         if _is_cancelled(appid):
             status = "cancelled"
-            _set_state(appid, {"status": "cancelled"})
+            _set_state(appid, {"status": "cancelled", "success": False,
+                               "error": "Cancelled by purge"})
+            # The purge may have interrupted this worker after it wrote a Lua
+            # file but before final registration. Clean any late residue before
+            # the worker exits so it cannot return after a Steam restart.
+            with _REGISTRATION_LOCK:
+                try:
+                    delete_luatools_for_app(appid)
+                except Exception as cleanup_exc:
+                    logger.warn(f"SLSDeck: cancelled-add cleanup failed for {appid}: {cleanup_exc}")
         if status in ("done", "failed"):
             name = ""
             try:
@@ -1157,10 +1187,11 @@ def _add_worker(appid: int) -> None:
                             base = int(info["base"])
                             try:
                                 bname = _fetch_app_name(base) or f"AppID {base}"
-                                slssteam.add_app(base, bname)
-                                _append_loaded_app(base, bname)
-                                target = base
-                                logger.log(f"SLSDeck: chain-added base game {base} for DLC {appid} — moon unlocks all its DLC")
+                                base_add = _register_app(base, bname, cancel_appid=appid)
+                                if base_add.get("success"):
+                                    _append_loaded_app(base, bname)
+                                    target = base
+                                    logger.log(f"SLSDeck: chain-added base game {base} for DLC {appid} — moon unlocks all its DLC")
                             except Exception as be:
                                 logger.warn(f"SLSDeck: chain-add base failed for DLC {appid}: {be}")
                         r = _dlc.ensure_all_dlc_keys(target)
@@ -1520,20 +1551,46 @@ def purge_all_added() -> Dict[str, Any]:
     and delete its lua manifest. Does NOT delete installed game files. Also clears
     the everAdded history since nothing is registered anymore. Restart Steam to
     apply."""
-    apps = get_installed_apps().get("apps", []) or []
-    appids = []
-    for a in apps:
-        try:
-            appids.append(int(a.get("appid")))
-        except Exception:
-            continue
-    removed = 0
-    for appid in appids:
-        try:
-            if delete_luatools_for_app(appid).get("success"):
-                removed += 1
-        except Exception as exc:
-            logger.warn(f"SLSDeck: purge failed for {appid}: {exc}")
+    # Cancel all background adds first. Then take the same lock used by their
+    # final registration: an add already inside the lock lands before our fresh
+    # snapshot and is removed, while one waiting behind us observes cancellation
+    # and cannot recreate the most recently added game after the purge.
+    with DOWNLOAD_LOCK:
+        active_appids = [
+            int(appid) for appid, state in DOWNLOAD_STATE.items()
+            if state.get("status") not in {"done", "failed", "cancelled"}
+        ]
+    for appid in active_appids:
+        _request_cancel(appid)
+        _set_state(appid, {"status": "cancelled", "success": False,
+                           "error": "Cancelled by purge"})
+
+    with _REGISTRATION_LOCK:
+        apps = get_installed_apps().get("apps", []) or []
+        appids = []
+        for a in apps:
+            try:
+                appids.append(int(a.get("appid")))
+            except Exception:
+                continue
+        # Active ids also cover partial Lua files which were not registered at
+        # snapshot time.
+        appids = sorted(set(appids) | set(active_appids))
+        removed = 0
+        for appid in appids:
+            try:
+                if delete_luatools_for_app(appid).get("success"):
+                    removed += 1
+            except Exception as exc:
+                logger.warn(f"SLSDeck: purge failed for {appid}: {exc}")
+    # Do not let the persistent notifier consume an old successful-add event
+    # after the corresponding game was intentionally purged.
+    purged_ids = set(appids)
+    with _ADD_EVENTS_LOCK:
+        _ADD_EVENTS[:] = [
+            event for event in _ADD_EVENTS
+            if int(event.get("appid") or 0) not in purged_ids
+        ]
     try:
         from .settings import clear_ever_added
         clear_ever_added()
