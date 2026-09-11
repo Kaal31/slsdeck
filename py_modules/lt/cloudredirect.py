@@ -748,6 +748,19 @@ def list_local_apps() -> dict:
                         "size": 0, "local": False, "remote": True}
                 apps.append(item)
                 by_key[(account, appid)] = item
+    # Cloud-only games do not exist in Steam's local appStore, so resolve their
+    # display names in the backend. The shared resolver uses the downloaded
+    # Steam applist first and only falls back to a rate-limited Store lookup.
+    try:
+        from . import downloads
+        names = {}
+        for app in apps:
+            appid = int(app["appid"])
+            if appid not in names:
+                names[appid] = downloads._fetch_app_name(appid)
+            app["name"] = names[appid] or ""
+    except Exception as exc:
+        logger.warn(f"CloudRedirect: game-name resolution failed: {exc}")
     apps.sort(key=lambda item: (item["account"], item["appid"]))
     return {"success": True, "apps": apps, "storageRoot": root,
             "provider": provider, "remoteError": remote_error}

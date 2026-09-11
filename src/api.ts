@@ -266,6 +266,7 @@ export const crAuthPoll = callable<[], { success: boolean; status?: string; prov
 export const crAuthCallback = callable<[value: string], { success: boolean; status?: string; provider?: string; authenticated?: boolean; error?: string }>("cr_auth_callback");
 export interface CloudRedirectLocalApp {
   appid: number;
+  name?: string;
   account: number;
   files: number;
   size: number;

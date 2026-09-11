@@ -36,8 +36,8 @@ function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirect
   }
 }
 
-function steamGame(appid: number): { title: string; header: string; wideCapsule: string } {
-  let title = `Steam App ${appid}`;
+function steamGame(appid: number, resolvedName = ""): { title: string; header: string; wideCapsule: string } {
+  let title = resolvedName || `Steam App ${appid}`;
   try {
     const overview: any = (window as any).appStore?.GetAppOverviewByAppID?.(appid)
       || (window as any).appStore?.GetAppOverviewByGameID?.(appid);
@@ -51,7 +51,7 @@ function steamGame(appid: number): { title: string; header: string; wideCapsule:
 }
 
 function CloudSaveCard({ app, provider }: { app: CloudRedirectLocalApp; provider?: CloudRedirectProvider }) {
-  const game = steamGame(app.appid);
+  const game = steamGame(app.appid, app.name);
   const [artIndex, setArtIndex] = useState(0);
   const [localArtwork, setLocalArtwork] = useState("");
   const [localArtworkChecked, setLocalArtworkChecked] = useState(false);
@@ -228,7 +228,7 @@ export function CloudRedirectSection() {
     const bHasSaves = b.files > 0 || b.size > 0 || !!b.remote;
     if (aHasSaves !== bHasSaves) return aHasSaves ? -1 : 1;
     if ((b.remoteTime || 0) !== (a.remoteTime || 0)) return (b.remoteTime || 0) - (a.remoteTime || 0);
-    return steamGame(a.appid).title.localeCompare(steamGame(b.appid).title);
+    return steamGame(a.appid, a.name).title.localeCompare(steamGame(b.appid, b.name).title);
   });
   return <PanelSection title="Cloud saves (CloudRedirect)">
     <PanelSectionRow><ToggleField label="Cloud saves for added games"
