@@ -270,8 +270,10 @@ export interface CloudRedirectLocalApp {
   files: number;
   size: number;
   remoteTime?: number;
+  local?: boolean;
+  remote?: boolean;
 }
-export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; error?: string }>("cr_list_local_apps");
+export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; provider?: CloudRedirectProvider; remoteError?: string; error?: string }>("cr_list_local_apps");
 export const crGameArtwork = callable<[appid: number], { success: boolean; image?: string; error?: string }>("cr_game_artwork");
 
 export interface MinigameItem {

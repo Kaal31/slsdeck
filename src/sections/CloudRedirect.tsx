@@ -13,7 +13,8 @@ const PROVIDERS: Array<{ data: CloudRedirectProvider; label: string }> = [
 ];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function formatSize(bytes: number): string {
+function formatSize(bytes: number, local = true): string {
+  if (!local) return "Cloud only";
   if (!bytes) return "No local save files yet";
   const units = ["B", "KB", "MB", "GB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
@@ -21,9 +22,10 @@ function formatSize(bytes: number): string {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
-function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirectProvider | undefined): string {
+function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirectProvider | undefined, remote = false): string {
   const providerName = provider === "gdrive" ? "Google Drive" : provider === "onedrive" ? "OneDrive" : "local storage";
-  if (!timestamp) return provider === "local" ? "No stored save metadata yet" : `Not synced to ${providerName} yet`;
+  if (!timestamp) return provider === "local" ? "No stored save metadata yet" :
+    remote ? `Stored in ${providerName}` : `Not synced to ${providerName} yet`;
   try {
     const date = new Date(timestamp * 1000).toLocaleString([], {
       month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
@@ -90,9 +92,10 @@ function CloudSaveCard({ app, provider }: { app: CloudRedirectLocalApp; provider
     <div style={{ position: "relative", padding: "13px 14px", textShadow: "0 1px 3px #000" }}>
       <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.18 }}>{game.title}</div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px 12px", marginTop: 13, fontSize: 11 }}>
-        <span style={{ color: "#67c1f5", fontWeight: 650 }}>{formatSize(app.size)}</span>
-        <span style={{ opacity: .82 }}>{app.files} {app.files === 1 ? "file" : "files"}</span>
-        <span style={{ opacity: .82 }}>{formatRemoteSave(app.remoteTime, provider)}</span>
+        <span style={{ color: "#67c1f5", fontWeight: 650 }}>{formatSize(app.size, app.local !== false)}</span>
+        <span style={{ opacity: .82 }}>{app.local === false ? "Files available remotely" : `${app.files} ${app.files === 1 ? "file" : "files"}`}</span>
+        {app.remote && app.local !== false && <span style={{ color: "#5ee6c4", fontWeight: 650 }}>Local + cloud</span>}
+        <span style={{ opacity: .82 }}>{formatRemoteSave(app.remoteTime, provider, !!app.remote)}</span>
       </div>
     </div>
   </DialogButton>;
@@ -122,7 +125,11 @@ export function CloudRedirectSection() {
         setMsg(`Cloud provider sign-in failed${auth.error ? `: ${auth.error}` : "."}`);
       }
     } catch { /* best effort */ }
-    try { setSaves((await crListLocalApps()).apps || []); } catch { /* best effort */ }
+    try {
+      const catalog = await crListLocalApps();
+      setSaves(catalog.apps || []);
+      if (catalog.remoteError) setMsg(`Local saves shown; cloud discovery unavailable: ${catalog.remoteError}`);
+    } catch { /* best effort */ }
   };
   useEffect(() => {
     alive.current = true;
@@ -215,9 +222,10 @@ export function CloudRedirectSection() {
 
   const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
   const saveCount = saves.length;
+  const remoteOnlyCount = saves.filter((app) => app.remote && app.local === false).length;
   const sortedSaves = [...saves].sort((a, b) => {
-    const aHasSaves = a.files > 0 || a.size > 0;
-    const bHasSaves = b.files > 0 || b.size > 0;
+    const aHasSaves = a.files > 0 || a.size > 0 || !!a.remote;
+    const bHasSaves = b.files > 0 || b.size > 0 || !!b.remote;
     if (aHasSaves !== bHasSaves) return aHasSaves ? -1 : 1;
     if ((b.remoteTime || 0) !== (a.remoteTime || 0)) return (b.remoteTime || 0) - (a.remoteTime || 0);
     return steamGame(a.appid).title.localeCompare(steamGame(b.appid).title);
@@ -255,7 +263,7 @@ export function CloudRedirectSection() {
       onChange={(v) => toggleOption("sync_playtime", v)} disabled={busy} /></PanelSectionRow>
     <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" ? "#5ee6c4" : "#f5a623" }}>
       {state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
-        state.authenticated ? `✓ ${selected?.label} connected · ${saveCount} local game save ${saveCount === 1 ? "folder" : "folders"}` :
+        state.authenticated ? `✓ ${selected?.label} connected · ${saveCount} managed ${saveCount === 1 ? "game" : "games"}${remoteOnlyCount ? ` · ${remoteOnlyCount} cloud only` : ""}` :
         `${selected?.label || "Cloud provider"} needs sign-in.`}
     </div></PanelSectionRow>
     <PanelSectionRow><div style={{ width: "100%", marginTop: 5 }}>

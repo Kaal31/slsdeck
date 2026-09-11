@@ -88,6 +88,9 @@ _AUTH_TIMEOUT = 5 * 60
 _AUTH_LOCK = threading.Lock()
 _AUTH_PENDING = None
 _AUTH_RESULT = None
+_TOKEN_REFRESH_LOCK = threading.Lock()
+_REMOTE_APPS_CACHE = {}
+_REMOTE_APPS_CACHE_SECONDS = 60
 
 
 def _native_config_dir() -> str:
@@ -156,6 +159,54 @@ def _has_refresh_token(path: str) -> bool:
         return isinstance(value, dict) and bool(str(value.get("refresh_token") or "").strip())
     except Exception:
         return False
+
+
+def _provider_access_token(provider: str) -> str:
+    """Return a live provider token, refreshing CloudRedirect's token file.
+
+    The injected hook and the former companion share this exact JSON contract,
+    so refreshing here also leaves a valid token for the next game sync.
+    """
+    cfg = _read_provider_config()
+    path = _token_path(provider, cfg)
+    with _TOKEN_REFRESH_LOCK:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                token = json.load(fh)
+        except Exception:
+            return ""
+        access = str(token.get("access_token") or "")
+        if access and int(token.get("expires_at") or 0) > int(time.time()) + 60:
+            return access
+        refresh = str(token.get("refresh_token") or "")
+        spec = _PROVIDERS.get(provider)
+        if not refresh or not spec:
+            return ""
+        form = {
+            "client_id": spec["client_id"], "refresh_token": refresh,
+            "grant_type": "refresh_token",
+        }
+        if spec["body_scope"]:
+            form["scope"] = spec["scope"]
+        try:
+            form["client_secret"] = _oauth_client_secret(provider)
+            response = ensure_http_client("CloudRedirect remote discovery").post(
+                spec["token_url"], data=form, timeout=30,
+            )
+            response.raise_for_status()
+            fresh = response.json()
+            access = str(fresh.get("access_token") or "")
+            if not access:
+                return ""
+            token["access_token"] = access
+            token["expires_at"] = int(time.time()) + int(fresh.get("expires_in") or 3600)
+            if fresh.get("refresh_token"):
+                token["refresh_token"] = str(fresh["refresh_token"])
+            _write_json_atomic(path, token)
+            return access
+        except Exception as exc:
+            logger.warn(f"CloudRedirect: {provider} token refresh failed: {exc}")
+            return ""
 
 
 def migrate_provider_data() -> dict:
@@ -555,8 +606,107 @@ _STORAGE_META = {
 }
 
 
+def _gdrive_folders(token: str, query: str) -> list:
+    client = ensure_http_client("CloudRedirect Google Drive discovery")
+    headers = {"Authorization": f"Bearer {token}"}
+    result = []
+    page_token = ""
+    while True:
+        params = {
+            "q": query, "fields": "nextPageToken,files(id,name,mimeType)",
+            "spaces": "drive", "pageSize": 1000,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = client.get("https://www.googleapis.com/drive/v3/files",
+                              headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        page = response.json()
+        result.extend(page.get("files") or [])
+        page_token = str(page.get("nextPageToken") or "")
+        if not page_token:
+            return result
+
+
+def _discover_gdrive_apps(token: str) -> list:
+    folder_type = "application/vnd.google-apps.folder"
+    roots = _gdrive_folders(
+        token, f"name='CloudRedirect' and mimeType='{folder_type}' and trashed=false",
+    )
+    found = set()
+    for root in roots:
+        root_id = str(root.get("id") or "").replace("'", "\\'")
+        if not root_id:
+            continue
+        accounts = _gdrive_folders(
+            token, f"'{root_id}' in parents and mimeType='{folder_type}' and trashed=false",
+        )
+        for account in accounts:
+            account_name = str(account.get("name") or "")
+            account_id = str(account.get("id") or "").replace("'", "\\'")
+            if not account_name.isdigit() or not account_id:
+                continue
+            apps = _gdrive_folders(
+                token, f"'{account_id}' in parents and mimeType='{folder_type}' and trashed=false",
+            )
+            for app in apps:
+                appid = str(app.get("name") or "")
+                if appid.isdigit() and appid != "0":
+                    found.add((int(account_name), int(appid)))
+    return sorted(found)
+
+
+def _onedrive_children(token: str, path: str) -> list:
+    client = ensure_http_client("CloudRedirect OneDrive discovery")
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{path}:/children"
+    params = {"$select": "name,folder", "$top": 1000}
+    result = []
+    while url:
+        response = client.get(url, headers=headers, params=params, timeout=30)
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        page = response.json()
+        result.extend(page.get("value") or [])
+        url = str(page.get("@odata.nextLink") or "")
+        params = None
+    return result
+
+
+def _discover_onedrive_apps(token: str) -> list:
+    found = set()
+    for account in _onedrive_children(token, "CloudRedirect"):
+        account_id = str(account.get("name") or "")
+        if not account_id.isdigit() or not isinstance(account.get("folder"), dict):
+            continue
+        for app in _onedrive_children(token, f"CloudRedirect/{account_id}"):
+            appid = str(app.get("name") or "")
+            if appid.isdigit() and appid != "0" and isinstance(app.get("folder"), dict):
+                found.add((int(account_id), int(appid)))
+    return sorted(found)
+
+
+def _discover_remote_apps(provider: str) -> tuple[list, str]:
+    """List remote account/AppID folders without downloading save contents."""
+    cached = _REMOTE_APPS_CACHE.get(provider)
+    if cached and time.time() - cached[0] < _REMOTE_APPS_CACHE_SECONDS:
+        return list(cached[1]), ""
+    token = _provider_access_token(provider)
+    if not token:
+        return [], "provider token unavailable"
+    try:
+        apps = (_discover_gdrive_apps(token) if provider == "gdrive"
+                else _discover_onedrive_apps(token))
+        _REMOTE_APPS_CACHE[provider] = (time.time(), list(apps))
+        return apps, ""
+    except Exception as exc:
+        logger.warn(f"CloudRedirect: {provider} remote discovery failed: {exc}")
+        return [], str(exc)
+
+
 def list_local_apps() -> dict:
-    """List actual local CloudRedirect save trees, grouped by Steam account."""
+    """Merge local/inherited save trees with cloud-only provider folders."""
     root = os.path.join(_native_config_dir(), "storage")
     apps = []
     if os.path.isdir(root):
@@ -581,9 +731,26 @@ def list_local_apps() -> dict:
                         except OSError:
                             pass
                 apps.append({"appid": int(appid), "account": int(account),
-                             "files": files, "size": size, "local": True})
+                             "files": files, "size": size, "local": True,
+                             "remote": False})
+    remote_error = ""
+    cfg = _read_provider_config()
+    provider = str(cfg.get("provider") or "local")
+    if provider in _PROVIDERS and _has_refresh_token(_token_path(provider, cfg)):
+        remote, remote_error = _discover_remote_apps(provider)
+        by_key = {(app["account"], app["appid"]): app for app in apps}
+        for account, appid in remote:
+            current = by_key.get((account, appid))
+            if current:
+                current["remote"] = True
+            else:
+                item = {"appid": appid, "account": account, "files": 0,
+                        "size": 0, "local": False, "remote": True}
+                apps.append(item)
+                by_key[(account, appid)] = item
     apps.sort(key=lambda item: (item["account"], item["appid"]))
-    return {"success": True, "apps": apps, "storageRoot": root}
+    return {"success": True, "apps": apps, "storageRoot": root,
+            "provider": provider, "remoteError": remote_error}
 
 
 def _recent_steam_account_id() -> str:

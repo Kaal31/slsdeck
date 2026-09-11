@@ -6,6 +6,7 @@ on:
       - roulette-dev
       - multi-language
       - manifest-sources
+      - cloudredirect-dev
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
@@ -64,6 +65,10 @@ jobs:
           test -s dist/index.js
           grep -q 'Store Roulette' dist/index.js
           grep -q 'WILL BE ADDED TO YOUR LIBRARY' dist/index.js
+          if [ "${{ github.ref_name }}" = "cloudredirect-dev" ]; then
+            grep -q 'Cloud only' dist/index.js
+            grep -q 'Local + cloud' dist/index.js
+          fi
       - name: Restore tracked dist support files
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
       - name: Build Ubisoft package dependency
