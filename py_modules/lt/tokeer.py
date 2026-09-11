@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.request
 import zipfile
 import importlib.util
@@ -35,6 +36,13 @@ RELEASE_API = "https://api.github.com/repos/Tesla697/TokeerDRM-App/releases/late
 VERSION_FILE = ".slsdeck_runtime_version"
 REQUIRED_PROTON = "GE-Proton10-34"
 LINUX_VALIDATE_SECRET = b"tokeer_linux_setup_validate_2026_v1_shared"
+GENERATOR_REVISION = "a6cf158ad7b9bd31dd5d1cd281684922ba0b9505"
+GENERATOR_URL = (
+    "https://raw.githubusercontent.com/Tesla697/TokeerDRM-App/"
+    + GENERATOR_REVISION + "/extract_tickets.exe"
+)
+GENERATOR_SHA256 = "58f9c1a283eea20c544ad93532597cc3ee6108c4959bf9b6cffe199cee1b07a9"
+GENERATOR_SERVER = "https://luastools.xyz"
 def _home() -> str:
     return get_user_home()
 
@@ -93,7 +101,7 @@ def _deck_user() -> str:
         return "deck"
 
 
-def _run_as_user(argv, timeout=180) -> subprocess.CompletedProcess:
+def _run_as_user(argv, timeout=180, extra_env=None, cwd=None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     # Decky is launched from Steam's/frozen Python runtime and can inherit
     # loader paths containing a libreadline that is incompatible with the
@@ -156,13 +164,15 @@ def _run_as_user(argv, timeout=180) -> subprocess.CompletedProcess:
         "/usr/local/bin", "/usr/bin", "/bin",
         "/usr/local/sbin", "/usr/sbin", "/sbin",
     ])
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
     cmd = list(argv)
     if os.geteuid() == 0:
         if shutil.which("runuser"):
             cmd = ["runuser", "-u", _deck_user(), "--"] + cmd
         elif shutil.which("sudo"):
             cmd = ["sudo", "-u", _deck_user(), "-H"] + cmd
-    return subprocess.run(cmd, env=env, text=True, stdout=subprocess.PIPE,
+    return subprocess.run(cmd, env=env, cwd=cwd, text=True, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=timeout)
 
 
@@ -819,3 +829,176 @@ def redeem(code: str) -> Dict[str, Any]:
                 "error": f"Tokeer did not finish{phase} after 150 seconds.\n\n{partial[-6000:]}".strip()}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+def _generator_exe() -> str:
+    return os.path.join(_tdir(), "generator", "extract_tickets.exe")
+
+
+def _ensure_generator() -> str:
+    """Install only upstream's ticket extractor, pinned and hash-verified."""
+    target = _generator_exe()
+    try:
+        if os.path.isfile(target):
+            with open(target, "rb") as fh:
+                if hashlib.sha256(fh.read()).hexdigest() == GENERATOR_SHA256:
+                    return target
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        staged = target + ".tmp"
+        _download(GENERATOR_URL, staged)
+        with open(staged, "rb") as fh:
+            actual = hashlib.sha256(fh.read()).hexdigest()
+        if actual != GENERATOR_SHA256:
+            os.remove(staged)
+            raise RuntimeError("Downloaded Tokeer extractor failed its SHA-256 check.")
+        os.replace(staged, target)
+        return target
+    except Exception:
+        try:
+            if os.path.exists(target + ".tmp"):
+                os.remove(target + ".tmp")
+        except OSError:
+            pass
+        raise
+
+
+def _recent_steam_id() -> str:
+    block_re = re.compile(r'"(\d{17})"\s*\{(.*?)\}', re.DOTALL)
+    recent_re = re.compile(r'"MostRecent"\s*"1"', re.IGNORECASE)
+    fallback = ""
+    for path in steam._loginusers_paths():
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+        except OSError:
+            continue
+        for match in block_re.finditer(content):
+            fallback = fallback or match.group(1)
+            if recent_re.search(match.group(2)):
+                return match.group(1)
+    return fallback
+
+
+def _ticket_owner(appticket: str) -> str:
+    try:
+        raw = bytes.fromhex(appticket)
+        owner = int.from_bytes(raw[8:16], "little")
+        return str(owner) if owner >= 76561197960265728 else ""
+    except Exception:
+        return ""
+
+
+def _generator_post(body: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+    client = ensure_http_client("tokeer: generate key")
+    response = client.post(
+        GENERATOR_SERVER + "/drm/generate",
+        json=body,
+        headers={"User-Agent": "SLSDeck-Tokeer-Generator/1.0", "Accept": "application/json"},
+        timeout=30,
+    )
+    try:
+        data = response.json()
+    except Exception:
+        data = {"reason": response.text[:500]}
+    return response.status_code, data
+
+
+def generate_key(appid: int) -> Dict[str, Any]:
+    """Mint a Tokeer share code from a genuinely-owned installed Steam game."""
+    try:
+        appid = int(appid)
+    except Exception:
+        return {"success": False, "error": "Invalid Steam AppID."}
+    if appid <= 0:
+        return {"success": False, "error": "Invalid Steam AppID."}
+
+    # Reject SLS-injected games before starting Proton. The server independently
+    # verifies the signed ownership ticket, so this is an early safety check.
+    try:
+        from . import slssteam
+        if appid in set(slssteam.read_additional_apps()):
+            return {"success": False, "error": "Dump key only works with a game genuinely owned by the signed-in Steam account."}
+    except Exception:
+        pass
+
+    found = steam.get_game_install_path_response(appid)
+    if not found.get("success"):
+        return {"success": False, "error": "The owned game must be installed before dumping its key."}
+    proton = required_proton_status()
+    proton_root = str(proton.get("path") or "")
+    proton_cmd = os.path.join(proton_root, "proton")
+    if not proton.get("healthy") or not os.path.isfile(proton_cmd):
+        return {"success": False, "needsProton": True,
+                "error": f"{REQUIRED_PROTON} is required to run the stripped Tokeer extractor."}
+
+    library = str(found.get("libraryPath") or "")
+    compatdata = os.path.join(library, "steamapps", "compatdata", str(appid))
+    if not os.path.isdir(os.path.join(compatdata, "pfx")):
+        return {"success": False, "error": "This game has no Proton prefix yet. Launch it once with Proton, then try Dump key again."}
+
+    steam_root = detect_steam_install_path()
+    current_sid = _recent_steam_id()
+    if not current_sid:
+        return {"success": False, "error": "Could not identify the Steam account currently signed in."}
+    try:
+        extractor = _ensure_generator()
+    except Exception as exc:
+        return {"success": False, "error": f"Could not install the stripped Tokeer extractor: {exc}"}
+
+    env = {
+        "STEAM_COMPAT_CLIENT_INSTALL_PATH": steam_root,
+        "STEAM_COMPAT_DATA_PATH": compatdata,
+        "SteamAppId": str(appid),
+        "SteamGameId": str(appid),
+        "STEAM_APP_ID": str(appid),
+        "STEAM_GAME_ID": str(appid),
+    }
+    tickets = None
+    output = ""
+    for attempt in range(3):
+        try:
+            proc = _run_as_user([proton_cmd, "run", extractor, "--pipe", str(appid)],
+                                timeout=55, extra_env=env, cwd=os.path.dirname(extractor))
+            output = proc.stdout or ""
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.stdout or exc.output or ""
+            output = partial.decode("utf-8", "replace") if isinstance(partial, bytes) else str(partial)
+        lines = [line for line in output.splitlines() if "|" in line]
+        if lines:
+            parts = lines[-1].strip().split("|")
+            if len(parts) >= 4 and parts[1].strip() and parts[2].strip():
+                tickets = {
+                    "app_id": parts[0].strip(), "appticket": parts[1].strip(),
+                    "eticket": parts[2].strip(), "steam_id": parts[3].strip(),
+                }
+                break
+        if attempt < 2:
+            time.sleep(1.5)
+    if not tickets:
+        clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output).strip()
+        detail = clean[-4000:] if clean else "The extractor returned no ticket."
+        return {"success": False, "error": "Could not dump an ownership ticket through Proton.\n\n" + detail,
+                "output": output[-12000:]}
+
+    owner_sid = _ticket_owner(tickets["appticket"])
+    if owner_sid and owner_sid != current_sid:
+        return {"success": False, "error": "The dumped ticket belongs to a different Steam account, so no key was generated."}
+    if tickets.get("steam_id") and tickets["steam_id"] != current_sid:
+        return {"success": False, "error": "The extractor connected to a different Steam account, so no key was generated."}
+    try:
+        status, data = _generator_post({
+            "appticket": tickets["appticket"], "eticket": tickets["eticket"],
+            "steam_id": tickets["steam_id"], "app_id": str(appid), "max_uses": 1,
+            "created_by_user": tickets["steam_id"], "current_steam_id": current_sid,
+        })
+    except Exception as exc:
+        return {"success": False, "error": f"Tokeer server unreachable: {exc}"}
+    if status != 200 or not data.get("success"):
+        return {"success": False,
+                "error": data.get("reason") or data.get("error") or f"Tokeer server error {status}."}
+    code = str(data.get("code") or "").strip().upper()
+    if not code:
+        return {"success": False, "error": "Tokeer generated an empty code."}
+    return {"success": True, "code": code, "appid": appid,
+            "gameName": found.get("name", ""), "maxUses": data.get("max_uses", 1),
+            "expiresIn": data.get("expires_in", 86400)}

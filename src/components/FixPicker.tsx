@@ -55,6 +55,7 @@ import {
   getDlcOwnedOnly,
   triggerSteamInstall,
   tokeerAppliedStatus,
+  tokeerGenerateKey,
   TokeerAppliedRecord,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
@@ -145,6 +146,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
   const [tokeerLookup, setTokeerLookup] = useState<{ name: string; cachedGames: number; updatedAt?: number }>({ name: "", cachedGames: 0 });
   const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord | null>(null);
+  const [dumpedCode, setDumpedCode] = useState("");
   const [dlcDownload, setDlcDownload] = useState<DepotDownloadJob | null>(null);
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
@@ -391,6 +393,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setCheck(null);
     setTokeerGame(null);
     setTokeerApplied(null);
+    setDumpedCode("");
     setTokeerRefreshing(false);
     setTokeerLookup({ name: appDisplayName(appid), cachedGames: 0 });
     setApplied([]);
@@ -1026,6 +1029,28 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     }
   };
 
+  const dumpTokeerKey = async () => {
+    setBusy("tokeer:dump");
+    setDumpedCode("");
+    setMsg("Dumping the owned-game ticket through Proton…");
+    try {
+      const result = await tokeerGenerateKey(appid);
+      if (!result.success || !result.code) {
+        setMsg(result.error || "Tokeer did not generate a code.");
+        toaster.toast({ title: "Dump key failed", body: result.error || "Tokeer did not generate a code." });
+        return;
+      }
+      setDumpedCode(result.code);
+      setMsg("Single-use Tokeer code generated and copied.");
+      try { await navigator.clipboard.writeText(result.code); } catch { /* code remains visible */ }
+      toaster.toast({ title: "Tokeer key dumped", body: `${result.code} · copied to clipboard` });
+    } catch (error) {
+      setMsg(`Dump key failed: ${error}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
   if (!check) {
     return <div style={{ fontSize: 12, opacity: 0.6, padding: "4px 0" }}>Checking fixes…</div>;
   }
@@ -1269,6 +1294,20 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           ? "Pinning…"
           : "Pin this version"}
       </DialogButton>
+      <div style={{ border: "1px solid rgba(112,170,255,0.34)", borderRadius: 8, padding: 8, background: "rgba(80,130,210,0.08)" }}>
+        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>Tokeer generator</div>
+        <div style={{ fontSize: 11, opacity: 0.72, lineHeight: 1.4, marginBottom: 6 }}>
+          Generate a single-use code from this game when it is installed and genuinely owned by the signed-in Steam account.
+        </div>
+        <DialogButton style={bs} disabled={working} onClick={dumpTokeerKey}>
+          {busy === "tokeer:dump" ? "Dumping key…" : "Dump key"}
+        </DialogButton>
+        {dumpedCode && (
+          <div style={{ marginTop: 7, fontSize: 21, fontWeight: 700, letterSpacing: 3, userSelect: "text" }}>
+            {dumpedCode}
+          </div>
+        )}
+      </div>
       {tokeerApplied && !pinned && <div style={{ border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }}>
         <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>
           {tokeerApplied.health === "valid" ? "🔑 Tokeer key applied" : "⚠️ Tokeer verification needed"}

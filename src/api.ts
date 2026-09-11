@@ -186,6 +186,7 @@ export const tokeerPrepare = callable<[appid: number], { success: boolean; outpu
 export const tokeerPrepareVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult & { phase?: string; prepare?: any; steamMayRestart?: boolean }>("tokeer_prepare_verify");
 export const tokeerVerify = callable<[appid: number, ubisoft?: boolean, liveLaunchOptions?: string], TokeerVerifyResult>("tokeer_verify");
 export const tokeerRedeem = callable<[code: string], { success: boolean; output?: string; needsPrepare?: boolean; error?: string }>("tokeer_redeem");
+export const tokeerGenerateKey = callable<[appid: number], { success: boolean; code?: string; appid?: number; gameName?: string; maxUses?: number; expiresIn?: number; needsProton?: boolean; output?: string; error?: string }>("tokeer_generate_key");
 export type UbisoftHostedGame = {
   name: string; aliases: string[]; steamAppId: number; carePackageId: number;
   ubisoftProductIds: { native: number | null; steam: number | null };

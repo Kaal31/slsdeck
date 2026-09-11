@@ -31,6 +31,7 @@ import {
   unfix,
   customDeleteFixes,
   tokeerAppliedStatus,
+  tokeerGenerateKey,
 } from "../api";
 import { importCustomFlow } from "../components/CustomImport";
 import { applyFixRuntime, resetFixRuntime, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
@@ -49,6 +50,8 @@ export function FixesSection() {
   const [installed, setInstalled] = useState<InstalledFix[]>([]);
   const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord[]>([]);
   const [openDesc, setOpenDesc] = useState<string | null>(null);
+  const [dumpingKey, setDumpingKey] = useState(false);
+  const [dumpedCode, setDumpedCode] = useState("");
   const [awaiting, setAwaiting] = useState<{ label: string; run: () => Promise<void>; mode?: "download" | "reinstall" } | null>(null);
   const [dlComplete, setDlComplete] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -245,6 +248,25 @@ export function FixesSection() {
     );
   };
 
+  const dumpTokeerKey = async (appid: number, gameName: string) => {
+    setDumpingKey(true);
+    setDumpedCode("");
+    try {
+      const result = await tokeerGenerateKey(appid);
+      if (!result.success || !result.code) {
+        toaster.toast({ title: "Dump key failed", body: result.error || "Tokeer did not generate a code." });
+        return;
+      }
+      setDumpedCode(result.code);
+      try { await navigator.clipboard.writeText(result.code); } catch { /* code remains visible */ }
+      toaster.toast({ title: "Tokeer key dumped", body: `${gameName}: ${result.code} (copied)` });
+    } catch (error) {
+      toaster.toast({ title: "Dump key failed", body: String(error) });
+    } finally {
+      setDumpingKey(false);
+    }
+  };
+
   const confirmUnfix = (fix: InstalledFix) => {
     showModal(
       <ConfirmModal
@@ -324,6 +346,23 @@ export function FixesSection() {
           <PanelSectionRow>
             <div style={{ fontWeight: 600, padding: "2px 0" }}>{check.gameName}</div>
           </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              disabled={dumpingKey || applyBusy || !!awaiting}
+              onClick={() => dumpTokeerKey(check.appid, check.gameName)}
+            >
+              {dumpingKey ? "Dumping key…" : "Dump key"}
+            </ButtonItem>
+          </PanelSectionRow>
+          {dumpedCode && (
+            <PanelSectionRow>
+              <Focusable style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 0" }}>
+                <span style={{ fontSize: 11, opacity: 0.7 }}>Single-use Tokeer code · copied to clipboard</span>
+                <span style={{ fontSize: 22, fontWeight: 700, letterSpacing: 3 }}>{dumpedCode}</span>
+              </Focusable>
+            </PanelSectionRow>
+          )}
           {check.genericFix.available && check.genericFix.url && (
             <PanelSectionRow>
               <ButtonItem

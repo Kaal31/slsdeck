@@ -103,6 +103,9 @@ class Plugin:
     async def tokeer_redeem(self, code: str) -> Dict[str, Any]:
         return await self._run_slow(tokeer.redeem, code)
 
+    async def tokeer_generate_key(self, appid: int) -> Dict[str, Any]:
+        return await self._run_slow(tokeer.generate_key, appid)
+
     async def tokeer_ubisoft_hosted_games(self) -> Dict[str, Any]:
         return await self._run(ubisoft_packages.hosted_games)
 

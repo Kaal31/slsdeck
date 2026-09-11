@@ -7,6 +7,7 @@ on:
       - multi-language
       - manifest-sources
       - cloudredirect-dev
+      - tokeer-generation
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
@@ -68,6 +69,10 @@ jobs:
           if [ "${{ github.ref_name }}" = "cloudredirect-dev" ]; then
             grep -q 'Cloud only' dist/index.js
             grep -q 'Local + cloud' dist/index.js
+          fi
+          if [ "${{ github.ref_name }}" = "tokeer-generation" ]; then
+            grep -q 'Dump key' dist/index.js
+            grep -q 'tokeer_generate_key' dist/index.js
           fi
       - name: Restore tracked dist support files
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
