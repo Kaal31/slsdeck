@@ -921,6 +921,44 @@ def _try_charon_manifest(appid: int, dest_path: str) -> bool:
     return False
 
 
+def _try_free_provider_manifest(appid: int, dest_path: str) -> bool:
+    """Aggregate the keyless community providers into one validated bundle."""
+    try:
+        from . import free_providers
+        _set_state(appid, {"status": "checking", "currentApi": "Free Providers"})
+        result = free_providers.build_bundle(
+            appid,
+            dest_path,
+            ensure_http_client("SLSDeck: free providers"),
+            cancelled=lambda: _is_cancelled(appid),
+        )
+        if result.get("cancelled"):
+            return True
+        for source, detail in (result.get("failures") or {}).items():
+            _record_source_error(appid, source, "unavailable", detail=str(detail))
+        if not result.get("success"):
+            logger.warn(
+                f"SLSDeck: Free Providers had no usable bundle for {appid}: "
+                f"{result.get('error') or 'all providers missed'}")
+            return False
+        _set_state(appid, {"status": "processing", "currentApi": "Free Providers"})
+        _process_and_install_lua(appid, dest_path)
+        if _is_cancelled(appid):
+            return True
+        contributors = ", ".join(result.get("contributors") or [])
+        _finalize_registration(appid, f"Free Providers ({contributors})")
+        return True
+    except Exception as exc:
+        _record_source_error(appid, "Free Providers", "processing", detail=str(exc))
+        logger.warn(f"SLSDeck: Free Providers failed for {appid}: {exc}")
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except Exception:
+            pass
+        return False
+
+
 def _download_zip_for_app(appid: int) -> None:
     client = ensure_http_client("SLSDeck: download")
     apis = load_api_manifest()
@@ -1049,8 +1087,12 @@ def _download_zip_for_app(appid: int) -> None:
             _record_source_error(appid, name, error_type, detail=str(err))
             continue
 
-    # Backup tier: Charon / BlissBlender github-raw lua DB (keyless), tried after
-    # ryuu/sushi/hubcap all miss.
+    # Keyless composite tier. Unlike a first-success cascade, it gathers all
+    # four community providers and smart-merges their usable keys/manifests.
+    if _try_free_provider_manifest(appid, dest_path):
+        return
+
+    # Final backup tier: Charon / BlissBlender github-raw lua DB.
     if _try_charon_manifest(appid, dest_path):
         return
 
