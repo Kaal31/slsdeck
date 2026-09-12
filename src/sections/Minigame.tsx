@@ -1,5 +1,6 @@
 import { ButtonItem, DialogButton, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, SliderField, ToggleField } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, StoreRouletteFilters, writeRouletteFilters } from "../lib/storeRoulettePrefs";
@@ -70,7 +71,6 @@ function GameArtwork({ item }: { item: MinigameItem }) {
 
 function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem; onReturn?: () => void; closeModal?: () => void }) {
   const gamepadFrame = useRef(0);
-  const cardFrame = useRef<HTMLDivElement>(null);
   const [dismissing, setDismissing] = useState(false);
   const dismiss = () => {
     if (dismissing) return;
@@ -105,50 +105,12 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       cancelAnimationFrame(gamepadFrame.current);
     };
   }, [closeModal, dismissing]);
-  useEffect(() => {
-    const centerCard = () => {
-      const card = cardFrame.current;
-      if (!card) return;
-      const rect = card.getBoundingClientRect();
-      // Decky's nested Quick Access webview reports its narrow panel as the
-      // visual viewport. Modal coordinates, however, are in full-display
-      // space. Steam Deck may also report its 800x1280 panel as portrait while
-      // Gaming Mode renders landscape, so the longer screen edge is the usable
-      // horizontal extent. On desktop/TV, outerWidth and the document viewport
-      // keep this responsive to the active full-screen Steam window.
-      const displayWidth = Math.max(
-        window.screen?.width || 0,
-        window.screen?.height || 0,
-        window.outerWidth || 0,
-        document.documentElement.clientWidth || 0,
-        window.innerWidth || 0,
-      );
-      const delta = displayWidth / 2 - (rect.left + rect.width / 2);
-      if (Math.abs(delta) < 0.5) return;
-      const renderedScale = card.offsetWidth ? rect.width / card.offsetWidth : 1;
-      const current = Number(card.dataset.centerCorrection || 0);
-      const correction = current + delta / (renderedScale || 1);
-      card.dataset.centerCorrection = String(correction);
-      card.style.transform = `translate3d(${correction}px,0,0)`;
-    };
-    const settleUntil = performance.now() + 1500;
-    let settleFrame = 0;
-    const centerWhileSteamSettles = () => {
-      centerCard();
-      if (performance.now() < settleUntil) settleFrame = requestAnimationFrame(centerWhileSteamSettles);
-    };
-    settleFrame = requestAnimationFrame(centerWhileSteamSettles);
-    window.addEventListener("resize", centerCard);
-    window.visualViewport?.addEventListener("resize", centerCard);
-    window.visualViewport?.addEventListener("scroll", centerCard);
-    return () => {
-      cancelAnimationFrame(settleFrame);
-      window.removeEventListener("resize", centerCard);
-      window.visualViewport?.removeEventListener("resize", centerCard);
-      window.visualViewport?.removeEventListener("scroll", centerCard);
-    };
-  }, []);
   return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
+    {createPortal(<div onPointerDown={dismiss} style={{
+      position: "fixed", zIndex: 2147483000, inset: 0,
+      width: "100vw", height: "100vh", margin: 0, padding: 0,
+      display: "grid", placeItems: "center", pointerEvents: "auto",
+    }}>
     <style>{`
       .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
       @keyframes sls-winner-enter { 0% { opacity:0; transform:scale(.72) translateY(24px); } 65% { opacity:1; transform:scale(1.06) translateY(-7px); } 100% { transform:scale(1) translateY(0); } }
@@ -156,8 +118,8 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
       @keyframes sls-winner-exit { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(.88) translateY(18px); } }
     `}</style>
-    <div ref={cardFrame} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)" }}>
-    <div onPointerDown={dismiss} style={{
+    <div style={{ position:"relative", zIndex:2, width: "min(calc(100vw - 64px),430px)" }}>
+    <div style={{
       width: "100%", textAlign: "center",
       animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both",
     } as React.CSSProperties}>
@@ -172,6 +134,7 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       </div>
     </div>
     </div>
+    </div>, document.body)}
   </ModalRoot>;
 }
 
