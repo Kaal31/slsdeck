@@ -1,5 +1,5 @@
 import { ButtonItem, DialogButton, DialogCheckbox, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, ToggleField } from "@decky/ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, readRoulettePrice, StoreRouletteFilters, writeRouletteFilters, writeRoulettePrice } from "../lib/storeRoulettePrefs";
@@ -72,7 +72,10 @@ function GameArtwork({ item }: { item: MinigameItem }) {
 
 function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem; onReturn?: () => void; closeModal?: () => void }) {
   const gamepadFrame = useRef(0);
+  const modalCenterProbe = useRef<HTMLDivElement>(null);
   const [dismissing, setDismissing] = useState(false);
+  const [horizontalShift, setHorizontalShift] = useState(0);
+  const [positionReady, setPositionReady] = useState(false);
   const dismiss = () => {
     if (dismissing) return;
     setDismissing(true);
@@ -106,6 +109,31 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       cancelAnimationFrame(gamepadFrame.current);
     };
   }, [closeModal, dismissing]);
+  useLayoutEffect(() => {
+    let frame = 0;
+    const centerOnViewport = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const bounds = modalCenterProbe.current?.getBoundingClientRect();
+        if (!bounds) return;
+        // ModalRoot is centered in Decky's active panel, which changes width
+        // between Steam UI layouts. Measure that untransformed host instead of
+        // applying a fixed rightward offset.
+        const shift = window.innerWidth / 2 - (bounds.left + bounds.width / 2);
+        setHorizontalShift(Math.max(-320, Math.min(320, shift)));
+        setPositionReady(true);
+      });
+    };
+    centerOnViewport();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(centerOnViewport);
+    if (modalCenterProbe.current) observer?.observe(modalCenterProbe.current);
+    window.addEventListener("resize", centerOnViewport);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", centerOnViewport);
+    };
+  }, []);
   return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
     <style>{`
       .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
@@ -114,9 +142,10 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
       @keyframes sls-winner-exit { from { opacity:1; transform:translateX(var(--sls-winner-shift)) scale(1); } to { opacity:0; transform:translateX(var(--sls-winner-shift)) scale(.88) translateY(18px); } }
     `}</style>
-    <div style={{ position:"relative", zIndex:2, width: "min(72vw,430px)" }}>
+    <div ref={modalCenterProbe} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)" }}>
     <div onPointerDown={dismiss} style={{
-      width: "100%", textAlign: "center", "--sls-winner-shift": "clamp(120px, 10vw, 135px)",
+      width: "100%", textAlign: "center", "--sls-winner-shift": `${horizontalShift}px`,
+      visibility: positionReady ? "visible" : "hidden",
       animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both",
     } as React.CSSProperties}>
       <div style={{ animation: "sls-winner-idle 3s ease-in-out 1s infinite" }}>
