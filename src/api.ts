@@ -689,6 +689,8 @@ export const refreshPatterns = callable<[], {
 }>("refresh_patterns");
 export const getAutoDownload = callable<[], { success: boolean; enabled: boolean }>("get_auto_download");
 export const setAutoDownload = callable<[enabled: boolean], { success: boolean }>("set_auto_download");
+export const getReloadOnPurge = callable<[], { success: boolean; enabled: boolean }>("get_reload_on_purge");
+export const setReloadOnPurge = callable<[enabled: boolean], { success: boolean }>("set_reload_on_purge");
 
 // ── DLC + cloud toggles ─────────────────────────────────────────────────────
 export const getAutoAddDlc = callable<[], { success: boolean; enabled: boolean }>("get_auto_add_dlc");
