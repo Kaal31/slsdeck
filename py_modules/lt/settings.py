@@ -686,8 +686,9 @@ def set_auto_download(value: bool) -> None:
 
 def get_reload_on_purge() -> bool:
     """Fully reload Steam after Purge All so live injected licenses disappear.
-    Default ON; disabling preserves the non-disruptive hot-removal behavior."""
-    return bool(get_value("reloadOnPurge", True))
+    Default OFF: current slsteam-moon can revoke a settled batch in-session.
+    Enabling this remains a compatibility fallback for older engines."""
+    return bool(get_value("reloadOnPurge", False))
 
 
 def set_reload_on_purge(value: bool) -> None:
