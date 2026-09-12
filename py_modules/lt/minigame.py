@@ -149,13 +149,14 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
 
 
 def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
-             filters: Dict[str, Any] | None = None) -> List[Tuple[int, str, int]]:
+             filters: Dict[str, Any] | None = None,
+             force_refresh: bool = False) -> List[Tuple[int, str, int]]:
     global _MEMORY, _TOTAL_RESULTS
     selected = _filters(filters)
     search_key = _search_key(selected)
     cache_key = f"{min_price_cents}:{max_price_cents}:{search_key}"
     cached = _MEMORY.get(cache_key)
-    if cached and time.time() - cached[0] < _CACHE_SECONDS:
+    if not force_refresh and cached and time.time() - cached[0] < _CACHE_SECONDS:
         return cached[1]
 
     # Steam retired the unauthenticated ISteamApps/GetAppList endpoint. Its
@@ -355,7 +356,10 @@ def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
             "currency": str(price.get("currency") or "USD"),
         }
     except Exception:
-        result = None
+        # A timeout, 429, or temporary Store/API failure does not establish
+        # that this AppID is invalid. Do not poison the hour-long validation
+        # cache with a transient negative result.
+        return None
     with _STORE_GAME_MEMORY_LOCK:
         _STORE_GAME_MEMORY[cache_key] = (time.time(), dict(result) if result else None)
         # Bound the process-lifetime cache while retaining its newest entries.
@@ -389,12 +393,26 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_ce
         or selected["players"] or selected["deck"] or selected["minRating"]
         or selected["minReviews"] or selected["releaseFrom"] or selected["releaseTo"]
     )
-    candidates = random.sample(catalog, min(72 if filters_active else 48, len(catalog)))
-    winner = None
-    for appid, _, _ in candidates:
-        winner = _store_game(appid, min_price_cents, max_price_cents, selected)
-        if winner:
-            break
+    def choose_winner(pool: List[Tuple[int, str, int]]) -> Dict[str, Any] | None:
+        candidates = random.sample(pool, min(72 if filters_active else 48, len(pool)))
+        for appid, _, _ in candidates:
+            candidate = _store_game(appid, min_price_cents, max_price_cents, selected)
+            if candidate:
+                return candidate
+        return None
+
+    winner = choose_winner(catalog)
+    if not winner:
+        # A filtered catalog is deliberately a small, fast sample. Once its
+        # remaining entries have been excluded or rejected, take a different
+        # sample instead of treating the one-hour cached slice as the entirety
+        # of Steam. Search pages themselves stay cached, limiting Store traffic.
+        fresh_catalog = [
+            item for item in _catalog(
+                min_price_cents, max_price_cents, selected, force_refresh=True,
+            ) if item[0] not in excluded
+        ]
+        winner = choose_winner(fresh_catalog) if fresh_catalog else None
     if not winner:
         return {"success": False, "error": "Could not find a live Steam game matching every selected filter; try broadening them"}
 
