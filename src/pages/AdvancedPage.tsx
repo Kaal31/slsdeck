@@ -42,6 +42,7 @@ import {
   getAutoClientRepin, setAutoClientRepin,
   getCheckDependenciesOnBoot, setCheckDependenciesOnBoot,
   getAutoDownload, setAutoDownload,
+  getReloadOnPurge, setReloadOnPurge,
   getAutoAddDlc, setAutoAddDlc,
   getDisableCloud, setDisableCloud,
   getDisableDlcUnlockOwned, setDisableDlcUnlockOwned,
@@ -67,8 +68,10 @@ function readDeckyHvVisible(): boolean {
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
   const [on, setOn] = useState(false);
+  const [reloadOnPurge, setReloadOnPurgeState] = useState(true);
   useEffect(() => {
     getAutoDownload().then((r) => setOn(!!r.enabled)).catch(() => {});
+    getReloadOnPurge().then((r) => setReloadOnPurgeState(r.enabled !== false)).catch(() => {});
   }, []);
   return (
     <PanelSection title="Adding games">
@@ -78,6 +81,14 @@ function AddDownloadToggle() {
           description="Auto restart Steam after adding a game."
           checked={on}
           onChange={async (v) => { setOn(v); await setAutoDownload(v); }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="Reload when purging all"
+          description="Fully restart Steam after Purge All so cached SLS games disappear immediately. Off keeps Steam running; cached cards disappear after your next normal restart."
+          checked={reloadOnPurge}
+          onChange={async (v) => { setReloadOnPurgeState(v); await setReloadOnPurge(v); }}
         />
       </PanelSectionRow>
     </PanelSection>
