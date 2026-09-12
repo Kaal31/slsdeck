@@ -1,6 +1,5 @@
 import { ButtonItem, DialogButton, DropdownItem, ModalRoot, Navigation, PanelSection, PanelSectionRow, showModal, SliderField, ToggleField } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { getAddStatus, MinigameItem, minigameRoll, startAdd } from "../api";
 import { listLibraryAppIds } from "../lib/ownership";
 import { DEFAULT_ROULETTE_FILTERS, readRouletteFilters, StoreRouletteFilters, writeRouletteFilters } from "../lib/storeRoulettePrefs";
@@ -105,20 +104,28 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       cancelAnimationFrame(gamepadFrame.current);
     };
   }, [closeModal, dismissing]);
-  return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
-    {createPortal(<div onPointerDown={dismiss} style={{
-      position: "fixed", zIndex: 2147483000, inset: 0,
-      width: "100vw", height: "100vh", margin: 0, padding: 0,
-      display: "grid", placeItems: "center", pointerEvents: "auto",
-    }}>
+  return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-content" modalClassName="sls-winner-shell">
     <style>{`
-      .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
+      .sls-winner-shell {
+        position: fixed !important; inset: 0 !important;
+        width: 100vw !important; height: 100vh !important; max-width: none !important;
+        margin: 0 !important; padding: 0 !important; transform: none !important;
+        background: transparent !important; box-shadow: none !important;
+        border: 0 !important; overflow: visible !important;
+      }
+      .sls-winner-content {
+        width: 100% !important; height: 100% !important; max-width: none !important;
+        margin: 0 !important; padding: 0 !important;
+        display: grid !important; place-items: center !important;
+        background: transparent !important; box-shadow: none !important;
+        border: 0 !important; overflow: visible !important;
+      }
       @keyframes sls-winner-enter { 0% { opacity:0; transform:scale(.72) translateY(24px); } 65% { opacity:1; transform:scale(1.06) translateY(-7px); } 100% { transform:scale(1) translateY(0); } }
       @keyframes sls-winner-idle { 0%,100% { transform:translateY(0) rotate(-.25deg); } 50% { transform:translateY(-9px) rotate(.25deg); } }
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
       @keyframes sls-winner-exit { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(.88) translateY(18px); } }
     `}</style>
-    <div style={{ position:"relative", zIndex:2, width: "min(calc(100vw - 64px),430px)" }}>
+    <div onPointerDown={dismiss} style={{ position:"relative", zIndex:2, width: "min(calc(100vw - 64px),430px)" }}>
     <div style={{
       width: "100%", textAlign: "center",
       animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both",
@@ -134,7 +141,6 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       </div>
     </div>
     </div>
-    </div>, document.body)}
   </ModalRoot>;
 }
 
