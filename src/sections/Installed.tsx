@@ -51,6 +51,9 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
           try {
             const res = await purgeAllAdded();
             if (res.success) {
+              window.dispatchEvent(new CustomEvent("slsdeck-purge-added-games", {
+                detail: { appids: apps.map((app) => Number(app.appid)), purgedAt: Date.now() },
+              }));
               toaster.toast({ title: "SLSDeck", body: `Purged ${res.removed} game(s)` });
               await load();
               onChanged();

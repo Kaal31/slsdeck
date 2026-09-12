@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, SlsStatus } from "./api";
+import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -86,6 +86,8 @@ function QamTitle() {
 }
 
 type PendingAddVerification = { appid: number; name: string; sessionOrigin: number; createdAt: number; liveReady: boolean };
+const PURGE_ADDED_GAMES_EVENT = "slsdeck-purge-added-games";
+const purgedAtByAppId = new Map<number, number>();
 
 function readPendingAddVerifications(): PendingAddVerification[] {
   try {
@@ -98,10 +100,12 @@ function writePendingAddVerifications(items: PendingAddVerification[]): void {
   try { window.localStorage.setItem(PENDING_ADD_VERIFY_KEY, JSON.stringify(items.slice(-50))); } catch { /* ignore */ }
 }
 
-function queueAddVerification(appid: number, name: string, liveReady: boolean): void {
+function queueAddVerification(appid: number, name: string, liveReady: boolean): PendingAddVerification {
   const items = readPendingAddVerifications().filter((item) => item.appid !== Number(appid));
-  items.push({ appid: Number(appid), name: name || `AppID ${appid}`, sessionOrigin: performance.timeOrigin, createdAt: Date.now(), liveReady });
+  const item = { appid: Number(appid), name: name || `AppID ${appid}`, sessionOrigin: performance.timeOrigin, createdAt: Date.now(), liveReady };
+  items.push(item);
   writePendingAddVerifications(items);
+  return item;
 }
 
 /** Steam's library stores are not always exposed to Decky in Desktop/Big
@@ -123,9 +127,12 @@ function steamLibraryHasApp(appid: number): boolean | null {
   return libraryCollectionAvailable ? false : null;
 }
 
-async function verifyAddedGameReachedSteam(appid: number, name: string): Promise<void> {
+async function verifyAddedGameReachedSteam(appid: number, name: string, createdAt = Date.now()): Promise<void> {
+  const wasPurged = () => (purgedAtByAppId.get(Number(appid)) || 0) >= createdAt;
+  if (wasPurged()) return;
   let authoritative = false;
   for (let attempt = 0; attempt < 15; attempt++) {
+    if (wasPurged()) return;
     const present = steamLibraryHasApp(appid);
     if (present === true) {
       writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
@@ -138,6 +145,7 @@ async function verifyAddedGameReachedSteam(appid: number, name: string): Promise
   // pending record so a later Gaming Mode session can verify it, but never emit
   // a false failure notification from an unavailable frontend data source.
   if (!authoritative) return;
+  if (wasPurged()) return;
   // Registration in config.yaml is not enough: this is the final frontend
   // proof that Steam actually accepted the injected package/appinfo entry.
   toaster.toast({
@@ -148,9 +156,21 @@ async function verifyAddedGameReachedSteam(appid: number, name: string): Promise
   writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
 }
 
-function verifyAddsPendingFromPreviousSteamSession(): void {
-  const previous = readPendingAddVerifications().filter((item) => item.sessionOrigin !== performance.timeOrigin);
-  previous.forEach((item) => { void verifyAddedGameReachedSteam(item.appid, item.name); });
+async function verifyAddsPendingFromPreviousSteamSession(): Promise<void> {
+  let previous = readPendingAddVerifications().filter((item) => item.sessionOrigin !== performance.timeOrigin);
+  try {
+    // A purge intentionally deregisters games. Old verification records survive
+    // a Steam/Desktop restart in localStorage, so only verify apps the backend
+    // still considers registered.
+    const installed = await getInstalledApps();
+    if (installed.success) {
+      const registered = new Set((installed.apps || []).map((app) => Number(app.appid)));
+      previous = previous.filter((item) => registered.has(Number(item.appid)));
+      const currentSession = readPendingAddVerifications().filter((item) => item.sessionOrigin === performance.timeOrigin);
+      writePendingAddVerifications([...previous, ...currentSession]);
+    }
+  } catch { /* retain records if backend status is temporarily unavailable */ }
+  previous.forEach((item) => { void verifyAddedGameReachedSteam(item.appid, item.name, item.createdAt); });
 }
 
 type DependencyLifecycleToken = { active: boolean; stableSince: number };
@@ -561,6 +581,14 @@ export default definePlugin(() => {
   };
   document.addEventListener("visibilitychange", noteCefTransition);
   window.addEventListener("pageshow", noteCefTransition);
+  const invalidatePurgedVerifications = (rawEvent: Event) => {
+    const event = rawEvent as CustomEvent<{ appids?: number[]; purgedAt?: number }>;
+    const ids = new Set((event.detail?.appids || []).map(Number).filter((appid) => appid > 0));
+    const purgedAt = Number(event.detail?.purgedAt) || Date.now();
+    ids.forEach((appid) => purgedAtByAppId.set(appid, purgedAt));
+    writePendingAddVerifications(readPendingAddVerifications().filter((item) => !ids.has(Number(item.appid))));
+  };
+  window.addEventListener(PURGE_ADDED_GAMES_EVENT, invalidatePurgedVerifications);
 
   const dependencyRepairFirst = setTimeout(() => {
     repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
@@ -616,12 +644,14 @@ export default definePlugin(() => {
         if (e.status === "done" && e.success) {
           void refreshBadges();
           if (!isAssella) {
-            queueAddVerification(e.appid, e.name, liveReady);
+            const verification = queueAddVerification(e.appid, e.name, liveReady);
             // A verified HotReload should materialize in this Steam session.
             // Restart-fallback adds stay queued and are checked on the next
             // Steam/webhelper session instead of raising a premature warning.
             if (liveReady) {
-              window.setTimeout(() => { void verifyAddedGameReachedSteam(e.appid, e.name); }, 5000);
+              window.setTimeout(() => {
+                void verifyAddedGameReachedSteam(e.appid, e.name, verification.createdAt);
+              }, 5000);
             }
           }
           // slsteam-moon's verified HotReload path updates package/license/appinfo
@@ -678,6 +708,7 @@ export default definePlugin(() => {
       try { clearInterval(dependencyRepairRetry); } catch { /* ignore */ }
       try { document.removeEventListener("visibilitychange", noteCefTransition); } catch { /* ignore */ }
       try { window.removeEventListener("pageshow", noteCefTransition); } catch { /* ignore */ }
+      try { window.removeEventListener(PURGE_ADDED_GAMES_EVENT, invalidatePurgedVerifications); } catch { /* ignore */ }
       try { clearInterval(addNotifier); } catch { /* ignore */ }
       try { clearInterval(autoFixSweep); } catch { /* ignore */ }
       try { clearInterval(collectionSync); } catch { /* ignore */ }

@@ -287,6 +287,9 @@ export interface MinigameItem {
   currency?: string;
 }
 export interface StoreRouletteFilters {
+  priceEnabled?: boolean;
+  priceDirection?: "min" | "max";
+  priceCents?: number;
   qualityMode?: boolean;
   genre?: string;
   players?: string;
