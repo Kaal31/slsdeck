@@ -70,6 +70,7 @@ function GameArtwork({ item }: { item: MinigameItem }) {
 
 function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem; onReturn?: () => void; closeModal?: () => void }) {
   const gamepadFrame = useRef(0);
+  const cardFrame = useRef<HTMLDivElement>(null);
   const [dismissing, setDismissing] = useState(false);
   const dismiss = () => {
     if (dismissing) return;
@@ -104,17 +105,50 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       cancelAnimationFrame(gamepadFrame.current);
     };
   }, [closeModal, dismissing]);
+  useEffect(() => {
+    const centerCard = () => {
+      const card = cardFrame.current;
+      if (!card) return;
+      const rect = card.getBoundingClientRect();
+      const viewportCenter = window.visualViewport
+        ? window.visualViewport.offsetLeft + window.visualViewport.width / 2
+        : document.documentElement.clientWidth / 2;
+      const delta = viewportCenter - (rect.left + rect.width / 2);
+      if (Math.abs(delta) < 0.5) return;
+      const renderedScale = card.offsetWidth ? rect.width / card.offsetWidth : 1;
+      const current = Number(card.dataset.centerCorrection || 0);
+      const correction = current + delta / (renderedScale || 1);
+      card.dataset.centerCorrection = String(correction);
+      card.style.transform = `translate3d(${correction}px,0,0)`;
+    };
+    const settleUntil = performance.now() + 1500;
+    let settleFrame = 0;
+    const centerWhileSteamSettles = () => {
+      centerCard();
+      if (performance.now() < settleUntil) settleFrame = requestAnimationFrame(centerWhileSteamSettles);
+    };
+    settleFrame = requestAnimationFrame(centerWhileSteamSettles);
+    window.addEventListener("resize", centerCard);
+    window.visualViewport?.addEventListener("resize", centerCard);
+    window.visualViewport?.addEventListener("scroll", centerCard);
+    return () => {
+      cancelAnimationFrame(settleFrame);
+      window.removeEventListener("resize", centerCard);
+      window.visualViewport?.removeEventListener("resize", centerCard);
+      window.visualViewport?.removeEventListener("scroll", centerCard);
+    };
+  }, []);
   return <ModalRoot closeModal={dismiss} onCancel={dismiss} bHideCloseIcon className="sls-winner-modal" modalClassName="sls-winner-modal">
     <style>{`
       .sls-winner-modal { background: transparent !important; box-shadow: none !important; border: 0 !important; overflow: visible !important; }
-      @keyframes sls-winner-enter { 0% { opacity:0; transform:translateX(var(--sls-winner-shift)) scale(.72) translateY(24px); } 65% { opacity:1; transform:translateX(var(--sls-winner-shift)) scale(1.06) translateY(-7px); } 100% { transform:translateX(var(--sls-winner-shift)) scale(1) translateY(0); } }
+      @keyframes sls-winner-enter { 0% { opacity:0; transform:scale(.72) translateY(24px); } 65% { opacity:1; transform:scale(1.06) translateY(-7px); } 100% { transform:scale(1) translateY(0); } }
       @keyframes sls-winner-idle { 0%,100% { transform:translateY(0) rotate(-.25deg); } 50% { transform:translateY(-9px) rotate(.25deg); } }
       @keyframes sls-winner-shine { 0% { transform:translateX(-180%) skewX(-22deg); } 55%,100% { transform:translateX(280%) skewX(-22deg); } }
-      @keyframes sls-winner-exit { from { opacity:1; transform:translateX(var(--sls-winner-shift)) scale(1); } to { opacity:0; transform:translateX(var(--sls-winner-shift)) scale(.88) translateY(18px); } }
+      @keyframes sls-winner-exit { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(.88) translateY(18px); } }
     `}</style>
-    <div style={{ position:"relative", zIndex:2, width: "min(72vw,430px)" }}>
+    <div ref={cardFrame} style={{ position:"relative", zIndex:2, width: "min(72vw,430px)" }}>
     <div onPointerDown={dismiss} style={{
-      width: "100%", textAlign: "center", "--sls-winner-shift": "clamp(120px, 10vw, 135px)",
+      width: "100%", textAlign: "center",
       animation: dismissing ? "sls-winner-exit 300ms ease-in both" : "sls-winner-enter 850ms cubic-bezier(.18,.82,.2,1) both",
     } as React.CSSProperties}>
       <div style={{ animation: "sls-winner-idle 3s ease-in-out 1s infinite" }}>
