@@ -9,6 +9,7 @@ export interface StoreRouletteFilters {
   priceDirection: "min" | "max";
   priceCents: number;
   qualityMode: boolean;
+  personalized: boolean;
   genre: string;
   players: string;
   deck: string;
@@ -23,6 +24,7 @@ export const DEFAULT_ROULETTE_FILTERS: StoreRouletteFilters = {
   priceDirection: "min",
   priceCents: 6000,
   qualityMode: false,
+  personalized: false,
   genre: "",
   players: "",
   deck: "",
@@ -65,6 +67,7 @@ export function readRouletteFilters(): StoreRouletteFilters {
       priceCents: Math.max(100, Math.min(100000,
         Number(hasSliderPrice ? parsed.priceCents : legacyPrice) || DEFAULT_ROULETTE_FILTERS.priceCents)),
       qualityMode: parsed.qualityMode === true,
+      personalized: parsed.personalized === true,
       genre: typeof parsed.genre === "string" ? parsed.genre : "",
       players: typeof parsed.players === "string" ? parsed.players : "",
       deck: typeof parsed.deck === "string" ? parsed.deck : "",
