@@ -604,7 +604,7 @@ def _read() -> Optional[str]:
         return None
 
 
-def _atomic_write(content: str) -> bool:
+def _atomic_write_path(path: str, content: str) -> bool:
     """Replace config.yaml in one step. This file holds AdditionalApps -- the
     user's entire added-games list -- so a partial write loses their library.
 
@@ -615,7 +615,6 @@ def _atomic_write(content: str) -> bool:
     survive a power cut while the data does not, leaving an empty config. On a
     handheld people shut off by holding the power button, that is a realistic
     way to lose the whole game list."""
-    path = config_path()
     tmp = "%s.tmp.%d.%d" % (path, os.getpid(), threading.get_ident())
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -654,6 +653,10 @@ def _atomic_write(content: str) -> bool:
         except Exception:
             pass
         return False
+
+
+def _atomic_write(content: str) -> bool:
+    return _atomic_write_path(config_path(), content)
 
 
 def _backup_once() -> None:
@@ -697,6 +700,28 @@ def _read_additional_from(content: str) -> Set[int]:
         if not line[:1].isspace():
             break
     return ids
+
+
+def _remove_additional_from(content: str, appid: int) -> str:
+    """Remove an id only from AdditionalApps, never from an unrelated YAML list."""
+    inline = re.search(r"^AdditionalApps:[ \t]*\[([^\]]*)\]", content, re.MULTILINE)
+    if inline:
+        values = [int(value) for value in re.findall(r"\d+", inline.group(1))]
+        kept = [str(value) for value in values if value != appid]
+        replacement = "AdditionalApps: [" + ", ".join(kept) + "]"
+        return content[:inline.start()] + replacement + content[inline.end():]
+
+    match = _ADDITIONAL_APPS_RE.search(content)
+    if not match:
+        return content
+    end = len(content)
+    for next_line in re.finditer(r"^\S[^\n]*$", content[match.end():], re.MULTILINE):
+        # The first match may be the newline-adjacent next top-level key.
+        end = match.end() + next_line.start()
+        break
+    block = content[match.end():end]
+    entry = re.compile(rf"^[ \t]*-[ \t]*{appid}[ \t]*(?:#.*)?$\n?", re.MULTILINE)
+    return content[:match.end()] + entry.sub("", block) + content[end:]
 
 
 def _all_config_paths() -> List[str]:
@@ -1103,18 +1128,61 @@ def remove_app(appid: int) -> Dict[str, Any]:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "Invalid appid"}
-    content = _read()
-    if content is None:
-        return {"success": True, "additionalApps": []}
-    _backup_once()
-    pattern = re.compile(rf"^[ \t]*-[ \t]*{appid}[ \t]*(?:#.*)?$\n?", re.MULTILINE)
-    if not pattern.search(content):
-        return {"success": True, "additionalApps": read_additional_apps()}
-    new_content = pattern.sub("", content, count=1)
-    if not _atomic_write(new_content):
-        return {"success": False, "error": "Failed to write SLSsteam config"}
-    logger.log(f"SLSsteam: removed {appid} from {ADDITIONAL_APPS_KEY}")
-    return {"success": True, "additionalApps": read_additional_apps()}
+    failed: List[str] = []
+
+    # Old and new SLSsteam builds can leave registrations in different files.
+    # Remove every occurrence from every candidate, rather than only the config
+    # selected by today's environment detection.
+    yaml_paths = list(_all_config_paths())
+    for cfg in list(_all_config_paths()):
+        lua_ids = os.path.join(os.path.dirname(cfg), "luaappids.yaml")
+        if lua_ids not in yaml_paths:
+            yaml_paths.append(lua_ids)
+    for path in yaml_paths:
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+            new_content = _remove_additional_from(content, appid)
+            if new_content != content and not _atomic_write_path(path, new_content):
+                failed.append(path)
+        except Exception as exc:
+            logger.warn(f"SLSsteam: failed to remove {appid} from {path}: {exc}")
+            failed.append(path)
+
+    # Lua stems are authoritative on current slsteam-moon. Clear native,
+    # Flatpak, and detected Steam roots, including disabled leftovers.
+    script_dirs: List[str] = []
+    try:
+        from .steam import stplugin_dir
+        script_dirs.append(stplugin_dir())
+    except Exception:
+        pass
+    for home in _candidate_homes():
+        script_dirs.extend([
+            os.path.join(home, ".steam", "steam", "config", "stplug-in"),
+            os.path.join(home, ".local", "share", "Steam", "config", "stplug-in"),
+            os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam", "config", "stplug-in"),
+        ])
+    for directory in set(filter(None, script_dirs)):
+        for suffix in (".lua", ".lua.disabled"):
+            path = os.path.join(directory, f"{appid}{suffix}")
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception as exc:
+                logger.warn(f"SLSsteam: failed to remove {path}: {exc}")
+                failed.append(path)
+
+    remaining = read_additional_apps()
+    if appid not in remaining:
+        logger.log(f"SLSsteam: removed {appid} from all registration stores")
+    return {
+        "success": not failed and appid not in remaining,
+        "additionalApps": remaining,
+        "failedPaths": failed,
+    }
 
 
 # ── SLSsteam install (direct download from GitHub; no apt/sudo/wget) ─────────
