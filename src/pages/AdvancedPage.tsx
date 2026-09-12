@@ -68,10 +68,10 @@ function readDeckyHvVisible(): boolean {
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
   const [on, setOn] = useState(false);
-  const [reloadOnPurge, setReloadOnPurgeState] = useState(true);
+  const [reloadOnPurge, setReloadOnPurgeState] = useState(false);
   useEffect(() => {
     getAutoDownload().then((r) => setOn(!!r.enabled)).catch(() => {});
-    getReloadOnPurge().then((r) => setReloadOnPurgeState(r.enabled !== false)).catch(() => {});
+    getReloadOnPurge().then((r) => setReloadOnPurgeState(!!r.enabled)).catch(() => {});
   }, []);
   return (
     <PanelSection title="Adding games">
@@ -86,7 +86,7 @@ function AddDownloadToggle() {
       <PanelSectionRow>
         <ToggleField
           label="Reload when purging all"
-          description="Fully restart Steam after Purge All so cached SLS games disappear immediately. Off keeps Steam running; cached cards disappear after your next normal restart."
+          description="Compatibility fallback that restarts Steam after Purge All. Off uses Moon's in-session hot removal."
           checked={reloadOnPurge}
           onChange={async (v) => { setReloadOnPurgeState(v); await setReloadOnPurge(v); }}
         />
