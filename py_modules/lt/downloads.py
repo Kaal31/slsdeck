@@ -1618,13 +1618,15 @@ def purge_all_added() -> Dict[str, Any]:
         # Active ids also cover partial Lua files which were not registered at
         # snapshot time.
         appids = sorted(set(appids) | set(active_appids))
-        removed = 0
+        batch = slssteam.remove_apps(appids)
         for appid in appids:
             try:
-                if delete_luatools_for_app(appid).get("success"):
-                    removed += 1
+                slssteam.remove_dlc_parent(appid)
+                name = _get_loaded_app_name(appid) or f"UNKNOWN ({appid})"
+                _remove_loaded_app(appid)
+                _log_event("REMOVED", appid, name)
             except Exception as exc:
-                logger.warn(f"SLSDeck: purge failed for {appid}: {exc}")
+                logger.warn(f"SLSDeck: purge bookkeeping failed for {appid}: {exc}")
     # Do not let the persistent notifier consume an old successful-add event
     # after the corresponding game was intentionally purged.
     purged_ids = set(appids)
@@ -1635,12 +1637,13 @@ def purge_all_added() -> Dict[str, Any]:
         ]
     # A final authoritative read catches incomplete removals and makes a partial
     # purge visible to the UI instead of reporting success while one card stays.
-    remaining = sorted(set(slssteam.read_additional_apps()))
+    remaining = sorted(set(batch.get("remaining") or []) | set(slssteam.read_additional_apps()) & purged_ids)
     success = not remaining
+    removed = len(appids) - len(remaining)
     logger.log(f"SLSDeck: purged {removed} added game(s); {len(remaining)} remain")
     return {
         "success": success,
-        "removed": len(appids) - len(set(appids) & set(remaining)),
+        "removed": removed,
         "total": len(appids),
         "appids": appids,
         "remaining": remaining,
