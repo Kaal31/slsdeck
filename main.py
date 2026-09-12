@@ -1994,6 +1994,13 @@ class Plugin:
         settings.set_auto_download(enabled)
         return {"success": True}
 
+    async def get_reload_on_purge(self) -> Dict[str, Any]:
+        return {"success": True, "enabled": settings.get_reload_on_purge()}
+
+    async def set_reload_on_purge(self, enabled: bool) -> Dict[str, Any]:
+        settings.set_reload_on_purge(enabled)
+        return {"success": True}
+
     # ── DLC toggles (A: auto-add DLC content; B: disable unlock on owned) ────
     async def get_auto_add_dlc(self) -> Dict[str, Any]:
         return {"success": True, "enabled": settings.get_auto_add_dlc()}
