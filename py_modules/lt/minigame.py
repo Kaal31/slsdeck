@@ -40,6 +40,7 @@ def _filters(value: Dict[str, Any] | None = None) -> Dict[str, Any]:
         "priceDirection": "max" if str(raw.get("priceDirection") or "").lower() == "max" else "min",
         "priceCents": max(100, min(100000, int(raw.get("priceCents") or 6000))),
         "qualityMode": bool(raw.get("qualityMode", False)),
+        "personalized": bool(raw.get("personalized", False)),
         "genre": str(raw.get("genre") or "").lower() if str(raw.get("genre") or "").lower() in _TAG_IDS else "",
         "players": str(raw.get("players") or "").lower() if str(raw.get("players") or "").lower() in ("singleplayer", "multiplayer", "coop") else "",
         "deck": str(raw.get("deck") or "").lower() if str(raw.get("deck") or "").lower() in ("playable", "verified") else "",
@@ -55,6 +56,7 @@ def _search_key(value: Dict[str, Any]) -> str:
         "genre": value.get("genre"),
         "players": value.get("players"),
         "deck": value.get("deck"),
+        "personalized": bool(value.get("personalized")),
         # Review-filtered catalogs deliberately use Reviews_DESC pages. Keep
         # them separate from ordinary Random/price caches.
         "reviewFiltered": bool(value.get("qualityMode") or value.get("minRating") or value.get("minReviews")),
@@ -79,7 +81,8 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
     params: Dict[str, Any] = {
         "query": "", "start": max(0, int(start)), "count": max(1, int(count)),
         "sort_by": sort_by, "category1": "998", "infinite": "1",
-        "ignore_preferences": "1", "ndl": "1", "cc": "US", "l": "english",
+        "ignore_preferences": "0" if selected["personalized"] else "1",
+        "ndl": "1", "cc": "US", "l": "english",
     }
     tags = [_TAG_IDS[value] for value in (selected["genre"], selected["players"]) if value]
     if tags:
@@ -176,12 +179,18 @@ def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
         _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS.get(search_key, 0), reported_total)
         pool.extend(first_page)
         page_count = max(1, (_TOTAL_RESULTS[search_key] + 99) // 100)
-        review_page_count = min(20, page_count)
-        # Three hundred review-sorted candidates are ample for the Quality
-        # preset's 300-review/60%-positive floor. Sample two additional pages to
-        # retain variety without hammering Steam's anonymous endpoint.
-        extra_count = min(2, max(0, review_page_count - 1))
-        for page_number in random.sample(range(1, review_page_count), extra_count):
+        review_page_count = min(120, page_count)
+        # Keep the cold path at exactly three Store calls, but spread them over
+        # the catalog instead of drawing every page from its anime-heavy front.
+        # The live details/review checks below remain authoritative.
+        page_bands = []
+        upper_end = min(20, review_page_count)
+        if upper_end > 1:
+            page_bands.append(range(1, upper_end))
+        if review_page_count > upper_end:
+            page_bands.append(range(upper_end, review_page_count))
+        for band in page_bands:
+            page_number = random.choice(band)
             page, reported_total = _search_page(page_number * 100, 100, "Reviews_DESC", selected)
             _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS[search_key], reported_total)
             pool.extend(page)
