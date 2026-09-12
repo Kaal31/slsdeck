@@ -9,6 +9,7 @@ import {
 import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
 import { InstalledApp, deleteLua, getInstalledApps, purgeAllAdded } from "../api";
+import { markSlsPurged, refreshBadges } from "../lib/badges";
 
 interface Props {
   refreshToken: number;
@@ -45,18 +46,25 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
     showModal(
       <ConfirmModal
         strTitle="Purge all added games?"
-        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every AdditionalApps registration and its lua manifest — and clears the added-games history. It does NOT delete installed game files. Restart Steam afterwards. This cannot be undone (restore a backup if you need them back).`}
+        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every registration and lua manifest. It does NOT delete installed game files. Restart Steam afterwards. This cannot be undone (restore a backup if you need them back).`}
         strOKButtonText="Purge all"
         onOK={async () => {
           try {
             const res = await purgeAllAdded();
+            const purgedIds = (res.appids || apps.map((app) => Number(app.appid)))
+              .filter((id) => !(res.remaining || []).includes(id));
+            markSlsPurged(purgedIds);
             if (res.success) {
               window.dispatchEvent(new CustomEvent("slsdeck-purge-added-games", {
-                detail: { appids: apps.map((app) => Number(app.appid)), purgedAt: Date.now() },
+                detail: { appids: purgedIds, purgedAt: Date.now() },
               }));
               toaster.toast({ title: "SLSDeck", body: `Purged ${res.removed} game(s)` });
               await load();
+              await refreshBadges();
               onChanged();
+            } else {
+              toaster.toast({ title: "SLSDeck", body: `${res.error || "Purge incomplete"}: ${(res.remaining || []).join(", ")}` });
+              await load();
             }
           } catch (e) {
             toaster.toast({ title: "SLSDeck", body: `Error: ${e}` });
