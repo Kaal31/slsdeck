@@ -41,14 +41,14 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
 
   useEffect(() => {
     load();
-    getReloadOnPurge().then((result) => setReloadOnPurge(result.enabled !== false)).catch(() => {});
+    getReloadOnPurge().then((result) => setReloadOnPurge(!!result.enabled)).catch(() => {});
   }, [refreshToken]);
 
   const confirmPurge = () => {
     showModal(
       <ConfirmModal
         strTitle="Purge all added games?"
-        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every registration and lua manifest. It does NOT delete installed game files. ${reloadOnPurge ? "Steam and any running game will close, then Steam will restart to clear cached ownership." : "Steam will stay open; cached cards disappear after your next normal restart."} This cannot be undone (restore a backup if needed).`}
+        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every registration and lua manifest. It does NOT delete installed game files. ${reloadOnPurge ? "Steam and any running game will close, then Steam will restart after the purge." : "Steam will stay open and Moon will refresh the library in-session."} This cannot be undone (restore a backup if needed).`}
         strOKButtonText={reloadOnPurge ? "Purge and reload Steam" : "Purge all"}
         onOK={async () => {
           try {
@@ -67,8 +67,8 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
               await refreshBadges();
               onChanged();
               if (reloadOnPurge) {
-                // Moon has no live revoke IPC. A backend full restart re-enters
-                // through steam.sh and preserves injection for the new session.
+                // Compatibility fallback for old Moon builds which cannot
+                // reconcile the final removal snapshot in-session.
                 window.setTimeout(() => { void reloadSteamBackend(); }, 750);
               }
             } else {
