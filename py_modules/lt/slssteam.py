@@ -1145,8 +1145,15 @@ def remove_app(appid: int) -> Dict[str, Any]:
             with open(path, "r", encoding="utf-8", errors="ignore") as fh:
                 content = fh.read()
             new_content = _remove_additional_from(content, appid)
-            if new_content != content and not _atomic_write_path(path, new_content):
-                failed.append(path)
+            if new_content != content:
+                try:
+                    backup = path + BACKUP_SUFFIX
+                    if not os.path.exists(backup) or os.path.getsize(path) >= os.path.getsize(backup):
+                        shutil.copy2(path, backup)
+                except Exception as exc:
+                    logger.warn(f"SLSsteam: backup failed for {path}: {exc}")
+                if not _atomic_write_path(path, new_content):
+                    failed.append(path)
         except Exception as exc:
             logger.warn(f"SLSsteam: failed to remove {appid} from {path}: {exc}")
             failed.append(path)
