@@ -291,6 +291,7 @@ export interface StoreRouletteFilters {
   priceDirection?: "min" | "max";
   priceCents?: number;
   qualityMode?: boolean;
+  personalized?: boolean;
   genre?: string;
   players?: string;
   deck?: string;
