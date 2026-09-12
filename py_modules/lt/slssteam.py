@@ -1192,6 +1192,108 @@ def remove_app(appid: int) -> Dict[str, Any]:
     }
 
 
+def remove_apps(appids: List[int]) -> Dict[str, Any]:
+    """Remove a set of registrations as one settled hot-reload transaction.
+
+    Moon watches the Lua directory plus config.yaml/luaappids.yaml. Reusing
+    ``remove_app`` in a loop publishes a succession of partially-removed
+    snapshots and can leave SteamUI showing whichever intermediate package
+    state won the race. Delete every Lua first, rewrite every YAML store once,
+    and finish by replacing the canonical luaappids.yaml after the filesystem
+    has reached its final state. That last event gives Moon one authoritative
+    snapshot to reconcile.
+    """
+    targets: Set[int] = set()
+    for value in appids:
+        try:
+            targets.add(int(value))
+        except Exception:
+            continue
+    if not targets:
+        return {"success": True, "additionalApps": read_additional_apps(),
+                "failedPaths": [], "deleted": []}
+
+    failed: List[str] = []
+    deleted: List[str] = []
+
+    # Lua stems are authoritative. Reach the final directory state before any
+    # YAML notification asks Moon to take a fresh snapshot.
+    script_dirs: List[str] = []
+    try:
+        from .steam import stplugin_dir
+        script_dirs.append(stplugin_dir())
+    except Exception:
+        pass
+    for home in _candidate_homes():
+        script_dirs.extend([
+            os.path.join(home, ".steam", "steam", "config", "stplug-in"),
+            os.path.join(home, ".local", "share", "Steam", "config", "stplug-in"),
+            os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam", "config", "stplug-in"),
+        ])
+    for directory in set(filter(None, script_dirs)):
+        for appid in targets:
+            for suffix in (".lua", ".lua.disabled"):
+                path = os.path.join(directory, f"{appid}{suffix}")
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                        deleted.append(path)
+                except Exception as exc:
+                    logger.warn(f"SLSsteam: failed to remove {path}: {exc}")
+                    failed.append(path)
+
+    yaml_paths = list(_all_config_paths())
+    for cfg in list(_all_config_paths()):
+        lua_ids = os.path.join(os.path.dirname(cfg), "luaappids.yaml")
+        if lua_ids not in yaml_paths:
+            yaml_paths.append(lua_ids)
+    final_signal = os.path.join(config_dir(), "luaappids.yaml")
+    yaml_paths = [path for path in yaml_paths if path != final_signal] + [final_signal]
+
+    for path in yaml_paths:
+        try:
+            exists = os.path.isfile(path)
+            if not exists and path != final_signal:
+                continue
+            if exists:
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+            else:
+                content = "AdditionalApps:\n"
+            new_content = content
+            for appid in targets:
+                new_content = _remove_additional_from(new_content, appid)
+            # Always replace final_signal, even when its text is unchanged: it
+            # is the completion event after all Lua/YAML mutations have settled.
+            if new_content != content or path == final_signal:
+                if exists:
+                    try:
+                        backup = path + BACKUP_SUFFIX
+                        if not os.path.exists(backup) or os.path.getsize(path) >= os.path.getsize(backup):
+                            shutil.copy2(path, backup)
+                    except Exception as exc:
+                        logger.warn(f"SLSsteam: backup failed for {path}: {exc}")
+                if not _atomic_write_path(path, new_content):
+                    failed.append(path)
+        except Exception as exc:
+            logger.warn(f"SLSsteam: batch removal failed for {path}: {exc}")
+            failed.append(path)
+
+    remaining = read_additional_apps()
+    still_present = sorted(targets & set(remaining))
+    logger.log(
+        f"SLSsteam: batch removed {len(targets) - len(still_present)}/"
+        f"{len(targets)} app registration(s); final hot-reload signal written"
+    )
+    return {
+        "success": not failed and not still_present,
+        "additionalApps": remaining,
+        "remaining": still_present,
+        "failedPaths": sorted(set(failed)),
+        "deleted": deleted,
+    }
+
+
 # ── SLSsteam install (direct download from GitHub; no apt/sudo/wget) ─────────
 # The bundled h3adcr-b bootstrap calls ``sudo apt-get``/``wget``/``7z`` which do
 # not exist / are not permitted on SteamOS's read-only rootfs (that produced the
