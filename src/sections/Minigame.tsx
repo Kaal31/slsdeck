@@ -110,10 +110,20 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       const card = cardFrame.current;
       if (!card) return;
       const rect = card.getBoundingClientRect();
-      const viewportCenter = window.visualViewport
-        ? window.visualViewport.offsetLeft + window.visualViewport.width / 2
-        : document.documentElement.clientWidth / 2;
-      const delta = viewportCenter - (rect.left + rect.width / 2);
+      // Decky's nested Quick Access webview reports its narrow panel as the
+      // visual viewport. Modal coordinates, however, are in full-display
+      // space. Steam Deck may also report its 800x1280 panel as portrait while
+      // Gaming Mode renders landscape, so the longer screen edge is the usable
+      // horizontal extent. On desktop/TV, outerWidth and the document viewport
+      // keep this responsive to the active full-screen Steam window.
+      const displayWidth = Math.max(
+        window.screen?.width || 0,
+        window.screen?.height || 0,
+        window.outerWidth || 0,
+        document.documentElement.clientWidth || 0,
+        window.innerWidth || 0,
+      );
+      const delta = displayWidth / 2 - (rect.left + rect.width / 2);
       if (Math.abs(delta) < 0.5) return;
       const renderedScale = card.offsetWidth ? rect.width / card.offsetWidth : 1;
       const current = Number(card.dataset.centerCorrection || 0);
