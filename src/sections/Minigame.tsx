@@ -195,7 +195,7 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
   const [returningFromWinner, setReturningFromWinner] = useState(false);
   const minPrice = filters.priceEnabled && filters.priceDirection === "min" ? filters.priceCents : 0;
   const activeFilterCount = (filters.priceEnabled ? 1 : 0) + [
-    filters.qualityMode, filters.genre, filters.players, filters.deck,
+    filters.qualityMode, filters.personalized, filters.genre, filters.players, filters.deck,
     ...(!filters.qualityMode ? [filters.minRating, filters.minReviews] : []),
     filters.releaseFrom, filters.releaseTo,
   ].filter(Boolean).length;
@@ -481,6 +481,9 @@ export function MinigameSection({ modalClose, onBusyChange, quickAccess = false 
       <PanelSectionRow><ToggleField label="Quality mode"
         description="Requires at least 300 reviews and 60% positive ratings. This overrides the two manual review filters while enabled."
         checked={filters.qualityMode} onChange={(value) => changeFilter("qualityMode", value)} /></PanelSectionRow>
+      <PanelSectionRow><ToggleField label="Use Steam personalization (experimental)"
+        description="Asks Steam Store search to respect recognized account preferences. Adds to every selected filter; results may remain neutral when Steam does not expose its signed-in session to the plugin backend."
+        checked={filters.personalized} onChange={(value) => changeFilter("personalized", value)} /></PanelSectionRow>
       <PanelSectionRow><DropdownItem label="Genre" rgOptions={GENRE_OPTIONS}
         selectedOption={filters.genre} strDefaultLabel={GENRE_OPTIONS.find((option) => option.data === filters.genre)?.label || "Any genre"}
         onChange={(option: any) => changeFilter("genre", String(option.data || ""))} /></PanelSectionRow>
