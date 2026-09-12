@@ -116,10 +116,11 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       frame = requestAnimationFrame(() => {
         const bounds = modalCenterProbe.current?.getBoundingClientRect();
         if (!bounds) return;
-        // ModalRoot is centered in Decky's active panel, which changes width
-        // between Steam UI layouts. Measure that untransformed host instead of
-        // applying a fixed rightward offset.
-        const shift = window.innerWidth / 2 - (bounds.left + bounds.width / 2);
+        // Decky's plugin window reports the narrow panel as innerWidth even
+        // though ModalRoot's bounds use full gamepad-screen coordinates. Use
+        // screen.width so the card has equal space to both physical edges.
+        const displayWidth = window.screen?.width || window.innerWidth;
+        const shift = displayWidth / 2 - (bounds.left + bounds.width / 2);
         setHorizontalShift(Math.max(-320, Math.min(320, shift)));
         setPositionReady(true);
       });
