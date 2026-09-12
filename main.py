@@ -67,6 +67,13 @@ class Plugin:
             excluded.update(int(value) for value in slssteam.read_additional_apps())
         except Exception:
             pass
+        # Purge removes ownership registrations, not the durable record of what
+        # this plugin awarded. Keep former roulette winners out of future rolls
+        # even after their cards have been purged from Steam's live library.
+        try:
+            excluded.update(int(value) for value in settings.get_ever_added())
+        except Exception:
+            pass
         return await self._run_slow(minigame.roll, sorted(excluded), 36, min_price_cents, filters or {})
 
     # ── Tokeer / Anti-Denuvo ────────────────────────────────────────────────
