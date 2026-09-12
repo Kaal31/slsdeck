@@ -8,7 +8,7 @@ import {
 } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
-import { InstalledApp, deleteLua, getInstalledApps, purgeAllAdded } from "../api";
+import { InstalledApp, deleteLua, getInstalledApps, purgeAllAdded, reloadSteamBackend } from "../api";
 import { markSlsPurged, refreshBadges } from "../lib/badges";
 
 interface Props {
@@ -46,8 +46,8 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
     showModal(
       <ConfirmModal
         strTitle="Purge all added games?"
-        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every registration and lua manifest. It does NOT delete installed game files. Restart Steam afterwards. This cannot be undone (restore a backup if you need them back).`}
-        strOKButtonText="Purge all"
+        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every registration and lua manifest — then fully restarts Steam to clear injected ownership from memory. It does NOT delete installed game files. Steam and any running game will close. This cannot be undone (restore a backup if needed).`}
+        strOKButtonText="Purge and restart Steam"
         onOK={async () => {
           try {
             const res = await purgeAllAdded();
@@ -58,10 +58,15 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
               window.dispatchEvent(new CustomEvent("slsdeck-purge-added-games", {
                 detail: { appids: purgedIds, purgedAt: Date.now() },
               }));
-              toaster.toast({ title: "SLSDeck", body: `Purged ${res.removed} game(s)` });
+              toaster.toast({ title: "SLSDeck", body: `Purged ${res.removed} game(s) — restarting Steam…` });
               await load();
               await refreshBadges();
               onChanged();
+              // The running moon has no revoke IPC: registrations are gone on
+              // disk, but Steam retains injected licenses until its process is
+              // replaced. Use the backend full restart so steam.sh runs again
+              // and SLSsteam injection remains active for the new session.
+              window.setTimeout(() => { void reloadSteamBackend(); }, 750);
             } else {
               toaster.toast({ title: "SLSDeck", body: `${res.error || "Purge incomplete"}: ${(res.remaining || []).join(", ")}` });
               await load();
