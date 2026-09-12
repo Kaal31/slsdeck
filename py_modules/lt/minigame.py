@@ -20,6 +20,8 @@ _CACHE_SECONDS = 60 * 60
 _MEMORY: Dict[str, Tuple[float, List[Tuple[int, str, int]]]] = {}
 _TOTAL_RESULTS: Dict[str, int] = {}
 _SEARCH_PAGE_MEMORY: Dict[str, Tuple[float, List[Tuple[int, str, int]], int]] = {}
+_STORE_GAME_MEMORY: Dict[str, Tuple[float, Dict[str, Any] | None]] = {}
+_STORE_GAME_MEMORY_LOCK = threading.Lock()
 _SEARCH_REQUEST_LOCK = threading.Lock()
 _LAST_SEARCH_REQUEST = 0.0
 _SEARCH_COOLDOWN_UNTIL = 0.0
@@ -156,21 +158,30 @@ def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
     # Steam retired the unauthenticated ISteamApps/GetAppList endpoint. Its
     # replacement requires an API key, whereas the Store's own paginated
     # search feed remains public. Read a random page from the Games category.
-    if not _TOTAL_RESULTS.get(search_key):
+    review_filtered = bool(selected["qualityMode"] or selected["minRating"] or selected["minReviews"])
+    if not _TOTAL_RESULTS.get(search_key) and not review_filtered:
         _, _TOTAL_RESULTS[search_key] = _search_page(0, 1, "_ASC", selected)
     pool: List[Tuple[int, str, int]] = []
     expensive = min_price_cents > 0
-    review_filtered = bool(selected["qualityMode"] or selected["minRating"] or selected["minReviews"])
     if review_filtered:
         # Random Store pages are overwhelmingly populated by little-reviewed
         # releases, so post-validating a small random batch frequently produces
         # no winner. Draw from a broad slice of Steam's review-sorted catalog;
         # the exact count/rating thresholds are still verified below against
         # the live review-summary API.
+        # The first Reviews_DESC page both seeds the pool and supplies the total
+        # count. Previously we made a separate count request followed by eight
+        # serial pages (the 650 ms Store throttle alone cost over five seconds).
+        first_page, reported_total = _search_page(0, 100, "Reviews_DESC", selected)
+        _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS.get(search_key, 0), reported_total)
+        pool.extend(first_page)
         page_count = max(1, (_TOTAL_RESULTS[search_key] + 99) // 100)
         review_page_count = min(20, page_count)
-        sample_count = min(8, review_page_count)
-        for page_number in random.sample(range(review_page_count), sample_count):
+        # Three hundred review-sorted candidates are ample for the Quality
+        # preset's 300-review/60%-positive floor. Sample two additional pages to
+        # retain variety without hammering Steam's anonymous endpoint.
+        extra_count = min(2, max(0, review_page_count - 1))
+        for page_number in random.sample(range(1, review_page_count), extra_count):
             page, reported_total = _search_page(page_number * 100, 100, "Reviews_DESC", selected)
             _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS[search_key], reported_total)
             pool.extend(page)
@@ -258,6 +269,16 @@ def _deck_category(appid: int) -> int:
 
 def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
                 filters: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
+    selected = _filters(filters)
+    cache_key = json.dumps({
+        "appid": int(appid), "min": int(min_price_cents or 0),
+        "max": int(max_price_cents or 0), "filters": selected,
+    }, sort_keys=True)
+    with _STORE_GAME_MEMORY_LOCK:
+        cached = _STORE_GAME_MEMORY.get(cache_key)
+        if cached and time.time() - cached[0] < _CACHE_SECONDS:
+            return dict(cached[1]) if cached[1] else None
+    result: Dict[str, Any] | None = None
     try:
         response = get_http_client().get(
             _DETAIL_URL,
@@ -285,7 +306,6 @@ def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
             return None
         if max_price_cents and actual_price_cents > int(max_price_cents):
             return None
-        selected = _filters(filters)
         # Quality mode owns the two overlapping review constraints. Preserve
         # the manual values in settings for later, but ignore them until the
         # preset is turned off so the result cannot be ambiguous.
@@ -317,7 +337,7 @@ def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
             classifications.extend(str(item.get("description") or "").lower() for item in group if isinstance(item, dict))
         if any(marker in label for label in classifications for marker in online_markers):
             return None
-        return {
+        result = {
             "appid": appid,
             "name": str(data["name"]),
             "image": str(data.get("header_image") or ""),
@@ -326,7 +346,13 @@ def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
             "currency": str(price.get("currency") or "USD"),
         }
     except Exception:
-        return None
+        result = None
+    with _STORE_GAME_MEMORY_LOCK:
+        _STORE_GAME_MEMORY[cache_key] = (time.time(), dict(result) if result else None)
+        # Bound the process-lifetime cache while retaining its newest entries.
+        while len(_STORE_GAME_MEMORY) > 2048:
+            _STORE_GAME_MEMORY.pop(next(iter(_STORE_GAME_MEMORY)), None)
+    return result
 
 
 def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_cents: int = 0,
