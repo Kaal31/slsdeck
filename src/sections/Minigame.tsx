@@ -116,10 +116,17 @@ function WinnerRevealModal({ item, onReturn, closeModal }: { item: MinigameItem;
       frame = requestAnimationFrame(() => {
         const bounds = modalCenterProbe.current?.getBoundingClientRect();
         if (!bounds) return;
-        // Decky's plugin window reports the narrow panel as innerWidth even
-        // though ModalRoot's bounds use full gamepad-screen coordinates. Use
-        // screen.width so the card has equal space to both physical edges.
-        const displayWidth = window.screen?.width || window.innerWidth;
+        // Decky's plugin window reports the narrow panel as innerWidth, while
+        // Steam Deck can expose screen.width/height in portrait orientation
+        // even though Gaming Mode is rendered landscape. ModalRoot's bounds
+        // use full gamepad-screen coordinates, so center on the longer screen
+        // dimension (1280 on Deck) to keep both outer margins equal.
+        const displayWidth = Math.max(
+          window.screen?.width || 0,
+          window.screen?.height || 0,
+          window.outerWidth || 0,
+          window.innerWidth,
+        );
         const shift = displayWidth / 2 - (bounds.left + bounds.width / 2);
         setHorizontalShift(Math.max(-320, Math.min(320, shift)));
         setPositionReady(true);
