@@ -1590,9 +1590,9 @@ def check_apis_for_app(appid: int) -> Dict[str, Any]:
 
 def purge_all_added() -> Dict[str, Any]:
     """Remove ALL added games at once: strip every SLSsteam AdditionalApps entry
-    and delete its lua manifest. Does NOT delete installed game files. Also clears
-    the everAdded history since nothing is registered anymore. Restart Steam to
-    apply."""
+    and delete its lua manifest. Does NOT delete installed game files. The
+    ever-added history is retained so a stale Steam capsule can never be
+    mislabelled as a legitimate owned game. Restart Steam to apply."""
     # Cancel all background adds first. Then take the same lock used by their
     # final registration: an add already inside the lock lands before our fresh
     # snapshot and is removed, while one waiting behind us observes cancellation
@@ -1633,10 +1633,16 @@ def purge_all_added() -> Dict[str, Any]:
             event for event in _ADD_EVENTS
             if int(event.get("appid") or 0) not in purged_ids
         ]
-    try:
-        from .settings import clear_ever_added
-        clear_ever_added()
-    except Exception:
-        pass
-    logger.log(f"SLSDeck: purged {removed} added game(s)")
-    return {"success": True, "removed": removed, "total": len(appids)}
+    # A final authoritative read catches incomplete removals and makes a partial
+    # purge visible to the UI instead of reporting success while one card stays.
+    remaining = sorted(set(slssteam.read_additional_apps()))
+    success = not remaining
+    logger.log(f"SLSDeck: purged {removed} added game(s); {len(remaining)} remain")
+    return {
+        "success": success,
+        "removed": len(appids) - len(set(appids) & set(remaining)),
+        "total": len(appids),
+        "appids": appids,
+        "remaining": remaining,
+        "error": "Some registrations could not be removed" if remaining else "",
+    }
