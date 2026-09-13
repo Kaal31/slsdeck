@@ -9,8 +9,10 @@ ManifestStore and Steam's live depotcache.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
+import select
 import tempfile
 import threading
 import time
@@ -28,7 +30,15 @@ _MANIFEST_MAGIC = b"\xd0\x17\xf6\x71"
 _MAX_BYTES = 64 * 1024 * 1024
 _SCAN_SECONDS = 5.0
 _IDLE_SECONDS = 30.0
+_POLL_FALLBACK_SECONDS = 2.0
 _RETRY_SECONDS = 15 * 60.0
+
+# Linux inotify masks used for Steam's direct writes and temp-file renames.
+_IN_CLOSE_WRITE = 0x00000008
+_IN_MOVED_TO = 0x00000080
+_IN_CREATE = 0x00000100
+_IN_DELETE = 0x00000200
+_INOTIFY_MASK = _IN_CLOSE_WRITE | _IN_MOVED_TO | _IN_CREATE | _IN_DELETE
 
 _lock = threading.RLock()
 _stop = threading.Event()
@@ -58,6 +68,62 @@ def _workshop_acfs(appids: Iterable[int]):
             path = os.path.join(base, f"appworkshop_{appid}.acf")
             if os.path.isfile(path):
                 yield appid, path
+
+
+def _workshop_dirs() -> list[str]:
+    return [
+        os.path.join(root, "steamapps", "workshop")
+        for root in steam._all_library_paths()
+        if os.path.isdir(os.path.join(root, "steamapps", "workshop"))
+    ]
+
+
+def _wait_for_acf_change(timeout: float) -> bool:
+    """Wait for a Workshop-state write; poll briefly if inotify is unavailable.
+
+    The one-second select slices also let plugin unload stop the watcher without
+    waiting for the full idle interval.
+    """
+    fd = -1
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        init = libc.inotify_init1
+        add = libc.inotify_add_watch
+        init.argtypes = [ctypes.c_int]
+        init.restype = ctypes.c_int
+        add.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        add.restype = ctypes.c_int
+        fd = init(os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+        watched = 0
+        for directory in _workshop_dirs():
+            if add(fd, os.fsencode(directory), _INOTIFY_MASK) >= 0:
+                watched += 1
+        if not watched:
+            raise OSError("no Workshop directories to watch")
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        while not _stop.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            ready, _, _ = select.select([fd], [], [], min(1.0, remaining))
+            if ready:
+                try:
+                    os.read(fd, 64 * 1024)
+                except BlockingIOError:
+                    pass
+                return True
+        return False
+    except Exception:
+        return _stop.wait(min(max(0.0, timeout), _POLL_FALLBACK_SECONDS))
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _items(appid: int, path: str):
@@ -213,7 +279,7 @@ def _run() -> None:
                 _status["lastError"] = str(exc)
             logger.warn(f"SLSDeck: Hubcap Workshop watcher failed: {exc}")
             delay = _IDLE_SECONDS
-        _stop.wait(delay)
+        _wait_for_acf_change(delay)
     with _lock:
         _status["running"] = False
 
