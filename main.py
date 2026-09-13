@@ -29,7 +29,7 @@ import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                nerai, opensave, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
+                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
@@ -281,17 +281,11 @@ class Plugin:
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: boot provisioning failed: {exc}")
 
-        # Boot: keep the OpenSave engine running (survives Game-Mode switches)
-        # and check every GitHub-sourced tool/DLL for a newer release. Lightweight
+        # Boot: check every GitHub-sourced tool/DLL for a newer release. Lightweight
         # deps auto-update if the user has it on; heavy ones (Proton, HV module)
         # are only flagged. All network/subprocess, so it lives in the warm-up
         # pool, not the RPC executor.
         def _boot_cloud_and_updates():
-            try:
-                if opensave.have_cli():
-                    opensave.ensure_daemon()
-            except Exception as exc:
-                decky.logger.warning(f"SLSDeck: opensave daemon boot failed: {exc}")
             try:
                 res = updates.boot_check()
                 if res.get("available"):
@@ -329,6 +323,7 @@ class Plugin:
                             f"and reset {len(transient.get('removed') or [])} transient setting(s)"
                         )
                     settings.set_last_plugin_version(cur_v)
+                    settings.remove_value("depVer:opensave")
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: plugin-update recheck failed: {exc}")
 
@@ -2186,39 +2181,118 @@ class Plugin:
         settings.set_cr_shortcut(int(appId or 0))
         return {"success": True}
 
-    # ── OpenSave (cloud saves engine) ──────────────────────────────────────
-    async def os_status(self) -> Dict[str, Any]:
-        return await self._run(opensave.overall_status)
+    # ── dependency updates (latest-version + boot check) ───────────────────
+    async def updates_check(self) -> Dict[str, Any]:
+        return await self._run(updates.check_all)
 
-    async def os_ensure_cli(self, force: bool = False) -> Dict[str, Any]:
-        return await self._run(opensave.ensure_cli, bool(force))
+    async def updates_update_all(self, includeHeavy: bool = False) -> Dict[str, Any]:
+        return await self._run(updates.update_all, bool(includeHeavy))
 
-    async def os_ensure_daemon(self) -> Dict[str, Any]:
-        return await self._run(opensave.ensure_daemon)
+    async def updates_update_one(self, name: str, includeHeavy: bool = True) -> Dict[str, Any]:
+        return await self._run(updates.update_one, str(name), bool(includeHeavy))
 
-    async def os_scan(self) -> Dict[str, Any]:
-        return await self._run(opensave.scan)
+    async def get_auto_update(self) -> Dict[str, Any]:
+        return {"success": True, "enabled": settings.get_auto_update()}
 
-    async def os_sync_all(self) -> Dict[str, Any]:
-        return await self._run(opensave.sync, None)
+    async def set_auto_update(self, enabled: bool) -> Dict[str, Any]:
+        settings.set_auto_update(bool(enabled))
+        return {"success": True, "enabled": bool(enabled)}
 
-    async def os_sync_game(self, appid: int) -> Dict[str, Any]:
-        return await self._run(opensave.sync, int(appid))
+    async def open_game_folder(self, path: str) -> Dict[str, Any]:
+        ok = await self._run(steam.open_game_folder, path)
+        return {"success": ok}
 
-    async def os_status_game(self, appid: int) -> Dict[str, Any]:
-        return await self._run(opensave.status_for_game, int(appid))
+    # ── UI Customization & Maintenance ──────────────────────────────────
+    async def get_ui_settings(self) -> Dict[str, Any]:
+        return {"success": True, "settings": settings.get_ui_settings()}
 
-    async def os_ensure_tracked(self, appid: int) -> Dict[str, Any]:
-        return await self._run(opensave.ensure_tracked, int(appid))
+    async def set_ui_setting(self, key: str, value: Any) -> Dict[str, Any]:
+        return settings.set_ui_setting(key, value)
 
-    async def os_snapshots(self, appid: int) -> Dict[str, Any]:
-        return await self._run(opensave.snapshots, int(appid))
+    async def run_full_system_maintenance(self) -> Dict[str, Any]:
+        """Run audit/repair, temporary-file cleanup, and artwork synchronization."""
+        def _maint():
+            repair_res = audit.auto_repair_system()
+            clean_res = storage.clean_temp_downloads()
+            art_res = art.sync_all_added_art(overwrite=False)
+            return {
+                "success": True,
+                "autoRepair": repair_res,
+                "tempClean": clean_res,
+                "artSync": art_res,
+            }
+        return await self._run(_maint)
 
-    async def os_rollback(self, appid: int, snapId: str) -> Dict[str, Any]:
-        return await self._run(opensave.rollback, int(appid), str(snapId))
+    # ── Steam Workshop Mod Engine (SteamCMD) ────────────────────────────
+    async def ws_resolve(self, text: str) -> Dict[str, Any]:
+        return await self._run(workshop.resolve_mod, text)
 
-    async def os_conflicts(self) -> Dict[str, Any]:
-        return await self._run(opensave.conflicts)
+    async def ws_download(self, text: str) -> Dict[str, Any]:
+        return await self._run(workshop.start_download, text)
 
-    async def os_resolve(self, appid: int, choice: str) -> Dict[str, Any]:
-        return await self._run(opensave.resolve, int(appid), str(choice))
+    async def ws_download_state(self, job: str) -> Dict[str, Any]:
+        return await self._run(workshop.get_download_state, job)
+
+    async def ws_search(self, text: str, limit: int = 40) -> Dict[str, Any]:
+        return await self._run(workshop.search_workshop, text, limit)
+
+    async def ws_list_mods(self, appid: int) -> Dict[str, Any]:
+        return await self._run(workshop.list_mods, appid)
+
+    async def ws_list_games(self) -> Dict[str, Any]:
+        return await self._run(workshop.list_mod_games)
+
+    async def ws_set_enabled(self, appid: int, modid: str, enabled: bool) -> Dict[str, Any]:
+        return await self._run(workshop.set_mod_enabled, appid, modid, enabled)
+
+    async def ws_remove(self, appid: int, modid: str) -> Dict[str, Any]:
+        return await self._run(workshop.remove_mod, appid, modid)
+
+    async def ws_ensure_steamcmd(self) -> Dict[str, Any]:
+        return await self._run(workshop.ensure_steamcmd)
+
+    async def ws_get_steam_key(self) -> Dict[str, Any]:
+        try:
+            return {"success": True, "key": settings.get_steam_web_key()}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def ws_set_steam_key(self, key: str = "") -> Dict[str, Any]:
+        try:
+            settings.set_steam_web_key(key)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def workshop_search(self, appid: int, query: str = "", limit: int = 15) -> Dict[str, Any]:
+        r = await self._run(workshop.search_workshop, query, limit)
+        if isinstance(r, dict) and "items" not in r:
+            r = dict(r)
+            r["items"] = r.get("results", [])
+        return r
+
+    async def get_steam_web_api_key(self) -> Dict[str, Any]:
+        try:
+            return {"success": True, "key": settings.get_steam_web_api_key()}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def set_steam_web_api_key(self, key: str = "") -> Dict[str, Any]:
+        try:
+            settings.set_steam_web_api_key(key)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def workshop_download(self, appid: int, published_file_id: str) -> Dict[str, Any]:
+        return await self._run(workshop.start_download, str(published_file_id))
+
+    async def workshop_list(self, appid: int) -> Dict[str, Any]:
+        r = await self._run(workshop.list_mods, appid)
+        if isinstance(r, dict) and "items" not in r:
+            r = dict(r)
+            r["items"] = r.get("mods", [])
+        return r
+
+    async def workshop_remove(self, appid: int, published_file_id: str) -> Dict[str, Any]:
+        return await self._run(workshop.remove_mod, appid, published_file_id)
