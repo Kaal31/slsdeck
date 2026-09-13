@@ -132,6 +132,17 @@ def set_value(key: str, value: Any) -> None:
         _persist_locked()
 
 
+def remove_value(key: str) -> bool:
+    """Remove one obsolete setting without disturbing unrelated preferences."""
+    with _LOCK:
+        _load_locked()
+        existed = key in _CACHE
+        if existed:
+            _CACHE.pop(key, None)
+            _persist_locked()
+        return existed
+
+
 def get_pinned_build(appid) -> str:
     """The buildid a game was pinned to, recorded at pin time (the config only
     stores the {depot: gid} map, so we remember the human-facing build here)."""
