@@ -252,13 +252,15 @@ export const crIconPath = callable<[], { success: boolean; path: string }>("cr_i
 export const crArtwork = callable<[], { success: boolean; cover: string; capsule: string; hero: string; logo: string }>("cr_artwork");
 export const crGetShortcut = callable<[], { success: boolean; appId: number }>("cr_get_shortcut");
 export const crSetShortcut = callable<[appId: number], { success: boolean }>("cr_set_shortcut");
-export type CloudRedirectProvider = "local" | "gdrive" | "onedrive";
+export type CloudRedirectProvider = "local" | "folder" | "gdrive" | "onedrive";
 export interface CloudRedirectProviderStatus {
   success: boolean; configured?: boolean; authenticated?: boolean;
   provider?: CloudRedirectProvider; providers?: string[];
+  syncFolderPath?: string; folderReady?: boolean; folderWritable?: boolean;
   syncAchievements?: boolean; syncPlaytime?: boolean; native?: boolean; error?: string;
 }
 export const crSetProvider = callable<[provider: string], CloudRedirectProviderStatus>("cr_set_provider");
+export const crSetSyncFolder = callable<[path: string], CloudRedirectProviderStatus>("cr_set_sync_folder");
 export const crSetProviderToggle = callable<[key: string, enabled: boolean], CloudRedirectProviderStatus>("cr_set_provider_toggle");
 export const crSignOut = callable<[provider?: string], CloudRedirectProviderStatus>("cr_sign_out");
 export const crAuthStart = callable<[provider: string], { success: boolean; status?: string; authUrl?: string; error?: string }>("cr_auth_start");

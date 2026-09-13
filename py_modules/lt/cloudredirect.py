@@ -312,19 +312,38 @@ def _wrap_cr(cmd: list) -> list:
         return base
 
 
+def _folder_writable(path: str) -> bool:
+    """Check access as the desktop/Steam user, not Decky's root backend."""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        return subprocess.run(
+            _wrap_cr(["test", "-w", path]), check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
 def provider_status() -> dict:
     """Return the native configuration consumed by cloudredirect-moon."""
     migrate_provider_data()
     cfg = _read_provider_config()
     provider = str(cfg.get("provider") or "local")
+    sync_folder_path = str(cfg.get("sync_folder_path") or "").strip()
+    folder_ready = provider == "folder" and bool(sync_folder_path) and os.path.isdir(sync_folder_path)
+    folder_writable = folder_ready and _folder_writable(sync_folder_path)
     providers = [p for p in _PROVIDERS if _has_refresh_token(_token_path(p, cfg))]
     authenticated = provider in providers
     return {
         "success": True,
-        "configured": provider == "local" or authenticated,
+        "configured": provider == "local" or authenticated or folder_writable,
         "authenticated": authenticated,
         "provider": provider,
         "providers": providers,
+        "syncFolderPath": sync_folder_path,
+        "folderReady": folder_ready,
+        "folderWritable": folder_writable,
         "syncAchievements": cfg.get("sync_achievements") is True,
         "syncPlaytime": cfg.get("sync_playtime") is True,
         "native": True,
@@ -333,12 +352,47 @@ def provider_status() -> dict:
 
 def set_provider(provider: str) -> dict:
     provider = str(provider or "").lower()
-    if provider not in ("local", "gdrive", "onedrive"):
+    if provider not in ("local", "folder", "gdrive", "onedrive"):
         return {"success": False, "error": "unknown provider"}
     migrate_provider_data()
     cfg = _read_provider_config()
     cfg["provider"] = provider
     try:
+        _write_json_atomic(_native_config_path(), cfg)
+        return provider_status()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def set_sync_folder(path: str) -> dict:
+    """Select CloudRedirect Moon's folder/network-drive provider root."""
+    migrate_provider_data()
+    raw = str(path or "").strip()
+    if not raw:
+        return {"success": False, "error": "Choose a folder first"}
+    if raw == "~" or raw.startswith("~/"):
+        raw = os.path.join(slssteam._home(), raw[2:]) if raw != "~" else slssteam._home()
+    expanded = os.path.abspath(raw)
+    if expanded == os.path.sep:
+        return {"success": False, "error": "The filesystem root cannot be used as a sync folder"}
+    try:
+        created = not os.path.exists(expanded)
+        mkdir = subprocess.run(
+            _wrap_cr(["mkdir", "-p", "--", expanded]), check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        if mkdir.returncode != 0:
+            detail = (mkdir.stderr or "").strip()
+            return {"success": False, "error": detail or "Could not create the selected folder"}
+        if not os.path.isdir(expanded):
+            return {"success": False, "error": "The selected path is not a folder"}
+        if created:
+            chown_to_user(expanded, recursive=False)
+        if not _folder_writable(expanded):
+            return {"success": False, "error": "The selected folder is not writable"}
+        cfg = _read_provider_config()
+        cfg["provider"] = "folder"
+        cfg["sync_folder_path"] = expanded
         _write_json_atomic(_native_config_path(), cfg)
         return provider_status()
     except Exception as exc:
@@ -705,6 +759,26 @@ def _discover_remote_apps(provider: str) -> tuple[list, str]:
         return [], str(exc)
 
 
+def _discover_folder_apps(root: str) -> tuple[list, str]:
+    """List the account/AppID layout used by Moon's folder provider."""
+    if not root:
+        return [], "custom folder is not configured"
+    if not os.path.isdir(root):
+        return [], "custom folder is unavailable"
+    found = set()
+    try:
+        for account in os.listdir(root):
+            account_dir = os.path.join(root, account)
+            if not account.isdigit() or not os.path.isdir(account_dir):
+                continue
+            for appid in os.listdir(account_dir):
+                if appid.isdigit() and appid != "0" and os.path.isdir(os.path.join(account_dir, appid)):
+                    found.add((int(account), int(appid)))
+        return sorted(found), ""
+    except OSError as exc:
+        return [], str(exc)
+
+
 def list_local_apps() -> dict:
     """Merge local/inherited save trees with cloud-only provider folders."""
     root = os.path.join(_native_config_dir(), "storage")
@@ -736,8 +810,12 @@ def list_local_apps() -> dict:
     remote_error = ""
     cfg = _read_provider_config()
     provider = str(cfg.get("provider") or "local")
-    if provider in _PROVIDERS and _has_refresh_token(_token_path(provider, cfg)):
+    remote = []
+    if provider == "folder":
+        remote, remote_error = _discover_folder_apps(str(cfg.get("sync_folder_path") or ""))
+    elif provider in _PROVIDERS and _has_refresh_token(_token_path(provider, cfg)):
         remote, remote_error = _discover_remote_apps(provider)
+    if remote:
         by_key = {(app["account"], app["appid"]): app for app in apps}
         for account, appid in remote:
             current = by_key.get((account, appid))

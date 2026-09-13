@@ -1832,6 +1832,9 @@ class Plugin:
     async def cr_set_provider(self, provider: str) -> Dict[str, Any]:
         return await self._run(cloudredirect.set_provider, provider)
 
+    async def cr_set_sync_folder(self, path: str) -> Dict[str, Any]:
+        return await self._run(cloudredirect.set_sync_folder, path)
+
     async def cr_set_provider_toggle(self, key: str, enabled: bool) -> Dict[str, Any]:
         return await self._run(cloudredirect.set_provider_toggle, key, bool(enabled))
 

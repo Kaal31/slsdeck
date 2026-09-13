@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import {
   CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthCallback, crAuthPoll, crAuthStart,
   crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crListLocalApps, crProviderStatus,
-  crSetEnabled, crSetProvider, crSetProviderToggle, crSignOut,
+  crSetEnabled, crSetProvider, crSetProviderToggle, crSetSyncFolder, crSignOut,
 } from "../api";
 
 const PROVIDERS: Array<{ data: CloudRedirectProvider; label: string }> = [
-  { data: "local", label: "Local folder" },
+  { data: "local", label: "Built-in local storage" },
+  { data: "folder", label: "Custom folder" },
   { data: "gdrive", label: "Google Drive" },
   { data: "onedrive", label: "OneDrive" },
 ];
@@ -23,7 +24,8 @@ function formatSize(bytes: number, local = true): string {
 }
 
 function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirectProvider | undefined, remote = false): string {
-  const providerName = provider === "gdrive" ? "Google Drive" : provider === "onedrive" ? "OneDrive" : "local storage";
+  const providerName = provider === "gdrive" ? "Google Drive" : provider === "onedrive" ? "OneDrive" :
+    provider === "folder" ? "custom folder" : "local storage";
   if (!timestamp) return provider === "local" ? "No stored save metadata yet" :
     remote ? `Stored in ${providerName}` : `Not synced to ${providerName} yet`;
   try {
@@ -110,6 +112,7 @@ export function CloudRedirectSection() {
   const [saves, setSaves] = useState<CloudRedirectLocalApp[]>([]);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [authWaiting, setAuthWaiting] = useState(false);
+  const [folderPath, setFolderPath] = useState("");
   const alive = useRef(true);
   const authWatch = useRef(0);
 
@@ -118,6 +121,7 @@ export function CloudRedirectSection() {
     try {
       const provider = await crProviderStatus();
       setState(provider);
+      setFolderPath(provider.syncFolderPath || "");
       const auth = await crAuthPoll();
       if (auth.status === "done" && provider.authenticated) {
         setMsg("Cloud provider connected."); setAuthWaiting(false); setCallbackUrl("");
@@ -170,10 +174,24 @@ export function CloudRedirectSection() {
     try {
       const result = await crSetProvider(value);
       setState(result);
-      setMsg(value === "local" ? "Using CloudRedirect's local storage folder." :
+      setMsg(value === "local" ? "Using CloudRedirect's built-in local storage." : value === "folder" ?
+        (result.configured ? "Using the selected custom folder." : "Enter and save a custom folder path below.") :
         result.authenticated ? "Existing sign-in restored." : "Provider selected. Connect it below.");
     } catch (error) { setMsg(`Error: ${error}`); }
     setBusy(false);
+  };
+
+  const saveFolder = async () => {
+    setBusy(true);
+    try {
+      const result = await crSetSyncFolder(folderPath.trim());
+      setState(result);
+      if (!result.success) throw new Error(result.error || "Could not use that folder");
+      setFolderPath(result.syncFolderPath || folderPath.trim());
+      setMsg("Custom sync folder saved. Restart Steam before using it.");
+      await load();
+    } catch (error) { setMsg(`Folder setup failed: ${error}`); }
+    if (alive.current) setBusy(false);
   };
 
   const connect = async () => {
@@ -237,11 +255,21 @@ export function CloudRedirectSection() {
     <PanelSectionRow><DropdownItem label="Storage provider"
       description="Configuration is read directly by cloudredirect-moon."
       rgOptions={PROVIDERS} selectedOption={selected?.data || "local"}
-      strDefaultLabel={selected?.label || "Local folder"}
+      strDefaultLabel={selected?.label || "Built-in local storage"}
       onChange={(option: any) => selectProvider(option.data)} disabled={busy} /></PanelSectionRow>
-    {state.provider !== "local" && !state.authenticated &&
+    {state.provider === "folder" && <>
+      <PanelSectionRow><TextField label="Custom sync folder"
+        description="Absolute path on internal storage, SD card, external drive, network mount, or a Syncthing/Dropbox folder."
+        value={folderPath}
+        onChange={(event: any) => setFolderPath(event?.target?.value ?? String(event || ""))}
+      /></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={saveFolder} disabled={busy || !folderPath.trim()}>
+        Use this folder
+      </ButtonItem></PanelSectionRow>
+    </>}
+    {state.provider !== "local" && state.provider !== "folder" && !state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={connect} disabled={busy}>Connect provider</ButtonItem></PanelSectionRow>}
-    {state.provider !== "local" && !state.authenticated && authWaiting && <>
+    {state.provider !== "local" && state.provider !== "folder" && !state.authenticated && authWaiting && <>
       <PanelSectionRow><div style={{ fontSize: 11, lineHeight: 1.45, opacity: .78 }}>
         Automatic capture is active. If the browser still ends on an unreachable localhost page, copy its complete address-bar URL and paste it below.
       </div></PanelSectionRow>
@@ -255,14 +283,15 @@ export function CloudRedirectSection() {
         Finish sign-in
       </ButtonItem></PanelSectionRow>
     </>}
-    {state.provider !== "local" && state.authenticated &&
+    {state.provider !== "local" && state.provider !== "folder" && state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={disconnect} disabled={busy}>Sign out</ButtonItem></PanelSectionRow>}
     <PanelSectionRow><ToggleField label="Sync achievements" checked={!!state.syncAchievements}
       onChange={(v) => toggleOption("sync_achievements", v)} disabled={busy} /></PanelSectionRow>
     <PanelSectionRow><ToggleField label="Sync playtime" checked={!!state.syncPlaytime}
       onChange={(v) => toggleOption("sync_playtime", v)} disabled={busy} /></PanelSectionRow>
-    <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" ? "#5ee6c4" : "#f5a623" }}>
+    <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" || state.configured ? "#5ee6c4" : "#f5a623" }}>
       {state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
+        state.provider === "folder" ? (state.configured ? `✓ Custom folder ready · ${state.syncFolderPath}` : "Custom folder needs a writable path.") :
         state.authenticated ? `✓ ${selected?.label} connected · ${saveCount} managed ${saveCount === 1 ? "game" : "games"}${remoteOnlyCount ? ` · ${remoteOnlyCount} cloud only` : ""}` :
         `${selected?.label || "Cloud provider"} needs sign-in.`}
     </div></PanelSectionRow>
