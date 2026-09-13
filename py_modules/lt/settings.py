@@ -1015,6 +1015,7 @@ UI_SETTINGS_DEFAULTS = {
     "uiViewMode": "detailed",  # "detailed" or "compact"
     "autoArtSyncOnAdd": True,
     "workshopButton": False,
+    "automaticUnsteam": False,
 }
 
 

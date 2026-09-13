@@ -887,6 +887,9 @@ export const runSystemAudit = callable<[], { success: boolean; healthScore?: num
 export const runFullSystemMaintenance = callable<[], { success: boolean; steps?: string[] }>("run_full_system_maintenance");
 export const getUiSettings = callable<[], { success: boolean; settings?: Record<string, any> }>("get_ui_settings");
 export const setUiSetting = callable<[key: string, value: any], { success: boolean }>("set_ui_setting");
+export const automaticUnsteamCandidates = callable<[], { success: boolean; apps: Array<{ appid: number; gameName: string; installed: boolean; registered: boolean }>; logDir: string; error?: string }>("automatic_unsteam_candidates");
+export const automaticUnsteamInspect = callable<[appid: number, launchStartedMs: number, durationMs: number], { success: boolean; matched?: boolean; queued?: boolean; alreadyApplied?: boolean; gameName?: string; error?: string; reason?: string }>("automatic_unsteam_inspect");
+export const automaticUnsteamSetManaged = callable<[appids: number[]], { success: boolean; appids?: number[] }>("automatic_unsteam_set_managed");
 export const getNotifyGameAdd = callable<[], { success: boolean; enabled: boolean }>("get_notify_game_add");
 export const setNotifyGameAdd = callable<[enabled: boolean], { success: boolean; error?: string }>("set_notify_game_add");
 

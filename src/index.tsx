@@ -21,6 +21,7 @@ import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 import { StoreRouletteModal } from "./sections/Minigame";
 import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY } from "./lib/storeRoulettePrefs";
+import { startAutomaticUnsteam } from "./lib/automaticUnsteam";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -533,6 +534,7 @@ export default definePlugin(() => {
   let libraryPatch: ReturnType<typeof patchLibraryApp> | null = null;
   let stopStorePatch: (() => void) | null = null;
   let stopWorkshopPatch: (() => void) | null = null;
+  let stopAutomaticUnsteam: (() => void) | null = null;
   try {
     libraryPatch = patchLibraryApp();
   } catch (e) {
@@ -547,6 +549,11 @@ export default definePlugin(() => {
     stopWorkshopPatch = initWorkshopPatch();
   } catch (e) {
     console.error("SLSDeck: failed to init workshop patch", e);
+  }
+  try {
+    stopAutomaticUnsteam = startAutomaticUnsteam();
+  } catch (e) {
+    console.error("SLSDeck: failed to start Automatic Unsteam", e);
   }
 
   // Library capsule badges (SLS / LEGIT) — injected into the gamepad window.
@@ -718,6 +725,7 @@ export default definePlugin(() => {
       try { if (libraryBadgePatch) routerHook.removePatch("/library", libraryBadgePatch); } catch { /* ignore */ }
       try { if (stopStorePatch) stopStorePatch(); } catch { /* ignore */ }
       try { if (stopWorkshopPatch) stopWorkshopPatch(); } catch { /* ignore */ }
+      try { if (stopAutomaticUnsteam) stopAutomaticUnsteam(); } catch { /* ignore */ }
     },
   };
 });

@@ -53,6 +53,7 @@ import { refreshBadges } from "../lib/badges";
 import { syncSlsCollection } from "../lib/collection";
 import { getEmojiBadgesEnabled, setEmojiBadgesEnabled } from "../lib/emojiBadges";
 import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY, ROULETTE_TAB_DISABLED_KEY, writeRouletteBool } from "../lib/storeRoulettePrefs";
+import { AUTOMATIC_UNSTEAM_EVENT } from "../lib/automaticUnsteam";
 
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
@@ -356,6 +357,7 @@ function OptionsPane({
   const [libButtons, setLibButtons] = useState(true);
   const [autoApply, setAutoApplyState] = useState(false);
   const [autoRepoint, setAutoRepointState] = useState(false);
+  const [automaticUnsteam, setAutomaticUnsteam] = useState(false);
   const [hideToolsQam, setHideToolsQamState] = useState(true);
   const [achievements, setAchievementsState] = useState(true);
   const [achMoon, setAchMoon] = useState(true);
@@ -383,6 +385,7 @@ function OptionsPane({
     getUiSettings().then((r) => {
       setSurfaceFailedSources(r.settings?.toastOnSourceFailure === true);
       setWorkshopButton(r.settings?.workshopButton === true);
+      setAutomaticUnsteam(r.settings?.automaticUnsteam === true);
     }).catch(() => {});
     try {
       const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
@@ -499,6 +502,19 @@ function OptionsPane({
             description="When an add finishes, download and apply the online fix and/or Denuvo fix if available. A Denuvo fix also marks the game and installs the custom Proton."
             checked={autoFix}
             onChange={async (v) => { setAutoFixState(v); await setAutoFix(v); }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Automatic Unsteam"
+            description="For installed SLS games using Proton, add per-game Proton logging. If a launch ends within 45 seconds and its fresh log contains Steam application load error 3:0000065432, apply the normal Universal Unsteam fix. The fix remains individually removable from Fixes. Off removes only logging options added by SLSDeck."
+            checked={automaticUnsteam}
+            onChange={async (v) => {
+              setAutomaticUnsteam(v);
+              const result = await setUiSetting("automaticUnsteam", v);
+              if (!result?.success) { setAutomaticUnsteam(!v); return; }
+              window.dispatchEvent(new CustomEvent(AUTOMATIC_UNSTEAM_EVENT, { detail: v }));
+            }}
           />
         </PanelSectionRow>
       </PanelSection>

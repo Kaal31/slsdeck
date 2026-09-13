@@ -8,6 +8,7 @@ on:
       - manifest-sources
       - cloudredirect-dev
       - hubcap-workshop
+      - unsteam-automatic
     paths-ignore:
       - "dist/**"
   workflow_dispatch:

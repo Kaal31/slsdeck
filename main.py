@@ -29,7 +29,7 @@ import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_workshop,
+                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_workshop, automatic_unsteam,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
@@ -2226,6 +2226,17 @@ class Plugin:
 
     async def set_ui_setting(self, key: str, value: Any) -> Dict[str, Any]:
         return settings.set_ui_setting(key, value)
+
+    async def automatic_unsteam_candidates(self) -> Dict[str, Any]:
+        return await self._run(automatic_unsteam.candidates)
+
+    async def automatic_unsteam_inspect(self, appid: int, launch_started_ms: int = 0,
+                                        duration_ms: int = 0) -> Dict[str, Any]:
+        return await self._run(automatic_unsteam.inspect_short_launch, int(appid),
+                               int(launch_started_ms or 0), int(duration_ms or 0))
+
+    async def automatic_unsteam_set_managed(self, appids: Optional[List[int]] = None) -> Dict[str, Any]:
+        return await self._run(automatic_unsteam.set_managed, appids or [])
 
     async def run_full_system_maintenance(self) -> Dict[str, Any]:
         """Run audit/repair, temporary-file cleanup, and artwork synchronization."""
