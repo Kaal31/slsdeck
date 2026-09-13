@@ -305,48 +305,6 @@ export const minigameRoll = callable<
   { success: boolean; items?: MinigameItem[]; winnerIndex?: number; winner?: MinigameItem; error?: string }
 >("minigame_roll");
 
-// ── OpenSave (cloud saves engine) ───────────────────────────────────────────
-export type OsState = "synced" | "syncing" | "conflict" | "idle" | "untracked" | "unavailable" | "unknown";
-export const osStatus = callable<
-  [],
-  { success: boolean; installed: boolean; version?: string; latestTag?: string; updateAvailable?: boolean;
-    daemonRunning?: boolean; provider?: string; providerConnected?: boolean; trackedGames?: number;
-    conflicts?: number; flatpakInstalled?: boolean }
->("os_status");
-export const osEnsureCli = callable<[force?: boolean], { success: boolean; installed?: boolean; updated?: boolean; version?: string; tag?: string; error?: string }>("os_ensure_cli");
-export const osEnsureDaemon = callable<[], { success: boolean; running?: boolean; log?: string }>("os_ensure_daemon");
-export const osScan = callable<[], { success: boolean; found?: number; error?: string }>("os_scan");
-export const osSyncAll = callable<[], { success: boolean; error?: string }>("os_sync_all");
-export const osSyncGame = callable<[appid: number], { success: boolean; error?: string; id?: string }>("os_sync_game");
-export const osStatusGame = callable<
-  [appid: number],
-  { success: boolean; installed: boolean; tracked: boolean; state: OsState; snapshots?: number | null; name?: string; id?: string }
->("os_status_game");
-export const osEnsureTracked = callable<[appid: number], { success: boolean; tracked?: boolean; id?: string; name?: string; error?: string }>("os_ensure_tracked");
-export const osSnapshots = callable<
-  [appid: number],
-  { success: boolean; found?: boolean; snapshots?: Array<{ id: string; date: string; comment: string }>; id?: string }
->("os_snapshots");
-export const osRollback = callable<[appid: number, snapId: string], { success: boolean; error?: string }>("os_rollback");
-export const osConflicts = callable<[], { success: boolean; conflicts?: string[] }>("os_conflicts");
-export const osResolve = callable<[appid: number, choice: string], { success: boolean; error?: string }>("os_resolve");
-export const osExportAll = callable<[folder: string], { success: boolean; exported?: number; total?: number; folder?: string; note?: string; error?: string }>("os_export_all");
-export const osCloudAuthStart = callable<[provider: string], { success: boolean; provider?: string; authUrl?: string; autoCallback?: boolean; error?: string }>("os_cloud_auth_start");
-export const osCloudAuthCallback = callable<[code: string], { success: boolean; email?: string; error?: string }>("os_cloud_auth_callback");
-export const osCloudDisconnect = callable<[], { success: boolean; error?: string }>("os_cloud_disconnect");
-export const osCloudWebdav = callable<[url: string, username: string, password: string], { success: boolean; error?: string }>("os_cloud_webdav");
-export const osCloudEnabled = callable<[enabled: boolean], { success: boolean; error?: string }>("os_cloud_enabled");
-export const osCloudPushAll = callable<[], { success: boolean; uploaded?: number; note?: string; error?: string }>("os_cloud_push_all");
-export const osRelayJoin = callable<[code: string], { success: boolean; error?: string }>("os_relay_join");
-export const osRelayStatus = callable<[], { success: boolean; raw?: string }>("os_relay_status");
-export const osRelayLeave = callable<[], { success: boolean; error?: string }>("os_relay_leave");
-export const osDiagnostics = callable<
-  [],
-  { success: boolean; binPath: string; exists: boolean; executable: boolean; user: string;
-    daemonUrl?: string; addrFile?: string; addrExists?: boolean;
-    versionRc: number | null; versionOut: string; daemonRc: number | null; daemonOut: string; [k: string]: any }
->("os_diagnostics");
-
 // ── dependency updates (latest-version + boot check) ────────────────────────
 export type UpdateItem = { name: string; repo: string; heavy: boolean; current: string; latest: string; updateAvailable: boolean };
 export const updatesCheck = callable<[], { success: boolean; items?: UpdateItem[]; updates?: UpdateItem[] }>("updates_check");
