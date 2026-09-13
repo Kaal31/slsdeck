@@ -6,7 +6,7 @@ import { updatesCheck, updatesUpdateAll, getAutoUpdate, setAutoUpdate, UpdateIte
 
 /**
  * Tool updates — keeps every GitHub-sourced tool/DLL (SmokeAPI, CreamAPI, Uplay
- * unlockers, OpenSave) on the latest release, checked on boot. Proton and the HV
+ * unlockers) on the latest release, checked on boot. Proton and the HV
  * module are large / system-specific, so they are only flagged here.
  */
 export function UpdatesSection() {
