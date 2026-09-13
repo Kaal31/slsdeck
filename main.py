@@ -29,7 +29,7 @@ import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
+                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
@@ -400,6 +400,15 @@ class Plugin:
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: failed to start watchdog: {exc}")
 
+        # Optional SLS-game manifest updater. The worker waits 90 seconds before
+        # its first pass and then checks every two hours; with the toggle off it
+        # performs no network work. The backend also disables it if its Hubcap
+        # key has been removed.
+        try:
+            hubcap_updates.start()
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: failed to start Hubcap Updates: {exc}")
+
         # Reconcile manifest pins: a game in the applied-fixes list should stay
         # version-pinned, but the pin (config.yaml) is only written at fix-apply
         # time — so after a reinstall (fix list inherited from the game folder)
@@ -439,6 +448,10 @@ class Plugin:
         # pool running -- which is why memory crept up over a session.
         try:
             watchdog.stop_watchdog()
+        except Exception:
+            pass
+        try:
+            hubcap_updates.stop()
         except Exception:
             pass
         try:
@@ -1681,6 +1694,12 @@ class Plugin:
     async def hubcap_workshop_manifest(self, appid: int) -> Dict[str, Any]:
         """Fetch + publish the Hubcap Workshop manifest for a game."""
         return await self._run(pinsource.hubcap_workshop_manifest, int(appid))
+
+    async def hubcap_updates_status(self) -> Dict[str, Any]:
+        return hubcap_updates.status()
+
+    async def set_hubcap_updates(self, enabled: bool) -> Dict[str, Any]:
+        return hubcap_updates.set_enabled(bool(enabled))
 
     async def pin_source(self, appid: int) -> Dict[str, Any]:
         """Which pin source would be used for this game (lua.tools/hubcap/downloads/none)."""

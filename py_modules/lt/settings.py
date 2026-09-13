@@ -1014,6 +1014,7 @@ UI_SETTINGS_DEFAULTS = {
     "toastOnSourceFailure": False,
     "uiViewMode": "detailed",  # "detailed" or "compact"
     "autoArtSyncOnAdd": True,
+    "hubcapUpdates": False,
 }
 
 

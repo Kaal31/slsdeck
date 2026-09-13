@@ -607,6 +607,13 @@ export const hubcapWorkshopManifest = callable<
   [appid: number],
   { success: boolean; path?: string; bytes?: number; error?: string; status?: number }
 >("hubcap_workshop_manifest");
+export interface HubcapUpdatesStatus {
+  success: boolean; enabled: boolean; keyAvailable: boolean; running?: boolean;
+  checking?: boolean; lastCheck?: number; checked?: number; updated?: number;
+  skipped?: number; failed?: number; error?: string;
+}
+export const hubcapUpdatesStatus = callable<[], HubcapUpdatesStatus>("hubcap_updates_status");
+export const setHubcapUpdates = callable<[enabled: boolean], HubcapUpdatesStatus>("set_hubcap_updates");
 export const getWrapperOption = callable<[], { success: boolean; skip: boolean }>("get_wrapper_option");
 export const setWrapperOption = callable<[skip: boolean], { success: boolean }>("set_wrapper_option");
 export const setDlcOption = callable<[enabled: boolean], { success: boolean }>("set_dlc_option");
