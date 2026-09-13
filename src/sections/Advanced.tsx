@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
 import { getDlcOption, getStoreDisabled, setDlcOption, setStoreDisabled, getPinOnFix, setPinOnFix, getAutoApply, setAutoApply } from "../api";
 import { FixesSection } from "./Fixes";
-import { OpenSaveSection } from "./OpenSave";
 
 let cachedDlc: boolean | null = null;
 let cachedStoreOn: boolean | null = null;
@@ -18,7 +17,6 @@ export function AdvancedSection() {
   const [pinOnFix, setPinOnFixState] = useState(true);
   const [autoApply, setAutoApplyState] = useState(false);
   const [showFixes, setShowFixes] = useState(false);
-  const [showCloud, setShowCloud] = useState(false);
 
   const load = async () => {
     try {
@@ -125,14 +123,8 @@ export function AdvancedSection() {
             {showFixes ? "Game fixes ▾" : "Game fixes ▸"}
           </ButtonItem>
         </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => setShowCloud((v) => !v)}>
-            {showCloud ? "Cloud saves (OpenSave) ▾" : "Cloud saves (OpenSave) ▸"}
-          </ButtonItem>
-        </PanelSectionRow>
       </PanelSection>
       {showFixes && <FixesSection />}
-      {showCloud && <OpenSaveSection />}
     </>
   );
 }
