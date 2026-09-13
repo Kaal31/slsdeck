@@ -16,6 +16,7 @@ import select
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from . import settings, slssteam, steam
@@ -29,9 +30,10 @@ _CD_NAME_RE = re.compile(r"filename\*?=(?:UTF-8''|\")?([^\";]+)", re.IGNORECASE)
 _MANIFEST_MAGIC = b"\xd0\x17\xf6\x71"
 _MAX_BYTES = 64 * 1024 * 1024
 _SCAN_SECONDS = 5.0
-_IDLE_SECONDS = 30.0
 _POLL_FALLBACK_SECONDS = 2.0
+_IDLE_SECONDS = _POLL_FALLBACK_SECONDS
 _RETRY_SECONDS = 15 * 60.0
+_MAX_FETCH_WORKERS = 3
 
 # Linux inotify masks used for Steam's direct writes and temp-file renames.
 _IN_CLOSE_WRITE = 0x00000008
@@ -242,6 +244,7 @@ def scan_once() -> Dict[str, Any]:
     missing = 0
     fetched = 0
     now = time.monotonic()
+    jobs: list[Tuple[int, int, int]] = []
     for appid, path in _workshop_acfs(appids):
         for itemid, gid in _items(appid, path):
             if _already_present(appid, gid):
@@ -252,17 +255,39 @@ def scan_once() -> Dict[str, Any]:
                 if _attempt_after.get(attempt, 0) > now:
                     continue
                 _attempt_after[attempt] = now + _RETRY_SECONDS
-            result = fetch_and_publish(itemid, appid, gid)
-            if result.get("success"):
-                fetched += 1
-                with _lock:
-                    _status["published"] += 1
-                    _status["lastPublished"] = result.get("filename", "")
-                    _status["lastError"] = ""
-            else:
-                with _lock:
-                    _status["lastError"] = str(result.get("error", "Unknown error"))
-                logger.warn(f"SLSDeck: Hubcap Workshop item {itemid} failed: {_status['lastError']}")
+            jobs.append(attempt)
+
+    # Collections and required-item chains can add many missing manifests in a
+    # single ACF write. Fetch a small bounded batch concurrently so all of them
+    # can land before Steam's retry, without turning Hubcap into an unbounded
+    # request fan-out.
+    results = []
+    if jobs:
+        with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(jobs)),
+                                thread_name_prefix="slsdeck-hubcap-item") as pool:
+            pending = {
+                pool.submit(fetch_and_publish, itemid, appid, gid): (appid, itemid, gid)
+                for appid, itemid, gid in jobs
+            }
+            for future in as_completed(pending):
+                appid, itemid, gid = pending[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {"success": False, "error": str(exc)}
+                results.append((itemid, result))
+
+    for itemid, result in results:
+        if result.get("success"):
+            fetched += 1
+            with _lock:
+                _status["published"] += 1
+                _status["lastPublished"] = result.get("filename", "")
+                _status["lastError"] = ""
+        else:
+            with _lock:
+                _status["lastError"] = str(result.get("error", "Unknown error"))
+            logger.warn(f"SLSDeck: Hubcap Workshop item {itemid} failed: {_status['lastError']}")
     with _lock:
         _status["scans"] += 1
         _status["lastScan"] = int(time.time())
