@@ -29,7 +29,7 @@ import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame,
+                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_workshop,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
 from lt.httpc import close_http_client
@@ -399,6 +399,10 @@ class Plugin:
             watchdog.start_watchdog(self.loop)
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: failed to start watchdog: {exc}")
+        try:
+            hubcap_workshop.start_watcher()
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: failed to start Hubcap Workshop watcher: {exc}")
 
         # Reconcile manifest pins: a game in the applied-fixes list should stay
         # version-pinned, but the pin (config.yaml) is only written at fix-apply
@@ -442,6 +446,10 @@ class Plugin:
         except Exception:
             pass
         try:
+            hubcap_workshop.stop_watcher()
+        except Exception:
+            pass
+        try:
             await get_hv().stop()
         except Exception:
             pass
@@ -476,6 +484,10 @@ class Plugin:
             "SLSDeck: uninstalled — " +
             ("full purge requested" if full_purge else "live-safe deactivate only")
         )
+        try:
+            hubcap_workshop.stop_watcher()
+        except Exception:
+            pass
         # IMPORTANT: Decky runs this while Steam is LIVE with moon injected. moon
         # keeps a CFileWatcher on ~/.config/SLSsteam/config.yaml inside the Steam
         # process, so rmtree-ing the moon data / stplug-in / added-game
@@ -1678,9 +1690,15 @@ class Plugin:
         """Live Hubcap manifest-generation quota for the configured key."""
         return await self._run(pinsource.hubcap_usage)
 
-    async def hubcap_workshop_manifest(self, appid: int) -> Dict[str, Any]:
-        """Fetch + publish the Hubcap Workshop manifest for a game."""
-        return await self._run(pinsource.hubcap_workshop_manifest, int(appid))
+    async def hubcap_workshop_manifest(self, workshop_id: int) -> Dict[str, Any]:
+        """Fetch + publish a Hubcap manifest by Workshop item id."""
+        return await self._run(pinsource.hubcap_workshop_manifest, int(workshop_id))
+
+    async def hubcap_workshop_watcher_status(self) -> Dict[str, Any]:
+        return hubcap_workshop.status()
+
+    async def hubcap_workshop_rescan(self) -> Dict[str, Any]:
+        return await self._run(hubcap_workshop.scan_once)
 
     async def pin_source(self, appid: int) -> Dict[str, Any]:
         """Which pin source would be used for this game (lua.tools/hubcap/downloads/none)."""
