@@ -287,6 +287,22 @@ class Plugin:
         # are only flagged. All network/subprocess, so it lives in the warm-up
         # pool, not the RPC executor.
         def _boot_cloud_and_updates():
+            # Move only provably active legacy registrations to Moon-native
+            # sources. Uninstalled/stale legacy entries remain untouched.
+            try:
+                migration = slssteam.migrate_legacy_registrations()
+                if migration.get("migrated"):
+                    decky.logger.info(
+                        "SLSDeck: migrated legacy Moon registrations: "
+                        + ", ".join(str(x) for x in migration["migrated"])
+                    )
+                if migration.get("failed"):
+                    decky.logger.warning(
+                        "SLSDeck: registration migration failed for: "
+                        + ", ".join(str(x) for x in migration["failed"])
+                    )
+            except Exception as exc:
+                decky.logger.warning(f"SLSDeck: registration migration failed: {exc}")
             try:
                 if opensave.have_cli():
                     opensave.ensure_daemon()

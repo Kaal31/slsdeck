@@ -32,8 +32,6 @@ from .httpc import ensure_http_client
 from .utils import chown_to_user
 from . import slssteam, settings
 
-_slssteam_add_app = slssteam.add_app
-
 CR_APP_ID = "org.cloudredirect.CloudRedirect"
 CR_REPO = "https://raw.githubusercontent.com/Selectively11/CloudRedirect/refs/heads/gh-pages/cloudredirect.flatpakrepo"
 FLATHUB_REPO = "https://dl.flathub.org/repo/flathub.flatpakrepo"
@@ -793,30 +791,13 @@ def _recent_steam_account_id() -> str:
 
 
 def sync_registered_games() -> dict:
-    """Expose every SLSsteam game to both the Moon hook and companion UI.
+    """Expose every Moon-registered game to the CloudRedirect companion UI.
 
-    New slsteam-moon discovers games primarily from ``stplug-in/*.lua`` while
-    CloudRedirect still reads ``AdditionalApps``.  Its current companion also
-    has an unused AdditionalApps loader and displays only directories already
-    present under its storage tree.  Keep the legacy list in sync and create
-    empty per-app directories (never save files or metadata) so registered games
-    are visible immediately.  The hook fills those directories normally later.
+    Registration remains owned by Moon (Lua stems or luaappids.yaml). Empty
+    storage placeholders make games visible without copying them back into the
+    deprecated config.yaml AdditionalApps list.
     """
-    appids = [int(x) for x in slssteam.read_additional_apps() if int(x) > 0]
-    mirrored = 0
-    try:
-        content = slssteam._read() or ""
-        legacy = slssteam._read_additional_from(content)
-        for appid in appids:
-            if appid not in legacy:
-                result = _slssteam_add_app(appid)
-                if not result.get("success"):
-                    return {"success": False, "error": result.get("error") or
-                            f"could not mirror AppID {appid} into AdditionalApps"}
-                mirrored += 1
-                legacy.add(appid)
-    except Exception as exc:
-        return {"success": False, "error": f"could not synchronize AdditionalApps: {exc}"}
+    appids = [int(x) for x in slssteam.read_registered_apps() if int(x) > 0]
 
     account_id = _recent_steam_account_id()
     seeded = 0
@@ -857,9 +838,9 @@ def sync_registered_games() -> dict:
             chown_to_user(config_root, recursive=True)
         except Exception as exc:
             return {"success": False, "error": f"could not seed CloudRedirect app list: {exc}"}
-    logger.log(f"CloudRedirect: synchronized {len(appids)} game(s), "
-               f"mirrored={mirrored}, seeded={seeded}, account={account_id or 'unknown'}")
-    return {"success": True, "games": len(appids), "mirrored": mirrored,
+    logger.log(f"CloudRedirect: synchronized {len(appids)} Moon registration(s), "
+               f"seeded={seeded}, account={account_id or 'unknown'}")
+    return {"success": True, "games": len(appids), "mirrored": 0,
             "seeded": seeded, "accountId": account_id}
 
 

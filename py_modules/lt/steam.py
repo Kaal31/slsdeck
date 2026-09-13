@@ -1028,9 +1028,9 @@ def download_preflight(appid: int) -> Dict[str, Any]:
         listed = appid in set(slssteam.read_additional_apps())
     except Exception:
         listed = False
-    add("in_additional_apps", listed,
-        f"{appid} is in AdditionalApps" if listed else
-        f"{appid} missing from AdditionalApps in config.yaml")
+    add("registered_with_moon", listed,
+        f"{appid} is registered with SLSsteam Moon" if listed else
+        f"{appid} has no Lua or manual Moon registration")
 
     # 3. DisableUpdates must be off, or SLSsteam hands Steam zero depots.
     du_ok = False

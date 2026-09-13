@@ -150,7 +150,7 @@ export function SlsSteamSection() {
         `installed:      ${d.hasSLSsteamSo}`,
         `steam.sh:       ${d.steamShPath}`,
         `wrapped:        ${d.steamShWrapped}`,
-        `AdditionalApps: ${(d.additionalApps || []).join(", ") || "(none)"}`,
+        `Registered games: ${(d.registeredApps || d.additionalApps || []).join(", ") || "(none)"}`,
         `SLSsteam.log:   ${d.slssteamLogExists ? `yes (${d.slssteamLogAgeSec}s ago)` : "MISSING - not loaded"}`,
         ...((d.slssteamLogTail || []).map((l: string) => `  | ${l}`)),
         `headcrab ran:   ${d.headcrabRunLogExists}`,

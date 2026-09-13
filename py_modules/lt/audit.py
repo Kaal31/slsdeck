@@ -71,8 +71,8 @@ def system_health_audit() -> Dict[str, Any]:
         if not apps:
             warnings.append({
                 "code": "NO_APPS_REGISTERED",
-                "title": "No games registered in config.yaml",
-                "description": "AdditionalApps list in config.yaml is empty.",
+                "title": "No games registered with Moon",
+                "description": "No Lua scripts or manual AppIDs are currently registered.",
             })
 
     # 5. Permission & ownership check (root vs deck user)
@@ -123,7 +123,11 @@ def system_health_audit() -> Dict[str, Any]:
         "injectionActive": injected,
         "configured": configured,
         "gamescopeHookActive": hook_active,
-        "additionalAppsCount": len(slssteam.read_additional_apps()) if os.path.isfile(cfg) else 0,
+        # Keep the old field for frontend compatibility while exposing the
+        # source-neutral Moon name.
+        "additionalAppsCount": len(slssteam.read_registered_apps()),
+        "registeredAppsCount": len(slssteam.read_registered_apps()),
+        "legacyAppsCount": len(slssteam.read_legacy_apps()),
         "steamPath": detect_steam_install_path(),
     }
 
@@ -189,7 +193,7 @@ def auto_repair_system() -> Dict[str, Any]:
 
 
 def repair_game(appid: int) -> Dict[str, Any]:
-    """Repair a specific game: AdditionalApps entry, auto-update policy, and grid art."""
+    """Repair a game's Moon registration, auto-update policy, and grid art."""
     try:
         appid = int(appid)
     except Exception:
@@ -197,14 +201,14 @@ def repair_game(appid: int) -> Dict[str, Any]:
 
     steps = []
 
-    # 1. Register in AdditionalApps if missing
+    # 1. Register using Moon's appropriate native source if missing.
     try:
         if not slssteam.has_app(appid):
             name = downloads.fetch_app_name(appid) or ""
             slssteam.add_app(appid, name)
-            steps.append(f"Added {appid} to config.yaml AdditionalApps")
+            steps.append(f"Registered {appid} with SLSsteam Moon")
         else:
-            steps.append(f"{appid} already present in AdditionalApps")
+            steps.append(f"{appid} already registered with SLSsteam Moon")
     except Exception as exc:
         logger.warn(f"SLSDeck repair_game {appid} add_app failed: {exc}")
 

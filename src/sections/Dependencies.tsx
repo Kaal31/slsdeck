@@ -316,7 +316,7 @@ export function DependenciesSection() {
         `Steam root:     ${d.steamRoot || "?"}`,
         `OS:             ${osName}`,
         `user / root:    ${d.user || "?"}${d.runningAsRoot ? " (running as root)" : ""}`,
-        `AdditionalApps: ${(d.additionalApps || []).length} added${(d.additionalApps || []).length ? ` — ${(d.additionalApps || []).join(", ")}` : ""}`,
+        `Registered games: ${(d.registeredApps || d.additionalApps || []).length}${(d.registeredApps || d.additionalApps || []).length ? ` — ${(d.registeredApps || d.additionalApps || []).join(", ")}` : ""}`,
         `SLSsteam.log:   ${d.slssteamLogExists ? `yes (${d.slssteamLogAgeSec}s ago, ${d.slssteamLogModified || "?"})` : "MISSING — not loaded"}`,
         `h3adcr-b log:   ${d.headcrabRunLogExists ? "present" : "none"}`,
         ``,

@@ -8,23 +8,20 @@ not exist on SteamOS. The native Linux equivalent is **SLSsteam**
 requests the depot decryption keys from its own servers, so no ``.lua`` script
 or manually supplied depot key is needed.
 
-SLSsteam is driven by a single YAML file at ``~/.config/SLSsteam/config.yaml``.
-Reading its source (``src/config.cpp`` / ``src/feats/apps.cpp``) shows:
+Current slsteam-moon discovers registrations from two native sources:
+
+* ``config/stplug-in/<appid>.lua`` filename stems for manifest-backed games.
+* ``~/.config/SLSsteam/luaappids.yaml`` for manual/no-Lua registrations.
 
 * ``AppIds:``        — a black/whitelist *filter* over apps you already own.
                         With the default ``UseWhitelist: no`` an entry here
                         **excludes** an app, so it must NOT be used to add games.
-* ``AdditionalApps:`` — the list that is actually *injected* into the owned-apps
-                        list (``getSubscribedApps`` appends it and
-                        ``checkAppOwnership`` only unlocks apps found here).
+* ``AdditionalApps:`` — the legacy registration list in ``config.yaml``. It is
+                        still read and removed for compatibility, but new
+                        registrations are never written there.
 
-Therefore "adding a game" == inserting its AppId under ``AdditionalApps:``. This
-matches the reference implementation in ``project-example`` (its
-``yaml_config_manager.add_additional_app``).
-
-This module edits the YAML with line-targeted, comment-preserving, *atomic*
-writes (temp file + ``os.replace``) — mirroring the reference — so an
-interrupted write can never corrupt the user's config.
+All YAML edits are line-targeted, comment-preserving, and atomic (temp file plus
+``os.replace``), so an interrupted write cannot corrupt the registration list.
 """
 
 from __future__ import annotations
@@ -568,6 +565,8 @@ def get_status() -> Dict[str, Any]:
     cfg = config_path()
     with _INSTALL_LOCK:
         install = dict(_INSTALL_STATE)
+    registered = read_registered_apps()
+    legacy = read_legacy_apps()
     return {
         "success": True,
         "installed": bool(lib),
@@ -580,7 +579,12 @@ def get_status() -> Dict[str, Any]:
         "flatpak": _is_flatpak_steam(),
         "configPath": cfg,
         "configExists": os.path.isfile(cfg),
-        "additionalApps": read_additional_apps(),
+        # Keep additionalApps for older frontends/RPC clients.
+        "additionalApps": registered,
+        "registeredApps": registered,
+        "registrationSources": {str(appid): registration_sources(appid)
+                                for appid in registered},
+        "legacyApps": legacy,
         "missingDeps": _missing_dependencies(),
         "clientFixRan": os.path.isfile(os.path.join(config_dir(), "tools", "headcrab-run.log")),
         "injectionActive": _injection_functional(),
@@ -746,6 +750,33 @@ def _all_config_paths() -> List[str]:
     return out
 
 
+def _stplugin_dirs() -> List[str]:
+    """Every plausible SteamTools script directory, de-duplicated."""
+    dirs: List[str] = []
+    try:
+        from .steam import stplugin_dir
+        directory = stplugin_dir()
+        if directory:
+            dirs.append(directory)
+    except Exception:
+        pass
+    for home in _candidate_homes():
+        dirs.extend([
+            os.path.join(home, ".steam", "steam", "config", "stplug-in"),
+            os.path.join(home, ".local", "share", "Steam", "config", "stplug-in"),
+            os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                         ".local", "share", "Steam", "config", "stplug-in"),
+        ])
+    seen: Set[str] = set()
+    result: List[str] = []
+    for directory in dirs:
+        real = os.path.realpath(directory)
+        if real not in seen:
+            seen.add(real)
+            result.append(directory)
+    return result
+
+
 def _stplugin_appids() -> Set[int]:
     """Main-app ids discovered from SteamTools-format scripts under
     <Steam>/config/stplug-in/<appid>.lua. Recent slsteam-moon reads the game list
@@ -755,22 +786,7 @@ def _stplugin_appids() -> Set[int]:
     engine even for games that were never mirrored into AdditionalApps. Only active
     `<digits>.lua` count (a `.lua.disabled` game is paused; the engine skips it)."""
     ids: Set[int] = set()
-    dirs = []
-    try:
-        from .steam import stplugin_dir
-        d = stplugin_dir()
-        if d:
-            dirs.append(d)
-    except Exception:
-        pass
-    home = _home()
-    for extra in (
-        os.path.join(home, ".steam", "steam", "config", "stplug-in"),
-        os.path.join(home, ".local", "share", "Steam", "config", "stplug-in"),
-        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
-                     ".local", "share", "Steam", "config", "stplug-in"),
-    ):
-        dirs.append(extra)
+    dirs = _stplugin_dirs()
     seen_dir: Set[str] = set()
     for d in dirs:
         try:
@@ -803,6 +819,29 @@ def _luaappids_yaml_ids() -> Set[int]:
     return ids
 
 
+def read_legacy_apps() -> List[int]:
+    """Registrations still present in deprecated config.yaml AdditionalApps."""
+    ids: Set[int] = set()
+    for path in _all_config_paths():
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    ids |= _read_additional_from(fh.read())
+        except Exception as exc:
+            logger.warn(f"SLSsteam: read legacy registrations from {path} failed: {exc}")
+    return sorted(ids)
+
+
+def read_manual_apps() -> List[int]:
+    """Registrations in Moon's supported luaappids.yaml override file."""
+    return sorted(_luaappids_yaml_ids())
+
+
+def read_registered_apps() -> List[int]:
+    """All registrations accepted by current or older SLSsteam engines."""
+    return sorted(set(read_legacy_apps()) | _luaappids_yaml_ids() | _stplugin_appids())
+
+
 def read_additional_apps() -> List[int]:
     """Every added main-app id, engine-version-agnostic: the union of
       * config.yaml `AdditionalApps:` (legacy — still read by the engine),
@@ -811,23 +850,20 @@ def read_additional_apps() -> List[int]:
     Every feature that lists/checks 'added games' (backup, workshop art, audit,
     diagnostics, watchdog, remove-all) flows through here, so widening the source
     here is what keeps them all correct after the AdditionalApps deprecation."""
-    ids: Set[int] = set()
-    for path in _all_config_paths():
-        try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as fh:
-                    ids |= _read_additional_from(fh.read())
-        except Exception as exc:
-            logger.warn(f"SLSsteam: read {path} failed: {exc}")
-    try:
-        ids |= _luaappids_yaml_ids()
-    except Exception:
-        pass
-    try:
-        ids |= _stplugin_appids()
-    except Exception:
-        pass
-    return sorted(ids)
+    return read_registered_apps()
+
+
+def registration_sources(appid: int) -> List[str]:
+    """Report the concrete source(s) that currently register an AppID."""
+    appid = int(appid)
+    sources: List[str] = []
+    if appid in _stplugin_appids():
+        sources.append("lua")
+    if appid in _luaappids_yaml_ids():
+        sources.append("manual")
+    if appid in set(read_legacy_apps()):
+        sources.append("legacy")
+    return sources
 
 
 def has_app(appid: int) -> bool:
@@ -1069,58 +1105,120 @@ def _strip_appids_block(content: str) -> str:
     return "\n".join(out)
 
 
+def _add_to_registration_content(content: str, appid: int, comment: str = "") -> str:
+    """Return YAML with AppID inserted into its AdditionalApps block."""
+    if appid in _read_additional_from(content):
+        return content
+    comment = str(comment or "").replace("\r", " ").replace("\n", " ").strip()
+    entry = f"  - {appid}   # {comment}\n" if comment else f"  - {appid}\n"
+    match = _ADDITIONAL_APPS_RE.search(content)
+    if not match:
+        return content.rstrip("\n") + f"\nAdditionalApps:\n{entry}"
+    start = match.end()
+    if start < len(content) and content[start] == "\n":
+        start += 1
+    insert_at = start
+    cursor = start
+    for line in content[start:].split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("-") or stripped == "" or stripped.startswith("#"):
+            cursor += len(line) + 1
+            if stripped.startswith("-"):
+                insert_at = cursor
+            continue
+        if not line[:1].isspace():
+            break
+        cursor += len(line) + 1
+    if insert_at > 0 and content[insert_at - 1] != "\n":
+        entry = "\n" + entry
+    return content[:insert_at] + entry + content[insert_at:]
+
+
+def _remove_legacy_registration(appid: int) -> List[str]:
+    """Remove one AppID from legacy config files after replacement is durable."""
+    failed: List[str] = []
+    for path in _all_config_paths():
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+            updated = _remove_additional_from(content, appid)
+            if updated != content:
+                try:
+                    backup = path + BACKUP_SUFFIX
+                    if not os.path.exists(backup) or os.path.getsize(path) >= os.path.getsize(backup):
+                        shutil.copy2(path, backup)
+                except Exception as exc:
+                    logger.warn(f"SLSsteam: legacy backup failed for {path}: {exc}")
+                if not _atomic_write_path(path, updated):
+                    failed.append(path)
+        except Exception as exc:
+            logger.warn(f"SLSsteam: legacy cleanup failed for {path}: {exc}")
+            failed.append(path)
+    return failed
+
+
 def add_app(appid: int, comment: str = "") -> Dict[str, Any]:
     try:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "Invalid appid"}
     ensure_config()
-    _backup_once()
-    content = _read() or "AdditionalApps:\n"
+    lua_backed = appid in _stplugin_appids()
+    manual_path = os.path.join(config_dir(), "luaappids.yaml")
+    manual_content = "AdditionalApps:\n"
+    try:
+        if os.path.isfile(manual_path):
+            with open(manual_path, "r", encoding="utf-8", errors="ignore") as fh:
+                manual_content = fh.read()
+    except Exception as exc:
+        return {"success": False, "error": f"Failed to read luaappids.yaml: {exc}"}
 
-    if appid in _read_additional_from(content):
-        return {"success": True, "additionalApps": read_additional_apps(),
-                "alreadyPresent": True}
-
-    # Game names are used as trailing YAML comments; strip any newline/CR so a
-    # multi-line name can never break out of the comment and corrupt the file.
-    comment = str(comment or "").replace("\r", " ").replace("\n", " ").strip()
-    entry = f"  - {appid}   # {comment}\n" if comment else f"  - {appid}\n"
-    match = _ADDITIONAL_APPS_RE.search(content)
-    if match:
-        # Insert after the last existing list item / comment in the block.
-        start = match.end()
-        if start < len(content) and content[start] == "\n":
-            start += 1
-        rest = content[start:]
-        lines = rest.split("\n")
-        insert_at = start
-        cursor = start
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("-") or stripped == "" or stripped.startswith("#"):
-                cursor += len(line) + 1
-                if stripped.startswith("-"):
-                    insert_at = cursor
-                continue
-            if not line[:1].isspace():
-                break
-            cursor += len(line) + 1
-        if insert_at == start:  # empty list, insert right after the key line
-            insert_at = start
-        # Safety: never weld the entry onto the "AdditionalApps:" line itself.
-        # This can only happen for a hand-edited config where the key has no
-        # trailing newline (the seeded/atomic-written config always does).
-        if insert_at > 0 and content[insert_at - 1] != "\n":
-            entry = "\n" + entry
-        new_content = content[:insert_at] + entry + content[insert_at:]
+    if lua_backed:
+        updated = _remove_additional_from(manual_content, appid)
+        if not _atomic_write_path(manual_path, updated):
+            return {"success": False, "error": "Failed to signal Lua registration"}
+        failed = _remove_legacy_registration(appid)
+        source = "lua"
     else:
-        new_content = content.rstrip("\n") + f"\nAdditionalApps:\n{entry}"
+        updated = _add_to_registration_content(manual_content, appid, comment)
+        if not _atomic_write_path(manual_path, updated) or appid not in _luaappids_yaml_ids():
+            return {"success": False, "error": "Failed to write luaappids.yaml"}
+        failed = _remove_legacy_registration(appid)
+        source = "manual"
 
-    if not _atomic_write(new_content):
-        return {"success": False, "error": "Failed to write SLSsteam config"}
-    logger.log(f"SLSsteam: added {appid} to {ADDITIONAL_APPS_KEY}")
-    return {"success": True, "additionalApps": read_additional_apps()}
+    logger.log(f"SLSsteam: registered {appid} via Moon {source} source")
+    apps = read_registered_apps()
+    return {"success": True, "registeredApps": apps, "additionalApps": apps,
+            "source": source, "cleanupComplete": not failed, "failedPaths": failed}
+
+
+def migrate_legacy_registrations() -> Dict[str, Any]:
+    """Retire legacy entries only when a Moon-native replacement is proven."""
+    legacy = set(read_legacy_apps())
+    lua_ids = _stplugin_appids()
+    installed: Set[int] = set()
+    try:
+        from .steam import _all_library_paths
+        for appid in legacy:
+            if any(os.path.isfile(os.path.join(lib, "steamapps", f"appmanifest_{appid}.acf"))
+                   for lib in _all_library_paths()):
+                installed.add(appid)
+    except Exception as exc:
+        logger.warn(f"SLSsteam: installed-app migration scan failed: {exc}")
+    migrated: List[int] = []
+    preserved: List[int] = []
+    failed: List[int] = []
+    for appid in sorted(legacy):
+        if appid not in lua_ids and appid not in installed:
+            preserved.append(appid)
+            continue
+        result = add_app(appid)
+        (migrated if result.get("success") and result.get("cleanupComplete", True)
+         else failed).append(appid)
+    return {"success": not failed, "migrated": migrated, "preserved": preserved,
+            "failed": failed, "registeredApps": read_registered_apps()}
 
 
 def remove_app(appid: int) -> Dict[str, Any]:
@@ -1160,19 +1258,7 @@ def remove_app(appid: int) -> Dict[str, Any]:
 
     # Lua stems are authoritative on current slsteam-moon. Clear native,
     # Flatpak, and detected Steam roots, including disabled leftovers.
-    script_dirs: List[str] = []
-    try:
-        from .steam import stplugin_dir
-        script_dirs.append(stplugin_dir())
-    except Exception:
-        pass
-    for home in _candidate_homes():
-        script_dirs.extend([
-            os.path.join(home, ".steam", "steam", "config", "stplug-in"),
-            os.path.join(home, ".local", "share", "Steam", "config", "stplug-in"),
-            os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam", "config", "stplug-in"),
-        ])
-    for directory in set(filter(None, script_dirs)):
+    for directory in _stplugin_dirs():
         for suffix in (".lua", ".lua.disabled"):
             path = os.path.join(directory, f"{appid}{suffix}")
             try:
@@ -1218,19 +1304,7 @@ def remove_apps(appids: List[int]) -> Dict[str, Any]:
 
     # Lua stems are authoritative. Reach the final directory state before any
     # YAML notification asks Moon to take a fresh snapshot.
-    script_dirs: List[str] = []
-    try:
-        from .steam import stplugin_dir
-        script_dirs.append(stplugin_dir())
-    except Exception:
-        pass
-    for home in _candidate_homes():
-        script_dirs.extend([
-            os.path.join(home, ".steam", "steam", "config", "stplug-in"),
-            os.path.join(home, ".local", "share", "Steam", "config", "stplug-in"),
-            os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam", "config", "stplug-in"),
-        ])
-    for directory in set(filter(None, script_dirs)):
+    for directory in _stplugin_dirs():
         for appid in targets:
             for suffix in (".lua", ".lua.disabled"):
                 path = os.path.join(directory, f"{appid}{suffix}")
@@ -3446,7 +3520,12 @@ def get_diagnostics() -> Dict[str, Any]:
     out["configPath"] = cfg
     out["configExists"] = os.path.isfile(cfg)
     out["configOwner"] = _owner_of(cfg) if os.path.isfile(cfg) else "-"
-    out["additionalApps"] = read_additional_apps()
+    registered = read_registered_apps()
+    out["additionalApps"] = registered
+    out["registeredApps"] = registered
+    out["registrationSources"] = {str(appid): registration_sources(appid)
+                                  for appid in registered}
+    out["legacyApps"] = read_legacy_apps()
     out["safeMode"] = _config_scalar(text, "SafeMode")
     out["api"] = _config_scalar(text, "API")
     out["useWhitelist"] = _config_scalar(text, "UseWhitelist")

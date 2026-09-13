@@ -189,22 +189,8 @@ def _cleanup_legacy_flatpak(cloudredirect: Any) -> None:
 
 
 def _sync_registered_games(cloudredirect: Any) -> dict:
-    """Mirror the legacy fallback without inventing fake save directories."""
-    appids = [int(x) for x in cloudredirect.slssteam.read_additional_apps() if int(x) > 0]
-    mirrored = 0
-    try:
-        content = cloudredirect.slssteam._read() or ""
-        legacy = cloudredirect.slssteam._read_additional_from(content)
-        for appid in appids:
-            if appid not in legacy:
-                result = cloudredirect._slssteam_add_app(appid)
-                if not result.get("success"):
-                    return {"success": False, "error": result.get("error") or
-                            f"could not mirror AppID {appid} into AdditionalApps"}
-                mirrored += 1
-                legacy.add(appid)
-    except Exception as exc:
-        return {"success": False, "error": f"could not synchronize AdditionalApps: {exc}"}
+    """Synchronize UI placeholders without recreating legacy registrations."""
+    appids = [int(x) for x in cloudredirect.slssteam.read_registered_apps() if int(x) > 0]
 
     config_root = cloudredirect._native_config_dir()
     seed_index = os.path.join(config_root, ".slsdeck_seeded_apps.json")
@@ -232,8 +218,8 @@ def _sync_registered_games(cloudredirect: Any) -> dict:
             os.remove(seed_index)
         except OSError:
             pass
-    logger.log(f"CloudRedirect: synchronized {len(appids)} game(s), mirrored={mirrored}")
-    return {"success": True, "games": len(appids), "mirrored": mirrored, "seeded": 0}
+    logger.log(f"CloudRedirect: synchronized {len(appids)} Moon registration(s)")
+    return {"success": True, "games": len(appids), "mirrored": 0, "seeded": 0}
 
 
 def _download_cr_lib(cloudredirect: Any) -> str:
