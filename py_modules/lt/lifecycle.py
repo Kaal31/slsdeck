@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from typing import Any, Dict, Iterable, List
 
 from .logger import logger
@@ -22,6 +23,34 @@ from .paths import get_plugin_dir, get_runtime_dir, get_settings_dir
 
 CURRENT_ID = "SLSDeckUniversal"
 LEGACY_IDS = ("SLSDeckHV",)
+
+
+def cleanup_obsolete_opensave() -> Dict[str, Any]:
+    """Stop and remove the retired OpenSave runtime, preserving its save data."""
+    removed: List[str] = []
+    errors: List[str] = []
+    for process_name in ("opensave-cli", "opensave-relay", "opensave"):
+        try:
+            subprocess.run(["pkill", "-x", process_name], capture_output=True, timeout=10)
+        except FileNotFoundError:
+            break
+        except Exception as exc:
+            errors.append(f"stop {process_name}: {exc}")
+    try:
+        from .paths import get_user_home
+        bin_dir = os.path.join(get_user_home(), ".local", "bin")
+    except Exception:
+        bin_dir = os.path.join(os.path.expanduser("~"), ".local", "bin")
+    for name in ("opensave-cli", "opensave-relay", "opensave"):
+        path = os.path.join(bin_dir, name)
+        try:
+            if os.path.lexists(path):
+                os.remove(path)
+                removed.append(path)
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return {"success": not errors, "removed": removed, "errors": errors,
+            "preserved": ["~/.opensave"]}
 
 
 def _inside(parent: str, child: str) -> bool:
@@ -92,6 +121,9 @@ def cleanup_for_update() -> Dict[str, Any]:
     except Exception as exc:
         errors.append(f"recreate {runtime}: {exc}")
     _remove_legacy_identities(removed, errors)
+    retired = cleanup_obsolete_opensave()
+    removed.extend(retired.get("removed") or [])
+    errors.extend(retired.get("errors") or [])
     logger.log(f"SLSDeck lifecycle: update cleanup removed {len(removed)} stale path(s)")
     return {"success": not errors, "removed": removed, "errors": errors}
 
@@ -112,6 +144,9 @@ def cleanup_for_uninstall() -> Dict[str, Any]:
     runtime = os.path.realpath(get_runtime_dir())
     _remove_tree(runtime, os.path.dirname(runtime), removed, errors)
     _remove_legacy_identities(removed, errors)
+    retired = cleanup_obsolete_opensave()
+    removed.extend(retired.get("removed") or [])
+    errors.extend(retired.get("errors") or [])
 
     root = _homebrew_root()
     if root:
