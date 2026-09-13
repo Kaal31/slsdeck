@@ -25,11 +25,6 @@ from . import settings, ghrel
 
 
 # ── per-dependency refresh callbacks (lazy imports avoid import cycles) ───────
-def _refresh_opensave(force: bool = True) -> Dict[str, Any]:
-    from . import opensave
-    return opensave.ensure_cli(force=force)
-
-
 def _refresh_smokeapi(force: bool = True) -> Dict[str, Any]:
     from . import smokeapi
     r = smokeapi.ensure_dlls(force=True)
