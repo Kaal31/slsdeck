@@ -1,1 +1,75 @@
-IiIiU2hhcmVkIEdpdEh1YiBsYXRlc3QtcmVsZWFzZSByZXNvbHZlciB1c2VkIGJ5IGRlcGVuZGVuY3kgdXBkYXRlcy4KClNtYWxsLCBjYWNoZWQgd3JhcHBlciBhcm91bmQgYGAvcmVwb3MvPG93bmVyPi88cmVwbz4vcmVsZWFzZXMvbGF0ZXN0YGAgc28gc2V2ZXJhbAptb2R1bGVzIGNhbiBhc2sgIndoYXQncyB0aGUgbmV3ZXN0IHRhZyAvIG1hdGNoaW5nIGFzc2V0PyIgd2l0aG91dCBlYWNoCnJlLWltcGxlbWVudGluZyB0aGUgSFRUUCArIEpTT04gKyBhc3NldC1waWNraW5nIGRhbmNlLgoiIiIKCmZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnMKCmltcG9ydCByZQppbXBvcnQgdGltZQpmcm9tIHR5cGluZyBpbXBvcnQgQW55LCBEaWN0LCBMaXN0LCBPcHRpb25hbAoKZnJvbSAubG9nZ2VyIGltcG9ydCBsb2dnZXIKZnJvbSAuaHR0cGMgaW1wb3J0IGVuc3VyZV9odHRwX2NsaWVudAoKX0FQSSA9ICJodHRwczovL2FwaS5naXRodWIuY29tL3JlcG9zL3tyZXBvfS9yZWxlYXNlcy9sYXRlc3QiCl9VQSA9ICJTTFNEZWNrL2docmVsIgpfVFRMID0gOTAwLjAKX2NhY2hlOiBEaWN0W3N0ciwgQW55XSA9IHt9ICAgIyByZXBvIC0+IHt0cywgZGF0YX0KCgpkZWYgX2hlYWRlcnMoKSAtPiBEaWN0W3N0ciwgc3RyXToKICAgIGltcG9ydCBvcwogICAgaCA9IHsiQWNjZXB0IjogImFwcGxpY2F0aW9uL3ZuZC5naXRodWIranNvbiIsICJVc2VyLUFnZW50IjogX1VBfQogICAgdG9rID0gb3MuZW52aXJvbi5nZXQoIkdJVEhVQl9UT0tFTiIpIG9yIG9zLmVudmlyb24uZ2V0KCJHSF9UT0tFTiIpCiAgICBpZiB0b2s6CiAgICAgICAgaFsiQXV0aG9yaXphdGlvbiJdID0gZiJCZWFyZXIge3Rva30iCiAgICByZXR1cm4gaAoKCmRlZiBsYXRlc3QocmVwbzogc3RyLCBmb3JjZTogYm9vbCA9IEZhbHNlKSAtPiBEaWN0W3N0ciwgQW55XToKICAgICIiIlJldHVybiB7c3VjY2VzcywgdGFnLCBuYW1lLCBwdWJsaXNoZWRBdCwgYXNzZXRzOlt7bmFtZSx1cmwsc2l6ZX1dfS4KCiAgICBgYHJlcG9gYCBpcyBgYG93bmVyL25hbWVgYC4gQ2FjaGVkIGZvciBfVFRMIHNlY29uZHMgcGVyIHJlcG8uIiIiCiAgICBub3cgPSB0aW1lLnRpbWUoKQogICAgYyA9IF9jYWNoZS5nZXQocmVwbykKICAgIGlmIG5vdCBmb3JjZSBhbmQgYyBhbmQgKG5vdyAtIGNbInRzIl0pIDwgX1RUTDoKICAgICAgICByZXR1cm4gY1siZGF0YSJdCiAgICBjbGllbnQgPSBlbnN1cmVfaHR0cF9jbGllbnQoZiJnaHJlbDoge3JlcG99IikKICAgIHRyeToKICAgICAgICByID0gY2xpZW50LmdldChfQVBJLmZvcm1hdChyZXBvPXJlcG8pLCBoZWFkZXJzPV9oZWFkZXJzKCksCiAgICAgICAgICAgICAgICAgICAgICAgdGltZW91dD0yMCwgZm9sbG93X3JlZGlyZWN0cz1UcnVlKQogICAgICAgIGlmIHIuc3RhdHVzX2NvZGUgIT0gMjAwOgogICAgICAgICAgICByZXR1cm4geyJzdWNjZXNzIjogRmFsc2UsICJlcnJvciI6IGYiSFRUUCB7ci5zdGF0dXNfY29kZX0iLCAidGFnIjogIiIsICJhc3NldHMiOiBbXX0KICAgICAgICByZWwgPSByLmpzb24oKQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBleGM6CiAgICAgICAgbG9nZ2VyLndhcm4oZiJnaHJlbDoge3JlcG99IGxvb2t1cCBmYWlsZWQ6IHtleGN9IikKICAgICAgICByZXR1cm4geyJzdWNjZXNzIjogRmFsc2UsICJlcnJvciI6IHN0cihleGMpLCAidGFnIjogIiIsICJhc3NldHMiOiBbXX0KICAgIGFzc2V0cyA9IFt7Im5hbWUiOiBzdHIoYS5nZXQoIm5hbWUiKSBvciAiIiksCiAgICAgICAgICAgICAgICJ1cmwiOiBhLmdldCgiYnJvd3Nlcl9kb3dubG9hZF91cmwiKSBvciAiIiwKICAgICAgICAgICAgICAgInNpemUiOiBpbnQoYS5nZXQoInNpemUiKSBvciAwKX0KICAgICAgICAgICAgICBmb3IgYSBpbiAocmVsLmdldCgiYXNzZXRzIikgb3IgW10pIGlmIGlzaW5zdGFuY2UoYSwgZGljdCldCiAgICBkYXRhID0geyJzdWNjZXNzIjogVHJ1ZSwgInRhZyI6IHN0cihyZWwuZ2V0KCJ0YWdfbmFtZSIpIG9yICIiKSwKICAgICAgICAgICAgIm5hbWUiOiBzdHIocmVsLmdldCgibmFtZSIpIG9yICIiKSwKICAgICAgICAgICAgInB1Ymxpc2hlZEF0Ijogc3RyKHJlbC5nZXQoInB1Ymxpc2hlZF9hdCIpIG9yICIiKSwKICAgICAgICAgICAgImFzc2V0cyI6IGFzc2V0c30KICAgIF9jYWNoZVtyZXBvXSA9IHsidHMiOiBub3csICJkYXRhIjogZGF0YX0KICAgIHJldHVybiBkYXRhCgoKZGVmIGxhdGVzdF90YWcocmVwbzogc3RyLCBmb3JjZTogYm9vbCA9IEZhbHNlKSAtPiBzdHI6CiAgICByZXR1cm4gbGF0ZXN0KHJlcG8sIGZvcmNlKS5nZXQoInRhZyIsICIiKSBvciAiIgoKCmRlZiBwaWNrX2Fzc2V0KGFzc2V0czogTGlzdFtEaWN0W3N0ciwgQW55XV0sIHBhdHRlcm5zOiBMaXN0W3N0cl0pIC0+IE9wdGlvbmFsW3N0cl06CiAgICAiIiJGaXJzdCBhc3NldCBVUkwgd2hvc2UgbmFtZSBtYXRjaGVzIGFueSByZWdleCBpbiAqcGF0dGVybnMqIChjYXNlLWluc2Vuc2l0aXZlKS4iIiIKICAgIGZvciBwYXQgaW4gcGF0dGVybnM6CiAgICAgICAgcnggPSByZS5jb21waWxlKHBhdCwgcmUuSSkKICAgICAgICBmb3IgYSBpbiBhc3NldHM6CiAgICAgICAgICAgIGlmIHJ4LnNlYXJjaChhLmdldCgibmFtZSIsICIiKSk6CiAgICAgICAgICAgICAgICB1ID0gYS5nZXQoInVybCIpCiAgICAgICAgICAgICAgICBpZiB1OgogICAgICAgICAgICAgICAgICAgIHJldHVybiB1CiAgICByZXR1cm4gTm9uZQo=
+"""Shared GitHub latest-release resolver used by dependency updates.
+
+Small, cached wrapper around ``/repos/<owner>/<repo>/releases/latest`` so several
+modules can ask "what's the newest tag / matching asset?" without each
+re-implementing the HTTP + JSON + asset-picking dance.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from typing import Any, Dict, List, Optional
+
+from .logger import logger
+from .httpc import ensure_http_client
+
+_API = "https://api.github.com/repos/{repo}/releases/latest"
+_UA = "SLSDeck/ghrel"
+_TTL = 900.0
+_cache: Dict[str, Any] = {}   # repo -> {ts, data}
+
+
+def _headers() -> Dict[str, str]:
+    import os
+    h = {"Accept": "application/vnd.github+json", "User-Agent": _UA}
+    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
+
+
+def latest(repo: str, force: bool = False) -> Dict[str, Any]:
+    """Return {success, tag, name, publishedAt, assets:[{name,url,size}]}.
+
+    ``repo`` is ``owner/name``. Cached for _TTL seconds per repo."""
+    now = time.time()
+    c = _cache.get(repo)
+    if not force and c and (now - c["ts"]) < _TTL:
+        return c["data"]
+    client = ensure_http_client(f"ghrel: {repo}")
+    try:
+        r = client.get(_API.format(repo=repo), headers=_headers(),
+                       timeout=20, follow_redirects=True)
+        if r.status_code != 200:
+            return {"success": False, "error": f"HTTP {r.status_code}", "tag": "", "assets": []}
+        rel = r.json()
+    except Exception as exc:
+        logger.warn(f"ghrel: {repo} lookup failed: {exc}")
+        return {"success": False, "error": str(exc), "tag": "", "assets": []}
+    assets = [{"name": str(a.get("name") or ""),
+               "url": a.get("browser_download_url") or "",
+               "size": int(a.get("size") or 0)}
+              for a in (rel.get("assets") or []) if isinstance(a, dict)]
+    data = {"success": True, "tag": str(rel.get("tag_name") or ""),
+            "name": str(rel.get("name") or ""),
+            "publishedAt": str(rel.get("published_at") or ""),
+            "assets": assets}
+    _cache[repo] = {"ts": now, "data": data}
+    return data
+
+
+def latest_tag(repo: str, force: bool = False) -> str:
+    return latest(repo, force).get("tag", "") or ""
+
+
+def pick_asset(assets: List[Dict[str, Any]], patterns: List[str]) -> Optional[str]:
+    """First asset URL whose name matches any regex in *patterns* (case-insensitive)."""
+    for pat in patterns:
+        rx = re.compile(pat, re.I)
+        for a in assets:
+            if rx.search(a.get("name", "")):
+                u = a.get("url")
+                if u:
+                    return u
+    return None
