@@ -14,6 +14,15 @@ const PROVIDERS: Array<{ data: CloudRedirectProvider; label: string }> = [
 ];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function migrationMessage(result: CloudRedirectProviderStatus, fallback: string): string {
+  const migrations = result.migrations || (result.repairMigration ? [result.repairMigration] : []);
+  if (!migrations.length) return fallback;
+  const copied = migrations.reduce((n, item) => n + (item.copied || 0) + (item.updated || 0), 0);
+  const conflicts = migrations.reduce((n, item) => n + (item.conflicts || 0), 0);
+  const failed = migrations.reduce((n, item) => n + (item.failed || 0), 0);
+  return `${fallback} Migration verified: ${copied} copied/updated${conflicts ? `, ${conflicts} conflicts preserved` : ""}${failed ? `, ${failed} failed` : ""}.`;
+}
+
 function formatSize(bytes: number, local = true): string {
   if (!local) return "Cloud only";
   if (!bytes) return "No local save files yet";
@@ -122,6 +131,9 @@ export function CloudRedirectSection() {
       const provider = await crProviderStatus();
       setState(provider);
       setFolderPath(provider.syncFolderPath || "");
+      if (provider.repairMigration?.success) {
+        setMsg(migrationMessage(provider, "Repaired the existing Custom Folder configuration. Restart Steam to finish."));
+      }
       const auth = await crAuthPoll();
       if (auth.status === "done" && provider.authenticated) {
         setMsg("Cloud provider connected."); setAuthWaiting(false); setCallbackUrl("");
@@ -173,10 +185,20 @@ export function CloudRedirectSection() {
     setBusy(true);
     try {
       const result = await crSetProvider(value);
+      if (!result.success) {
+        if (value === "folder" && (result.error || "").includes("Choose a custom folder")) {
+          setState((old) => ({ ...old, provider: "folder", configured: false }));
+          setMsg("Enter and save a custom folder path below.");
+          setBusy(false);
+          return;
+        }
+        throw new Error(result.error || "Provider transition failed");
+      }
       setState(result);
-      setMsg(value === "local" ? "Using CloudRedirect's built-in local storage." : value === "folder" ?
-        (result.configured ? "Using the selected custom folder." : "Enter and save a custom folder path below.") :
-        result.authenticated ? "Existing sign-in restored." : "Provider selected. Connect it below.");
+      const base = value === "local" ? "Using CloudRedirect's built-in local storage. Restart Steam to finish." : value === "folder" ?
+        (result.configured ? "Using the selected custom folder. Restart Steam to finish." : "Enter and save a custom folder path below.") :
+        result.authenticated ? "Existing sign-in restored. Restart Steam to finish." : "Provider selected. Connect it below.";
+      setMsg(migrationMessage(result, base));
     } catch (error) { setMsg(`Error: ${error}`); }
     setBusy(false);
   };
@@ -188,7 +210,7 @@ export function CloudRedirectSection() {
       setState(result);
       if (!result.success) throw new Error(result.error || "Could not use that folder");
       setFolderPath(result.syncFolderPath || folderPath.trim());
-      setMsg("Custom sync folder saved. Restart Steam before using it.");
+      setMsg(migrationMessage(result, "Custom folder activated. Restart Steam before using it."));
       await load();
     } catch (error) { setMsg(`Folder setup failed: ${error}`); }
     if (alive.current) setBusy(false);

@@ -257,7 +257,15 @@ export interface CloudRedirectProviderStatus {
   success: boolean; configured?: boolean; authenticated?: boolean;
   provider?: CloudRedirectProvider; providers?: string[];
   syncFolderPath?: string; folderReady?: boolean; folderWritable?: boolean;
+  folderBridgeReady?: boolean; restartRequired?: boolean; migrationNote?: string; pendingProvider?: boolean;
+  migrations?: CloudRedirectMigration[]; repairMigration?: CloudRedirectMigration | null;
+  runningAppIds?: number[];
   syncAchievements?: boolean; syncPlaytime?: boolean; native?: boolean; error?: string;
+}
+export interface CloudRedirectMigration {
+  success: boolean; source?: string; destination?: string; inspected?: number;
+  copied?: number; updated?: number; identical?: number; conflicts?: number;
+  failed?: number; bytes?: number; note?: string;
 }
 export const crSetProvider = callable<[provider: string], CloudRedirectProviderStatus>("cr_set_provider");
 export const crSetSyncFolder = callable<[path: string], CloudRedirectProviderStatus>("cr_set_sync_folder");
