@@ -31,7 +31,6 @@ import os
 import secrets
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
@@ -77,7 +76,7 @@ _UA = "SLSDeck/lua.tools"
 # ── Discord OAuth (PKCE) state ───────────────────────────────────────────────
 _oauth_lock = threading.Lock()
 _oauth_verifier: Optional[str] = None
-_oauth_server: Optional[HTTPServer] = None
+_oauth_server: Optional[Any] = None
 _oauth_result: Dict[str, Any] = {"done": False, "success": False, "error": ""}
 
 
@@ -216,7 +215,7 @@ def _exchange_pkce(code: str) -> bool:
         return False
 
 
-def _oauth_handler_factory():
+def _oauth_handler_factory(base_handler):
     _CLOSE_HTML = (
         b"<!doctype html><html><head><meta charset='utf-8'>"
         b"<title>SLSDeck</title></head>"
@@ -226,7 +225,7 @@ def _oauth_handler_factory():
         b"<p>Signed in \xe2\x9c\x93 &mdash; you can close this and return to Steam.</p>"
         b"</div></body></html>")
 
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(base_handler):
         def log_message(self, *a):  # silence
             pass
 
@@ -265,7 +264,19 @@ def oauth_start() -> Dict[str, Any]:
     verifier, challenge = _gen_pkce()
     _oauth_verifier = verifier
     try:
-        server = HTTPServer(("127.0.0.1", OAUTH_PORT), _oauth_handler_factory())
+        # Decky 3.2.9 may run plugins with a reduced Python standard library
+        # that omits http.server.  OAuth is optional, so importing it at module
+        # load must never prevent every SLSDeck backend callable from starting.
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+    except (ImportError, ModuleNotFoundError) as exc:
+        logger.warn(f"lua.tools: browser OAuth listener unavailable: {exc}")
+        return {
+            "success": False,
+            "error": "Browser sign-in is unavailable in this Decky runtime; use the lua.tools bot code instead.",
+        }
+    try:
+        server = HTTPServer(("127.0.0.1", OAUTH_PORT),
+                            _oauth_handler_factory(BaseHTTPRequestHandler))
     except OSError as exc:
         return {"success": False, "error": f"could not open callback port {OAUTH_PORT}: {exc}"}
     _oauth_server = server
