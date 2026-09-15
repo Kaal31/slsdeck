@@ -1,0 +1,88 @@
+name: Release decky-compat
+
+on:
+  push:
+    branches:
+      - decky-compat
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-decky-compat
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout decky-compat
+        uses: actions/checkout@v4
+        with:
+          ref: decky-compat
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+      - name: Restore tracked dist support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Build Ubisoft package dependency
+        run: |
+          python3 .github/scripts/build-ubisoft-packages.py
+          unzip -t ubisoft-packages.zip
+          unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-decky-compat.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          test -s artifact/SLSDeckUniversal/dist/index.js
+          test -f artifact/SLSDeckUniversal/package.json
+          node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") process.exit(1)'
+          cd artifact
+          zip -qr ../SLSDeckUniversal-decky-compat.zip SLSDeckUniversal
+          cd ..
+          unzip -l SLSDeckUniversal-decky-compat.zip | grep -q 'SLSDeckUniversal/plugin.json'
+      - name: Update rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="decky-compat-latest"
+          TITLE="SLSDeck Decky compatibility"
+          NOTES="Rolling prerelease built automatically from decky-compat for current Decky Loader and Steam clients."
+          git fetch origin --tags --force
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target decky-compat
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-decky-compat.zip ubisoft-packages.zip --clobber
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-decky-compat
+          path: |
+            SLSDeckUniversal-decky-compat.zip
+            ubisoft-packages.zip
+          if-no-files-found: error
+          retention-days: 14

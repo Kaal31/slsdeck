@@ -1537,11 +1537,13 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       {ticket?.opened&&ticket.url&&(
         (activeUbisoftTicket&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||ticketCompletionPaused||ubisoftContinuationStage))||
         (!activeUbisoftTicket&&ticket.appid&&(ticketCompletionPaused||["waiting-code","checking-game","confirming-worked"].includes(automationStage)))
-      )&&<PanelSectionRow><ButtonItem layout="below" onClick={
-        activeUbisoftTicket
-          ?(ubisoftContinuationRunning&&!ticketCompletionPaused?pauseTicketCompletion:continueUbisoftTicket)
-          :(ticketCompletionPaused?resumeTicket:pauseTicketCompletion)
-      }>{activeUbisoftTicket
+      )&&<PanelSectionRow><ButtonItem layout="below" onClick={() => {
+        if (activeUbisoftTicket) {
+          if (ubisoftContinuationRunning&&!ticketCompletionPaused) pauseTicketCompletion();
+          else void continueUbisoftTicket();
+        } else if (ticketCompletionPaused) void resumeTicket();
+        else pauseTicketCompletion();
+      }}>{activeUbisoftTicket
         ?(ubisoftContinuationRunning&&!ticketCompletionPaused?"Pause ticket completion":"Continue Ubisoft ticket")
         :(ticketCompletionPaused?"Continue ticket":"Pause ticket completion")}</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&!["Waiting for Discord activation code…","Waiting for Ubisoft verification confirmation…","Waiting for Discord dbdata.json…"].includes(busy)} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}
