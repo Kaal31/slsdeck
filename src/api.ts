@@ -286,6 +286,11 @@ export interface CloudRedirectLocalApp {
 }
 export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; provider?: CloudRedirectProvider; remoteError?: string; error?: string }>("cr_list_local_apps");
 export const crGameArtwork = callable<[appid: number], { success: boolean; image?: string; error?: string }>("cr_game_artwork");
+export const crImportSave = callable<[appid: number, path: string], {
+  success: boolean; appid?: number; account?: number; files?: number; bytes?: number;
+  destination?: string; backup?: string; wrapperRemoved?: boolean;
+  provider?: CloudRedirectProvider; error?: string;
+}>("cr_import_save");
 
 export interface MinigameItem {
   appid: number;

@@ -1,8 +1,9 @@
-import { ButtonItem, DialogButton, DropdownItem, Navigation, PanelSection, PanelSectionRow, TextField, ToggleField } from "@decky/ui";
+import { ButtonItem, DialogButton, DropdownItem, Focusable, ModalRoot, Navigation, PanelSection, PanelSectionRow, TextField, ToggleField, showModal } from "@decky/ui";
+import { FileSelectionType, openFilePicker } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import {
   CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthCallback, crAuthPoll, crAuthStart,
-  crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crListLocalApps, crProviderStatus,
+  crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crImportSave, crListLocalApps, crProviderStatus, getInstalledApps,
   crSetEnabled, crSetProvider, crSetProviderToggle, crSetSyncFolder, crSignOut,
 } from "../api";
 
@@ -13,6 +14,37 @@ const PROVIDERS: Array<{ data: CloudRedirectProvider; label: string }> = [
   { data: "onedrive", label: "OneDrive" },
 ];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function SaveGamePickerModal({
+  games, closeModal, onResult,
+}: {
+  games: Array<{ appid: number; name: string }>;
+  closeModal?: () => void;
+  onResult: (game: { appid: number; name: string } | null) => void;
+}) {
+  const settled = useRef(false);
+  const close = () => {
+    if (!settled.current) onResult(null);
+    closeModal?.();
+  };
+  return <ModalRoot closeModal={close}>
+    <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Which game owns this save?</div>
+    <div style={{ fontSize: 12, opacity: .7, marginBottom: 10 }}>
+      The imported files will be placed in this game's CloudRedirect folder.
+    </div>
+    <Focusable style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "56vh", overflowY: "scroll" }}>
+      {games.map((game) => <DialogButton key={game.appid} style={{ textAlign: "left", padding: "8px 10px" }}
+        onClick={() => { settled.current = true; onResult(game); closeModal?.(); }}>
+        <div style={{ fontSize: 14 }}>{game.name}</div>
+        <div style={{ fontSize: 11, opacity: .6 }}>AppID {game.appid}</div>
+      </DialogButton>)}
+    </Focusable>
+  </ModalRoot>;
+}
+
+function pickSaveGame(games: Array<{ appid: number; name: string }>): Promise<{ appid: number; name: string } | null> {
+  return new Promise((resolve) => showModal(<SaveGamePickerModal games={games} onResult={resolve} />));
+}
 
 function migrationMessage(result: CloudRedirectProviderStatus, fallback: string): string {
   const migrations = result.migrations || (result.repairMigration ? [result.repairMigration] : []);
@@ -122,6 +154,7 @@ export function CloudRedirectSection() {
   const [callbackUrl, setCallbackUrl] = useState("");
   const [authWaiting, setAuthWaiting] = useState(false);
   const [folderPath, setFolderPath] = useState("");
+  const [importGames, setImportGames] = useState<Array<{ appid: number; name: string }>>([]);
   const alive = useRef(true);
   const authWatch = useRef(0);
 
@@ -145,6 +178,14 @@ export function CloudRedirectSection() {
       const catalog = await crListLocalApps();
       setSaves(catalog.apps || []);
       if (catalog.remoteError) setMsg(`Local saves shown; cloud discovery unavailable: ${catalog.remoteError}`);
+    } catch { /* best effort */ }
+    try {
+      const installed = await getInstalledApps();
+      const games = (installed.apps || [])
+        .map((app) => ({ appid: Number(app.appid), name: app.gameName || `AppID ${app.appid}` }))
+        .filter((app) => app.appid > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      setImportGames(games);
     } catch { /* best effort */ }
   };
   useEffect(() => {
@@ -260,6 +301,29 @@ export function CloudRedirectSection() {
     setBusy(false);
   };
 
+  const importSave = async () => {
+    const game = await pickSaveGame(importGames);
+    if (!game) return;
+    let path = "";
+    try {
+      const picked: any = await openFilePicker(
+        FileSelectionType.FILE, "/home/deck/Downloads", true, true,
+      );
+      path = picked?.realpath || picked?.path || "";
+    } catch { return; }
+    if (!path) return;
+    setBusy(true); setMsg("Importing save…");
+    try {
+      const result = await crImportSave(game.appid, path);
+      if (!result.success) throw new Error(result.error || "Save import failed");
+      const wrapper = result.wrapperRemoved ? " The archive's outer folder was removed." : "";
+      const backup = result.backup ? " Existing saves were backed up first." : "";
+      setMsg(`Imported ${result.files || 0} save file${result.files === 1 ? "" : "s"}.${wrapper}${backup}`);
+      await load();
+    } catch (error) { setMsg(`Save import failed: ${error}`); }
+    if (alive.current) setBusy(false);
+  };
+
   const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
   const saveCount = saves.length;
   const remoteOnlyCount = saves.filter((app) => app.remote && app.local === false).length;
@@ -311,6 +375,10 @@ export function CloudRedirectSection() {
       onChange={(v) => toggleOption("sync_achievements", v)} disabled={busy} /></PanelSectionRow>
     <PanelSectionRow><ToggleField label="Sync playtime" checked={!!state.syncPlaytime}
       onChange={(v) => toggleOption("sync_playtime", v)} disabled={busy} /></PanelSectionRow>
+    <PanelSectionRow><ButtonItem layout="below" onClick={importSave} disabled={busy || !importGames.length}
+      description="Choose an SLS game, then select a loose save file or ZIP/TAR archive from Downloads.">
+      Add save file or archive
+    </ButtonItem></PanelSectionRow>
     <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" || state.configured ? "#5ee6c4" : "#f5a623" }}>
       {state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
         state.provider === "folder" ? (state.configured ? `✓ Custom folder ready · ${state.syncFolderPath}` : "Custom folder needs a writable path.") :

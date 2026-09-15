@@ -24,8 +24,11 @@ import re
 import secrets
 import socket
 import subprocess
+import tarfile
+import tempfile
 import threading
 import time
+import zipfile
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .logger import logger
@@ -92,6 +95,8 @@ _AUTH_RESULT = None
 _TOKEN_REFRESH_LOCK = threading.Lock()
 _REMOTE_APPS_CACHE = {}
 _REMOTE_APPS_CACHE_SECONDS = 60
+_IMPORT_MAX_FILES = 20000
+_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024
 _MIGRATION_LOCK = threading.Lock()
 _MIGRATION_HISTORY = ".slsdeck-provider-migrations.json"
 _FOLDER_BRIDGE = "tokens_folder.json"
@@ -1108,6 +1113,137 @@ def list_local_apps() -> dict:
     apps.sort(key=lambda item: (item["account"], item["appid"]))
     return {"success": True, "apps": apps, "storageRoot": root,
             "provider": provider, "remoteError": remote_error}
+
+
+def _import_source_root(selected_path: str, staging: str) -> tuple[str, bool]:
+    """Return the directory whose contents should land in the AppID folder."""
+    if not os.path.isfile(selected_path):
+        raise ValueError("The selected save file no longer exists")
+
+    from .utils import safe_extract
+    extracted = os.path.join(staging, "extracted")
+    os.makedirs(extracted, exist_ok=True)
+    if zipfile.is_zipfile(selected_path):
+        with zipfile.ZipFile(selected_path, "r") as archive:
+            members = [m for m in archive.infolist() if not m.is_dir()]
+            if len(members) > _IMPORT_MAX_FILES:
+                raise ValueError("The save archive contains too many files")
+            total = sum(max(0, int(m.file_size)) for m in members)
+            if total > _IMPORT_MAX_BYTES:
+                raise ValueError("The expanded save archive is larger than 4 GB")
+            safe_extract(archive, extracted, "zip")
+    elif tarfile.is_tarfile(selected_path):
+        with tarfile.open(selected_path, "r:*") as archive:
+            members = [m for m in archive.getmembers() if m.isfile()]
+            if len(members) > _IMPORT_MAX_FILES:
+                raise ValueError("The save archive contains too many files")
+            total = sum(max(0, int(m.size)) for m in members)
+            if total > _IMPORT_MAX_BYTES:
+                raise ValueError("The expanded save archive is larger than 4 GB")
+            safe_extract(archive, extracted, "tar")
+    else:
+        if selected_path.lower().endswith((".7z", ".7z.001", ".rar")):
+            raise ValueError("Unsupported archive format. Please use ZIP or TAR.")
+        # A loose/unpacked save is imported exactly as selected.
+        loose = os.path.join(staging, "loose")
+        os.makedirs(loose, exist_ok=True)
+        shutil.copy2(selected_path, os.path.join(loose, os.path.basename(selected_path)))
+        return loose, False
+
+    entries = [name for name in os.listdir(extracted) if name not in ("__MACOSX", ".DS_Store")]
+    if not entries:
+        raise ValueError("The selected archive contains no save files")
+    # Save exports commonly wrap everything in one named folder. Import that
+    # folder's contents rather than nesting the wrapper below the AppID.
+    if len(entries) == 1 and os.path.isdir(os.path.join(extracted, entries[0])):
+        return os.path.join(extracted, entries[0]), True
+    return extracted, False
+
+
+def _copy_import_tree(source: str, destination: str) -> tuple[int, int]:
+    files = total = 0
+    for current, dirs, names in os.walk(source, followlinks=False):
+        dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(current, name))]
+        relative = os.path.relpath(current, source)
+        target_dir = destination if relative == "." else os.path.join(destination, relative)
+        os.makedirs(target_dir, exist_ok=True)
+        for name in names:
+            src = os.path.join(current, name)
+            if os.path.islink(src) or not os.path.isfile(src):
+                continue
+            size = os.path.getsize(src)
+            files += 1
+            total += size
+            if files > _IMPORT_MAX_FILES or total > _IMPORT_MAX_BYTES:
+                raise ValueError("The selected save exceeds the import safety limit")
+            dst = os.path.join(target_dir, name)
+            staged = f"{dst}.slsdeck-import-{os.getpid()}-{secrets.token_hex(3)}"
+            shutil.copyfile(src, staged)
+            os.replace(staged, dst)
+    return files, total
+
+
+def import_save(appid: int, selected_path: str) -> dict:
+    """Import a loose save or safe archive into CloudRedirect's active store."""
+    try:
+        appid = int(appid)
+    except Exception:
+        return {"success": False, "error": "Choose a game first"}
+    if appid <= 0:
+        return {"success": False, "error": "Choose a game first"}
+    raw_path = str(selected_path or "").strip()
+    if not raw_path:
+        return {"success": False, "error": "Choose an existing save file or archive"}
+    selected_path = os.path.abspath(os.path.expanduser(raw_path))
+    if not os.path.isfile(selected_path):
+        return {"success": False, "error": "Choose an existing save file or archive"}
+    if appid in _running_sls_apps():
+        return {"success": False, "error": "Close the game before importing its saves"}
+    account = _recent_steam_account_id()
+    if not account:
+        return {"success": False, "error": "Could not determine the current Steam account"}
+
+    cfg = _read_provider_config()
+    provider = str(cfg.get("provider") or "local")
+    cache_root = os.path.join(_native_config_dir(), "storage")
+    active_root = cache_root
+    if provider == "folder":
+        folder = str(cfg.get("sync_folder_path") or "").strip()
+        if not folder or not os.path.isdir(folder) or not _folder_writable(folder):
+            return {"success": False, "error": "The configured custom folder is unavailable or not writable"}
+        active_root = folder
+    destination = os.path.join(active_root, account, str(appid))
+    backup = ""
+    try:
+        with _MIGRATION_LOCK, tempfile.TemporaryDirectory(prefix="slsdeck-save-import-") as staging:
+            source, wrapper_removed = _import_source_root(selected_path, staging)
+            if os.path.isdir(destination) and os.listdir(destination):
+                backup = os.path.join(_native_config_dir(), "import-backups", account,
+                                      str(appid), f"{int(time.time())}-{secrets.token_hex(3)}")
+                os.makedirs(os.path.dirname(backup), exist_ok=True)
+                shutil.copytree(destination, backup)
+            os.makedirs(destination, exist_ok=True)
+            files, size = _copy_import_tree(source, destination)
+            if not files:
+                raise ValueError("The selected archive contains no importable save files")
+            chown_to_user(destination, recursive=True)
+            if backup:
+                chown_to_user(backup, recursive=True)
+            # The custom-folder provider is the active authority, but the local
+            # cache remains CloudRedirect's recovery/index source.
+            if provider == "folder":
+                mirrored = _sync_provider_tree(active_root, cache_root,
+                                               "custom folder", "local cache")
+                if not mirrored.get("success"):
+                    raise RuntimeError("Save imported, but the local cache mirror could not be updated")
+        _REMOTE_APPS_CACHE.clear()
+        logger.log(f"CloudRedirect: imported {files} save file(s) for {appid} from {selected_path}")
+        return {"success": True, "appid": appid, "account": int(account),
+                "files": files, "bytes": size, "destination": destination,
+                "backup": backup, "wrapperRemoved": wrapper_removed,
+                "provider": provider}
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        return {"success": False, "error": str(exc), "backup": backup}
 
 
 def _recent_steam_account_id() -> str:

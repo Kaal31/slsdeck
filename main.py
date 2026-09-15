@@ -1900,6 +1900,10 @@ class Plugin:
             app["remoteTime"] = remote_time
         return result
 
+    async def cr_import_save(self, appid: int, path: str) -> Dict[str, Any]:
+        """Import a loose save or archive into a CloudRedirect game folder."""
+        return await self._run(cloudredirect.import_save, int(appid), path)
+
     async def cr_game_artwork(self, appid: int) -> Dict[str, Any]:
         """Return Steam's local hero/wide artwork when public CDN art is absent.
 
