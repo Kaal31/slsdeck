@@ -56,6 +56,7 @@ import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY, ROULETTE_TAB_
 
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
+const WORKSHOP_BUTTON_VISIBILITY_EVENT = "slsdeck-workshop-button-visibility";
 const DECKY_HV_VISIBLE_KEY = "slsdeck.showDeckyHv";
 function readDeckyHvVisible(): boolean {
   try {
@@ -332,6 +333,7 @@ function OptionsPane({
   const [groupCollection, setGroupCollectionState] = useState(false);
   const [backupCustom, setBackupCustomState] = useState(false);
   const [storeOn, setStoreOn] = useState(true);
+  const [workshopButton, setWorkshopButton] = useState(false);
   const [pin, setPin] = useState(true);
   const [noNet, setNoNet] = useState(true);
   const [hideOwned, setHideOwned] = useState(true);
@@ -378,7 +380,10 @@ function OptionsPane({
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
     getShowReinstallQam().then((r) => setReinstallQam(!!r.enabled)).catch(() => {});
     getNotifyGameAdd().then((r) => setNotifyGameAdds(r.enabled !== false)).catch(() => {});
-    getUiSettings().then((r) => setSurfaceFailedSources(r.settings?.toastOnSourceFailure === true)).catch(() => {});
+    getUiSettings().then((r) => {
+      setSurfaceFailedSources(r.settings?.toastOnSourceFailure === true);
+      setWorkshopButton(r.settings?.workshopButton === true);
+    }).catch(() => {});
     try {
       const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
       setActionsFixesQam(raw == null ? true : raw === "1");
@@ -427,6 +432,22 @@ function OptionsPane({
             description="The Add / Fixes bar injected into the game's library page. Turn off to use only the Quick Access panel."
             checked={libButtons}
             onChange={async (v) => { setLibButtons(v); await setLibraryButtons(v); }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Workshop button"
+            description="Show the green Download with SLSDeck button on Steam Workshop pages. Off by default; native Subscribe buttons are unaffected."
+            checked={workshopButton}
+            onChange={async (v) => {
+              setWorkshopButton(v);
+              const result = await setUiSetting("workshopButton", v);
+              if (!result?.success) {
+                setWorkshopButton(!v);
+                return;
+              }
+              window.dispatchEvent(new CustomEvent(WORKSHOP_BUTTON_VISIBILITY_EVENT, { detail: v }));
+            }}
           />
         </PanelSectionRow>
         <PanelSectionRow>
