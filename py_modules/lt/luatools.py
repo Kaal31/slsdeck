@@ -24,6 +24,7 @@ treated as a secret: it is never included in backups/exports.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -77,6 +78,8 @@ _UA = "SLSDeck/lua.tools"
 _oauth_lock = threading.Lock()
 _oauth_verifier: Optional[str] = None
 _oauth_server: Optional[Any] = None
+_oauth_loop: Optional[asyncio.AbstractEventLoop] = None
+_oauth_thread: Optional[threading.Thread] = None
 _oauth_result: Dict[str, Any] = {"done": False, "success": False, "error": ""}
 
 
@@ -186,18 +189,22 @@ def _gen_pkce() -> Tuple[str, str]:
 
 
 def _stop_oauth_server() -> None:
-    global _oauth_server
+    global _oauth_server, _oauth_loop, _oauth_thread
     srv = _oauth_server
+    loop = _oauth_loop
+    thread = _oauth_thread
     _oauth_server = None
-    if srv is not None:
+    _oauth_loop = None
+    _oauth_thread = None
+    if loop is not None and loop.is_running():
         try:
-            srv.shutdown()
-        except Exception:
+            if srv is not None:
+                loop.call_soon_threadsafe(srv.close)
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError:
             pass
-        try:
-            srv.server_close()
-        except Exception:
-            pass
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=2)
 
 
 def _exchange_pkce(code: str) -> bool:
@@ -215,71 +222,106 @@ def _exchange_pkce(code: str) -> bool:
         return False
 
 
-def _oauth_handler_factory(base_handler):
-    _CLOSE_HTML = (
-        b"<!doctype html><html><head><meta charset='utf-8'>"
-        b"<title>SLSDeck</title></head>"
-        b"<body style='font-family:sans-serif;background:#0a0a0f;color:#eee;"
-        b"display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-        b"<div style='text-align:center'><h2>SLSDeck</h2>"
-        b"<p>Signed in \xe2\x9c\x93 &mdash; you can close this and return to Steam.</p>"
-        b"</div></body></html>")
+_CLOSE_HTML = (
+    b"<!doctype html><html><head><meta charset='utf-8'>"
+    b"<title>SLSDeck</title></head>"
+    b"<body style='font-family:sans-serif;background:#0a0a0f;color:#eee;"
+    b"display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+    b"<div style='text-align:center'><h2>SLSDeck</h2>"
+    b"<p>Signed in \xe2\x9c\x93 &mdash; you can close this and return to Steam.</p>"
+    b"</div></body></html>")
 
-    class Handler(base_handler):
-        def log_message(self, *a):  # silence
-            pass
 
-        def do_GET(self):
-            q = parse_qs(urlparse(self.path).query)
-            code = (q.get("code") or [None])[0]
-            err = (q.get("error_description") or q.get("error") or [None])[0]
-            try:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(_CLOSE_HTML)
-            except Exception:
-                pass
-            if code:
-                ok = _exchange_pkce(code)
-                with _oauth_lock:
-                    _oauth_result.update({"done": True, "success": ok,
-                                          "error": "" if ok else "token exchange failed"})
-            else:
-                with _oauth_lock:
-                    _oauth_result.update({"done": True, "success": False,
-                                          "error": err or "no authorization code returned"})
-            threading.Thread(target=_stop_oauth_server, daemon=True).start()
+async def _oauth_callback(reader: asyncio.StreamReader,
+                          writer: asyncio.StreamWriter) -> None:
+    """Accept the one localhost OAuth redirect without importing http.server.
 
-    return Handler
+    Decky's frozen Python may exclude http.server even though asyncio and its
+    socket transport are present. Bound the request size and read timeout so a
+    stray local connection cannot hold the sign-in listener open indefinitely.
+    """
+    target = ""
+    try:
+        line = await asyncio.wait_for(reader.readline(), timeout=5)
+        parts = line.decode("ascii", errors="replace").strip().split()
+        if len(parts) == 3 and parts[0] == "GET":
+            target = parts[1]
+        total = len(line)
+        while total < 16384:
+            line = await asyncio.wait_for(reader.readline(), timeout=5)
+            total += len(line)
+            if line in (b"\r\n", b"\n", b""):
+                break
+        if not target.startswith("/?") or total >= 16384:
+            body = b"Invalid sign-in callback"
+            status = b"400 Bad Request"
+        else:
+            body = _CLOSE_HTML
+            status = b"200 OK"
+        writer.write(b"HTTP/1.1 " + status + b"\r\nContent-Type: text/html; charset=utf-8\r\n"
+                     + b"Content-Length: " + str(len(body)).encode("ascii")
+                     + b"\r\nConnection: close\r\n\r\n" + body)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        if status != b"200 OK":
+            return
+        q = parse_qs(urlparse(target).query)
+        code = (q.get("code") or [None])[0]
+        err = (q.get("error_description") or q.get("error") or [None])[0]
+        if code:
+            ok = await asyncio.to_thread(_exchange_pkce, code)
+            with _oauth_lock:
+                _oauth_result.update({"done": True, "success": ok,
+                                      "error": "" if ok else "token exchange failed"})
+        else:
+            with _oauth_lock:
+                _oauth_result.update({"done": True, "success": False,
+                                      "error": err or "no authorization code returned"})
+        threading.Thread(target=_stop_oauth_server, daemon=True).start()
+    except (OSError, ValueError, asyncio.TimeoutError, UnicodeError):
+        writer.close()
+
+
+async def _start_oauth_listener() -> asyncio.AbstractServer:
+    return await asyncio.start_server(_oauth_callback, "127.0.0.1", OAUTH_PORT,
+                                      limit=8192)
+
+
+def _run_oauth_loop(loop: asyncio.AbstractEventLoop) -> None:
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_forever()
+    finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
 
 
 def oauth_start() -> Dict[str, Any]:
     """Begin Discord OAuth: start the localhost callback listener and return the
     authorize URL for the frontend to open in Steam's browser (Game mode)."""
-    global _oauth_verifier, _oauth_server, _oauth_result
+    global _oauth_verifier, _oauth_server, _oauth_loop, _oauth_thread, _oauth_result
     _stop_oauth_server()
     with _oauth_lock:
         _oauth_result = {"done": False, "success": False, "error": ""}
     verifier, challenge = _gen_pkce()
     _oauth_verifier = verifier
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=_run_oauth_loop, args=(loop,), daemon=True)
+    thread.start()
     try:
-        # Decky 3.2.9 may omit this optional stdlib module. OAuth must not stop
-        # the rest of the plugin backend from loading.
-        from http.server import BaseHTTPRequestHandler, HTTPServer
-    except (ImportError, ModuleNotFoundError) as exc:
-        logger.warn(f"lua.tools: browser OAuth listener unavailable: {exc}")
-        return {
-            "success": False,
-            "error": "Browser sign-in is unavailable in this Decky runtime; use the lua.tools bot code instead.",
-        }
-    try:
-        server = HTTPServer(("127.0.0.1", OAUTH_PORT),
-                            _oauth_handler_factory(BaseHTTPRequestHandler))
-    except OSError as exc:
-        return {"success": False, "error": f"could not open callback port {OAUTH_PORT}: {exc}"}
+        server = asyncio.run_coroutine_threadsafe(_start_oauth_listener(), loop).result(timeout=5)
+    except Exception as exc:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        return {"success": False, "error": f"Could not open sign-in callback port {OAUTH_PORT}: {exc}"}
+    _oauth_loop = loop
+    _oauth_thread = thread
     _oauth_server = server
-    threading.Thread(target=server.serve_forever, daemon=True).start()
     # Supabase PKCE authorize → Discord consent → back to the localhost callback.
     from urllib.parse import urlencode
     url = AUTHORIZE_URL + "?" + urlencode({

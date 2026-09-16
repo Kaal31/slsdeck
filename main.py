@@ -438,6 +438,10 @@ class Plugin:
         # reload, so each cycle leaves another watchdog loop and another thread
         # pool running -- which is why memory crept up over a session.
         try:
+            luatools.oauth_cancel()
+        except Exception:
+            pass
+        try:
             watchdog.stop_watchdog()
         except Exception:
             pass
