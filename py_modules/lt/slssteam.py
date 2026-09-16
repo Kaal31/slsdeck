@@ -4561,6 +4561,84 @@ def _write_config_lines(lines) -> bool:
     return ok
 
 
+# SLSonline uses Moon's FakeAppIds map. Only the selected game's entry is
+# managed here; no Steam launch options or other YAML settings are rewritten.
+_SLSONLINE_APPID = 480
+_FAKE_APPID_HEADER = re.compile(r"^FakeAppIds[ \t]*:[ \t]*(?:#.*)?$")
+_FAKE_APPID_ENTRY = re.compile(r"^[ \t]+['\"]?(\d+)['\"]?[ \t]*:[ \t]*(\d+)(?:[ \t]+#.*)?$")
+
+
+def _fake_appid_block(lines):
+    headers = [i for i, line in enumerate(lines) if re.match(r"^FakeAppIds[ \t]*:", line)]
+    if len(headers) > 1:
+        raise ValueError("Duplicate FakeAppIds sections in config.yaml")
+    if not headers:
+        return None, None, {}
+    start = headers[0]
+    if not _FAKE_APPID_HEADER.match(lines[start]):
+        raise ValueError("Unsupported inline FakeAppIds map in config.yaml")
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace() or lines[end].startswith("#")):
+        end += 1
+    entries = {}
+    for i in range(start + 1, end):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = _FAKE_APPID_ENTRY.match(line)
+        if not match:
+            raise ValueError("Unsupported FakeAppIds entry in config.yaml")
+        appid = int(match.group(1))
+        if appid in entries:
+            raise ValueError(f"Duplicate FakeAppIds entry for {appid}")
+        entries[appid] = (i, int(match.group(2)))
+    return start, end, entries
+
+
+def slsonline_status(appid: int) -> Dict[str, Any]:
+    if int(appid) <= 0:
+        return {"success": False, "error": "invalid appid"}
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    try:
+        _, _, entries = _fake_appid_block(lines)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    current = entries.get(int(appid))
+    return {"success": True, "enabled": current is not None,
+            "fakeAppId": current[1] if current else None}
+
+
+def set_slsonline(appid: int, enabled: bool) -> Dict[str, Any]:
+    if int(appid) <= 0:
+        return {"success": False, "error": "invalid appid"}
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    try:
+        start, end, entries = _fake_appid_block(lines)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    current = entries.get(int(appid))
+    if enabled == (current is not None):
+        return {"success": True, "enabled": enabled,
+                "fakeAppId": current[1] if current else None, "changed": False}
+    if enabled:
+        if start is None:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend(["FakeAppIds:", f"  {appid}: {_SLSONLINE_APPID}"])
+        else:
+            lines.insert(end, f"  {appid}: {_SLSONLINE_APPID}")
+    else:
+        del lines[current[0]]
+    if not _write_config_lines(lines):
+        return {"success": False, "error": "Could not write config.yaml"}
+    return {"success": True, "enabled": bool(enabled),
+            "fakeAppId": _SLSONLINE_APPID if enabled else None, "changed": True}
+
+
 def _purge_pins_lines(lines, appid: int):
     """Remove the ManifestPins sub-block for appid; drop the header if empty.
     Returns (new_lines, changed)."""

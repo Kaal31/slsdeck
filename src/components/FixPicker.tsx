@@ -22,6 +22,9 @@ import {
   netsockStatus,
   netsockSet,
   NetsockStatus,
+  SlsOnlineStatus,
+  slsonlineStatus,
+  setSlsonline,
   LuatoolsCatalogFix,
   applyLuatoolsFix,
   getAutoApply,
@@ -168,6 +171,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [hasRyuuKey, setHasRyuuKey] = useState(true);
   const [busy, setBusy] = useState("");
   const [ns, setNs] = useState<NetsockStatus | null>(null);
+  const [slsOnline, setSlsOnline] = useState<SlsOnlineStatus | null>(null);
   const [msg, setMsg] = useState("");
   const [autoApply, setAutoApplyState] = useState(false);
   // Guided build-accurate apply: after pin+update we wait for the user to press
@@ -338,6 +342,11 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       setNs(await netsockStatus(appid));
     } catch {
       setNs(null);
+    }
+    try {
+      setSlsOnline(await slsonlineStatus(appid));
+    } catch {
+      setSlsOnline(null);
     }
     try {
       setAutoApplyState((await getAutoApply()).enabled);
@@ -1116,6 +1125,23 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("");
   };
 
+  const toggleSlsOnline = async (enabled: boolean) => {
+    setBusy("slsonline");
+    try {
+      const result = await setSlsonline(appid, enabled);
+      if (result.success) {
+        setSlsOnline(result);
+        setMsg(enabled ? "SLSonline enabled for this game (FakeAppId 480)." : "SLSonline disabled for this game.");
+      } else {
+        setMsg(result.error || "Could not change SLSonline.");
+      }
+    } catch (e) {
+      setMsg(`Error: ${e}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
   const isApplied = (fixType: string) =>
     applied.some((f) => (f.fixType || "").toLowerCase() === fixType.toLowerCase());
   const working = busy !== "";
@@ -1295,6 +1321,21 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       )}
       {rows.length === 0 && (
         <div style={{ fontSize: 12, opacity: 0.6 }}>No ryuu fixes indexed for this game.</div>
+      )}
+      {slsOnline && (
+        <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+            SLSonline{slsOnline.success && slsOnline.enabled ? ` · ✓ On (FakeAppId ${slsOnline.fakeAppId})` : ""}
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
+            Uses Moon's FakeAppIds mapping for online features. Other games and Steam launch options are kept as they are.
+          </div>
+          {slsOnline.success ? (
+            <DialogButton style={bs} disabled={working} onClick={() => toggleSlsOnline(!slsOnline.enabled)}>
+              {busy === "slsonline" ? "Working…" : slsOnline.enabled ? "Disable SLSonline" : "Enable SLSonline"}
+            </DialogButton>
+          ) : <div style={{ fontSize: 11, color: "#ffcc66" }}>{slsOnline.error || "SLSonline status unavailable"}</div>}
+        </div>
       )}
       {ns && (
         <div

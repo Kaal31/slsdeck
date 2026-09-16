@@ -1243,6 +1243,12 @@ class Plugin:
         """slsteam-moon live achievements toggle (config.yaml Achievements)."""
         return await self._run(slssteam.get_achievements)
 
+    async def slsonline_status(self, appid: int) -> Dict[str, Any]:
+        return await self._run(slssteam.slsonline_status, int(appid))
+
+    async def set_slsonline(self, appid: int, enabled: bool) -> Dict[str, Any]:
+        return await self._run(slssteam.set_slsonline, int(appid), bool(enabled))
+
     async def set_achievements(self, enabled: bool) -> Dict[str, Any]:
         return await self._run(slssteam.set_achievements, bool(enabled))
 

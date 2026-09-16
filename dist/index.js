@@ -182,6 +182,7 @@ const crAuthPoll = callable("cr_auth_poll");
 const crAuthCallback = callable("cr_auth_callback");
 const crListLocalApps = callable("cr_list_local_apps");
 const crGameArtwork = callable("cr_game_artwork");
+const crImportSave = callable("cr_import_save");
 const minigameRoll = callable("minigame_roll");
 const updatesCheck = callable("updates_check");
 const updatesUpdateAll = callable("updates_update_all");
@@ -221,6 +222,8 @@ const getAutoFix = callable("get_auto_fix");
 const setAutoFix = callable("set_auto_fix");
 const netsockStatus = callable("netsock_status");
 const netsockSet = callable("netsock_set");
+const slsonlineStatus = callable("slsonline_status");
+const setSlsonline = callable("set_slsonline");
 callable("netsock_compatible");
 const getDlcOption = callable("get_dlc_option");
 const getPinStatus = callable("get_pin_status");
@@ -313,6 +316,8 @@ const applyLuatoolsFix = callable("apply_luatools_fix");
 callable("pin_source");
 const hubcapUsage = callable("hubcap_usage");
 const hubcapWorkshopManifest = callable("hubcap_workshop_manifest");
+const hubcapUpdatesStatus = callable("hubcap_updates_status");
+const setHubcapUpdates = callable("set_hubcap_updates");
 callable("get_wrapper_option");
 callable("set_wrapper_option");
 const setDlcOption = callable("set_dlc_option");
@@ -6026,6 +6031,7 @@ function FixPicker({ appid, onReload, onClose }) {
     const [hasRyuuKey, setHasRyuuKey] = SP_REACT.useState(true);
     const [busy, setBusy] = SP_REACT.useState("");
     const [ns, setNs] = SP_REACT.useState(null);
+    const [slsOnline, setSlsOnline] = SP_REACT.useState(null);
     const [msg, setMsg] = SP_REACT.useState("");
     const [autoApply, setAutoApplyState] = SP_REACT.useState(false);
     // Guided build-accurate apply: after pin+update we wait for the user to press
@@ -6209,6 +6215,12 @@ function FixPicker({ appid, onReload, onClose }) {
         }
         catch {
             setNs(null);
+        }
+        try {
+            setSlsOnline(await slsonlineStatus(appid));
+        }
+        catch {
+            setSlsOnline(null);
         }
         try {
             setAutoApplyState((await getAutoApply()).enabled);
@@ -6984,6 +6996,25 @@ function FixPicker({ appid, onReload, onClose }) {
         }
         setBusy("");
     };
+    const toggleSlsOnline = async (enabled) => {
+        setBusy("slsonline");
+        try {
+            const result = await setSlsonline(appid, enabled);
+            if (result.success) {
+                setSlsOnline(result);
+                setMsg(enabled ? "SLSonline enabled for this game (FakeAppId 480)." : "SLSonline disabled for this game.");
+            }
+            else {
+                setMsg(result.error || "Could not change SLSonline.");
+            }
+        }
+        catch (e) {
+            setMsg(`Error: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
     const isApplied = (fixType) => applied.some((f) => (f.fixType || "").toLowerCase() === fixType.toLowerCase());
     const working = busy !== "";
     const bs = { minWidth: 0, flex: 1, padding: "5px 8px", fontSize: 12 };
@@ -7071,7 +7102,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
                         : !tokeerLookup.updatedAt
                             ? "no successful availability cache yet — connect Discord in Tokeer helper and refresh the vault"
-                            : `not currently matched as available (${tokeerLookup.cachedGames} cached games; zero-key games are excluded)`] })), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), ns && (SP_JSX.jsxs("div", { style: {
+                            : `not currently matched as available (${tokeerLookup.cachedGames} cached games; zero-key games are excluded)`] })), rows.length === 0 && (SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.6 }, children: "No ryuu fixes indexed for this game." })), slsOnline && (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["SLSonline", slsOnline.success && slsOnline.enabled ? ` · ✓ On (FakeAppId ${slsOnline.fakeAppId})` : ""] }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.7, marginBottom: 6 }, children: "Uses Moon's FakeAppIds mapping for online features. Other games and Steam launch options are kept as they are." }), slsOnline.success ? (SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working, onClick: () => toggleSlsOnline(!slsOnline.enabled), children: busy === "slsonline" ? "Working…" : slsOnline.enabled ? "Disable SLSonline" : "Enable SLSonline" })) : SP_JSX.jsx("div", { style: { fontSize: 11, color: "#ffcc66" }, children: slsOnline.error || "SLSonline status unavailable" })] })), ns && (SP_JSX.jsxs("div", { style: {
                     border: "1px solid rgba(255,255,255,0.12)",
                     borderRadius: 8,
                     padding: 8,
@@ -10816,6 +10847,18 @@ const PROVIDERS = [
     { data: "onedrive", label: "OneDrive" },
 ];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function SaveGamePickerModal({ games, closeModal, onResult, }) {
+    const settled = SP_REACT.useRef(false);
+    const close = () => {
+        if (!settled.current)
+            onResult(null);
+        closeModal?.();
+    };
+    return SP_JSX.jsxs(DFL.ModalRoot, { closeModal: close, children: [SP_JSX.jsx("div", { style: { fontSize: 18, fontWeight: 600, marginBottom: 8 }, children: "Which game owns this save?" }), SP_JSX.jsx("div", { style: { fontSize: 12, opacity: .7, marginBottom: 10 }, children: "The imported files will be placed in this game's CloudRedirect folder." }), SP_JSX.jsx(DFL.Focusable, { style: { display: "flex", flexDirection: "column", gap: 6, maxHeight: "56vh", overflowY: "scroll" }, children: games.map((game) => SP_JSX.jsxs(DFL.DialogButton, { style: { textAlign: "left", padding: "8px 10px" }, onClick: () => { settled.current = true; onResult(game); closeModal?.(); }, children: [SP_JSX.jsx("div", { style: { fontSize: 14 }, children: game.name }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: .6 }, children: ["AppID ", game.appid] })] }, game.appid)) })] });
+}
+function pickSaveGame(games) {
+    return new Promise((resolve) => DFL.showModal(SP_JSX.jsx(SaveGamePickerModal, { games: games, onResult: resolve })));
+}
 function migrationMessage(result, fallback) {
     const migrations = result.migrations || (result.repairMigration ? [result.repairMigration] : []);
     if (!migrations.length)
@@ -10923,6 +10966,7 @@ function CloudRedirectSection() {
     const [callbackUrl, setCallbackUrl] = SP_REACT.useState("");
     const [authWaiting, setAuthWaiting] = SP_REACT.useState(false);
     const [folderPath, setFolderPath] = SP_REACT.useState("");
+    const [importGames, setImportGames] = SP_REACT.useState([]);
     const alive = SP_REACT.useRef(true);
     const authWatch = SP_REACT.useRef(0);
     const load = async () => {
@@ -10953,6 +10997,15 @@ function CloudRedirectSection() {
             setSaves(catalog.apps || []);
             if (catalog.remoteError)
                 setMsg(`Local saves shown; cloud discovery unavailable: ${catalog.remoteError}`);
+        }
+        catch { /* best effort */ }
+        try {
+            const installed = await getInstalledApps();
+            const games = (installed.apps || [])
+                .map((app) => ({ appid: Number(app.appid), name: app.gameName || `AppID ${app.appid}` }))
+                .filter((app) => app.appid > 0)
+                .sort((a, b) => a.name.localeCompare(b.name));
+            setImportGames(games);
         }
         catch { /* best effort */ }
     };
@@ -11111,6 +11164,37 @@ function CloudRedirectSection() {
         }
         setBusy(false);
     };
+    const importSave = async () => {
+        const game = await pickSaveGame(importGames);
+        if (!game)
+            return;
+        let path = "";
+        try {
+            const picked = await openFilePicker(0 /* FileSelectionType.FILE */, "/home/deck/Downloads", true, true);
+            path = picked?.realpath || picked?.path || "";
+        }
+        catch {
+            return;
+        }
+        if (!path)
+            return;
+        setBusy(true);
+        setMsg("Importing save…");
+        try {
+            const result = await crImportSave(game.appid, path);
+            if (!result.success)
+                throw new Error(result.error || "Save import failed");
+            const wrapper = result.wrapperRemoved ? " The archive's outer folder was removed." : "";
+            const backup = result.backup ? " Existing saves were backed up first." : "";
+            setMsg(`Imported ${result.files || 0} save file${result.files === 1 ? "" : "s"}.${wrapper}${backup}`);
+            await load();
+        }
+        catch (error) {
+            setMsg(`Save import failed: ${error}`);
+        }
+        if (alive.current)
+            setBusy(false);
+    };
     const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
     const saveCount = saves.length;
     const remoteOnlyCount = saves.filter((app) => app.remote && app.local === false).length;
@@ -11125,7 +11209,7 @@ function CloudRedirectSection() {
     });
     return SP_JSX.jsxs(DFL.PanelSection, { title: "Cloud saves (CloudRedirect)", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Cloud saves for added games", description: "Uses the native cloudredirect-moon hook. No Flatpak companion is required.", checked: enabled, onChange: changeEnabled, disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.DropdownItem, { label: "Storage provider", description: "Configuration is read directly by cloudredirect-moon.", rgOptions: PROVIDERS, selectedOption: selected?.data || "local", strDefaultLabel: selected?.label || "Built-in local storage", onChange: (option) => selectProvider(option.data), disabled: busy }) }), state.provider === "folder" && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Custom sync folder", description: "Absolute path on internal storage, SD card, external drive, network mount, or a Syncthing/Dropbox folder.", value: folderPath, onChange: (event) => setFolderPath(event?.target?.value ?? String(event || "")) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: saveFolder, disabled: busy || !folderPath.trim(), children: "Use this folder" }) })] }), state.provider !== "local" && state.provider !== "folder" && !state.authenticated &&
                 SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: connect, disabled: busy, children: "Connect provider" }) }), state.provider !== "local" && state.provider !== "folder" && !state.authenticated && authWaiting && SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, lineHeight: 1.45, opacity: .78 }, children: "Automatic capture is active. If the browser still ends on an unreachable localhost page, copy its complete address-bar URL and paste it below." }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.TextField, { label: "Callback URL", description: "Includes both ?code= and &state=.", value: callbackUrl, onChange: (event) => setCallbackUrl(event?.target?.value ?? String(event || "")) }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: finishCallback, disabled: busy || !callbackUrl.trim(), children: "Finish sign-in" }) })] }), state.provider !== "local" && state.provider !== "folder" && state.authenticated &&
-                SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: disconnect, disabled: busy, children: "Sign out" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Sync achievements", checked: !!state.syncAchievements, onChange: (v) => toggleOption("sync_achievements", v), disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Sync playtime", checked: !!state.syncPlaytime, onChange: (v) => toggleOption("sync_playtime", v), disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: state.authenticated || state.provider === "local" || state.configured ? "#5ee6c4" : "#f5a623" }, children: state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
+                SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: disconnect, disabled: busy, children: "Sign out" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Sync achievements", checked: !!state.syncAchievements, onChange: (v) => toggleOption("sync_achievements", v), disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Sync playtime", checked: !!state.syncPlaytime, onChange: (v) => toggleOption("sync_playtime", v), disabled: busy }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: importSave, disabled: busy || !importGames.length, description: "Choose an SLS game, then select a loose save file or ZIP/TAR archive from Downloads.", children: "Add save file or archive" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 11, color: state.authenticated || state.provider === "local" || state.configured ? "#5ee6c4" : "#f5a623" }, children: state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
                         state.provider === "folder" ? (state.configured ? `✓ Custom folder ready · ${state.syncFolderPath}` : "Custom folder needs a writable path.") :
                             state.authenticated ? `✓ ${selected?.label} connected · ${saveCount} managed ${saveCount === 1 ? "game" : "games"}${remoteOnlyCount ? ` · ${remoteOnlyCount} cloud only` : ""}` :
                                 `${selected?.label || "Cloud provider"} needs sign-in.` }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", marginTop: 5 }, children: [SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "0 2px 9px" }, children: [SP_JSX.jsx("span", { style: { fontSize: 14, fontWeight: 700 }, children: "Cloud-managed games" }), SP_JSX.jsxs("span", { style: { fontSize: 10, opacity: .62 }, children: [saveCount, " ", saveCount === 1 ? "game" : "games"] })] }), sortedSaves.length ? sortedSaves.map((app) => SP_JSX.jsx(CloudSaveCard, { app: app, provider: state.provider }, `${app.account}:${app.appid}`)) :
@@ -11432,6 +11516,7 @@ function SettingsSection() {
     const [hub, setHub] = SP_REACT.useState(null);
     const [hubBusy, setHubBusy] = SP_REACT.useState(false);
     const [hubCapturing, setHubCapturing] = SP_REACT.useState(false);
+    const [hubUpdates, setHubUpdatesState] = SP_REACT.useState(null);
     const [ryuuCapturing, setRyuuCapturing] = SP_REACT.useState(false);
     const [steamCapturing, setSteamCapturing] = SP_REACT.useState(false);
     const loadHub = async () => {
@@ -11447,6 +11532,14 @@ function SettingsSection() {
             setHubBusy(false);
         }
     };
+    const loadHubUpdates = async () => {
+        try {
+            setHubUpdatesState(await hubcapUpdatesStatus());
+        }
+        catch {
+            setHubUpdatesState(null);
+        }
+    };
     const load = async () => {
         try {
             const res = await getApiKeyFields();
@@ -11459,6 +11552,7 @@ function SettingsSection() {
         catch {
             setFields([]);
         }
+        await loadHubUpdates();
         try {
             const res = await getRyuuKey();
             const k = res.success ? res.key || "" : "";
@@ -11637,7 +11731,24 @@ function SettingsSection() {
                                     toaster.toast({ title: "Hubcap", body: `Capture error: ${e}` });
                                 }
                                 setHubCapturing(false);
-                            }, children: hubCapturing ? "Waiting for key… (sign in with Discord)" : "Sign in to Hubcap & capture key" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => saveKey(f.placeholder), disabled: (drafts[f.placeholder] ?? "") === (f.value ?? ""), children: ["Save ", f.label] }) }), f.placeholder === "<moapikey>" && f.hasKey && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11, opacity: 0.9, padding: "2px 2px 6px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: "Hubcap quota" }), SP_JSX.jsx("span", { style: { textDecoration: "underline", cursor: "pointer", opacity: 0.7 }, onClick: loadHub, children: hubBusy ? "refreshing…" : "refresh" })] }), hub ? (SP_JSX.jsxs("div", { style: { marginTop: 4 }, children: [["single", "bundle", "workshop"].map((k) => {
+                            }, children: hubCapturing ? "Waiting for key… (sign in with Discord)" : "Sign in to Hubcap & capture key" }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", onClick: () => saveKey(f.placeholder), disabled: (drafts[f.placeholder] ?? "") === (f.value ?? ""), children: ["Save ", f.label] }) }), f.placeholder === "<moapikey>" && (SP_JSX.jsxs(DFL.PanelSectionRow, { children: [SP_JSX.jsx(DFL.ToggleField, { label: "Hubcap updates", description: hubUpdates?.keyAvailable
+                                    ? "Automatically checks installed SLS games after boot and every two hours, then publishes newer Hubcap manifests through Moon. Pinned games are skipped."
+                                    : "Add and save a Hubcap key to enable automatic manifest updates.", checked: !!hubUpdates?.enabled, disabled: !hubUpdates?.keyAvailable, onChange: async (value) => {
+                                    const previous = !!hubUpdates?.enabled;
+                                    setHubUpdatesState((s) => s ? { ...s, enabled: value } : s);
+                                    try {
+                                        const result = await setHubcapUpdates(value);
+                                        setHubUpdatesState(result);
+                                        if (!result.success) {
+                                            toaster.toast({ title: "Hubcap updates", body: result.error || "Could not change setting" });
+                                            setHubUpdatesState((s) => s ? { ...s, enabled: previous } : s);
+                                        }
+                                    }
+                                    catch (e) {
+                                        setHubUpdatesState((s) => s ? { ...s, enabled: previous } : s);
+                                        toaster.toast({ title: "Hubcap updates", body: `Error: ${e}` });
+                                    }
+                                } }), !!hubUpdates?.lastCheck && (SP_JSX.jsxs("div", { style: { fontSize: 10, opacity: 0.6, padding: "2px 2px 5px" }, children: ["Last check: ", new Date(hubUpdates.lastCheck * 1000).toLocaleString(), " \u00B7 checked ", hubUpdates.checked || 0, " \u00B7 updated ", hubUpdates.updated || 0, hubUpdates.failed ? ` · failed ${hubUpdates.failed}` : ""] }))] })), f.placeholder === "<moapikey>" && f.hasKey && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { width: "100%", fontSize: 11, opacity: 0.9, padding: "2px 2px 6px" }, children: [SP_JSX.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, children: [SP_JSX.jsx("span", { style: { fontWeight: 600 }, children: "Hubcap quota" }), SP_JSX.jsx("span", { style: { textDecoration: "underline", cursor: "pointer", opacity: 0.7 }, onClick: loadHub, children: hubBusy ? "refreshing…" : "refresh" })] }), hub ? (SP_JSX.jsxs("div", { style: { marginTop: 4 }, children: [["single", "bundle", "workshop"].map((k) => {
                                             const q = hub[k];
                                             if (!q)
                                                 return null;

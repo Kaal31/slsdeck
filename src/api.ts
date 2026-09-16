@@ -379,6 +379,9 @@ export interface NetsockStatus {
 }
 export const netsockStatus = callable<[appid: number], NetsockStatus>("netsock_status");
 export const netsockSet = callable<[appid: number, enabled: boolean], NetsockStatus>("netsock_set");
+export interface SlsOnlineStatus { success: boolean; enabled?: boolean; fakeAppId?: number | null; changed?: boolean; error?: string }
+export const slsonlineStatus = callable<[appid: number], SlsOnlineStatus>("slsonline_status");
+export const setSlsonline = callable<[appid: number, enabled: boolean], SlsOnlineStatus>("set_slsonline");
 export const netsockCompatible = callable<[], { success: boolean; games: Array<{ appid: number; name: string }> }>("netsock_compatible");
 
 export const getDlcOption = callable<[], { success: boolean; enabled: boolean }>("get_dlc_option");
