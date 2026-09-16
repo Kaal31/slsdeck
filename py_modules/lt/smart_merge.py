@@ -523,6 +523,11 @@ def install(appid, collection_dir, opts):
     if not home or not steam_root:
         return None, "install paths unavailable"
     current_gids = parse_appinfo_gids(opts.get("appinfo_text") or "")
+    # Normal installs intentionally preserve the manifest already selected by
+    # Steam/Moon.  The Hubcap updater is the one caller that has independently
+    # proved its refreshed bundle is newer, so it must be allowed to select the
+    # newest manifest in that bundle instead of pinning itself to the old GID.
+    selection_gids = {} if opts.get("prefer_source_newest") else current_gids
 
     manifest_by_name = {}
     sources = []
@@ -596,12 +601,12 @@ def install(appid, collection_dir, opts):
     # order) -- so readdir order could decide which game version got installed.
     manifests = sorted(manifest_by_name.values(),
                        key=lambda a: (a["depot"], gid_sort_key(a["gid"])))
-    result, err = merge_sources(appid, sources, current_gids)
+    result, err = merge_sources(appid, sources, selection_gids)
     if not result:
         return None, err
 
     lua_text = emit_lua(appid, result)
-    preferred = select_preferred(manifests, current_gids)
+    preferred = select_preferred(manifests, selection_gids)
 
     store_dir = os.path.join(home, ".config", "SLSsteam", "manifests")
     target = os.path.join(steam_root, "config", "stplug-in", "%d.lua" % appid)
