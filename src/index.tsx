@@ -21,6 +21,7 @@ import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 import { StoreRouletteModal } from "./sections/Minigame";
 import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY } from "./lib/storeRoulettePrefs";
+import { SlsDeckErrorBoundary } from "./components/SlsDeckErrorBoundary";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -563,7 +564,9 @@ export default definePlugin(() => {
 
   // Full-page "Advanced" surface (junkstore-style sidebar page).
   try {
-    routerHook.addRoute(ADVANCED_ROUTE, () => <AdvancedPage />, { exact: true });
+    routerHook.addRoute(ADVANCED_ROUTE, () => (
+      <SlsDeckErrorBoundary surface="Advanced page"><AdvancedPage /></SlsDeckErrorBoundary>
+    ), { exact: true });
   } catch (e) {
     console.error("SLSDeck: failed to register Advanced route", e);
   }
@@ -698,8 +701,8 @@ export default definePlugin(() => {
 
   return {
     name: "SLSDeck",
-    titleView: <QamTitle />,
-    content: <Content />,
+    titleView: <SlsDeckErrorBoundary surface="Quick Access title"><QamTitle /></SlsDeckErrorBoundary>,
+    content: <SlsDeckErrorBoundary surface="Quick Access panel"><Content /></SlsDeckErrorBoundary>,
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");

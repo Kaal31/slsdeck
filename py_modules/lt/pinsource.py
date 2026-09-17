@@ -33,50 +33,10 @@ HUBCAP_MANIFEST = "https://hubcapmanifest.com/api/v1/manifest/{appid}?api_key={k
 HUBCAP_USAGE = "https://hubcapmanifest.com/api/v1/generate/usage"
 
 
-HUBCAP_WORKSHOP = "https://hubcapmanifest.com/api/v1/generate/workshopmanifest/{appid}"
-
-
-def hubcap_workshop_manifest(appid: int) -> Dict[str, object]:
-    """Fetch the Hubcap-generated Workshop manifest for a game and publish it to
-    the SLSsteam ManifestStore so the engine can serve the workshop depot. Bearer
-    auth. Returns {success, path, bytes}."""
-    try:
-        key = settings.get_morrenus_api_key()
-    except Exception:
-        key = ""
-    if not key:
-        return {"success": False, "error": "No Hubcap key set"}
-    try:
-        client = ensure_http_client("pinsource: hubcap workshop")
-        r = client.get(HUBCAP_WORKSHOP.format(appid=int(appid)), headers={
-            "Authorization": f"Bearer {key}", "User-Agent": "SLSDeck/hubcap",
-        }, timeout=90, follow_redirects=True)
-    except Exception as exc:
-        return {"success": False, "error": str(exc)}
-    if r.status_code != 200:
-        body = ""
-        try:
-            body = r.text[:160]
-        except Exception:
-            body = ""
-        return {"success": False, "status": r.status_code, "error": f"HTTP {r.status_code} {body}".strip()}
-    data = r.content
-    if not data:
-        return {"success": False, "error": "empty manifest"}
-    try:
-        mdir = os.path.join(slssteam.config_dir(), "manifests")
-        os.makedirs(mdir, exist_ok=True)
-        path = os.path.join(mdir, f"workshop_{int(appid)}.manifest")
-        with open(path, "wb") as fh:
-            fh.write(data)
-        try:
-            from .utils import chown_to_user
-            chown_to_user(path, recursive=False)
-        except Exception:
-            pass
-    except Exception as exc:
-        return {"success": False, "error": f"saved fetch but could not store: {exc}"}
-    return {"success": True, "path": path, "bytes": len(data)}
+def hubcap_workshop_manifest(workshop_id: int) -> Dict[str, object]:
+    """Compatibility RPC: fetch by Workshop item id using the shared publisher."""
+    from .hubcap_workshop import fetch_and_publish
+    return fetch_and_publish(int(workshop_id))
 
 
 def hubcap_usage() -> Dict[str, object]:

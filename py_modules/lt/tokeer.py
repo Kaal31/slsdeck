@@ -1,7 +1,8 @@
 """Tokeer Linux integration used by the Anti-Denuvo page.
 
-SLSDeck does not vendor the upstream Tokeer sources.  Runtime files are fetched
-from Tesla697/TokeerDRM-App when the user explicitly prepares a game, then the
+SLSDeck does not vendor the upstream Tokeer sources. Runtime files are fetched
+from the official lua.tools TokeerDRM-App Forgejo when the user explicitly
+prepares a game, then the
 upstream Linux verifier/redeemer are invoked locally and their results surfaced
 through Decky RPC.
 """
@@ -28,10 +29,13 @@ from .httpc import ensure_http_client
 from .steam import detect_steam_install_path
 from . import steam
 
-RUNTIME_ZIP = "https://github.com/Tesla697/TokeerDRM-App/releases/latest/download/tokeer-linux.zip"
-INSTALL_SCRIPT = "https://raw.githubusercontent.com/Tesla697/TokeerDRM-App/main/install_linux.sh"
+# Forgejo has no GitHub-style /releases/latest/download shortcut. Normal
+# installs resolve the newest asset through RELEASE_API below; this known-good
+# Linux bundle is used only if the release metadata request is unavailable.
+RUNTIME_ZIP = "https://git.lua.tools/luatools-dedivision/TokeerDRM-App/releases/download/v1.0.28/tokeer-linux.zip"
+INSTALL_SCRIPT = "https://git.lua.tools/luatools-dedivision/TokeerDRM-App/raw/branch/main/install_linux.sh"
 DEFAULT_COOLDOWN_HOURS = 48
-RELEASE_API = "https://api.github.com/repos/Tesla697/TokeerDRM-App/releases/latest"
+RELEASE_API = "https://git.lua.tools/api/v1/repos/luatools-dedivision/TokeerDRM-App/releases/latest"
 VERSION_FILE = ".slsdeck_runtime_version"
 REQUIRED_PROTON = "GE-Proton10-34"
 LINUX_VALIDATE_SECRET = b"tokeer_linux_setup_validate_2026_v1_shared"
@@ -368,7 +372,7 @@ def _shared_fetch(url: str, dest: str | None = None, label: str = ""):
 
 def _download(url: str, dest: str) -> None:
     if not _shared_fetch(url, dest, os.path.basename(dest)):
-        raise RuntimeError(f"Secure GitHub download failed: {url}")
+        raise RuntimeError(f"Secure Tokeer Linux download failed: {url}")
 
 
 def _latest_bundle() -> tuple[str, str]:

@@ -1,5 +1,5 @@
 import { DialogButton, Focusable, ModalRoot, Navigation, showModal } from "@decky/ui";
-import { openFilePicker, FileSelectionType, toaster } from "@decky/api";
+import { openFilePicker, FileSelectionType } from "@decky/api";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import {
   AddState,

@@ -1,6 +1,6 @@
 import { fetchNoCors } from "@decky/api";
 import { findModuleExport } from "@decky/ui";
-import { wsResolve, wsDownload, wsDownloadState } from "../api";
+import { getUiSettings, wsResolve, wsDownload, wsDownloadState } from "../api";
 
 /**
  * Steam Workshop item-page injection.
@@ -34,6 +34,9 @@ let isConnecting = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let bgTimer: ReturnType<typeof setInterval> | null = null;
 let histUnlisten: (() => void) | null = null;
+let enabled = false;
+
+const WORKSHOP_BUTTON_VISIBILITY_EVENT = "slsdeck-workshop-button-visibility";
 
 const WORKSHOP_RE = /(?:sharedfiles|workshop)\/filedetails\/.*?[?&]id=(\d+)/;
 
@@ -194,10 +197,10 @@ function pollJob(job: string): void {
 
 // ── CDP connection to the workshop tab ──────────────────────────────────────
 function scheduleReconnect(ms = 1000): void {
-  if (!mounted || reconnectTimer) return;
+  if (!mounted || !enabled || reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    if (mounted && (!ws || ws.readyState === WebSocket.CLOSED)) connect();
+    if (mounted && enabled && (!ws || ws.readyState === WebSocket.CLOSED)) connect();
   }, ms);
 }
 
@@ -214,8 +217,8 @@ function updateFromUrl(url: string): void {
   if (wsReady) injectFor(id);
 }
 
-async function connect(): Promise<void> {
-  if (!mounted || isConnecting) return;
+async function connect(cleanupOnly = false): Promise<void> {
+  if (!mounted || (!enabled && !cleanupOnly) || isConnecting) return;
   isConnecting = true;
   setTimeout(() => {
     isConnecting = false;
@@ -245,6 +248,14 @@ async function connect(): Promise<void> {
       }
       cdp("Page.enable");
       cdp("Runtime.enable");
+      if (!enabled || cleanupOnly) {
+        wsReady = true;
+        removeButton();
+        setTimeout(() => {
+          if (ws === sock) sock.close();
+        }, 100);
+        return;
+      }
       cdp("Runtime.addBinding", { name: "ltWsInvoke" });
       const uid = msgId++;
       pendingUrlId = uid;
@@ -304,6 +315,24 @@ async function connect(): Promise<void> {
 
 export function initWorkshopPatch(): () => void {
   mounted = true;
+  const onVisibilityChange = (event: Event) => {
+    enabled = (event as CustomEvent<boolean>).detail === true;
+    if (!enabled) {
+      removeButton();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (ws) {
+        try { ws.close(); } catch { /* ignore */ }
+        ws = null;
+        wsReady = false;
+      }
+    } else {
+      connect();
+    }
+  };
+  window.addEventListener(WORKSHOP_BUTTON_VISIBILITY_EVENT, onVisibilityChange);
   if (History) {
     try {
       histUnlisten = History.listen(() => connect());
@@ -311,13 +340,20 @@ export function initWorkshopPatch(): () => void {
       /* ignore */
     }
   }
-  connect();
+  getUiSettings()
+    .then((result) => {
+      enabled = result.settings?.workshopButton === true;
+      if (!enabled) connect(true); // remove a button left in an already-open tab by an older build
+      else connect();
+    })
+    .catch(() => { enabled = false; });
   bgTimer = setInterval(() => {
-    if (!ws || ws.readyState === WebSocket.CLOSED) connect();
+    if (enabled && (!ws || ws.readyState === WebSocket.CLOSED)) connect();
   }, 500);
 
   return () => {
     mounted = false;
+    window.removeEventListener(WORKSHOP_BUTTON_VISIBILITY_EVENT, onVisibilityChange);
     if (bgTimer) {
       clearInterval(bgTimer);
       bgTimer = null;
@@ -336,6 +372,7 @@ export function initWorkshopPatch(): () => void {
     }
     if (ws) {
       try {
+        removeButton();
         ws.close();
       } catch {
         /* ignore */
