@@ -16,7 +16,7 @@ import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAuto
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
-import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
+import { disposeTokeerDiscordView } from "./lib/tokeerDiscordCapture";
 import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 import { StoreRouletteModal } from "./sections/Minigame";
@@ -446,19 +446,6 @@ function Content() {
   }, []);
 
   useEffect(() => {
-    if (!installed) return;
-    // Refresh Discord-backed vault/game availability independently of the
-    // Anti-Denuvo page. The cache itself coalesces callers and preserves the
-    // last good result when Discord is logged out or temporarily unrendered.
-    const refresh = () => refreshTokeerAvailabilityCache(false).catch(() => {});
-    const first = setTimeout(refresh, 12000);
-    const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
-    return () => { clearTimeout(first); clearInterval(interval); };
-  }, [installed]);
-
-
-
-  useEffect(() => {
     const readActionsFixes = () => {
       try {
         const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
@@ -703,6 +690,7 @@ export default definePlugin(() => {
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");
+      disposeTokeerDiscordView();
       dependencyLifecycleToken.active = false;
       try { clearTimeout(dependencyRepairFirst); } catch { /* ignore */ }
       try { clearInterval(dependencyRepairRetry); } catch { /* ignore */ }

@@ -17,6 +17,7 @@ import {
   openTokeerDiscord,
   readLatestTicketGate,
   readTokeerDiscord,
+  retainTokeerDiscordView,
   restoreTokeerTicketView,
   sendTokeerTicketMessage,
   uploadTokeerTicketFile,
@@ -168,7 +169,10 @@ export type TokeerActivationRequest = {
 };
 
 export function TokeerSection({ headless = false, activationRequest }: { headless?: boolean; activationRequest?: TokeerActivationRequest } = {}) {
-  useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
+  useEffect(() => {
+    const releaseView = retainTokeerDiscordView();
+    return () => { cancelTokeerAvailabilityRefresh(); releaseView(); };
+  }, []);
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
   const selectorLayoutRef=useRef<TokeerDiscordState|null>(readSelectorLayout());
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
@@ -721,6 +725,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     if(automationRunningRef.current||!ctx.appid||!ctx.url)return;
     if(ticketAbortedRef.current||generation!==ticketGenerationRef.current)return;
     automationRunningRef.current=true;
+    const releaseView = retainTokeerDiscordView();
     const stale=()=>ticketAbortedRef.current||ticketCompletionPausedRef.current||generation!==ticketGenerationRef.current;
     const fail=(body:string)=>{
       if(stale())return;
@@ -934,6 +939,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         }
     }catch(e){if(!stale())fail(String(e));}
     finally{
+      releaseView();
       if(generation===ticketGenerationRef.current){automationRunningRef.current=false;setBusy("");}
     }
   };

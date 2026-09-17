@@ -69,6 +69,7 @@ import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { cancelTokeerAvailabilityRefresh, getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 import { TokeerSection } from "../sections/Tokeer";
+import { retainTokeerDiscordView } from "../lib/tokeerDiscordCapture";
 
 function FullStatusModal({ text, closeModal }: { text: string; closeModal?: () => void }) {
   return (
@@ -142,7 +143,10 @@ function BadgeChip({ badge, inline }: { badge?: string; inline?: boolean }) {
 }
 
 export function FixPicker({ appid, onReload, onClose }: { appid: number; onReload?: () => void; onClose?: () => void }) {
-  useEffect(() => () => cancelTokeerAvailabilityRefresh(), [appid]);
+  useEffect(() => {
+    const releaseView = retainTokeerDiscordView();
+    return () => { cancelTokeerAvailabilityRefresh(); releaseView(); };
+  }, [appid]);
   const [check, setCheck] = useState<FixCheck | null>(null);
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
