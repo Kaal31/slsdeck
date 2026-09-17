@@ -517,7 +517,8 @@ def fetch_app_name(appid: int) -> str:
 
 
 # ── install ───────────────────────────────────────────────────────────────
-def _process_and_install_lua(appid: int, zip_path: str) -> None:
+def _process_and_install_lua(appid: int, zip_path: str,
+                             prefer_source_newest: bool = False) -> Dict[str, Any]:
     if _is_cancelled(appid):
         raise RuntimeError("cancelled")
 
@@ -576,6 +577,7 @@ def _process_and_install_lua(appid: int, zip_path: str) -> None:
 
         result, err = smart_merge.install(appid, coll, {
             "home": home, "steam_root": steam_root, "appinfo_text": appinfo_text,
+            "prefer_source_newest": bool(prefer_source_newest),
         })
         if not result:
             raise RuntimeError(f"smart_merge: {err}")
@@ -719,6 +721,7 @@ def _process_and_install_lua(appid: int, zip_path: str) -> None:
         except Exception as exc:
             logger.error(f"SLSDeck: content check failed for {appid}: {exc}")
             _set_state(appid, {"status": "done"})
+        return result
     finally:
         try:
             shutil.rmtree(coll, ignore_errors=True)
