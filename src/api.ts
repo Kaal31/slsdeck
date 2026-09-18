@@ -379,6 +379,14 @@ export interface NetsockStatus {
 }
 export const netsockStatus = callable<[appid: number], NetsockStatus>("netsock_status");
 export const netsockSet = callable<[appid: number, enabled: boolean], NetsockStatus>("netsock_set");
+export type MultiplayerProxyKind = "uc-online2" | "eos-proxy";
+export interface MultiplayerProxyStatus {
+  success: boolean;
+  fixes?: Record<MultiplayerProxyKind, { installed: boolean; targets: string[] }>;
+  error?: string;
+}
+export const multiplayerProxyStatus = callable<[appid: number], MultiplayerProxyStatus>("multiplayer_proxy_status");
+export const multiplayerProxyInstall = callable<[appid: number, kind: MultiplayerProxyKind], { success: boolean; warning?: string; error?: string }>("multiplayer_proxy_install");
 export interface SlsOnlineStatus { success: boolean; enabled?: boolean; fakeAppId?: number | null; changed?: boolean; error?: string }
 export const slsonlineStatus = callable<[appid: number], SlsOnlineStatus>("slsonline_status");
 export const setSlsonline = callable<[appid: number, enabled: boolean], SlsOnlineStatus>("set_slsonline");

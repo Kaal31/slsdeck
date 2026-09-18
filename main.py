@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
-                dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
+                dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
                 updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
 )
@@ -2176,6 +2176,12 @@ class Plugin:
 
     async def netsock_compatible(self) -> Dict[str, Any]:
         return {"success": True, "games": await self._run(netsock.compatible_list)}
+
+    async def multiplayer_proxy_status(self, appid: int) -> Dict[str, Any]:
+        return await self._run(multiplayer_proxies.status, appid)
+
+    async def multiplayer_proxy_install(self, appid: int, kind: str) -> Dict[str, Any]:
+        return await self._run(multiplayer_proxies.install, appid, kind)
 
     # ── CloudRedirect (cloud saves for added games) ────────────────────────
     async def cr_get_enabled(self) -> Dict[str, Any]:

@@ -21,6 +21,10 @@ import {
   getRyuuKey,
   netsockStatus,
   netsockSet,
+  multiplayerProxyStatus,
+  multiplayerProxyInstall,
+  MultiplayerProxyKind,
+  MultiplayerProxyStatus,
   NetsockStatus,
   SlsOnlineStatus,
   slsonlineStatus,
@@ -176,6 +180,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [hasRyuuKey, setHasRyuuKey] = useState(true);
   const [busy, setBusy] = useState("");
   const [ns, setNs] = useState<NetsockStatus | null>(null);
+  const [proxies, setProxies] = useState<MultiplayerProxyStatus | null>(null);
   const [slsOnline, setSlsOnline] = useState<SlsOnlineStatus | null>(null);
   const [msg, setMsg] = useState("");
   const [autoApply, setAutoApplyState] = useState(false);
@@ -367,6 +372,11 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       setNs(await netsockStatus(appid));
     } catch {
       setNs(null);
+    }
+    try {
+      setProxies(await multiplayerProxyStatus(appid));
+    } catch {
+      setProxies(null);
     }
     try {
       setSlsOnline(await slsonlineStatus(appid));
@@ -1158,6 +1168,23 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("");
   };
 
+  const installProxy = async (kind: MultiplayerProxyKind) => {
+    setBusy(kind);
+    setMsg(`Downloading and installing ${kind === "uc-online2" ? "UC Online 2" : "EOS Proxy"}…`);
+    try {
+      const result = await multiplayerProxyInstall(appid, kind);
+      setMsg(result.success ? (result.warning || "Multiplayer fix installed. Restart the game.") : (result.error || "Install failed"));
+      if (result.success) {
+        await refresh();
+        void refreshBadges();
+      }
+    } catch (e) {
+      setMsg(`Install failed: ${e}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
   const toggleSlsOnline = async (enabled: boolean) => {
     setBusy("slsonline");
     try {
@@ -1418,6 +1445,31 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           )}
         </div>
       )}
+      {(["uc-online2", "eos-proxy"] as MultiplayerProxyKind[]).map((kind) => {
+        const item = proxies?.fixes?.[kind];
+        if (!item) return null;
+        const label = kind === "uc-online2" ? "UC Online 2" : "EOS Proxy";
+        return (
+          <div key={kind} style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+              {label} · Manual only · {item.installed ? "✓ Installed" : item.targets.length ? "Available" : "No matching DLL"}
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
+              {kind === "uc-online2"
+                ? "Replaces this game's existing Steam API DLLs with the upstream proxy."
+                : "Replaces this game's EOS SDK DLL and keeps the original as a .yes file for the proxy."}
+              {item.targets.length ? ` Targets: ${item.targets.join(", ")}` : " Install the game first."}
+              {item.installed ? " Use Un-fix and unpin below to restore the originals." : ""}
+              {kind === "eos-proxy" ? " Requires working Steam authentication; game support varies." : " Game support varies."}
+            </div>
+            {!item.installed && item.targets.length > 0 && (
+              <DialogButton style={bs} disabled={working} onClick={() => installProxy(kind)}>
+                {busy === kind ? "Installing…" : `Install ${label}`}
+              </DialogButton>
+            )}
+          </div>
+        );
+      })}
       {rows.map((row) => {
         const avail = !!row.info?.available;
         const done = isApplied(row.fixType);
