@@ -181,6 +181,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [busy, setBusy] = useState("");
   const [ns, setNs] = useState<NetsockStatus | null>(null);
   const [proxies, setProxies] = useState<MultiplayerProxyStatus | null>(null);
+  const eosProxyLabel = appid === 1904480 ? "EOS Proxy (Absolum)" : "EOS Proxy";
   const [slsOnline, setSlsOnline] = useState<SlsOnlineStatus | null>(null);
   const [msg, setMsg] = useState("");
   const [autoApply, setAutoApplyState] = useState(false);
@@ -1170,7 +1171,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   const installProxy = async (kind: MultiplayerProxyKind) => {
     setBusy(kind);
-    setMsg(`Downloading and applying ${kind === "uc-online2" ? "UC Online 2" : "EOS Proxy"}…`);
+    setMsg(`Downloading and applying ${kind === "uc-online2" ? "UC Online 2" : eosProxyLabel}…`);
     try {
       const result = await multiplayerProxyInstall(appid, kind);
       setMsg(result.success ? (result.warning || "Multiplayer fix applied. Restart the game.") : (result.error || "Apply failed"));
@@ -1448,7 +1449,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       {(["uc-online2", "eos-proxy"] as MultiplayerProxyKind[]).map((kind) => {
         const item = proxies?.fixes?.[kind];
         if (!item) return null;
-        const label = kind === "uc-online2" ? "UC Online 2" : "EOS Proxy";
+        const label = kind === "uc-online2" ? "UC Online 2" : eosProxyLabel;
         return (
           <div key={kind} style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
@@ -1458,6 +1459,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
               {kind === "uc-online2"
                 ? "Replaces this game's existing Steam API DLLs with the upstream proxy."
                 : "Replaces this game's EOS SDK DLL and keeps the original as a .yes file for the proxy."}
+              {kind === "eos-proxy" && appid === 1904480 ? " Uses the dedicated Absolum release and cache." : ""}
               {item.targets.length ? ` Targets: ${item.targets.join(", ")}` : " Install the game first."}
               {item.installed ? " Use Un-fix and unpin below to restore the originals." : ""}
               {kind === "eos-proxy" ? " Requires working Steam authentication; game support varies." : " Game support varies."}
