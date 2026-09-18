@@ -154,6 +154,9 @@ export function CloudRedirectSection() {
   const [callbackUrl, setCallbackUrl] = useState("");
   const [authWaiting, setAuthWaiting] = useState(false);
   const [folderPath, setFolderPath] = useState("");
+  const [folderDraft, setFolderDraft] = useState(false);
+  const [folderError, setFolderError] = useState("");
+  const folderDraftRef = useRef(false);
   const [importGames, setImportGames] = useState<Array<{ appid: number; name: string }>>([]);
   const alive = useRef(true);
   const authWatch = useRef(0);
@@ -163,7 +166,7 @@ export function CloudRedirectSection() {
     try {
       const provider = await crProviderStatus();
       setState(provider);
-      setFolderPath(provider.syncFolderPath || "");
+      if (!folderDraftRef.current) setFolderPath(provider.syncFolderPath || "");
       if (provider.repairMigration?.success) {
         setMsg(migrationMessage(provider, "Repaired the existing Custom Folder configuration. Restart Steam to finish."));
       }
@@ -223,21 +226,27 @@ export function CloudRedirectSection() {
   };
 
   const selectProvider = async (value: CloudRedirectProvider) => {
+    if (value === "folder") {
+      // Choosing a folder is only an editor action. The active provider must
+      // stay unchanged until Use this folder validates and migrates the data.
+      folderDraftRef.current = true;
+      setFolderDraft(true);
+      setFolderError("");
+      setMsg("Enter a path and press Use this folder. Your current provider stays active until then.");
+      return;
+    }
+    folderDraftRef.current = false;
+    setFolderDraft(false);
+    setFolderError("");
+    if (value === state.provider) return;
     setBusy(true);
     try {
       const result = await crSetProvider(value);
       if (!result.success) {
-        if (value === "folder" && (result.error || "").includes("Choose a custom folder")) {
-          setState((old) => ({ ...old, provider: "folder", configured: false }));
-          setMsg("Enter and save a custom folder path below.");
-          setBusy(false);
-          return;
-        }
         throw new Error(result.error || "Provider transition failed");
       }
       setState(result);
-      const base = value === "local" ? "Using CloudRedirect's built-in local storage. Restart Steam to finish." : value === "folder" ?
-        (result.configured ? "Using the selected custom folder. Restart Steam to finish." : "Enter and save a custom folder path below.") :
+      const base = value === "local" ? "Using CloudRedirect's built-in local storage. Restart Steam to finish." :
         result.authenticated ? "Existing sign-in restored. Restart Steam to finish." : "Provider selected. Connect it below.";
       setMsg(migrationMessage(result, base));
     } catch (error) { setMsg(`Error: ${error}`); }
@@ -246,14 +255,22 @@ export function CloudRedirectSection() {
 
   const saveFolder = async () => {
     setBusy(true);
+    setFolderError("");
+    setMsg("Checking the folder and safely moving saves…");
     try {
       const result = await crSetSyncFolder(folderPath.trim());
-      setState(result);
       if (!result.success) throw new Error(result.error || "Could not use that folder");
+      folderDraftRef.current = false;
+      setFolderDraft(false);
+      setState(result);
       setFolderPath(result.syncFolderPath || folderPath.trim());
       setMsg(migrationMessage(result, "Custom folder activated. Restart Steam before using it."));
       await load();
-    } catch (error) { setMsg(`Folder setup failed: ${error}`); }
+    } catch (error) {
+      const message = String(error);
+      setFolderError(message);
+      setMsg(`Folder setup failed: ${message}`);
+    }
     if (alive.current) setBusy(false);
   };
 
@@ -324,7 +341,8 @@ export function CloudRedirectSection() {
     if (alive.current) setBusy(false);
   };
 
-  const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
+  const displayProvider = folderDraft ? "folder" : state.provider;
+  const selected = PROVIDERS.find((item) => item.data === (displayProvider || "local"));
   const saveCount = saves.length;
   const remoteOnlyCount = saves.filter((app) => app.remote && app.local === false).length;
   const sortedSaves = [...saves].sort((a, b) => {
@@ -343,7 +361,10 @@ export function CloudRedirectSection() {
       rgOptions={PROVIDERS} selectedOption={selected?.data || "local"}
       strDefaultLabel={selected?.label || "Built-in local storage"}
       onChange={(option: any) => selectProvider(option.data)} disabled={busy} /></PanelSectionRow>
-    {state.provider === "folder" && <>
+    {displayProvider === "folder" && <>
+      {folderDraft && state.provider !== "folder" && <PanelSectionRow><div style={{ fontSize: 11, opacity: .78 }}>
+        {PROVIDERS.find((item) => item.data === state.provider)?.label || "Current provider"} stays active until this folder is accepted.
+      </div></PanelSectionRow>}
       <PanelSectionRow><TextField label="Custom sync folder"
         description="Absolute path on internal storage, SD card, external drive, network mount, or a Syncthing/Dropbox folder."
         value={folderPath}
@@ -352,10 +373,13 @@ export function CloudRedirectSection() {
       <PanelSectionRow><ButtonItem layout="below" onClick={saveFolder} disabled={busy || !folderPath.trim()}>
         Use this folder
       </ButtonItem></PanelSectionRow>
+      {folderError && <PanelSectionRow><div style={{ fontSize: 11, color: "#ffcc66" }}>
+        Folder setup failed: {folderError}
+      </div></PanelSectionRow>}
     </>}
-    {state.provider !== "local" && state.provider !== "folder" && !state.authenticated &&
+    {displayProvider !== "local" && displayProvider !== "folder" && !state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={connect} disabled={busy}>Connect provider</ButtonItem></PanelSectionRow>}
-    {state.provider !== "local" && state.provider !== "folder" && !state.authenticated && authWaiting && <>
+    {displayProvider !== "local" && displayProvider !== "folder" && !state.authenticated && authWaiting && <>
       <PanelSectionRow><div style={{ fontSize: 11, lineHeight: 1.45, opacity: .78 }}>
         Automatic capture is active. If the browser still ends on an unreachable localhost page, copy its complete address-bar URL and paste it below.
       </div></PanelSectionRow>
@@ -369,7 +393,7 @@ export function CloudRedirectSection() {
         Finish sign-in
       </ButtonItem></PanelSectionRow>
     </>}
-    {state.provider !== "local" && state.provider !== "folder" && state.authenticated &&
+    {displayProvider !== "local" && displayProvider !== "folder" && state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={disconnect} disabled={busy}>Sign out</ButtonItem></PanelSectionRow>}
     <PanelSectionRow><ToggleField label="Sync achievements" checked={!!state.syncAchievements}
       onChange={(v) => toggleOption("sync_achievements", v)} disabled={busy} /></PanelSectionRow>
