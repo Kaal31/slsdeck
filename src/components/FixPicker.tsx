@@ -1333,11 +1333,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           <div>
             {tokeerApplied
               ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
-              : ""}🔒 Version pinned{pinInfo.buildid
-              ? ` — Build ${pinInfo.buildid}`
-              : (pinInfo.depots && Object.keys(pinInfo.depots).length
-                  ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
-                  : "")} — the game won't update past the pinned version.
+              : ""}🔒 Version pinned — Build {pinInfo.buildid || "unknown"} · {Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.
           </div>
           {tokeerApplied && tokeerApplied.health !== "valid" && (
             <div style={{ color: "#ffbf69" }}>{tokeerApplied.healthReason || "Tokeer activation needs verification."}</div>
