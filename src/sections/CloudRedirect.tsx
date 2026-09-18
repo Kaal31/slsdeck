@@ -274,6 +274,22 @@ export function CloudRedirectSection() {
     if (alive.current) setBusy(false);
   };
 
+  const pickFolder = async () => {
+    try {
+      const selected = await openFilePicker(FileSelectionType.FOLDER, "/home", false, true);
+      const path = String(selected?.path || selected?.realpath || "").trim();
+      if (!path) return;
+      if (!path.startsWith("/")) throw new Error("Select an absolute folder path");
+      setFolderPath(path);
+      setFolderError("");
+      setMsg("Folder selected. Press Use this folder to activate it.");
+    } catch (error) {
+      const message = String(error);
+      setFolderError(message);
+      setMsg(`Folder selection failed: ${message}`);
+    }
+  };
+
   const connect = async () => {
     const provider = state.provider;
     if (!provider || provider === "local") return;
@@ -365,11 +381,13 @@ export function CloudRedirectSection() {
       {folderDraft && state.provider !== "folder" && <PanelSectionRow><div style={{ fontSize: 11, opacity: .78 }}>
         {PROVIDERS.find((item) => item.data === state.provider)?.label || "Current provider"} stays active until this folder is accepted.
       </div></PanelSectionRow>}
-      <PanelSectionRow><TextField label="Custom sync folder"
-        description="Absolute path on internal storage, SD card, external drive, network mount, or a Syncthing/Dropbox folder."
-        value={folderPath}
-        onChange={(event: any) => setFolderPath(event?.target?.value ?? String(event || ""))}
-      /></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={pickFolder} disabled={busy}
+        description="Browse internal storage, SD cards, external drives, or network mounts.">
+        Choose folder…
+      </ButtonItem></PanelSectionRow>
+      {!!folderPath.trim() && <PanelSectionRow><div style={{ fontSize: 11, overflowWrap: "anywhere" }}>
+        Selected folder: {folderPath}
+      </div></PanelSectionRow>}
       <PanelSectionRow><ButtonItem layout="below" onClick={saveFolder} disabled={busy || !folderPath.trim()}>
         Use this folder
       </ButtonItem></PanelSectionRow>
