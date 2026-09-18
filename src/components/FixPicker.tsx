@@ -414,6 +414,14 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     refresh();
   }, [appid]);
 
+  useEffect(() => {
+    const onTokeerApplied = (event: Event) => {
+      if ((event as CustomEvent<{appid: number}>).detail?.appid === appid) void refresh();
+    };
+    window.addEventListener("slsdeck-tokeer-applied", onTokeerApplied);
+    return () => window.removeEventListener("slsdeck-tokeer-applied", onTokeerApplied);
+  }, [appid]);
+
   const watch = (
     getState: () => Promise<{ state: AddState }>,
     okMsg: string,

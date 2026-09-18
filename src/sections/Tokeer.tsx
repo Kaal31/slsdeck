@@ -721,6 +721,17 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     return()=>{stopped=true;clearTimeout(timer);};
   },[ticket?.url]);
 
+  const markSteamTokeerApplied=async(appid:number)=>{
+    // Like Ubisoft completion, lock the installed depot manifests once the
+    // activation succeeds. The key remains applied if Moon cannot write a pin.
+    const applied=await tokeerMarkApplied(appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${appid}`,"steam",true);
+    window.dispatchEvent(new CustomEvent("slsdeck-tokeer-applied",{detail:{appid}}));
+    if(!applied.pin?.success){
+      toaster.toast({title:"SLSDeck · Tokeer pin",body:`Activation applied, but version pinning failed: ${applied.pin?.error||"check the installed game and Moon in Fixes."}`});
+    }
+    return applied;
+  };
+
   const runAutomation=async(ctx:TokeerTicketContext,resume?:SavedTokeerSession,generation=ticketGenerationRef.current)=>{
     if(automationRunningRef.current||!ctx.appid||!ctx.url)return;
     if(ticketAbortedRef.current||generation!==ticketGenerationRef.current)return;
@@ -808,7 +819,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           const redeemed=await tokeerRedeem(resume.activation);
           if(stale())return;
           if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed.");return;}
-          await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+          await markSteamTokeerApplied(ctx.appid);
           void refreshBadges();
           stage="checking-game";
           checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
@@ -853,7 +864,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         const redeemed=await tokeerRedeem(received.code);
         if(stale())return;
         if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}
-        await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+        await markSteamTokeerApplied(ctx.appid);
         void refreshBadges();
         checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
         await completeNonUbisoftActivation("checking-game",trackedTicket);
@@ -866,7 +877,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         const redeemed=await tokeerRedeem(resume.activation);
         if(stale())return;
         if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed.");return;}
-        await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+        await markSteamTokeerApplied(ctx.appid);
         void refreshBadges();
         setAutomationStage("done");setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
@@ -1396,7 +1407,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       const r=await tokeerRedeem(activation.trim());
       setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
       if(r.success){
-        await tokeerMarkApplied(resolvedAppid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${resolvedAppid}`,"steam",false);
+        await markSteamTokeerApplied(resolvedAppid);
         void refreshBadges();
         if(ticket?.url){
           const tracked={...ticket};
