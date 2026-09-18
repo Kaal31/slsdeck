@@ -139,6 +139,11 @@ class Plugin:
                 game_appid = int(key)
             except Exception:
                 continue
+            reason = await self._run(tokeer_health.reset_reason, game_appid, value)
+            if reason:
+                if settings.clear_tokeer_applied_game(game_appid, int(value.get("appliedAt") or 0)):
+                    tokeer_health.invalidate(game_appid)
+                continue
             health = await self._run(tokeer_health.evaluate, game_appid, value)
             record = {**value, **health, "appid": game_appid, "applied": True}
             records.append(record)

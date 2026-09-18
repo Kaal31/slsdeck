@@ -657,6 +657,21 @@ def set_tokeer_applied_game(appid: int, record: Dict[str, Any]) -> None:
     set_value("tokeerAppliedGames", games)
 
 
+def clear_tokeer_applied_game(appid: int, expected_applied_at: int) -> bool:
+    """Remove only the activation we inspected, not a concurrent new one."""
+    key = str(int(appid))
+    with _LOCK:
+        _load_locked()
+        games = dict(_CACHE.get("tokeerAppliedGames") or {})
+        current = games.get(key)
+        if not isinstance(current, dict) or int(current.get("appliedAt") or 0) != int(expected_applied_at):
+            return False
+        games.pop(key)
+        _CACHE["tokeerAppliedGames"] = games
+        _persist_locked()
+        return True
+
+
 def get_badge_game_page() -> bool:
     return bool(get_value("badgeGamePage", True))
 
