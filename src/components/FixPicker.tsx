@@ -61,15 +61,15 @@ import {
   CustomItem,
   getDlcOwnedOnly,
   triggerSteamInstall,
+  validateSteamApp,
   tokeerAppliedStatus,
   TokeerAppliedRecord,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
-import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
+import { runBuildAccurateApply, isDownloadComplete, isPinnedBuildReady } from "../lib/buildApply";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
-import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { cancelTokeerAvailabilityRefresh, getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 import { TokeerSection } from "../sections/Tokeer";
@@ -187,7 +187,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [autoApply, setAutoApplyState] = useState(false);
   // Guided build-accurate apply: after pin+update we wait for the user to press
   // "Apply now". `awaiting` holds the deferred apply and the originating fix row.
-  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void>; mode?: "download" | "reinstall" } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void> } | null>(null);
   const [activeFixKey, setActiveFixKey] = useState("");
   const [fixState, setFixState] = useState<AddState>({});
   const [dlComplete, setDlComplete] = useState(false);
@@ -543,15 +543,15 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     );
   };
 
-  // Poll the game's download completion while we're waiting (guided mode) so the
-  // "Apply now" card can hint when it's ready.
+  // The guided fix can apply only when Steam has installed the pinned depots.
   const startDlPoll = () => {
     stopDl();
     setDlComplete(false);
     dlPoll.current = setInterval(async () => {
-      const done = await isDownloadComplete(appid);
+      const done = await isPinnedBuildReady(appid);
       setDlComplete(done);
     }, 3000);
+    void isPinnedBuildReady(appid).then(setDlComplete);
   };
 
   // Shared build-accurate apply runner. `startExtract` kicks off the actual
@@ -572,6 +572,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy(key);
     resetFixRuntime(appid);
     const doApply = async () => {
+      if (pinFn && !(await isPinnedBuildReady(appid))) {
+        setMsg("Steam has not installed the pinned build yet. Wait for the update or retry verification.");
+        throw new Error("pinned-build-not-ready");
+      }
       setAwaiting(null);
       stopDl();
       setBusy(`${key}:apply`);
@@ -610,22 +614,17 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
               `Pinned via ${info?.source || "source"} — updating the game in Steam to that build…`
             );
           else if (phase === "awaiting_download")
-            setMsg("Steam is updating the game. When the download finishes, press “Apply now”.");
-          else if (phase === "awaiting_reinstall")
-            setMsg("The exact fix build is pinned. Uninstall and reinstall the game, then press this fix again; Steam cannot reliably downgrade an installed game by launching it.");
+            setMsg("Steam is updating the game. Apply the fix once the installed depot manifests match the pin.");
           else if (phase === "applying") setMsg(`Applying ${label}…`);
         },
       });
-      if (result === "reinstall") {
+      if (result === "awaiting") {
         setBusy("");
-        setAwaiting({ key, label, run: doApply, mode: "reinstall" });
-      } else if (result === "awaiting") {
-        setBusy("");
-        setAwaiting({ key, label, run: doApply, mode: "download" });
+        setAwaiting({ key, label, run: doApply });
         startDlPoll();
       }
     } catch (e) {
-      if (!String(e).includes("apply-start-failed")) {
+      if (!String(e).includes("apply-start-failed") && !String(e).includes("pinned-build-not-ready")) {
         setBusy("");
         setFixState({ status: "failed", error: `${e}`.replace(/^Error:\s*/, "") });
       }
@@ -1279,34 +1278,36 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-              {awaiting.mode === "reinstall" ? "Exact build pinned — reinstall required" : "Pinned — waiting for Steam to update the game"}
+              Pinned — waiting for Steam to install the matching build
             </div>
             <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>
-              {awaiting.mode === "reinstall"
-                ? "The fix's exact build is pinned. Uninstall this game, reinstall it from Steam, then press the fix again. The fix will only apply after the installed depot manifests match."
-                : dlComplete
-                ? "Download complete. Press Apply now to install the fix onto this build."
-                : "Press Start download now to retry Steam's pinned-build update. The game is launched too, which helps Steam begin the download if it is still idle."}
+              {dlComplete
+                ? "Steam's installed depot manifests match the pin. You can apply the fix now."
+                : "Steam is verifying or updating to the pinned build. If it stays idle, retry verification. The fix can apply once the installed depot manifests match."}
             </div>
-            {awaiting.mode !== "reinstall" && !dlComplete && (
+            {!dlComplete && (
               <DialogButton
                 style={{ ...bs, marginBottom: 6 }}
                 onClick={async () => {
                   await noInternetFixBegin(appid).catch(() => ({}));
                   await triggerSteamInstall(appid).catch(() => ({}));
-                  launchGame(appid);
+                  const result = await validateSteamApp(appid).catch(() => ({ success: false }));
+                  if (!result.success) {
+                    setMsg("Could not request Steam verification. Open the game's Properties → Installed Files → Verify integrity in Steam.");
+                  }
                 }}
               >
-                ▶ Start download now
+                Retry Steam verification
               </DialogButton>
             )}
             <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
-              {awaiting.mode !== "reinstall" && <DialogButton
+              <DialogButton
                 style={bs}
+                disabled={!dlComplete}
                 onClick={() => awaiting.run().catch(() => {})}
               >
-                {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
-              </DialogButton>}
+                Apply {awaiting.label} now
+              </DialogButton>
               <DialogButton
                 style={bs}
                 onClick={() => {
