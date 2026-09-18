@@ -256,7 +256,7 @@ export type CloudRedirectProvider = "local" | "folder" | "gdrive" | "onedrive";
 export interface CloudRedirectProviderStatus {
   success: boolean; configured?: boolean; authenticated?: boolean;
   provider?: CloudRedirectProvider; providers?: string[];
-  syncFolderPath?: string; folderReady?: boolean; folderWritable?: boolean;
+  steamUserHome?: string; syncFolderPath?: string; folderReady?: boolean; folderWritable?: boolean;
   folderBridgeReady?: boolean; restartRequired?: boolean; migrationNote?: string; pendingProvider?: boolean;
   migrations?: CloudRedirectMigration[]; repairMigration?: CloudRedirectMigration | null;
   runningAppIds?: number[];

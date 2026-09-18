@@ -596,6 +596,7 @@ def provider_status() -> dict:
         "authenticated": authenticated,
         "provider": provider,
         "providers": providers,
+        "steamUserHome": slssteam._home(),
         "syncFolderPath": sync_folder_path,
         "folderReady": folder_ready,
         "folderWritable": folder_writable,

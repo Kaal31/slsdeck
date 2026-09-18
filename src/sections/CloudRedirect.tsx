@@ -338,9 +338,17 @@ export function CloudRedirectSection() {
     const game = await pickSaveGame(importGames);
     if (!game) return;
     let path = "";
+    let home = "";
+    try {
+      const status = await crProviderStatus();
+      home = status.steamUserHome || "";
+      if (!status.success || !home.startsWith("/")) {
+        throw new Error(status.error || "Could not detect the Steam user's home directory");
+      }
+    } catch (error) { setMsg(`Save picker failed: ${error}`); return; }
     try {
       const picked: any = await openFilePicker(
-        FileSelectionType.FILE, "/home", true, true,
+        FileSelectionType.FILE, home, true, true,
       );
       path = picked?.realpath || picked?.path || "";
     } catch { return; }
