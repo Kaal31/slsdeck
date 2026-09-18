@@ -149,6 +149,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   }, [appid]);
   const [check, setCheck] = useState<FixCheck | null>(null);
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
+  const [tokeerDownload, setTokeerDownload] = useState({ appid, complete: false });
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
   const [tokeerLookup, setTokeerLookup] = useState<{ name: string; cachedGames: number; updatedAt?: number }>({ name: "", cachedGames: 0 });
   const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord | null>(null);
@@ -188,6 +189,26 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const dlPoll = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopFlag = useRef(false);
   const tokeerRefreshApp = useRef(0);
+  const tokeerDownloadReady = tokeerDownload.appid === appid && tokeerDownload.complete;
+
+  useEffect(() => {
+    let mounted = true;
+    let checking = false;
+    setTokeerDownload({ appid, complete: false });
+    const checkDownload = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const complete = await isDownloadComplete(appid);
+        if (mounted) setTokeerDownload({ appid, complete });
+      } finally {
+        checking = false;
+      }
+    };
+    void checkDownload();
+    const timer = setInterval(checkDownload, 5000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, [appid]);
 
   const stop = () => {
     if (poll.current) {
@@ -1315,13 +1336,21 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           {tokeerApplied.healthReason || (tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed")} · Version not pinned
         </div>
       </div>}
-      {tokeerGame && !tokeerApplied && <TokeerSection headless activationRequest={{
+      {tokeerGame && !tokeerApplied && tokeerDownloadReady && <TokeerSection headless activationRequest={{
         appid,
         gameName: tokeerGame.name || tokeerLookup.name,
         availabilityLabel: tokeerGame.label,
         remaining: tokeerGame.remaining,
         total: tokeerGame.total,
       }} />}
+      {tokeerGame && !tokeerApplied && !tokeerDownloadReady && (
+        <div style={{border:"1px solid rgba(202,168,255,.28)",borderRadius:8,padding:8,background:"rgba(202,168,255,.06)"}}>
+          <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>
+            Tokeer activation{tokeerGame.remaining!==undefined?` · ${tokeerGame.remaining}${tokeerGame.total!==undefined?` / ${tokeerGame.total}`:""} keys available`:""}
+          </div>
+          <div style={{fontSize:11,opacity:.72}}>Activation is available once the game finishes downloading.</div>
+        </div>
+      )}
       {!tokeerGame && !tokeerApplied && (
         <div style={{ fontSize: 11, opacity: 0.65, padding: "5px 2px" }}>
           Tokeer: {tokeerRefreshing
