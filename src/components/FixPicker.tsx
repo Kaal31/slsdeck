@@ -1170,16 +1170,16 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   const installProxy = async (kind: MultiplayerProxyKind) => {
     setBusy(kind);
-    setMsg(`Downloading and installing ${kind === "uc-online2" ? "UC Online 2" : "EOS Proxy"}…`);
+    setMsg(`Downloading and applying ${kind === "uc-online2" ? "UC Online 2" : "EOS Proxy"}…`);
     try {
       const result = await multiplayerProxyInstall(appid, kind);
-      setMsg(result.success ? (result.warning || "Multiplayer fix installed. Restart the game.") : (result.error || "Install failed"));
+      setMsg(result.success ? (result.warning || "Multiplayer fix applied. Restart the game.") : (result.error || "Apply failed"));
       if (result.success) {
         await refresh();
         void refreshBadges();
       }
     } catch (e) {
-      setMsg(`Install failed: ${e}`);
+      setMsg(`Apply failed: ${e}`);
     } finally {
       setBusy("");
     }
@@ -1452,7 +1452,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         return (
           <div key={kind} style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
-              {label} · Manual only · {item.installed ? "✓ Installed" : item.targets.length ? "Available" : "No matching DLL"}
+              {label} · Manual only · {item.installed ? "✓ Applied" : item.targets.length ? "Available" : "No matching DLL"}
             </div>
             <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
               {kind === "uc-online2"
@@ -1464,7 +1464,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             </div>
             {!item.installed && item.targets.length > 0 && (
               <DialogButton style={bs} disabled={working} onClick={() => installProxy(kind)}>
-                {busy === kind ? "Installing…" : `Install ${label}`}
+                {busy === kind ? "Applying…" : `Apply ${label} fix`}
               </DialogButton>
             )}
           </div>
