@@ -340,7 +340,7 @@ export function CloudRedirectSection() {
     let path = "";
     try {
       const picked: any = await openFilePicker(
-        FileSelectionType.FILE, "/home/deck/Downloads", true, true,
+        FileSelectionType.FILE, "/home", true, true,
       );
       path = picked?.realpath || picked?.path || "";
     } catch { return; }
@@ -418,7 +418,7 @@ export function CloudRedirectSection() {
     <PanelSectionRow><ToggleField label="Sync playtime" checked={!!state.syncPlaytime}
       onChange={(v) => toggleOption("sync_playtime", v)} disabled={busy} /></PanelSectionRow>
     <PanelSectionRow><ButtonItem layout="below" onClick={importSave} disabled={busy || !importGames.length}
-      description="Choose an SLS game, then select a loose save file or ZIP/TAR archive from Downloads.">
+      description="Choose an SLS game, then browse for a loose save file or ZIP/TAR archive.">
       Add save file or archive
     </ButtonItem></PanelSectionRow>
     <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" || state.configured ? "#5ee6c4" : "#f5a623" }}>
