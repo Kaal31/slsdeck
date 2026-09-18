@@ -3,13 +3,13 @@
 import io
 import os
 import shutil
-import tempfile
 import threading
 import zipfile
 
 from . import fixes, slssteam, settings
 from .httpc import ensure_http_client
 from .logger import logger
+from .paths import runtime_path
 from .steam import get_game_install_path_response
 from .utils import chown_to_user
 
@@ -20,6 +20,7 @@ SOURCES = {
 }
 _locks = {}
 _guard = threading.Lock()
+_cache_locks = {key: threading.Lock() for key in ("uc-online2", "eos-proxy", "eos-proxy-absolum")}
 
 
 def _game(appid):
@@ -65,17 +66,15 @@ def status(appid):
 def _release_assets(kind, appid, names):
     repo = SOURCES[kind][0]
     client = ensure_http_client("SLSDeck: multiplayer proxy release")
-    endpoint = f"https://api.github.com/repos/{repo}/releases/latest"
+    endpoint = (f"https://api.github.com/repos/{repo}/releases/tags/absolum"
+                if kind == "eos-proxy" and int(appid) == 1904480 else
+                f"https://api.github.com/repos/{repo}/releases/latest")
     response = client.get(endpoint, headers={"Accept": "application/vnd.github+json", "User-Agent": "SLSDeck"}, timeout=20)
     response.raise_for_status()
-    assets = response.json().get("assets", [])
-    # Absolum requires the separate upstream release, not the generic one.
-    if kind == "eos-proxy" and int(appid) == 1904480:
-        response = client.get(f"https://api.github.com/repos/{repo}/releases/tags/absolum",
-                              headers={"Accept": "application/vnd.github+json", "User-Agent": "SLSDeck"}, timeout=20)
-        response.raise_for_status()
-        assets = response.json().get("assets", [])
-    archives = [a for a in assets if a.get("name", "").lower().endswith(".zip")]
+    release = response.json()
+    assets = release.get("assets", [])
+    archives = [a for a in assets if a.get("name", "").lower().endswith(".zip")
+                and "src" not in a.get("name", "").lower()]
     direct = {name: [a for a in assets if a.get("name", "").casefold() == name]
               for name in names}
     if all(len(items) == 1 for items in direct.values()):
@@ -87,7 +86,7 @@ def _release_assets(kind, appid, names):
     urls = [a.get("browser_download_url", "") for a in selected]
     if any(not url.startswith("https://github.com/" + repo + "/releases/download/") for url in urls):
         raise ValueError("Unexpected release download URL")
-    return selected
+    return str(release.get("tag_name") or ""), selected
 
 
 def _payloads(data, names):
@@ -103,6 +102,82 @@ def _payloads(data, names):
                 raise ValueError(f"Invalid Windows DLL: {name}")
             result[name.casefold()] = payload
         return result
+
+
+def _cache_dir(kind, appid):
+    # Absolum has a different upstream EOS binary; never share its cache with
+    # the generic EOS release used for other games.
+    variant = "eos-proxy-absolum" if kind == "eos-proxy" and int(appid) == 1904480 else kind
+    path = runtime_path("multiplayer-proxies", variant)
+    os.makedirs(path, exist_ok=True)
+    return path, variant
+
+
+def _valid_cached(path):
+    try:
+        if not 2 <= os.path.getsize(path) <= 30 * 1024 * 1024:
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+def ensure_dlls(kind, appid=0, force=False):
+    """Persist upstream release DLLs, like SmokeAPI's runtime cache.
+
+    A cache refresh stages and validates every DLL before replacing any of the
+    existing files. Game installs read complete DLLs under the same lock.
+    """
+    if kind not in SOURCES:
+        return {"success": False, "error": "Unknown multiplayer fix"}
+    folder, variant = _cache_dir(kind, appid)
+    names = {n.casefold() for n in SOURCES[kind][2]}
+    with _cache_locks[variant]:
+        paths = {name: os.path.join(folder, name) for name in names}
+        if not force and all(_valid_cached(p) for p in paths.values()):
+            return {"success": True, "cached": True, "dlls": paths,
+                    "tag": settings.get_dep_version(variant)}
+        try:
+            tag, assets = _release_assets(kind, appid, names)
+            client = ensure_http_client("SLSDeck: multiplayer proxy download")
+            payloads = {}
+            for asset in assets:
+                response = client.get(asset["browser_download_url"],
+                                      headers={"User-Agent": "SLSDeck"}, timeout=120,
+                                      follow_redirects=True)
+                response.raise_for_status()
+                data = response.content
+                if asset["name"].lower().endswith(".zip"):
+                    payloads.update(_payloads(data, names))
+                elif data.startswith(b"MZ") and len(data) <= 30 * 1024 * 1024:
+                    payloads[asset["name"].casefold()] = data
+                else:
+                    raise ValueError("Invalid upstream DLL")
+            if set(payloads) != names:
+                raise ValueError("Upstream release is missing a required DLL")
+            staged = {}
+            try:
+                for name, data in payloads.items():
+                    stage = paths[name] + ".new"
+                    with open(stage, "wb") as handle:
+                        handle.write(data)
+                    staged[name] = stage
+                for name, stage in staged.items():
+                    os.replace(stage, paths[name])
+                    chown_to_user(paths[name], recursive=False)
+            finally:
+                for stage in staged.values():
+                    if os.path.exists(stage):
+                        os.remove(stage)
+            if tag:
+                settings.set_dep_version(variant, tag)
+            logger.log(f"SLSDeck: cached {variant} {tag}")
+            return {"success": True, "cached": False, "dlls": paths, "tag": tag,
+                    "url": assets[0]["browser_download_url"]}
+        except Exception as exc:
+            logger.warn(f"SLSDeck: {variant} cache refresh failed: {exc}")
+            return {"success": False, "error": str(exc)}
 
 
 def install(appid, kind):
@@ -131,24 +206,13 @@ def install(appid, kind):
                 return {"success": False, "error": "Another fix owns a target DLL; un-fix it before applying this proxy"}
             if kind == "eos-proxy" and any(os.path.lexists(os.path.join(path, t[:-4] + ".yes")) for t in targets):
                 return {"success": False, "error": "EOS .yes backup already exists; refusing to overwrite it"}
-            names = {os.path.basename(t).casefold() for t in targets}
-            assets = _release_assets(kind, appid, names)
-            with tempfile.TemporaryDirectory(prefix="slsdeck-proxy-") as temp:
-                payloads = {}
-                for index, asset in enumerate(assets):
-                    url = asset["browser_download_url"]
-                    asset_path = os.path.join(temp, str(index))
-                    fixes._download_archive(None, url, asset_path, appid)
-                    with open(asset_path, "rb") as handle:
-                        data = handle.read()
-                    if asset["name"].lower().endswith(".zip"):
-                        payloads.update(_payloads(data, names))
-                    elif data.startswith(b"MZ") and len(data) <= 30 * 1024 * 1024:
-                        payloads[asset["name"].casefold()] = data
-                    else:
-                        raise ValueError("Invalid upstream DLL")
-                if set(payloads) != names:
-                    raise ValueError("Upstream release is missing a required DLL")
+            cached = ensure_dlls(kind, appid)
+            if not cached.get("success"):
+                return cached
+            payloads = {}
+            for name, filename in cached["dlls"].items():
+                with open(filename, "rb") as handle:
+                    payloads[name] = handle.read()
             written, replaced = [], []
             try:
                 for rel in targets:
@@ -187,7 +251,8 @@ def install(appid, kind):
                     elif rel not in replaced and os.path.isfile(full) and rel.lower().endswith(".yes"):
                         os.remove(full)
                 raise
-            fixes._write_fix_log(path, appid, f"AppID {appid}", spec[1], assets[0]["browser_download_url"], written, replaced)
+            fixes._write_fix_log(path, appid, f"AppID {appid}", spec[1],
+                                 cached.get("url") or f"https://github.com/{spec[0]}/releases", written, replaced)
             if not any(r["fixType"] == spec[1] for r in _records(path, appid)):
                 raise RuntimeError("Fix files installed, but could not record them. Keep the .slsdeck-orig backups")
             chown_to_user(fixes._fix_log_path(path, appid), recursive=False)
