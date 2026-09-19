@@ -55,17 +55,15 @@ export async function isDownloadComplete(appid: number): Promise<boolean> {
   }
 }
 
-/** Match Moon's update policy: only depots installed on this machine count. */
+/** A pin is ready only when every pinned depot is installed at its exact GID. */
 export function installedDepotsMatchPin(
   pinned: Record<string, string>, installed: Record<string, string>
 ): boolean {
-  let matched = 0;
-  for (const [depot, gid] of Object.entries(pinned)) {
-    if (!(depot in installed)) continue; // Other OS / unavailable depot.
-    if (String(installed[depot]) !== String(gid)) return false;
-    matched++;
-  }
-  return matched > 0;
+  const entries = Object.entries(pinned);
+  if (!entries.length) return false;
+  return entries.every(([depot, gid]) =>
+    depot in installed && String(installed[depot]) === String(gid)
+  );
 }
 
 export async function isPinnedBuildReady(appid: number): Promise<boolean> {
