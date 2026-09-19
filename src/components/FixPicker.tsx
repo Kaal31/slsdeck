@@ -184,6 +184,39 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [hv, setHv] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; gids?: { [d: string]: string } } | null>(null);
   const [crak, setCrak] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; badges?: string[]; gids?: { [d: string]: string } } | null>(null);
   const [hasRyuuKey, setHasRyuuKey] = useState(true);
+
+  // For fix-derived pins, keep the installed side live while Steam verifies or
+  // downloads. This lets the banner move from "Update pending" to "Pin matched"
+  // without requiring the user to close and reopen Fixes.
+  useEffect(() => {
+    if (!pinned || pinInfo.source !== "lua.tools-fix") return;
+    let mounted = true;
+    let reading = false;
+    const readInstalledPin = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const status = await getPinStatus(appid);
+        if (mounted && status.success && status.pinned) {
+          setPinInfo((current) => ({
+            ...current,
+            buildid: status.buildid || current.buildid,
+            source: status.pinSource || current.source,
+            depots: status.depots || current.depots,
+            installedBuildid: status.installedBuildid,
+            installedDepots: status.installedDepots || {},
+          }));
+        }
+      } catch {
+        /* keep the last confirmed comparison */
+      } finally {
+        reading = false;
+      }
+    };
+    void readInstalledPin();
+    const timer = setInterval(readInstalledPin, 3000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, [appid, pinned, pinInfo.source]);
   const [busy, setBusy] = useState("");
   const [ns, setNs] = useState<NetsockStatus | null>(null);
   const [proxies, setProxies] = useState<MultiplayerProxyStatus | null>(null);
