@@ -4793,7 +4793,7 @@ def _read_pin_gids(appid: int) -> Dict[int, str]:
     return out
 
 
-def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
+def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "") -> Dict[str, Any]:
     """Pin the game to a SPECIFIC set of depot manifest gids (build-accurate),
     e.g. the setManifestid gids from a fix's manifest .lua — as opposed to
     pin_app_current which locks whatever is installed now. slsteam-moon fetches
@@ -4803,6 +4803,9 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "invalid appid"}
+    buildid = str(buildid or "").strip()
+    if buildid and not buildid.isdigit():
+        buildid = ""
     clean = {}
     for d, g in (depot_gids or {}).items():
         try:
@@ -4866,18 +4869,21 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
     if ok:
         try:
             from . import settings
-            settings.set_pinned_manifest_snapshot(appid, clean, "")
-            if changed:
+            settings.set_pinned_manifest_snapshot(appid, clean, buildid)
+            if buildid:
+                settings.set_pinned_build(appid, buildid)
+            elif changed:
                 settings.set_pinned_build(appid, "")
         except Exception:
             pass
         try:
             from . import buildhistory
-            buildhistory.snapshot(appid, clean, source="pin")
+            buildhistory.snapshot(appid, clean, buildid=buildid, source="pin")
         except Exception:
             pass
     return {"success": ok, "depots": len(clean), "changed": changed,
-            "wasPinned": was_pinned, "alreadyOnBuild": already_on_build}
+            "wasPinned": was_pinned, "alreadyOnBuild": already_on_build,
+            "buildid": buildid}
 
 
 def is_pinned(appid) -> bool:
