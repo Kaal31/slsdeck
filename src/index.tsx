@@ -329,8 +329,8 @@ function RepairBanner() {
   const [reason, setReason] = useState("");
   // A broken config.yaml is the OTHER way the engine goes silently dead:
   // injection can be perfectly healthy while a malformed/missing key makes
-  // SLSsteam fall back to its own defaults (DisableUpdates: yes hands added
-  // games zero depots). Both faults surface through this one banner.
+  // SLSsteam fall back to defaults that do not match the managed setup. Both
+  // faults surface through this one banner.
   const [cfgIssues, setCfgIssues] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");

@@ -929,15 +929,8 @@ def ensure_config() -> bool:
 # Missing key(s)"), so omitting a key is NOT neutral -- it silently opts into
 # whatever upstream chose.
 _REQUIRED_BOOL_KEYS = {
-    # Needed for the /tmp/SLSsteam.API IPC (schema + install triggers).
+    # Needed for Moon's private per-user runtime API (schema + install triggers).
     "API": "yes",
-    # CRITICAL. SLSsteam's own default is `yes`, and it implements this by
-    # hooking CUserAppManager::BuildDepotDependency so that unowned apps (i.e.
-    # everything in AdditionalApps) are handed ZERO depots. Steam then resolves
-    # "0 active: 0 target:", downloads nothing, and writes an appmanifest with
-    # StateFlags 4 / SizeOnDisk 0 -- a game that shows as installed but is empty.
-    # It must be `no` or no added game can ever download.
-    "DisableUpdates": "no",
     # Both SLSsteam and slsteam-moon ship this OFF ("Enables playing of not owned
     # games"), and SLSDeck's bundled template inherited that default -- which
     # directly contradicts the plugin's entire purpose. Adding a game to
@@ -3381,6 +3374,102 @@ def _config_scalar(text: str, key: str) -> str:
 # flag (default true in moon) turns that behaviour on/off. Writing it on stock
 # SLSsteam is harmless (the key is simply ignored).
 _TRUE_WORDS = {"true", "1", "yes", "on"}
+
+
+def _get_moon_bool(key: str, default: bool) -> Dict[str, Any]:
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found", "enabled": default}
+    enabled = default
+    present = False
+    for ln in lines:
+        m = re.match(rf"^{re.escape(key)}[ \t]*:[ \t]*(\S+)", ln)
+        if m:
+            enabled = m.group(1).strip().strip('"').lower() in _TRUE_WORDS
+            present = True
+            break
+    return {"success": True, "enabled": enabled, "present": present}
+
+
+def _set_moon_bool(key: str, enabled: bool) -> Dict[str, Any]:
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    newval = "yes" if enabled else "no"
+    found = False
+    for i, ln in enumerate(lines):
+        if re.match(rf"^{re.escape(key)}[ \t]*:", ln):
+            lines[i] = f"{key}: {newval}"
+            found = True
+            break
+    if not found:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.append(f"{key}: {newval}")
+    ok = _write_config_lines(lines)
+    return {"success": ok, "enabled": enabled}
+
+
+def get_auto_update_apps() -> Dict[str, Any]:
+    """Moon defaults to updating every managed app unless individually pinned."""
+    return _get_moon_bool("AutoUpdateApps", True)
+
+
+def set_auto_update_apps(enabled: bool) -> Dict[str, Any]:
+    return _set_moon_bool("AutoUpdateApps", enabled)
+
+
+def get_manifest_donation() -> Dict[str, Any]:
+    """Read Donate.Enabled without disturbing the rest of Moon's Donate map."""
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found", "enabled": True}
+    enabled = True
+    present = False
+    in_donate = False
+    for ln in lines:
+        if re.match(r"^Donate[ \t]*:", ln):
+            in_donate = True
+            continue
+        if in_donate and ln.strip() and not ln.startswith((" ", "\t", "#")):
+            break
+        if in_donate:
+            m = re.match(r"^[ \t]+Enabled[ \t]*:[ \t]*(\S+)", ln)
+            if m:
+                enabled = m.group(1).strip().strip('"').lower() in _TRUE_WORDS
+                present = True
+                break
+    return {"success": True, "enabled": enabled, "present": present}
+
+
+def set_manifest_donation(enabled: bool) -> Dict[str, Any]:
+    """Change only Donate.Enabled, preserving URL, limits, and user comments."""
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    newval = "yes" if enabled else "no"
+    donate_at = None
+    end = len(lines)
+    for i, ln in enumerate(lines):
+        if re.match(r"^Donate[ \t]*:", ln):
+            donate_at = i
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip() and not lines[j].startswith((" ", "\t", "#")):
+                    end = j
+                    break
+            for j in range(i + 1, end):
+                if re.match(r"^[ \t]+Enabled[ \t]*:", lines[j]):
+                    lines[j] = f"  Enabled: {newval}"
+                    ok = _write_config_lines(lines)
+                    return {"success": ok, "enabled": enabled}
+            lines.insert(i + 1, f"  Enabled: {newval}")
+            ok = _write_config_lines(lines)
+            return {"success": ok, "enabled": enabled}
+    if lines and lines[-1].strip() != "":
+        lines.append("")
+    lines.extend(["Donate:", f"  Enabled: {newval}"])
+    ok = _write_config_lines(lines)
+    return {"success": ok, "enabled": enabled}
 
 
 def get_achievements() -> Dict[str, Any]:

@@ -24,6 +24,9 @@
 #Disables Family Share license locking for self and others
 DisableFamilyShareLock: yes
 
+#Locally unlocks Steam areas restricted by parental controls. Requires restart.
+DisableParentalRestrictions: no
+
 #Switches to whitelist instead of the default blacklist
 UseWhitelist: no
 
@@ -52,7 +55,9 @@ FakeOffline:
 
 #Change AppIds of games to enable networking features
 #Use 0 as a key to set for all unowned Apps
-#Keeps track of the proper AppIds via game launches, so please do not start multiple FakeAppId enabled games simultaneously
+#Do not run multiple apps under the same AppId simultaneously! It's possible but
+#will most likely cause undefined behaviour
+#Requires access to /proc to read processes' real AppId from their environment
 FakeAppIds:
 
 #Custom ingame statuses. Set AppId to 0 to disable
@@ -68,6 +73,13 @@ SubscriptionTimestamps:
 
 #Blocks games from unlocking on wrong accounts
 DenuvoGames:
+
+#Optional per-app SteamID override for games whose ownership ticket is requested
+#before Moon can apply its automatic spoofing.
+SteamIdOverride:
+
+#Smart ownership-ticket analysis flags. 0x1 enables SteamDRM detection.
+SmartTickets: 0x1
 
 #Automatically disable SLSsteam when steamclient.so does not match a predefined file hash that is known to work
 #You should enable this if you're planing to use SLSsteam with Steam Deck's gamemode
@@ -86,7 +98,7 @@ WarnHashMissmatch: no
 #Notify when SLSsteam is done initializing
 NotifyInit: yes
 
-#Enable sending commands to SLSsteam via /tmp/SLSsteam.API
+#Enable commands through Moon's private per-user runtime API socket.
 API: no
 
 #Disable cloud saves for unlocked games. Default "no" so CloudRedirect (shipped
@@ -94,16 +106,36 @@ API: no
 #NOT using CloudRedirect, to avoid a doomed cloud sync that Steam rejects.
 DisableCloud: no
 
-#Disable updates for AppIds on AdditionalApps.
-#MUST be "no" for SLSDeck. SLSsteam implements this by hooking
-#CUserAppManager::BuildDepotDependency so unowned apps get NO depots at all --
-#which blocks the FIRST download too, not just later updates. With it on, Steam
-#resolves "0 target" depots, downloads nothing, and still writes the app's
-#manifest as StateFlags 4 / SizeOnDisk 0, so the game shows as installed but is
-#empty and can never be recovered without deleting that manifest.
-#SLSsteam's own default is "yes", so this key must be present and explicit.
-#To hold a game at a specific build, use ManifestPins / the pin button instead.
-DisableUpdates: no
+#Keep unpinned managed games on the latest build. Per-game ManifestPins still
+#take precedence. This mirrors LuaTools' global "Auto Update Apps" setting.
+AutoUpdateApps: yes
+
+#Share short-lived manifest request codes only for depots this account owns.
+#The plugin exposes this setting in Advanced; disable it there to opt out.
+Donate:
+  Enabled: yes
+  Url: "https://manifest.luastools.xyz"
+  IntervalSecs: 30
+  WantedRefreshSecs: 300
+  MaxMintsPerCycle: 25
+  MinMintIntervalMs: 2000
+  MaxMintsPerSession: 0
+
+#Inject every storefront-advertised DLC. Content-backed DLC remains automatic.
+InjectAllAdvertisedDlc: no
+
+#Achievement schema support for managed games.
+Achievements: yes
+AchievementOwnerId: 76561198028121353
+AchievementOwners:
+
+#Validated per-Steam-client signature cache and asynchronous appinfo refresh.
+PatternCache: yes
+AsyncProvision: yes
+
+#Safety valve for accidentally publishing an enormous stplug-in collection.
+#Set to 0 to disable the limit.
+MaxManagedApps: 4096
 
 #Changes your account's E-Mail clientsided. Leave blank to disable
 FakeEmail: ""

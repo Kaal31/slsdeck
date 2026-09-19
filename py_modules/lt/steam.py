@@ -1032,20 +1032,7 @@ def download_preflight(appid: int) -> Dict[str, Any]:
         f"{appid} is in AdditionalApps" if listed else
         f"{appid} missing from AdditionalApps in config.yaml")
 
-    # 3. DisableUpdates must be off, or SLSsteam hands Steam zero depots.
-    du_ok = False
-    try:
-        cfg = open(slssteam.config_path(), "r", encoding="utf-8").read()
-        m = re.search(r"^DisableUpdates[ \t]*:[ \t]*(\S+)", cfg, re.MULTILINE)
-        du_ok = bool(m and m.group(1).strip().lower() in ("no", "false"))
-        detail = (f"DisableUpdates: {m.group(1)}" if m else
-                  "DisableUpdates key ABSENT - SLSsteam defaults it to yes, which "
-                  "gives unowned apps zero depots")
-    except Exception as exc:
-        detail = f"could not read config.yaml: {exc}"
-    add("disable_updates_off", du_ok, detail)
-
-    # 4. Depot keys present in config.vdf RIGHT NOW. This is the one that keeps
+    # 3. Depot keys present in config.vdf RIGHT NOW. This is the one that keeps
     #    silently reverting: Steam rewrites config.vdf from memory on exit.
     want, have = set(), set()
     try:
@@ -1142,7 +1129,7 @@ def download_diagnosis(appid: int) -> Dict[str, Any]:
     md, td = out.get("mountedDepots"), out.get("targetDepots")
     if td == 0:
         out["summary"] = ("Steam targeted ZERO depots - it never attempted a download. "
-                          "That points at ownership/DisableUpdates, NOT at depot keys.")
+                          "That points at ownership/registration, NOT at depot keys.")
     elif md == 0 and "decryption" in str(out.get("result", "")).lower():
         out["summary"] = ("Steam targeted depots but could not decrypt them - the depot "
                           "keys were not in config.vdf when it tried.")

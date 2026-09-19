@@ -1262,6 +1262,18 @@ class Plugin:
     async def set_achievements(self, enabled: bool) -> Dict[str, Any]:
         return await self._run(slssteam.set_achievements, bool(enabled))
 
+    async def get_auto_update_apps(self) -> Dict[str, Any]:
+        return await self._run(slssteam.get_auto_update_apps)
+
+    async def set_auto_update_apps(self, enabled: bool) -> Dict[str, Any]:
+        return await self._run(slssteam.set_auto_update_apps, bool(enabled))
+
+    async def get_manifest_donation(self) -> Dict[str, Any]:
+        return await self._run(slssteam.get_manifest_donation)
+
+    async def set_manifest_donation(self, enabled: bool) -> Dict[str, Any]:
+        return await self._run(slssteam.set_manifest_donation, bool(enabled))
+
     # ── SmokeAPI DLC unlocker (steam_api proxy) ────────────────────────────
     async def smokeapi_status(self, appid: int) -> Dict[str, Any]:
         try:

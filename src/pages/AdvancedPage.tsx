@@ -30,6 +30,8 @@ import {
   getAutoApply, setAutoApply,
   getAutoRepoint, setAutoRepoint,
   getAchievements, setAchievements,
+  getAutoUpdateApps, setAutoUpdateApps,
+  getManifestDonation, setManifestDonation,
   getHideToolsQam, setHideToolsQam,
   getOnlineUsername, setOnlineUsername,
   getHideOnOwned, setHideOnOwned,
@@ -357,6 +359,8 @@ function OptionsPane({
   const [hideToolsQam, setHideToolsQamState] = useState(true);
   const [achievements, setAchievementsState] = useState(true);
   const [achMoon, setAchMoon] = useState(true);
+  const [autoUpdateApps, setAutoUpdateAppsState] = useState(true);
+  const [manifestDonation, setManifestDonationState] = useState(true);
   const [notifyGameAdds, setNotifyGameAdds] = useState(true);
   const [surfaceFailedSources, setSurfaceFailedSources] = useState(false);
   const [rouletteQam, setRouletteQam] = useState(() => readRouletteBool(ROULETTE_QAM_KEY));
@@ -373,6 +377,8 @@ function OptionsPane({
     getAutoApply().then((r) => setAutoApplyState(!!r.enabled)).catch(() => {});
     getAutoRepoint().then((r) => setAutoRepointState(!!r.enabled)).catch(() => {});
     getAchievements().then((r) => { setAchievementsState(!!r.enabled); setAchMoon(r.moon !== false); }).catch(() => {});
+    getAutoUpdateApps().then((r) => setAutoUpdateAppsState(r.enabled !== false)).catch(() => {});
+    getManifestDonation().then((r) => setManifestDonationState(r.enabled !== false)).catch(() => {});
     getHideToolsQam().then((r) => setHideToolsQamState(!!r.enabled)).catch(() => {});
     getHideOnOwned().then((r) => setHideOwned(!!r.enabled)).catch(() => {});
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
@@ -592,6 +598,36 @@ function OptionsPane({
             }
             checked={achievements}
             onChange={async (v) => { setAchievementsState(v); await setAchievements(v); }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Automatically update managed games"
+            description="Keep unpinned SLS games on their latest available build. Per-game manifest pins still take precedence. Restart Steam after changing."
+            checked={autoUpdateApps}
+            onChange={async (v) => {
+              setAutoUpdateAppsState(v);
+              const r = await setAutoUpdateApps(v);
+              if (!r?.success) {
+                setAutoUpdateAppsState(!v);
+                toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the Moon config" });
+              }
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Share owned manifest request codes"
+            description="Allow Moon to contribute short-lived manifest request codes only for depots this Steam account owns. Off disables both active requests and passive capture."
+            checked={manifestDonation}
+            onChange={async (v) => {
+              setManifestDonationState(v);
+              const r = await setManifestDonation(v);
+              if (!r?.success) {
+                setManifestDonationState(!v);
+                toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the Moon config" });
+              }
+            }}
           />
         </PanelSectionRow>
         <PanelSectionRow>

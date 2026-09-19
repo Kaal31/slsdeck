@@ -576,6 +576,10 @@ export const setAutoRepoint = callable<[enabled: boolean], { success: boolean }>
 // slsteam-moon live achievements (config.yaml Achievements). `moon` = engine supports it.
 export const getAchievements = callable<[], { success: boolean; enabled: boolean; present?: boolean; moon?: boolean }>("get_achievements");
 export const setAchievements = callable<[enabled: boolean], { success: boolean; enabled?: boolean }>("set_achievements");
+export const getAutoUpdateApps = callable<[], { success: boolean; enabled: boolean; present?: boolean }>("get_auto_update_apps");
+export const setAutoUpdateApps = callable<[enabled: boolean], { success: boolean; enabled?: boolean; error?: string }>("set_auto_update_apps");
+export const getManifestDonation = callable<[], { success: boolean; enabled: boolean; present?: boolean }>("get_manifest_donation");
+export const setManifestDonation = callable<[enabled: boolean], { success: boolean; enabled?: boolean; error?: string }>("set_manifest_donation");
 // Pin the game to a fix's manifest build without applying (build-accurate flow).
 export interface PinResult {
   success: boolean;

@@ -222,6 +222,8 @@ const getAutoFix = callable("get_auto_fix");
 const setAutoFix = callable("set_auto_fix");
 const netsockStatus = callable("netsock_status");
 const netsockSet = callable("netsock_set");
+const multiplayerProxyStatus = callable("multiplayer_proxy_status");
+const multiplayerProxyInstall = callable("multiplayer_proxy_install");
 const slsonlineStatus = callable("slsonline_status");
 const setSlsonline = callable("set_slsonline");
 callable("netsock_compatible");
@@ -301,6 +303,10 @@ const setAutoRepoint = callable("set_auto_repoint");
 // slsteam-moon live achievements (config.yaml Achievements). `moon` = engine supports it.
 const getAchievements = callable("get_achievements");
 const setAchievements = callable("set_achievements");
+const getAutoUpdateApps = callable("get_auto_update_apps");
+const setAutoUpdateApps = callable("set_auto_update_apps");
+const getManifestDonation = callable("get_manifest_donation");
+const setManifestDonation = callable("set_manifest_donation");
 callable("pin_for_fix");
 // Pin to a SPECIFIC lua.tools fix's build (its own manifest) — accurate per-fix.
 const pinForLuatoolsFix = callable("pin_for_luatools_fix");
@@ -1615,16 +1621,8 @@ async function checkFixesFull(appid) {
 // Hubcap / ~/Downloads), the correct order is: pin the manifest to that build →
 // let Steam update the game to it → apply the fix onto the matching build.
 //
-// Flow:
-//   1. Pin the fix's build (pinForFix). Harmless no-op if no build source.
-//   2. If the game is already installed AND its download is complete, skip the
-//      update entirely and go straight to applying (covers "installed with the
-//      pinned manifest but no fix applied yet").
-//   3. If no build could be pinned, just apply now (legacy behaviour).
-//   4. Otherwise trigger the Steam update to the pinned build, then:
-//        - guided (default): stop and let the user press Apply once the download
-//          bar completes;
-//        - auto: poll for completion and apply automatically.
+// Pin the fix's build, let Steam reconcile the installed depots with Moon's
+// pinned target, and apply the fix only after the on-disk depot GIDs match.
 async function installed(appid) {
     try {
         const p = await getGameInstallPath(appid);
@@ -1637,6 +1635,28 @@ async function installed(appid) {
 async function isDownloadComplete(appid) {
     try {
         return !!(await appDownloadComplete(appid)).complete;
+    }
+    catch {
+        return false;
+    }
+}
+/** Match Moon's update policy: only depots installed on this machine count. */
+function installedDepotsMatchPin(pinned, installed) {
+    let matched = 0;
+    for (const [depot, gid] of Object.entries(pinned)) {
+        if (!(depot in installed))
+            continue; // Other OS / unavailable depot.
+        if (String(installed[depot]) !== String(gid))
+            return false;
+        matched++;
+    }
+    return matched > 0;
+}
+async function isPinnedBuildReady(appid) {
+    try {
+        const [pin, download] = await Promise.all([getPinStatus(appid), appDownloadComplete(appid)]);
+        return !!(pin.success && pin.pinned && download.success && download.complete &&
+            installedDepotsMatchPin(pin.depots || {}, pin.installedDepots || {}));
     }
     catch {
         return false;
@@ -1657,44 +1677,29 @@ async function runBuildAccurateApply(h) {
     let pinned = false;
     // Default true: if we can't tell, assume the build changed so we force an
     // update rather than silently applying onto a stale build.
-    let pinChanged = true;
     try {
         const pin = await h.pinFn();
         source = pin.source || "none";
         pinned = !!pin.pinned;
-        pinChanged = pin.changed !== false;
     }
     catch {
         /* pin is best-effort */
     }
     const isInstalled = await installed(h.appid);
-    const downloadComplete = isInstalled ? await isDownloadComplete(h.appid) : false;
     // A source advertised a paired manifest, so failure to pin it must stop the
     // operation. Applying anyway would put the fix on latest/the wrong build.
     if (source === "none" || !pinned) {
         h.onPhase("pin_failed", { source });
         throw new Error("The selected fix's paired manifest could not be pinned.");
     }
-    // 3) Skip the update ONLY when the game is already pinned to *this exact build*
-    //    (the pin didn't change) and is installed & fully downloaded. That's the
-    //    "installed with the pinned manifest, fix not yet applied" case. If the pin
-    //    changed (a different/newer build), we must NOT skip — otherwise the
-    //    manifest upgrade would never download and the fix would land on the old
-    //    build.
-    if (!pinChanged && isInstalled && downloadComplete) {
+    // A pin file is not evidence that Steam has downloaded that build. Read
+    // InstalledDepots from Steam's appmanifest, even when the pin did not change.
+    if (isInstalled && await isPinnedBuildReady(h.appid)) {
         h.onPhase("applying");
         await h.doApply();
         return "applied";
     }
-    // Steam does not reliably switch an already-installed app to historical
-    // ManifestPins by launching or validating it. It frequently launches the
-    // current build instead. Keep the exact pin, but require a reinstall; the
-    // next apply attempt verifies the installed depot GIDs before extraction.
-    if (pinChanged && isInstalled) {
-        h.onPhase("awaiting_reinstall", { source });
-        return "reinstall";
-    }
-    // 4) Trigger Steam to update/download the game to the pinned build. First apply
+    // Trigger Steam to update/download the game to the pinned build. First apply
     //    the "no internet" fix (strip the steam.cfg update-block, restored once the
     //    download starts) so Steam doesn't fail the update with "no internet".
     h.onPhase("updating", { source });
@@ -1704,11 +1709,23 @@ async function runBuildAccurateApply(h) {
     catch {
         /* best-effort */
     }
+    // Moon reloads config.yaml through its file watcher. Give that watcher one
+    // turn before asking Steam to construct the install plan from the new pin.
+    await new Promise((resolve) => setTimeout(resolve, 750));
     try {
         await triggerSteamInstall(h.appid);
     }
     catch {
         /* the user can still start the download manually */
+    }
+    if (isInstalled) {
+        // Install IPC can be a no-op for an app Steam considers fully installed.
+        // Steam's Verify action makes it reconcile Moon's newly pinned TARGET
+        // against the actual ACTIVE depots; do not launch the stale game.
+        try {
+            await validateSteamApp(h.appid);
+        }
+        catch { /* user can retry */ }
     }
     if (!h.autoApply) {
         // Guided: stop here; the component shows an "Apply now" button and polls
@@ -1725,7 +1742,7 @@ async function runBuildAccurateApply(h) {
         await new Promise((r) => setTimeout(r, 3000));
         if (h.shouldStop?.())
             return "awaiting";
-        if (await isDownloadComplete(h.appid)) {
+        if (await isPinnedBuildReady(h.appid)) {
             h.onPhase("applying");
             await h.doApply();
             return "applied";
@@ -1734,31 +1751,6 @@ async function runBuildAccurateApply(h) {
     // Timed out -> fall back to guided so the user can apply manually.
     h.onPhase("awaiting_download");
     return "awaiting";
-}
-
-// Force Steam to download/update a game to its pinned build by launching it.
-//
-// Pinning a build only changes the *target* manifest; Steam won't fetch the new
-// files until something makes it re-check. Our IPC trigger (/tmp/SLSsteam.API
-// "install|appid") only reaches SLSsteam-added games — for a game the account
-// actually owns it's a no-op, which is why "pinned, waiting for download" can sit
-// forever. Launching the game makes Steam run its normal update-before-play
-// check, so a build whose installed manifest differs from the pinned target
-// downloads first. Works for owned and added games alike.
-//
-// For a Steam app the RunGame gameId is just the appid (non-Steam shortcuts use a
-// 64-bit gameID; we only pin real Steam apps here).
-function launchGame(appid) {
-    try {
-        const SC = window.SteamClient;
-        if (!SC?.Apps?.RunGame)
-            return false;
-        SC.Apps.RunGame(String(appid), "", -1, 100);
-        return true;
-    }
-    catch {
-        return false;
-    }
 }
 
 const TOKEER_DISCORD_URL = "https://discord.com/channels/1464130182364270696/1534460498446127175";
@@ -2134,6 +2126,70 @@ async function findSharedJsContext$1() {
     return tabs.find((t) => String(t.title || "") === "SharedJSContext")
         || tabs.find((t) => /SharedJSContext/i.test(String(t.title || "")))
         || null;
+}
+// The offscreen view still plays Discord audio. Keep it only while a panel or
+// Discord operation needs it, then release Chromium's view after a short grace
+// period so a quick switch between Fixes and Tokeer does not reload Discord.
+const VIEW_IDLE_MS = 15000;
+let viewUsers = 0;
+let viewCloseTimer = null;
+let viewClosing = null;
+let viewDisposed = false;
+async function closeIdleTokeerView() {
+    if (viewClosing)
+        return viewClosing;
+    viewClosing = (async () => {
+        const shared = await findSharedJsContext$1();
+        if (viewUsers && !viewDisposed)
+            return;
+        if (!shared?.webSocketDebuggerUrl)
+            return;
+        const closed = await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+      var v=window.SLSDECK_TOKEER_VIEW;
+      if(!v)return true;
+      try{v.m_browserView.SetVisible(false);}catch(e){}
+      v.Destroy();
+      window.SLSDECK_TOKEER_VIEW=undefined;
+      return true;
+    }catch(e){return false;}})()`, 3000);
+        if (closed)
+            invalidateDiscordCaptureCaches();
+    })().finally(() => { viewClosing = null; });
+    return viewClosing;
+}
+function scheduleTokeerViewClose() {
+    if (viewCloseTimer)
+        clearTimeout(viewCloseTimer);
+    viewCloseTimer = null;
+    if (viewUsers || viewDisposed)
+        return;
+    viewCloseTimer = setTimeout(() => {
+        viewCloseTimer = null;
+        if (!viewUsers)
+            void closeIdleTokeerView();
+    }, VIEW_IDLE_MS);
+}
+function retainTokeerDiscordView() {
+    if (viewCloseTimer)
+        clearTimeout(viewCloseTimer);
+    viewCloseTimer = null;
+    viewUsers++;
+    let released = false;
+    return () => {
+        if (released)
+            return;
+        released = true;
+        viewUsers = Math.max(0, viewUsers - 1);
+        scheduleTokeerViewClose();
+    };
+}
+function disposeTokeerDiscordView() {
+    viewDisposed = true;
+    viewUsers = 0;
+    if (viewCloseTimer)
+        clearTimeout(viewCloseTimer);
+    viewCloseTimer = null;
+    void closeIdleTokeerView();
 }
 async function hasTokeerBrowserView() {
     const shared = await findSharedJsContext$1();
@@ -3627,43 +3683,52 @@ async function cancelTokeerTicket(ticketUrl = "") {
  * BrowserView shares Steam CEF's Discord session, so a prior visible login is
  * reused. */
 async function connectTokeerDiscordHidden(fastRestore = false) {
-    // Reuse only our managed BrowserView. A normal Steam external-web tab may be
-    // readable through CDP but cannot be repositioned inside the plugin page.
-    if (await hasTokeerBrowserView()) {
-        try {
-            // Reuse only the CDP target tagged by createTokeerDiscordBrowserView.
-            // A user's manual/login Discord tab is readable too, but it is not the
-            // BrowserView that positionTokeerDiscordEmbedded() can move.
-            const existing = await findManagedTokeerTab();
-            if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing, fastRestore ? 3500 : 10000)) {
-                try {
-                    await parkTokeerBrowserView();
-                }
-                catch { }
-                try {
-                    await cdpCommand$1(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
-                }
-                catch { }
-                return true;
-            }
-        }
-        catch { }
-    }
-    // A restore follows an already-created ticket surface. If that managed view
-    // disappeared, unlock the UI promptly and let the next normal refresh rebuild
-    // it instead of spending another 12 seconds creating a BrowserView here.
-    if (fastRestore)
-        return false;
+    const releaseView = retainTokeerDiscordView();
     try {
-        const created = await createTokeerDiscordBrowserView();
-        try {
-            await parkTokeerBrowserView();
+        // Finish a pending destroy before deciding whether to reuse the old view.
+        if (viewClosing)
+            await viewClosing;
+        // Reuse only our managed BrowserView. A normal Steam external-web tab may be
+        // readable through CDP but cannot be repositioned inside the plugin page.
+        if (await hasTokeerBrowserView()) {
+            try {
+                // Reuse only the CDP target tagged by createTokeerDiscordBrowserView.
+                // A user's manual/login Discord tab is readable too, but it is not the
+                // BrowserView that positionTokeerDiscordEmbedded() can move.
+                const existing = await findManagedTokeerTab();
+                if (existing?.webSocketDebuggerUrl && await navigateDiscordTabToTokeer(existing, fastRestore ? 3500 : 10000)) {
+                    try {
+                        await parkTokeerBrowserView();
+                    }
+                    catch { }
+                    try {
+                        await cdpCommand$1(existing.webSocketDebuggerUrl, "Page.setWebLifecycleState", { state: "active" }, 2000);
+                    }
+                    catch { }
+                    return true;
+                }
+            }
+            catch { }
         }
-        catch { }
-        return !!created?.webSocketDebuggerUrl;
+        // A restore follows an already-created ticket surface. If that managed view
+        // disappeared, unlock the UI promptly and let the next normal refresh rebuild
+        // it instead of spending another 12 seconds creating a BrowserView here.
+        if (fastRestore)
+            return false;
+        try {
+            const created = await createTokeerDiscordBrowserView();
+            try {
+                await parkTokeerBrowserView();
+            }
+            catch { }
+            return !!created?.webSocketDebuggerUrl;
+        }
+        catch {
+            return false;
+        }
     }
-    catch {
-        return false;
+    finally {
+        releaseView();
     }
 }
 async function openTokeerDiscord() {
@@ -3859,6 +3924,7 @@ async function refreshTokeerAvailabilityCache(force = false) {
         return refreshPromise;
     const generation = ++refreshGeneration;
     const run = (async () => {
+        const releaseView = retainTokeerDiscordView();
         // Hard wall-clock budget for the WHOLE refresh. The old loop bounded only the
         // number of retries (20 x 500ms), but each readTokeerDiscord can itself take
         // seconds (target resolution + a 5s Runtime.evaluate), so a Discord page that
@@ -3911,6 +3977,7 @@ async function refreshTokeerAvailabilityCache(force = false) {
             }
             if (generation === refreshGeneration)
                 refreshPromise = null;
+            releaseView();
         }
     })();
     refreshPromise = run;
@@ -4007,6 +4074,31 @@ function getTokeerAvailabilityForGame(appid, gameName) {
     return wanted.size
         ? cache.games.find((game) => nameVariants(game.name).some((variant) => wanted.has(variant))) || null
         : null;
+}
+
+// Force Steam to download/update a game to its pinned build by launching it.
+//
+// Pinning a build only changes the *target* manifest; Steam won't fetch the new
+// files until something makes it re-check. API "install|appid" reaches
+// SLSsteam-added games through Moon's private per-user runtime socket. For an
+// owned game it can still be a no-op, so "pinned, waiting for download" can sit
+// forever. Launching makes Steam run its normal update-before-play check; when
+// the installed manifest differs from the pinned target, the target build
+// downloads first. Works for owned and added games alike.
+//
+// For a Steam app the RunGame gameId is just the appid (non-Steam shortcuts use a
+// 64-bit gameID; we only pin real Steam apps here).
+function launchGame(appid) {
+    try {
+        const SC = window.SteamClient;
+        if (!SC?.Apps?.RunGame)
+            return false;
+        SC.Apps.RunGame(String(appid), "", -1, 100);
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
 
 const sleep$2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -4241,7 +4333,10 @@ function readSelectorLayout() {
     }
 }
 function TokeerSection({ headless = false, activationRequest } = {}) {
-    SP_REACT.useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
+    SP_REACT.useEffect(() => {
+        const releaseView = retainTokeerDiscordView();
+        return () => { cancelTokeerAvailabilityRefresh(); releaseView(); };
+    }, []);
     const savedRef = SP_REACT.useRef(readSavedSession());
     const selectorLayoutRef = SP_REACT.useRef(readSelectorLayout());
     const sessionStartedRef = SP_REACT.useRef(savedRef.current?.startedAt || Date.now());
@@ -4912,12 +5007,23 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
         }, 600);
         return () => { stopped = true; clearTimeout(timer); };
     }, [ticket?.url]);
+    const markSteamTokeerApplied = async (appid) => {
+        // Like Ubisoft completion, lock the installed depot manifests once the
+        // activation succeeds. The key remains applied if Moon cannot write a pin.
+        const applied = await tokeerMarkApplied(appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${appid}`, "steam", true);
+        window.dispatchEvent(new CustomEvent("slsdeck-tokeer-applied", { detail: { appid } }));
+        if (!applied.pin?.success) {
+            toaster.toast({ title: "SLSDeck · Tokeer pin", body: `Activation applied, but version pinning failed: ${applied.pin?.error || "check the installed game and Moon in Fixes."}` });
+        }
+        return applied;
+    };
     const runAutomation = async (ctx, resume, generation = ticketGenerationRef.current) => {
         if (automationRunningRef.current || !ctx.appid || !ctx.url)
             return;
         if (ticketAbortedRef.current || generation !== ticketGenerationRef.current)
             return;
         automationRunningRef.current = true;
+        const releaseView = retainTokeerDiscordView();
         const stale = () => ticketAbortedRef.current || ticketCompletionPausedRef.current || generation !== ticketGenerationRef.current;
         const fail = (body) => {
             if (stale())
@@ -5023,7 +5129,7 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
                         fail(redeemed.error || redeemed.output || "Activation redemption failed.");
                         return;
                     }
-                    await tokeerMarkApplied(ctx.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ctx.appid}`, "steam", false);
+                    await markSteamTokeerApplied(ctx.appid);
                     void refreshBadges();
                     stage = "checking-game";
                     checkpoint({ automationStage: "checking-game", automationError: "", ticket: trackedTicket });
@@ -5100,7 +5206,7 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
                     fail(redeemed.error || redeemed.output || "Activation redemption failed. The received code is preserved for manual retry.");
                     return;
                 }
-                await tokeerMarkApplied(ctx.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ctx.appid}`, "steam", false);
+                await markSteamTokeerApplied(ctx.appid);
                 void refreshBadges();
                 checkpoint({ automationStage: "checking-game", automationError: "", ticket: trackedTicket });
                 await completeNonUbisoftActivation("checking-game", trackedTicket);
@@ -5116,7 +5222,7 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
                     fail(redeemed.error || redeemed.output || "Activation redemption failed.");
                     return;
                 }
-                await tokeerMarkApplied(ctx.appid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${ctx.appid}`, "steam", false);
+                await markSteamTokeerApplied(ctx.appid);
                 void refreshBadges();
                 setAutomationStage("done");
                 setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
@@ -5235,6 +5341,7 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
                 fail(String(e));
         }
         finally {
+            releaseView();
             if (generation === ticketGenerationRef.current) {
                 automationRunningRef.current = false;
                 setBusy("");
@@ -5830,7 +5937,7 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
             const r = await tokeerRedeem(activation.trim());
             setMessage(r.success ? "Activation written successfully. Launch the game from Steam." : (r.error || r.output || "Activation failed."));
             if (r.success) {
-                await tokeerMarkApplied(resolvedAppid, parseTokeerGameLabel(selectedGame)?.name || selectedGame || `AppID ${resolvedAppid}`, "steam", false);
+                await markSteamTokeerApplied(resolvedAppid);
                 void refreshBadges();
                 if (ticket?.url) {
                     const tracked = { ...ticket };
@@ -6002,9 +6109,13 @@ function BadgeChip({ badge, inline }) {
         }, children: label }));
 }
 function FixPicker({ appid, onReload, onClose }) {
-    SP_REACT.useEffect(() => () => cancelTokeerAvailabilityRefresh(), [appid]);
+    SP_REACT.useEffect(() => {
+        const releaseView = retainTokeerDiscordView();
+        return () => { cancelTokeerAvailabilityRefresh(); releaseView(); };
+    }, [appid]);
     const [check, setCheck] = SP_REACT.useState(null);
     const [tokeerGame, setTokeerGame] = SP_REACT.useState(null);
+    const [tokeerDownload, setTokeerDownload] = SP_REACT.useState({ appid, complete: false });
     const [tokeerRefreshing, setTokeerRefreshing] = SP_REACT.useState(false);
     const [tokeerLookup, setTokeerLookup] = SP_REACT.useState({ name: "", cachedGames: 0 });
     const [tokeerApplied, setTokeerApplied] = SP_REACT.useState(null);
@@ -6029,8 +6140,46 @@ function FixPicker({ appid, onReload, onClose }) {
     const [hv, setHv] = SP_REACT.useState(null);
     const [crak, setCrak] = SP_REACT.useState(null);
     const [hasRyuuKey, setHasRyuuKey] = SP_REACT.useState(true);
+    // For fix-derived pins, keep the installed side live while Steam verifies or
+    // downloads. This lets the banner move from "Update pending" to "Pin matched"
+    // without requiring the user to close and reopen Fixes.
+    SP_REACT.useEffect(() => {
+        if (!pinned || pinInfo.source !== "lua.tools-fix")
+            return;
+        let mounted = true;
+        let reading = false;
+        const readInstalledPin = async () => {
+            if (reading)
+                return;
+            reading = true;
+            try {
+                const status = await getPinStatus(appid);
+                if (mounted && status.success && status.pinned) {
+                    setPinInfo((current) => ({
+                        ...current,
+                        buildid: status.buildid || current.buildid,
+                        source: status.pinSource || current.source,
+                        depots: status.depots || current.depots,
+                        installedBuildid: status.installedBuildid,
+                        installedDepots: status.installedDepots || {},
+                    }));
+                }
+            }
+            catch {
+                /* keep the last confirmed comparison */
+            }
+            finally {
+                reading = false;
+            }
+        };
+        void readInstalledPin();
+        const timer = setInterval(readInstalledPin, 3000);
+        return () => { mounted = false; clearInterval(timer); };
+    }, [appid, pinned, pinInfo.source]);
     const [busy, setBusy] = SP_REACT.useState("");
     const [ns, setNs] = SP_REACT.useState(null);
+    const [proxies, setProxies] = SP_REACT.useState(null);
+    const eosProxyLabel = appid === 1904480 ? "EOS Proxy (Absolum)" : "EOS Proxy";
     const [slsOnline, setSlsOnline] = SP_REACT.useState(null);
     const [msg, setMsg] = SP_REACT.useState("");
     const [autoApply, setAutoApplyState] = SP_REACT.useState(false);
@@ -6044,6 +6193,28 @@ function FixPicker({ appid, onReload, onClose }) {
     const dlPoll = SP_REACT.useRef(null);
     const stopFlag = SP_REACT.useRef(false);
     const tokeerRefreshApp = SP_REACT.useRef(0);
+    const tokeerDownloadReady = tokeerDownload.appid === appid && tokeerDownload.complete;
+    SP_REACT.useEffect(() => {
+        let mounted = true;
+        let checking = false;
+        setTokeerDownload({ appid, complete: false });
+        const checkDownload = async () => {
+            if (checking)
+                return;
+            checking = true;
+            try {
+                const complete = await isDownloadComplete(appid);
+                if (mounted)
+                    setTokeerDownload({ appid, complete });
+            }
+            finally {
+                checking = false;
+            }
+        };
+        void checkDownload();
+        const timer = setInterval(checkDownload, 5000);
+        return () => { mounted = false; clearInterval(timer); };
+    }, [appid]);
     const stop = () => {
         if (poll.current) {
             clearInterval(poll.current);
@@ -6167,7 +6338,13 @@ function FixPicker({ appid, onReload, onClose }) {
             const snapshotDepots = p.pinned
                 ? (p.depots || {})
                 : (Object.keys(p.depots || {}).length ? p.depots : p.installedDepots);
-            setPinInfo({ buildid: snapshotBuild, depots: snapshotDepots });
+            setPinInfo({
+                buildid: snapshotBuild,
+                source: p.pinSource,
+                depots: snapshotDepots,
+                installedBuildid: p.installedBuildid,
+                installedDepots: p.installedDepots,
+            });
             // Ask about THIS build specifically: the same game can have several
             // builds archived, so "is this game archived" is the wrong question.
             if (snapshotBuild) {
@@ -6215,6 +6392,12 @@ function FixPicker({ appid, onReload, onClose }) {
         }
         catch {
             setNs(null);
+        }
+        try {
+            setProxies(await multiplayerProxyStatus(appid));
+        }
+        catch {
+            setProxies(null);
         }
         try {
             setSlsOnline(await slsonlineStatus(appid));
@@ -6287,6 +6470,14 @@ function FixPicker({ appid, onReload, onClose }) {
         setFixState({});
         setDlComplete(false);
         refresh();
+    }, [appid]);
+    SP_REACT.useEffect(() => {
+        const onTokeerApplied = (event) => {
+            if (event.detail?.appid === appid)
+                void refresh();
+        };
+        window.addEventListener("slsdeck-tokeer-applied", onTokeerApplied);
+        return () => window.removeEventListener("slsdeck-tokeer-applied", onTokeerApplied);
     }, [appid]);
     const watch = (getState, okMsg, failMsg, onDone) => {
         stop();
@@ -6374,15 +6565,15 @@ function FixPicker({ appid, onReload, onClose }) {
             }
         });
     };
-    // Poll the game's download completion while we're waiting (guided mode) so the
-    // "Apply now" card can hint when it's ready.
+    // The guided fix can apply only when Steam has installed the pinned depots.
     const startDlPoll = () => {
         stopDl();
         setDlComplete(false);
         dlPoll.current = setInterval(async () => {
-            const done = await isDownloadComplete(appid);
+            const done = await isPinnedBuildReady(appid);
             setDlComplete(done);
         }, 3000);
+        void isPinnedBuildReady(appid).then(setDlComplete);
     };
     // Shared build-accurate apply runner. `startExtract` kicks off the actual
     // extraction (applyFix / applyLuatoolsFix). The orchestration pins the fix's
@@ -6397,6 +6588,10 @@ function FixPicker({ appid, onReload, onClose }) {
         setBusy(key);
         resetFixRuntime(appid);
         const doApply = async () => {
+            if (pinFn && !(await isPinnedBuildReady(appid))) {
+                setMsg("Steam has not installed the pinned build yet. Wait for the update or retry verification.");
+                throw new Error("pinned-build-not-ready");
+            }
             setAwaiting(null);
             stopDl();
             setBusy(`${key}:apply`);
@@ -6429,25 +6624,19 @@ function FixPicker({ appid, onReload, onClose }) {
                     else if (phase === "updating")
                         setMsg(`Pinned via ${info?.source || "source"} — updating the game in Steam to that build…`);
                     else if (phase === "awaiting_download")
-                        setMsg("Steam is updating the game. When the download finishes, press “Apply now”.");
-                    else if (phase === "awaiting_reinstall")
-                        setMsg("The exact fix build is pinned. Uninstall and reinstall the game, then press this fix again; Steam cannot reliably downgrade an installed game by launching it.");
+                        setMsg("Steam is updating the game. Apply the fix once the installed depot manifests match the pin.");
                     else if (phase === "applying")
                         setMsg(`Applying ${label}…`);
                 },
             });
-            if (result === "reinstall") {
+            if (result === "awaiting") {
                 setBusy("");
-                setAwaiting({ key, label, run: doApply, mode: "reinstall" });
-            }
-            else if (result === "awaiting") {
-                setBusy("");
-                setAwaiting({ key, label, run: doApply, mode: "download" });
+                setAwaiting({ key, label, run: doApply });
                 startDlPoll();
             }
         }
         catch (e) {
-            if (!String(e).includes("apply-start-failed")) {
+            if (!String(e).includes("apply-start-failed") && !String(e).includes("pinned-build-not-ready")) {
                 setBusy("");
                 setFixState({ status: "failed", error: `${e}`.replace(/^Error:\s*/, "") });
             }
@@ -6484,7 +6673,21 @@ function FixPicker({ appid, onReload, onClose }) {
             setMsg("Game not installed — press “Pin this version” to add it, then download the game in Steam to install the fix.");
             return;
         }
-        await runApply(`lt:${fix.id}`, fix.name || "lua.tools fix", () => applyLuatoolsFix(appid, fix.id, installPath, fix.manifest_id || "", fix.depot_id || "", "lua.tools fix", check?.gameName || ""), fix.has_manifest ? () => pinForLuatoolsFix(appid, fix.id) : undefined);
+        await runApply(`lt:${fix.id}`, fix.name || "lua.tools fix", () => applyLuatoolsFix(appid, fix.id, installPath, fix.manifest_id || "", fix.depot_id || "", "lua.tools fix", check?.gameName || ""), fix.has_manifest ? async () => {
+            const result = await pinForLuatoolsFix(appid, fix.id, fix.build || "");
+            if (result.pinned) {
+                const p = await getPinStatus(appid);
+                setPinned(!!p.pinned);
+                setPinInfo({
+                    buildid: p.buildid,
+                    source: p.pinSource,
+                    depots: p.depots || {},
+                    installedBuildid: p.installedBuildid,
+                    installedDepots: p.installedDepots || {},
+                });
+            }
+            return result;
+        } : undefined);
     };
     // Archive the build this game is actually on right now. `pinInfo` already
     // holds the pinned build + its depot gids, which is exactly what the archive
@@ -6996,6 +7199,24 @@ function FixPicker({ appid, onReload, onClose }) {
         }
         setBusy("");
     };
+    const installProxy = async (kind) => {
+        setBusy(kind);
+        setMsg(`Downloading and applying ${kind === "uc-online2" ? "UC Online 2" : eosProxyLabel}…`);
+        try {
+            const result = await multiplayerProxyInstall(appid, kind);
+            setMsg(result.success ? (result.warning || "Multiplayer fix applied. Restart the game.") : (result.error || "Apply failed"));
+            if (result.success) {
+                await refresh();
+                void refreshBadges();
+            }
+        }
+        catch (e) {
+            setMsg(`Apply failed: ${e}`);
+        }
+        finally {
+            setBusy("");
+        }
+    };
     const toggleSlsOnline = async (enabled) => {
         setBusy("slsonline");
         try {
@@ -7065,15 +7286,16 @@ function FixPicker({ appid, onReload, onClose }) {
                         padding: 8,
                         marginTop: 7,
                         background: "rgba(80,130,220,0.08)",
-                    }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginBottom: 4 }, children: awaiting.mode === "reinstall" ? "Exact build pinned — reinstall required" : "Pinned — waiting for Steam to update the game" }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginBottom: 6 }, children: awaiting.mode === "reinstall"
-                                ? "The fix's exact build is pinned. Uninstall this game, reinstall it from Steam, then press the fix again. The fix will only apply after the installed depot manifests match."
-                                : dlComplete
-                                    ? "Download complete. Press Apply now to install the fix onto this build."
-                                    : "Press Start download now to retry Steam's pinned-build update. The game is launched too, which helps Steam begin the download if it is still idle." }), awaiting.mode !== "reinstall" && !dlComplete && (SP_JSX.jsx(DFL.DialogButton, { style: { ...bs, marginBottom: 6 }, onClick: async () => {
+                    }, children: [SP_JSX.jsx("div", { style: { fontSize: 12, fontWeight: 600, marginBottom: 4 }, children: "Pinned \u2014 waiting for Steam to install the matching build" }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: 0.75, marginBottom: 6 }, children: dlComplete
+                                ? "Steam's installed depot manifests match the pin. You can apply the fix now."
+                                : "Steam is verifying or updating to the pinned build. If it stays idle, retry verification. The fix can apply once the installed depot manifests match." }), !dlComplete && (SP_JSX.jsx(DFL.DialogButton, { style: { ...bs, marginBottom: 6 }, onClick: async () => {
                                 await noInternetFixBegin(appid).catch(() => ({}));
                                 await triggerSteamInstall(appid).catch(() => ({}));
-                                launchGame(appid);
-                            }, children: "\u25B6 Start download now" })), SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: [awaiting.mode !== "reinstall" && SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => awaiting.run().catch(() => { }), children: dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)" }), SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => {
+                                const result = await validateSteamApp(appid).catch(() => ({ success: false }));
+                                if (!result.success) {
+                                    setMsg("Could not request Steam verification. Open the game's Properties → Installed Files → Verify integrity in Steam.");
+                                }
+                            }, children: "Retry Steam verification" })), SP_JSX.jsxs(DFL.Focusable, { style: { display: "flex", gap: 6 }, "flow-children": "row", children: [SP_JSX.jsxs(DFL.DialogButton, { style: bs, disabled: !dlComplete, onClick: () => awaiting.run().catch(() => { }), children: ["Apply ", awaiting.label, " now"] }), SP_JSX.jsx(DFL.DialogButton, { style: bs, onClick: () => {
                                         stopFlag.current = true;
                                         stopDl();
                                         setAwaiting(null);
@@ -7082,23 +7304,21 @@ function FixPicker({ appid, onReload, onClose }) {
     };
     return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: [SP_JSX.jsxs("div", { children: [tokeerApplied
                                 ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
-                                : "", "\uD83D\uDD12 Version pinned", pinInfo.buildid
-                                ? ` — Build ${pinInfo.buildid}`
-                                : (pinInfo.depots && Object.keys(pinInfo.depots).length
-                                    ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
-                                    : ""), " \u2014 the game won't update past the pinned version."] }), tokeerApplied && tokeerApplied.health !== "valid" && (SP_JSX.jsx("div", { style: { color: "#ffbf69" }, children: tokeerApplied.healthReason || "Tokeer activation needs verification." }))] })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
+                                : "", pinInfo.source === "lua.tools-fix" && pinInfo.buildid
+                                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {}) ? "Pin matched" : "Update pending"}`
+                                : `🔒 Version pinned — Build ${pinInfo.buildid || "unknown"} · ${Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.`] }), tokeerApplied && tokeerApplied.health !== "valid" && (SP_JSX.jsx("div", { style: { color: "#ffbf69" }, children: tokeerApplied.healthReason || "Tokeer activation needs verification." }))] })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
                     ? "🔒 Already pinned"
                     : busy === "game:manifest"
                         ? msg || "Adding…"
                         : busy === "game:pin"
                             ? "Pinning…"
-                            : "Pin this version" }), tokeerApplied && !pinned && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 4 }, children: tokeerApplied.health === "valid" ? "🔑 Tokeer key applied" : "⚠️ Tokeer verification needed" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.76, lineHeight: 1.45 }, children: [tokeerApplied.healthReason || (tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed"), " \u00B7 Version not pinned"] })] }), tokeerGame && !tokeerApplied && SP_JSX.jsx(TokeerSection, { headless: true, activationRequest: {
+                            : "Pin this version" }), tokeerApplied && !pinned && SP_JSX.jsxs("div", { style: { border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }, children: [SP_JSX.jsx("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 4 }, children: tokeerApplied.health === "valid" ? "🔑 Tokeer key applied" : "⚠️ Tokeer verification needed" }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.76, lineHeight: 1.45 }, children: [tokeerApplied.healthReason || (tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed"), " \u00B7 Version not pinned"] })] }), tokeerGame && !tokeerApplied && tokeerDownloadReady && SP_JSX.jsx(TokeerSection, { headless: true, activationRequest: {
                     appid,
                     gameName: tokeerGame.name || tokeerLookup.name,
                     availabilityLabel: tokeerGame.label,
                     remaining: tokeerGame.remaining,
                     total: tokeerGame.total,
-                } }), !tokeerGame && !tokeerApplied && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.65, padding: "5px 2px" }, children: ["Tokeer: ", tokeerRefreshing
+                } }), tokeerGame && !tokeerApplied && !tokeerDownloadReady && (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(202,168,255,.28)", borderRadius: 8, padding: 8, background: "rgba(202,168,255,.06)" }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: ["Tokeer activation", tokeerGame.remaining !== undefined ? ` · ${tokeerGame.remaining}${tokeerGame.total !== undefined ? ` / ${tokeerGame.total}` : ""} keys available` : ""] }), SP_JSX.jsx("div", { style: { fontSize: 11, opacity: .72 }, children: "Activation is available once the game finishes downloading." })] })), !tokeerGame && !tokeerApplied && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.65, padding: "5px 2px" }, children: ["Tokeer: ", tokeerRefreshing
                         ? `checking live availability for ${tokeerLookup.name || `AppID ${appid}`}…`
                         : !tokeerLookup.updatedAt
                             ? "no successful availability cache yet — connect Discord in Tokeer helper and refresh the vault"
@@ -7111,7 +7331,15 @@ function FixPicker({ appid, onReload, onClose }) {
                             ? "Working…"
                             : ns.enabled
                                 ? "Turn multiplayer patch off"
-                                : "Turn multiplayer patch on" }))] })), rows.map((row) => {
+                                : "Turn multiplayer patch on" }))] })), ["uc-online2", "eos-proxy"].map((kind) => {
+                const item = proxies?.fixes?.[kind];
+                if (!item)
+                    return null;
+                const label = kind === "uc-online2" ? "UC Online 2" : eosProxyLabel;
+                return (SP_JSX.jsxs("div", { style: { border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }, children: [SP_JSX.jsxs("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 }, children: [label, " \u00B7 Manual only \u00B7 ", item.installed ? "✓ Applied" : item.targets.length ? "Available" : "No matching DLL"] }), SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.7, marginBottom: 6 }, children: [kind === "uc-online2"
+                                    ? "Replaces this game's existing Steam API DLLs with the upstream proxy."
+                                    : "Replaces this game's EOS SDK DLL and keeps the original as a .yes file for the proxy.", kind === "eos-proxy" && appid === 1904480 ? " Uses the dedicated Absolum release and cache." : "", item.targets.length ? ` Targets: ${item.targets.join(", ")}` : " Install the game first.", item.installed ? " Use Un-fix and unpin below to restore the originals." : "", kind === "eos-proxy" ? " Requires working Steam authentication; game support varies." : " Game support varies."] }), !item.installed && item.targets.length > 0 && (SP_JSX.jsx(DFL.DialogButton, { style: bs, disabled: working, onClick: () => installProxy(kind), children: busy === kind ? "Applying…" : `Apply ${label} fix` }))] }, kind));
+            }), rows.map((row) => {
                 const avail = !!row.info?.available;
                 const done = isApplied(row.fixType);
                 const flowKey = `${row.key}:fix`;
@@ -7206,6 +7434,7 @@ let mounted$1 = false;
 let ws$1 = null;
 let msgId$1 = 1;
 let currentAppId = "";
+let fixModalGeneration = 0;
 let wsReady$1 = false;
 let isConnecting$1 = false;
 let storeDisabled = false;
@@ -7235,6 +7464,9 @@ function evaluate$1(expr) {
 }
 function setStatus$1(text) {
     evaluate$1(`window.__ltStatus&&window.__ltStatus(${JSON.stringify(text)})`);
+}
+function updateFixModal(appid, generation, kind, data) {
+    evaluate$1(`window.__ltFixUpdate&&window.__ltFixUpdate(${appid},${generation},${JSON.stringify(kind)},${JSON.stringify(data)})`);
 }
 function removeBar() {
     evaluate$1("(function(){" +
@@ -7304,18 +7536,18 @@ function buildBar(appid, installed, fixAvailable) {
 // Mirrors the desktop SLSDeck "Fixes" modal: one row per fix (Online /
 // Generic) with a Manifest button (add the game) and a Fix button (apply that
 // fix), plus Un-Fix and Close.
-function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryuuJson, catalogJson, tokeerJson) {
+function buildFixModal(appid, name, generation) {
     return `(function(){
-    var APPID=${appid};
+    var APPID=${appid}, GENERATION=${generation};
     var old=document.getElementById('lt-fix-modal'); if(old) old.remove();
-    var ov=document.createElement('div'); ov.id='lt-fix-modal';
+    var ov=document.createElement('div');ov.id='lt-fix-modal';
     ov.style.cssText='position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);font-family:Arial,Helvetica,sans-serif;';
-    var card=document.createElement('div');
-    card.style.cssText='background:#1b2838;color:#e6edf3;border:1px solid #2a3f5a;border-radius:12px;padding:18px 18px 14px;min-width:340px;max-width:90vw;box-shadow:0 10px 40px rgba(0,0,0,0.6);';
-    var h=document.createElement('div'); h.textContent='Fixes — '+${JSON.stringify(name || `AppID ${appid}`)};
-    h.style.cssText='font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';
-    card.appendChild(h);
-    function inv(o){ try{ window.ltInvoke(JSON.stringify(o)); }catch(e){} }
+    var card=document.createElement('div');card.style.cssText='background:#1b2838;color:#e6edf3;border:1px solid #2a3f5a;border-radius:12px;padding:18px 18px 14px;min-width:340px;max-width:90vw;box-shadow:0 10px 40px rgba(0,0,0,0.6);';
+    var h=document.createElement('div');h.textContent='Fixes — '+${JSON.stringify(name || `AppID ${appid}`)};
+    h.style.cssText='font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';card.appendChild(h);
+    var body=document.createElement('div');body.style.cssText='max-height:60vh;overflow-y:auto;';card.appendChild(body);
+    var tokeerSlot=document.createElement('div');card.appendChild(tokeerSlot);
+    function inv(o){try{window.ltInvoke(JSON.stringify(o));}catch(e){}}
     function row(label,avail,fixKey){
       var box=document.createElement('div');
       box.style.cssText='border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:10px;margin-bottom:8px;opacity:'+(avail?'1':'0.6')+';';
@@ -7329,7 +7561,10 @@ function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryu
       r.appendChild(mk('Fix','#5ba32b',!avail,function(){ inv({action:'fixApply',appid:APPID,fix:fixKey}); }));
       box.appendChild(r); return box;
     }
-    var RYUU=${ryuuJson};
+    function renderFixes(data){
+      body.replaceChildren();
+      h.textContent='Fixes — '+(data.gameName||${JSON.stringify(name || `AppID ${appid}`)});
+      var RYUU=data.ryuuFixes||[];
     RYUU.forEach(function(e){
       var online=(e.badge||'').toLowerCase()==='online';
       var lbl=online?'Online Fix':'Crack / Bypass Fix';
@@ -7341,16 +7576,9 @@ function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryu
       var b=document.createElement('button'); b.textContent='Apply this fix';
       b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';
       b.onclick=function(){ inv({action:'fixApplyUrl',appid:APPID,url:e.url,fixType:(online?'Online Fix':'Generic Fix'),file:e.file}); };
-      box.appendChild(b); card.appendChild(box);
+      box.appendChild(b); body.appendChild(box);
     });
-    var TOKEER=${tokeerJson};
-    if(TOKEER&&TOKEER.name){
-      var tb=document.createElement('div');tb.style.cssText='border:1px solid rgba(202,168,255,.35);background:rgba(202,168,255,.07);border-radius:8px;padding:10px;margin-bottom:8px;';
-      var tt=document.createElement('div');tt.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+(TOKEER.total==null?'':(' / '+TOKEER.total))+' keys available';tt.style.cssText='font-size:14px;font-weight:600;margin-bottom:4px;';tb.appendChild(tt);
-      var td=document.createElement('div');td.textContent='Live Discord availability matched for this game. Uses the same Tokeer setup and validation as the library Fixes menu.';td.style.cssText='font-size:11px;opacity:.75;line-height:1.4;margin-bottom:7px;';tb.appendChild(td);
-      var tx=document.createElement('button');tx.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+' keys';tx.style.cssText='width:100%;background:#7655a8;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';tx.onclick=function(){inv({action:'tokeer',appid:APPID});};tb.appendChild(tx);card.appendChild(tb);
-    }
-    var CATALOG=${catalogJson};
+      var CATALOG=data.luatoolsCatalog||[];
     CATALOG.forEach(function(e,i){
       var box=document.createElement('div');box.style.cssText='border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin-bottom:8px;';
       var tags=(e.tags||[]).map(function(t){return typeof t==='string'?t:(t&&(t.name||t.label||t.text||t.title||t.tag))||'';}).filter(Boolean);
@@ -7358,15 +7586,27 @@ function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryu
       if(tags.length){var tg=document.createElement('div');tg.textContent=tags.join(' · ');tg.style.cssText='font-size:11px;color:#caa8ff;margin-bottom:4px;';box.appendChild(tg);}
       var meta=[e.release_date?('Released '+String(e.release_date).slice(0,10)):'',e.build?('build '+e.build):''].filter(Boolean).join(' · ');if(meta){var m=document.createElement('div');m.textContent=meta;m.style.cssText='font-size:11px;opacity:.6;margin-bottom:4px;';box.appendChild(m);}
       if(e.description){var d=document.createElement('div');d.textContent=e.description;d.style.cssText='font-size:11px;opacity:.78;white-space:pre-wrap;line-height:1.4;margin-bottom:7px;max-height:150px;overflow:auto;';box.appendChild(d);}
-      var b=document.createElement('button');b.textContent='Apply lua.tools fix';b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';b.onclick=function(){inv({action:'ltApply',appid:APPID,fix:e});};box.appendChild(b);card.appendChild(box);
+      var b=document.createElement('button');b.textContent='Apply lua.tools fix';b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';b.onclick=function(){inv({action:'ltApply',appid:APPID,fix:e});};box.appendChild(b);body.appendChild(box);
     });
-    if(${onlineAvail ? "true" : "false"}) card.appendChild(row('Online Fix (perondepot)', true, 'online'));
-    // The generic/crack fix had no row at all: genericAvail was accepted as a
-    // parameter and then never used, so a fix the backend was perfectly able to
-    // apply (fixApply already handles fix:'generic') was unreachable from the
-    // store page, while its Online and Unsteam siblings both had buttons.
-    if(${genericAvail ? "true" : "false"}) card.appendChild(row('Crack / Bypass Fix (generic)', true, 'generic'));
-    card.appendChild(row('Online Fix (Unsteam) · Universal', ${unsteamAvail ? "true" : "false"}, 'unsteam'));
+      if(data.onlineFix&&data.onlineFix.available)body.appendChild(row('Online Fix (perondepot)',true,'online'));
+      if(data.genericFix&&data.genericFix.available)body.appendChild(row('Crack / Bypass Fix (generic)',true,'generic'));
+      body.appendChild(row('Online Fix (Unsteam) · Universal',!data.unsteamFix||data.unsteamFix.available!==false,'unsteam'));
+    }
+    function renderTokeer(TOKEER){
+      tokeerSlot.replaceChildren();
+    if(TOKEER&&TOKEER.name){
+      var tb=document.createElement('div');tb.style.cssText='border:1px solid rgba(202,168,255,.35);background:rgba(202,168,255,.07);border-radius:8px;padding:10px;margin-bottom:8px;';
+      var tt=document.createElement('div');tt.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+(TOKEER.total==null?'':(' / '+TOKEER.total))+' keys available';tt.style.cssText='font-size:14px;font-weight:600;margin-bottom:4px;';tb.appendChild(tt);
+      var td=document.createElement('div');td.textContent='Live Discord availability matched for this game. Uses the same Tokeer setup and validation as the library Fixes menu.';td.style.cssText='font-size:11px;opacity:.75;line-height:1.4;margin-bottom:7px;';tb.appendChild(td);
+      var tx=document.createElement('button');tx.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+' keys';tx.style.cssText='width:100%;background:#7655a8;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';tx.onclick=function(){inv({action:'tokeer',appid:APPID});};tb.appendChild(tx);tokeerSlot.appendChild(tb);
+    }
+    }
+    window.__ltFixUpdate=function(appid,generation,kind,data){
+      if(appid!==APPID||generation!==GENERATION||!ov.isConnected)return;
+      if(kind==='fixes'){renderFixes(data);window.__ltStatus('');}
+      else if(kind==='tokeer')renderTokeer(data);
+      else if(kind==='error')window.__ltStatus('Could not check fixes');
+    };
     var st=document.createElement('div'); st.id='lt-store-status';
     st.style.cssText='font-size:12px;color:#c6d4df;text-align:center;min-height:15px;margin:4px 0 10px;';
     window.__ltStatus=function(t){ var e=document.getElementById('lt-store-status'); if(e) e.textContent=t; };
@@ -7380,6 +7620,7 @@ function buildFixModal(appid, name, onlineAvail, genericAvail, unsteamAvail, ryu
     ov.appendChild(card);
     ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
     document.body.appendChild(ov);
+    window.__ltStatus('Checking fixes…');
   })();`;
 }
 // Store-page badges — same pill style as the library badges, bottom-left.
@@ -7606,25 +7847,36 @@ async function onAction$1(payloadStr) {
     }
     // The Fix button opens the picker modal (Manifest + Fix per fix type).
     if (action === "fix") {
-        setStatus$1("Checking fixes…");
-        try {
-            const f = await checkFixesFull(appid);
-            const cached = readTokeerAvailabilityCache();
-            let tokeer = null;
-            try {
-                const live = hasFreshTokeerFixCache(cached) ? cached : await refreshTokeerAvailabilityCache(true);
-                if (live)
-                    tokeer = await resolveTokeerAvailabilityForGame(appid, f?.gameName || "");
-            }
-            catch {
-                tokeer = null;
-            }
-            evaluate$1(buildFixModal(appid, f?.gameName || "", !!f?.onlineFix?.available, !!f?.genericFix?.available, f?.unsteamFix?.available !== false, JSON.stringify(f?.ryuuFixes || []), JSON.stringify(f?.luatoolsCatalog || []), JSON.stringify(tokeer)));
-            setStatus$1("");
-        }
-        catch {
-            setStatus$1("Could not check fixes");
-        }
+        const generation = ++fixModalGeneration;
+        const knownName = appDisplayName(appid) || `AppID ${appid}`;
+        evaluate$1(buildFixModal(appid, knownName, generation));
+        // Fix providers and Discord availability are independent. Open the menu
+        // immediately, then populate each part whenever its own lookup completes.
+        const fixesPromise = checkFixesFull(appid);
+        void fixesPromise
+            .then((fixes) => updateFixModal(appid, generation, "fixes", fixes))
+            .catch(() => updateFixModal(appid, generation, "error", null));
+        const cached = readTokeerAvailabilityCache();
+        const cachedGame = getTokeerAvailabilityForGame(appid, knownName);
+        if (cachedGame)
+            updateFixModal(appid, generation, "tokeer", cachedGame);
+        const availabilityPromise = hasFreshTokeerFixCache(cached)
+            ? Promise.resolve(cached)
+            : refreshTokeerAvailabilityCache(true);
+        void availabilityPromise
+            .then(async (live) => {
+            if (!live)
+                return cachedGame;
+            const immediate = await resolveTokeerAvailabilityForGame(appid, knownName);
+            if (immediate)
+                return immediate;
+            // Store-only games may not be present in Steam's app overview cache.
+            // Fall back to the authoritative name returned by the fixes lookup.
+            const fixes = await fixesPromise.catch(() => null);
+            return fixes ? resolveTokeerAvailabilityForGame(appid, fixes.gameName || knownName) : null;
+        })
+            .then((game) => updateFixModal(appid, generation, "tokeer", game))
+            .catch(() => updateFixModal(appid, generation, "tokeer", cachedGame));
         return;
     }
     if (action === "tokeer") {
@@ -7664,7 +7916,7 @@ async function onAction$1(payloadStr) {
             const f = msg.fix || {};
             if (f.has_manifest) {
                 setStatus$1("Loading this fix's exact manifest…");
-                const pin = await pinForLuatoolsFix(appid, String(f.id || ""));
+                const pin = await pinForLuatoolsFix(appid, String(f.id || ""), String(f.build || ""));
                 if (!pin.pinned) {
                     setStatus$1(pin.error || "This fix's paired manifest could not be pinned; nothing was applied");
                     return;
@@ -10605,12 +10857,12 @@ function FixesSection() {
             clearInterval(dlRef.current);
         setDlComplete(false);
         dlRef.current = setInterval(async () => {
-            setDlComplete(await isDownloadComplete(appid));
+            setDlComplete(await isPinnedBuildReady(appid));
         }, 3000);
+        void isPinnedBuildReady(appid).then(setDlComplete);
     };
     // Build-accurate apply: pin the fix's build, update the game, then apply
-    // (auto) or wait for the user to press Apply (guided). Skips the update if the
-    // game is already installed & downloaded.
+    // (auto) or wait for the user to press Apply (guided).
     const runApply = async (appid, label, startExtract, pinFn) => {
         setAwaiting(null);
         stopFlag.current = false;
@@ -10622,6 +10874,10 @@ function FixesSection() {
             /* default guided */
         }
         const doApply = async () => {
+            if (pinFn && !(await isPinnedBuildReady(appid))) {
+                toaster.toast({ title: "SLSDeck", body: "Steam has not installed the pinned build yet. Retry verification if the update stays idle." });
+                throw new Error("pinned-build-not-ready");
+            }
             setAwaiting(null);
             if (dlRef.current)
                 clearInterval(dlRef.current);
@@ -10653,19 +10909,12 @@ function FixesSection() {
                         setApplyState({ status: "updating" });
                     else if (phase === "awaiting_download")
                         setApplyState({ status: "awaiting download" });
-                    else if (phase === "awaiting_reinstall") {
-                        setApplyState({ status: "reinstall required" });
-                        toaster.toast({ title: "SLSDeck", body: "Exact build pinned. Uninstall and reinstall the game, then apply this fix again." });
-                    }
                     else if (phase === "applying")
                         setApplyState({ status: "queued" });
                 },
             });
-            if (result === "reinstall") {
-                setAwaiting({ label, run: doApply, mode: "reinstall" });
-            }
-            else if (result === "awaiting") {
-                setAwaiting({ label, run: doApply, mode: "download" });
+            if (result === "awaiting") {
+                setAwaiting({ appid, label, run: doApply });
                 startDlPoll(appid);
             }
         }
@@ -10762,7 +11011,7 @@ function FixesSection() {
             toaster.toast({ title: "SLSDeck", body: "Game must be installed to apply a fix." });
             return;
         }
-        await runApply(fix.appid, gameName, () => applyLuatoolsFix(fix.appid, fix.id, pathRes.installPath, fix.manifest_id || "", fix.depot_id || "", "lua.tools fix", gameName), fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id) : undefined);
+        await runApply(fix.appid, gameName, () => applyLuatoolsFix(fix.appid, fix.id, pathRes.installPath, fix.manifest_id || "", fix.depot_id || "", "lua.tools fix", gameName), fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id, fix.build || "") : undefined);
     };
     const confirmUnfix = (fix) => {
         DFL.showModal(SP_JSX.jsx(DFL.ConfirmModal, { strTitle: `Un-fix and unpin ${fix.gameName}?`, strDescription: `Deletes ${fix.filesCount} file(s) added by "${fix.fixType}" on ${fix.date}, and removes the game's version pin so Steam can update it again.`, strOKButtonText: "Un-fix and unpin", onOK: async () => {
@@ -10822,9 +11071,13 @@ function FixesSection() {
                                                                 overflowY: "auto",
                                                             }, children: desc }) }))] }))] }, `lt-${key}`));
                                 })] }));
-                    })()] })), awaiting && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("div", { style: { fontSize: 12, opacity: 0.85, padding: "4px 0" }, children: awaiting.mode === "reinstall"
-                                ? "Exact build pinned — uninstall and reinstall the game, then select this fix again."
-                                : SP_JSX.jsxs(SP_JSX.Fragment, { children: ["Pinned \u2014 waiting for Steam to update the game. ", dlComplete ? "Download complete — press Apply now." : "Let the download finish, then Apply."] }) }) }), awaiting.mode !== "reinstall" && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => awaiting.run().catch(() => { }), children: dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => {
+                    })()] })), awaiting && (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs("div", { style: { fontSize: 12, opacity: 0.85, padding: "4px 0" }, children: ["Pinned \u2014 waiting for Steam to install the matching build. ", dlComplete ? "Installed depot manifests match — apply the fix now." : "Wait for Steam to verify or update the game."] }) }), !dlComplete && SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: async () => {
+                                await noInternetFixBegin(awaiting.appid).catch(() => ({}));
+                                await triggerSteamInstall(awaiting.appid).catch(() => ({}));
+                                const result = await validateSteamApp(awaiting.appid).catch(() => ({ success: false }));
+                                if (!result.success)
+                                    toaster.toast({ title: "SLSDeck", body: "Open the game's Properties → Installed Files → Verify integrity in Steam." });
+                            }, children: "Retry Steam verification" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsxs(DFL.ButtonItem, { layout: "below", disabled: !dlComplete, onClick: () => awaiting.run().catch(() => { }), children: ["Apply ", awaiting.label, " now"] }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => {
                                 stopFlag.current = true;
                                 if (dlRef.current)
                                     clearInterval(dlRef.current);
@@ -13539,6 +13792,8 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
     const [hideToolsQam, setHideToolsQamState] = SP_REACT.useState(true);
     const [achievements, setAchievementsState] = SP_REACT.useState(true);
     const [achMoon, setAchMoon] = SP_REACT.useState(true);
+    const [autoUpdateApps, setAutoUpdateAppsState] = SP_REACT.useState(true);
+    const [manifestDonation, setManifestDonationState] = SP_REACT.useState(true);
     const [notifyGameAdds, setNotifyGameAdds] = SP_REACT.useState(true);
     const [surfaceFailedSources, setSurfaceFailedSources] = SP_REACT.useState(false);
     const [rouletteQam, setRouletteQam] = SP_REACT.useState(() => readRouletteBool(ROULETTE_QAM_KEY));
@@ -13554,6 +13809,8 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
         getAutoApply().then((r) => setAutoApplyState(!!r.enabled)).catch(() => { });
         getAutoRepoint().then((r) => setAutoRepointState(!!r.enabled)).catch(() => { });
         getAchievements().then((r) => { setAchievementsState(!!r.enabled); setAchMoon(r.moon !== false); }).catch(() => { });
+        getAutoUpdateApps().then((r) => setAutoUpdateAppsState(r.enabled !== false)).catch(() => { });
+        getManifestDonation().then((r) => setManifestDonationState(r.enabled !== false)).catch(() => { });
         getHideToolsQam().then((r) => setHideToolsQamState(!!r.enabled)).catch(() => { });
         getHideOnOwned().then((r) => setHideOwned(!!r.enabled)).catch(() => { });
         getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => { });
@@ -13605,7 +13862,21 @@ function OptionsPane({ showDeckyHv, onShowDeckyHvChange, }) {
                                 catch { /* ignore */ }
                             } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show added games in Quick Access", description: "Move the added-games list into the Quick Access panel, under Actions & fixes (removes the Installed tab here). Applies when the panel is reopened.", checked: gamesQam, onChange: async (v) => { setGamesQam(v); await setGamesInQam(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Show Reinstall SLSsteam in Quick Access", description: "When SLSsteam is installed, show its status and Reinstall section in Quick Access on store pages. Install still shows when it isn't installed yet.", checked: reinstallQam, onChange: async (v) => { setReinstallQam(v); await setShowReinstallQam(v); } }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Store Roulette", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Disable gambling tab", description: "Hide Store Roulette from the Advanced sidebar. The Quick Access dice remains controlled separately above. Off by default.", checked: rouletteTabDisabled, onChange: (v) => { setRouletteTabDisabled(v); writeRouletteBool(ROULETTE_TAB_DISABLED_KEY, v); } }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Games & library", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Notify when games are added", description: "Show a notification after an SLSsteam game is successfully added. Add failures and verification warnings remain visible.", checked: notifyGameAdds, onChange: async (value) => { setNotifyGameAdds(value); await setNotifyGameAdd(value); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Surface failed sources", description: "Show one notification listing every manifest provider that failed and was skipped during an add attempt. Off by default.", checked: surfaceFailedSources, onChange: async (value) => { setSurfaceFailedSources(value); await setUiSetting("toastOnSourceFailure", value); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Achievements (slsteam-moon)", description: achMoon
                                 ? "Let added games unlock achievements — moon fetches the real schema live from Steam by impersonating an owner. Restart Steam after changing."
-                                : "Needs the slsteam-moon engine. Stock SLSsteam ignores this setting (use SLScheevo to pre-generate achievements instead).", checked: achievements, onChange: async (v) => { setAchievementsState(v); await setAchievements(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Group SLS games into a collection", description: "Keep a Steam collection named 'SLSDeck' auto-synced with every game you added through SLSsteam, so they're easy to find among your owned titles. Updates on boot and as you add/remove games. Off by default; turning it off leaves the collection as-is.", checked: groupCollection, onChange: async (v) => {
+                                : "Needs the slsteam-moon engine. Stock SLSsteam ignores this setting (use SLScheevo to pre-generate achievements instead).", checked: achievements, onChange: async (v) => { setAchievementsState(v); await setAchievements(v); } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Automatically update managed games", description: "Keep unpinned SLS games on their latest available build. Per-game manifest pins still take precedence. Restart Steam after changing.", checked: autoUpdateApps, onChange: async (v) => {
+                                setAutoUpdateAppsState(v);
+                                const r = await setAutoUpdateApps(v);
+                                if (!r?.success) {
+                                    setAutoUpdateAppsState(!v);
+                                    toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the Moon config" });
+                                }
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Share owned manifest request codes", description: "Allow Moon to contribute short-lived manifest request codes only for depots this Steam account owns. Off disables both active requests and passive capture.", checked: manifestDonation, onChange: async (v) => {
+                                setManifestDonationState(v);
+                                const r = await setManifestDonation(v);
+                                if (!r?.success) {
+                                    setManifestDonationState(!v);
+                                    toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the Moon config" });
+                                }
+                            } }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Group SLS games into a collection", description: "Keep a Steam collection named 'SLSDeck' auto-synced with every game you added through SLSsteam, so they're easy to find among your owned titles. Updates on boot and as you add/remove games. Off by default; turning it off leaves the collection as-is.", checked: groupCollection, onChange: async (v) => {
                                 setGroupCollectionState(v);
                                 await setGroupCollection(v);
                                 if (v) {
@@ -14908,8 +15179,8 @@ function RepairBanner() {
     const [reason, setReason] = SP_REACT.useState("");
     // A broken config.yaml is the OTHER way the engine goes silently dead:
     // injection can be perfectly healthy while a malformed/missing key makes
-    // SLSsteam fall back to its own defaults (DisableUpdates: yes hands added
-    // games zero depots). Both faults surface through this one banner.
+    // SLSsteam fall back to defaults that do not match the managed setup. Both
+    // faults surface through this one banner.
     const [cfgIssues, setCfgIssues] = SP_REACT.useState([]);
     const [busy, setBusy] = SP_REACT.useState(false);
     const [done, setDone] = SP_REACT.useState("");
@@ -15010,17 +15281,6 @@ function Content() {
             return null;
         }
     }, []);
-    SP_REACT.useEffect(() => {
-        if (!installed)
-            return;
-        // Refresh Discord-backed vault/game availability independently of the
-        // Anti-Denuvo page. The cache itself coalesces callers and preserves the
-        // last good result when Discord is logged out or temporarily unrendered.
-        const refresh = () => refreshTokeerAvailabilityCache(false).catch(() => { });
-        const first = setTimeout(refresh, 12000);
-        const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
-        return () => { clearTimeout(first); clearInterval(interval); };
-    }, [installed]);
     SP_REACT.useEffect(() => {
         const readActionsFixes = () => {
             try {
@@ -15262,6 +15522,7 @@ var index = definePlugin(() => {
         icon: SP_JSX.jsx(FaPuzzlePiece, {}),
         onDismount() {
             console.log("SLSDeck unloading");
+            disposeTokeerDiscordView();
             dependencyLifecycleToken.active = false;
             try {
                 clearTimeout(dependencyRepairFirst);

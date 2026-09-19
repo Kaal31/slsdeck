@@ -73,9 +73,12 @@ class PinsourceBuildIdTests(unittest.TestCase):
                 )
 
         self.assertTrue(result["success"])
-        snapshot.assert_called_once_with(
-            3751950, {3751951: "4397710407098141927"},
-            "24424450", "lua.tools-fix"
+        # The package-level survival backup may refresh the same snapshot after
+        # the pin. The build-aware write itself must always be present.
+        self.assertIn(
+            mock.call(3751950, {3751951: "4397710407098141927"},
+                      "24424450", "lua.tools-fix"),
+            snapshot.call_args_list,
         )
         saved_build.assert_called_once_with(3751950, "24424450")
         history.assert_called_once_with(
