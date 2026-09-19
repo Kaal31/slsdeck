@@ -242,7 +242,7 @@ export function FixesSection() {
           fix.appid, fix.id, pathRes.installPath!, fix.manifest_id || "", fix.depot_id || "",
           "lua.tools fix", gameName
         ),
-      fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id) : undefined
+      fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id, fix.build || "") : undefined
     );
   };
 

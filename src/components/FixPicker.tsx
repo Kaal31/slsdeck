@@ -68,7 +68,7 @@ import {
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
-import { runBuildAccurateApply, isDownloadComplete, isPinnedBuildReady } from "../lib/buildApply";
+import { runBuildAccurateApply, installedDepotsMatchPin, isDownloadComplete, isPinnedBuildReady } from "../lib/buildApply";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
 import { noInternetFixBegin } from "../api";
 import { cancelTokeerAvailabilityRefresh, getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
@@ -161,7 +161,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
   const [pinned, setPinned] = useState(false);
-  const [pinInfo, setPinInfo] = useState<{ buildid?: string; depots?: { [d: string]: string } }>({});
+  const [pinInfo, setPinInfo] = useState<{
+    buildid?: string;
+    source?: string;
+    depots?: { [d: string]: string };
+    installedBuildid?: string;
+    installedDepots?: { [d: string]: string };
+  }>({});
   const [added, setAdded] = useState(false);
   // DLC unlockers (SmokeAPI / CreamAPI / Ubisoft) only make sense on games you
   // own. When this pref is on (default), hide them on SLS-added games.
@@ -332,7 +338,13 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       const snapshotDepots = p.pinned
         ? (p.depots || {})
         : (Object.keys(p.depots || {}).length ? p.depots : p.installedDepots);
-      setPinInfo({ buildid: snapshotBuild, depots: snapshotDepots });
+      setPinInfo({
+        buildid: snapshotBuild,
+        source: p.pinSource,
+        depots: snapshotDepots,
+        installedBuildid: p.installedBuildid,
+        installedDepots: p.installedDepots,
+      });
       // Ask about THIS build specifically: the same game can have several
       // builds archived, so "is this game archived" is the wrong question.
       if (snapshotBuild) {
@@ -673,7 +685,21 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           appid, fix.id, installPath, fix.manifest_id || "", fix.depot_id || "",
           "lua.tools fix", check?.gameName || ""
         ),
-      fix.has_manifest ? () => pinForLuatoolsFix(appid, fix.id) : undefined
+      fix.has_manifest ? async () => {
+        const result = await pinForLuatoolsFix(appid, fix.id, fix.build || "");
+        if (result.pinned) {
+          const p = await getPinStatus(appid);
+          setPinned(!!p.pinned);
+          setPinInfo({
+            buildid: p.buildid,
+            source: p.pinSource,
+            depots: p.depots || {},
+            installedBuildid: p.installedBuildid,
+            installedDepots: p.installedDepots || {},
+          });
+        }
+        return result;
+      } : undefined
     );
   };
 
@@ -1333,7 +1359,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           <div>
             {tokeerApplied
               ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
-              : ""}🔒 Version pinned — Build {pinInfo.buildid || "unknown"} · {Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.
+              : ""}{pinInfo.source === "lua.tools-fix" && pinInfo.buildid
+                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {}) ? "Pin matched" : "Update pending"}`
+                : `🔒 Version pinned — Build ${pinInfo.buildid || "unknown"} · ${Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.`}
           </div>
           {tokeerApplied && tokeerApplied.health !== "valid" && (
             <div style={{ color: "#ffbf69" }}>{tokeerApplied.healthReason || "Tokeer activation needs verification."}</div>

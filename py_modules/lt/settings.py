@@ -184,7 +184,8 @@ def get_pinned_manifest_snapshots() -> Dict[str, Dict[str, Any]]:
     return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
 
 
-def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: str = "") -> None:
+def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: str = "",
+                                 source: str = "") -> None:
     clean = {
         str(depot): str(gid)
         for depot, gid in (depots or {}).items()
@@ -200,6 +201,7 @@ def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: st
         snapshots[key] = {
             "depots": clean,
             "buildid": str(buildid or (previous.get("buildid") if previous_depots == clean else "") or ""),
+            "source": str(source or (previous.get("source") if previous_depots == clean else "") or ""),
         }
     else:
         snapshots.pop(key, None)

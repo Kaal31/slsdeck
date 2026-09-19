@@ -508,7 +508,7 @@ async function onAction(payloadStr: string): Promise<void> {
       const f = msg.fix || {};
       if (f.has_manifest) {
         setStatus("Loading this fix's exact manifest…");
-        const pin = await pinForLuatoolsFix(appid, String(f.id || ""));
+        const pin = await pinForLuatoolsFix(appid, String(f.id || ""), String(f.build || ""));
         if (!pin.pinned) {
           setStatus(pin.error || "This fix's paired manifest could not be pinned; nothing was applied");
           return;

@@ -394,7 +394,7 @@ export const netsockCompatible = callable<[], { success: boolean; games: Array<{
 
 export const getDlcOption = callable<[], { success: boolean; enabled: boolean }>("get_dlc_option");
 
-export const getPinStatus = callable<[appid: number], { success: boolean; pinned: boolean; buildid?: string; depots?: { [depot: string]: string }; installedBuildid?: string; installedDepots?: { [depot: string]: string } }>("get_pin_status");
+export const getPinStatus = callable<[appid: number], { success: boolean; pinned: boolean; buildid?: string; pinSource?: string; depots?: { [depot: string]: string }; installedBuildid?: string; installedDepots?: { [depot: string]: string } }>("get_pin_status");
 export const pinGame = callable<[appid: number], { success: boolean; depots?: number; error?: string }>("pin_game");
 export const unpinGame = callable<[appid: number], { success: boolean; changed?: boolean }>("unpin_game");
 export const getPinOnFix = callable<[], { success: boolean; enabled: boolean }>("get_pin_on_fix");
@@ -585,10 +585,11 @@ export interface PinResult {
   wasPinned?: boolean;
   error?: string;
   unsupported?: boolean;
+  buildid?: string;
 }
 export const pinForFix = callable<[appid: number], PinResult>("pin_for_fix");
 // Pin to a SPECIFIC lua.tools fix's build (its own manifest) — accurate per-fix.
-export const pinForLuatoolsFix = callable<[appid: number, fixId: string], PinResult>(
+export const pinForLuatoolsFix = callable<[appid: number, fixId: string, buildid?: string], PinResult>(
   "pin_for_luatools_fix"
 );
 

@@ -32,13 +32,30 @@ class PinsourceBuildIdTests(unittest.TestCase):
         pin.assert_called_once_with(
             3751950,
             {3751951: "4397710407098141927", 3751953: "3022415893432196011"},
-            buildid="24424450",
+            buildid="24424450", source="lua.tools-fix",
         )
         self.assertTrue(result["pinned"])
         self.assertEqual(result["buildid"], "24424450")
 
     def test_missing_comment_remains_supported(self):
         self.assertEqual(pinsource.parse_buildid('setManifestid(1, "2")'), "")
+
+    def test_catalog_build_is_fallback_when_download_omits_comment(self):
+        lua_without_header = 'setManifestid(3751951, "4397710407098141927")'
+        with mock.patch.object(
+            pinsource.luatools, "download_fix_manifest", return_value=lua_without_header
+        ), mock.patch.object(
+            pinsource.slssteam, "pin_app_gids", return_value={"success": True}
+        ) as pin:
+            result = pinsource.auto_pin_from_luatools_fix(
+                3751950, "fix-id", "24424450"
+            )
+
+        pin.assert_called_once_with(
+            3751950, {3751951: "4397710407098141927"},
+            buildid="24424450", source="lua.tools-fix"
+        )
+        self.assertEqual(result["buildid"], "24424450")
 
     def test_pin_persists_buildid_with_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -51,17 +68,19 @@ class PinsourceBuildIdTests(unittest.TestCase):
                  mock.patch("lt.settings.set_pinned_build") as saved_build, \
                  mock.patch("lt.buildhistory.snapshot") as history:
                 result = pinsource.slssteam.pin_app_gids(
-                    3751950, {3751951: "4397710407098141927"}, buildid="24424450"
+                    3751950, {3751951: "4397710407098141927"},
+                    buildid="24424450", source="lua.tools-fix"
                 )
 
         self.assertTrue(result["success"])
         snapshot.assert_called_once_with(
-            3751950, {3751951: "4397710407098141927"}, "24424450"
+            3751950, {3751951: "4397710407098141927"},
+            "24424450", "lua.tools-fix"
         )
         saved_build.assert_called_once_with(3751950, "24424450")
         history.assert_called_once_with(
             3751950, {3751951: "4397710407098141927"},
-            buildid="24424450", source="pin"
+            buildid="24424450", source="lua.tools-fix"
         )
 
 

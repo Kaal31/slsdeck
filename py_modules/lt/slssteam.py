@@ -357,20 +357,34 @@ def _push_injection_event(kind: str, message: str) -> None:
 
 def trigger_steam_install(appid, library: int = 0) -> Dict[str, Any]:
     """Ask the LIVE SLSsteam hook to start downloading an added game via its
-    /tmp/SLSsteam.API IPC ("install|appid|library"). Works in the running Steam
-    session with no restart. Harmless (a no-op) when injection isn't active."""
+    private runtime API ("install|appid|library")."""
     try:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "invalid appid"}
+    candidates = []
     try:
-        with open("/tmp/SLSsteam.API", "w", encoding="utf-8") as fh:
-            fh.write("install|%d|%d\n" % (appid, int(library)))
-        logger.log(f"SLSsteam: API install trigger -> {appid} (library {library})")
-        return {"success": True}
-    except Exception as exc:
-        logger.warn(f"SLSsteam: API install trigger failed: {exc}")
-        return {"success": False, "error": str(exc)}
+        import pwd
+        uid = pwd.getpwnam(_decky_user()).pw_uid
+        candidates.append(f"/run/user/{uid}/SLSsteam/api")
+    except Exception:
+        pass
+    candidates.append(os.path.join(_home(), ".cache", "SLSsteam", "api"))
+    # Compatibility with older, pre-private-runtime engines only when their
+    # contract already exists. Never recreate this insecure legacy endpoint.
+    candidates.append("/tmp/SLSsteam.API")
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("install|%d|%d\n" % (appid, int(library)))
+            logger.log(f"SLSsteam: API install trigger -> {appid} via {path} (library {library})")
+            return {"success": True, "path": path}
+        except Exception as exc:
+            logger.warn(f"SLSsteam: API install trigger failed via {path}: {exc}")
+    return {"success": False, "error": "live SLSsteam API contract not found",
+            "checked": candidates}
 
 
 def validate_steam_app(appid) -> Dict[str, Any]:
@@ -389,7 +403,9 @@ def validate_steam_app(appid) -> Dict[str, Any]:
     except Exception:
         return {"success": False, "error": "invalid appid"}
     try:
-        cmd = _wrap_as_user(["steam", f"steam://validate/{appid}"])
+        steam_candidates = _steam_sh_candidates()
+        steam_cmd = steam_candidates[0] if steam_candidates else "steam"
+        cmd = _wrap_as_user([steam_cmd, f"steam://validate/{appid}"])
         subprocess.Popen(
             cmd, env=_rich_env(), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1324,6 +1340,15 @@ def _rich_env() -> Dict[str, str]:
     env["PATH"] = base + ((":" + env["PATH"]) if env.get("PATH") else "")
     env.setdefault("XDG_DATA_HOME", os.path.join(_home(), ".local", "share"))
     env.setdefault("XDG_CONFIG_HOME", os.path.join(_home(), ".config"))
+    try:
+        import pwd as _pwd
+        uid = _pwd.getpwnam(_decky_user()).pw_uid
+        runtime = f"/run/user/{uid}"
+        if os.path.isdir(runtime):
+            env["XDG_RUNTIME_DIR"] = runtime
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime}/bus"
+    except Exception:
+        pass
     return env
 
 
@@ -1363,6 +1388,10 @@ def _wrap_as_user(cmd: List[str]) -> List[str]:
               f"HOME={env['HOME']}", f"PATH={env['PATH']}",
               f"XDG_DATA_HOME={env['XDG_DATA_HOME']}",
               f"XDG_CONFIG_HOME={env['XDG_CONFIG_HOME']}"]
+    if env.get("XDG_RUNTIME_DIR"):
+        prefix.append(f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}")
+    if env.get("DBUS_SESSION_BUS_ADDRESS"):
+        prefix.append(f"DBUS_SESSION_BUS_ADDRESS={env['DBUS_SESSION_BUS_ADDRESS']}")
     return prefix + cmd
 
 
@@ -4793,7 +4822,8 @@ def _read_pin_gids(appid: int) -> Dict[int, str]:
     return out
 
 
-def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "") -> Dict[str, Any]:
+def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "",
+                 source: str = "") -> Dict[str, Any]:
     """Pin the game to a SPECIFIC set of depot manifest gids (build-accurate),
     e.g. the setManifestid gids from a fix's manifest .lua — as opposed to
     pin_app_current which locks whatever is installed now. slsteam-moon fetches
@@ -4806,6 +4836,7 @@ def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "") -> Dict[s
     buildid = str(buildid or "").strip()
     if buildid and not buildid.isdigit():
         buildid = ""
+    source = str(source or "").strip()
     clean = {}
     for d, g in (depot_gids or {}).items():
         try:
@@ -4869,7 +4900,7 @@ def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "") -> Dict[s
     if ok:
         try:
             from . import settings
-            settings.set_pinned_manifest_snapshot(appid, clean, buildid)
+            settings.set_pinned_manifest_snapshot(appid, clean, buildid, source)
             if buildid:
                 settings.set_pinned_build(appid, buildid)
             elif changed:
@@ -4878,12 +4909,12 @@ def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "") -> Dict[s
             pass
         try:
             from . import buildhistory
-            buildhistory.snapshot(appid, clean, buildid=buildid, source="pin")
+            buildhistory.snapshot(appid, clean, buildid=buildid, source=source or "pin")
         except Exception:
             pass
     return {"success": ok, "depots": len(clean), "changed": changed,
             "wasPinned": was_pinned, "alreadyOnBuild": already_on_build,
-            "buildid": buildid}
+            "buildid": buildid, "source": source}
 
 
 def is_pinned(appid) -> bool:

@@ -127,6 +127,9 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
   } catch {
     /* best-effort */
   }
+  // Moon reloads config.yaml through its file watcher. Give that watcher one
+  // turn before asking Steam to construct the install plan from the new pin.
+  await new Promise((resolve) => setTimeout(resolve, 750));
   try {
     await triggerSteamInstall(h.appid);
   } catch {

@@ -1203,6 +1203,7 @@ class Plugin:
             pinned = await self._run(slssteam.is_pinned, int(appid))
             depots: Dict[str, str] = {}
             buildid = ""
+            pin_source = ""
             if pinned:
                 try:
                     raw = await self._run(slssteam._read_pin_gids, int(appid))
@@ -1210,11 +1211,14 @@ class Plugin:
                 except Exception:
                     depots = {}
                 try:
+                    snapshot = settings.get_pinned_manifest_snapshots().get(str(int(appid))) or {}
                     buildid = settings.get_pinned_build(int(appid))
                     if not buildid:
-                        buildid = str((settings.get_pinned_manifest_snapshots().get(str(int(appid))) or {}).get("buildid") or "")
+                        buildid = str(snapshot.get("buildid") or "")
+                    pin_source = str(snapshot.get("source") or "")
                 except Exception:
                     buildid = ""
+                    pin_source = ""
             # Snapshot creation is not limited to already-pinned games. Steam's
             # appmanifest records the installed BuildID and exact depot GIDs,
             # which are sufficient mandatory material for a game snapshot.
@@ -1227,7 +1231,8 @@ class Plugin:
             except Exception:
                 installed_buildid = ""
             return {"success": True, "pinned": bool(pinned), "buildid": buildid, "depots": depots,
-                    "installedBuildid": installed_buildid, "installedDepots": installed_depots}
+                    "pinSource": pin_source, "installedBuildid": installed_buildid,
+                    "installedDepots": installed_depots}
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
@@ -1657,11 +1662,15 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
-    async def pin_for_luatools_fix(self, appid: int, fix_id: str) -> Dict[str, Any]:
+    async def pin_for_luatools_fix(self, appid: int, fix_id: str,
+                                   buildid: str = "") -> Dict[str, Any]:
         """Pin to the exact build a specific lua.tools fix targets (its own
         manifest), so the update-vs-skip decision is accurate per-fix."""
         try:
-            return await self._run(pinsource.auto_pin_from_luatools_fix, int(appid), str(fix_id))
+            return await self._run(
+                pinsource.auto_pin_from_luatools_fix,
+                int(appid), str(fix_id), str(buildid or "")
+            )
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
