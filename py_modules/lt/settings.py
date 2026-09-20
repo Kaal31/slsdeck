@@ -259,7 +259,7 @@ def get_all() -> Dict[str, Any]:
 
 
 def get_slssteam_dlc_enabled() -> bool:
-    return bool(get_value("slssteamDlc", False))
+    return bool(get_value("slssteamDlc", True))
 
 
 def set_slssteam_dlc_enabled(value: bool) -> None:
@@ -733,8 +733,8 @@ def set_auto_fix(value: bool) -> None:
 
 def get_auto_add_dlc() -> bool:
     """When adding a game, also fetch the FULL manifest (all depots incl. DLC) so
-    the base install pulls all content DLC. Off by default."""
-    return bool(get_value("autoAddDlc", False))
+    the base install pulls all content DLC. On by default."""
+    return bool(get_value("autoAddDlc", True))
 
 
 def set_auto_add_dlc(value: bool) -> None:

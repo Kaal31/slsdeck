@@ -98,11 +98,15 @@ function AddDownloadToggle() {
 }
 
 function DlcCloudToggles() {
-  const [autoDlc, setAutoDlc] = useState(false);
+  const [dlc, setDlc] = useState(true);
+  const [dlcOwnedOnly, setDlcOwnedOnlyState] = useState(true);
+  const [autoDlc, setAutoDlc] = useState(true);
   const [noCloud, setNoCloud] = useState(false);
   const [noOwnedDlc, setNoOwnedDlc] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
+    getDlcOption().then((r) => setDlc(!!r.enabled)).catch(() => {});
+    getDlcOwnedOnly().then((r) => setDlcOwnedOnlyState(!!r.enabled)).catch(() => {});
     getAutoAddDlc().then((r) => setAutoDlc(!!r.enabled)).catch(() => {});
     getDisableCloud().then((r) => setNoCloud(!!r.enabled)).catch(() => {});
     getDisableDlcUnlockOwned().then((r) => setNoOwnedDlc(!!r.enabled)).catch(() => {});
@@ -111,8 +115,28 @@ function DlcCloudToggles() {
     <PanelSection title="DLC & cloud">
       <PanelSectionRow>
         <ToggleField
+          label="Unlock DLC when adding a game"
+          description="Marks the game's DLC as owned and auto-installs the matching in-process DLC unlocker when the game is on disk — SmokeAPI for Steam titles, Uplay R1/R2 for Ubisoft Connect titles (each only applies to games that use it). SLSsteam already unlocks most Steam DLC on its own. In-game (entitlement) DLC unlocks right away; DLC that downloads as separate files still needs those files. On by default."
+          checked={dlc}
+          onChange={async (v) => { setDlc(v); await setDlcOption(v); }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="DLC unlockers on owned games only"
+          description="Only show the CreamAPI, SmokeAPI and Ubisoft (Uplay R1/R2) DLC-unlock buttons on games you actually own — hide them on SLS-added games, where they do nothing. On by default."
+          checked={dlcOwnedOnly}
+          onChange={async (v) => {
+            setDlcOwnedOnlyState(v);
+            await setDlcOwnedOnly(v);
+            toaster.toast({ title: "SLSDeck", body: v ? "DLC unlockers: owned games only" : "DLC unlockers: all games" });
+          }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
           label="Add DLC automatically"
-          description="When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. Off by default."
+          description="When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. On by default."
           checked={autoDlc}
           onChange={async (v) => {
             setAutoDlc(v);
@@ -329,8 +353,6 @@ function OptionsPane({
   showDeckyHv: boolean;
   onShowDeckyHvChange: (enabled: boolean) => void;
 }) {
-  const [dlc, setDlc] = useState(false);
-  const [dlcOwnedOnly, setDlcOwnedOnlyState] = useState(true);
   const [groupCollection, setGroupCollectionState] = useState(false);
   const [backupCustom, setBackupCustomState] = useState(false);
   const [storeOn, setStoreOn] = useState(true);
@@ -367,8 +389,6 @@ function OptionsPane({
   const [rouletteTabDisabled, setRouletteTabDisabled] = useState(() => readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
 
   useEffect(() => {
-    getDlcOption().then((r) => setDlc(!!r.enabled)).catch(() => {});
-    getDlcOwnedOnly().then((r) => setDlcOwnedOnlyState(!!r.enabled)).catch(() => {});
     getGroupCollection().then((r) => setGroupCollectionState(!!r.enabled)).catch(() => {});
     getBackupCustom().then((r) => setBackupCustomState(!!r.enabled)).catch(() => {});
     getStoreDisabled().then((r) => setStoreOn(!r.disabled)).catch(() => {});
@@ -484,29 +504,6 @@ function OptionsPane({
             description="When an add finishes, download and apply the online fix and/or Denuvo fix if available. A Denuvo fix also marks the game and installs the custom Proton."
             checked={autoFix}
             onChange={async (v) => { setAutoFixState(v); await setAutoFix(v); }}
-          />
-        </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="DLC unlocking">
-        <PanelSectionRow>
-          <ToggleField
-            label="Unlock DLC when adding a game"
-            description="Marks the game's DLC as owned and auto-installs the matching in-process DLC unlocker when the game is on disk — SmokeAPI for Steam titles, Uplay R1/R2 for Ubisoft Connect titles (each only applies to games that use it). SLSsteam already unlocks most Steam DLC on its own. In-game (entitlement) DLC unlocks right away; DLC that downloads as separate files still needs those files."
-            checked={dlc}
-            onChange={async (v) => { setDlc(v); await setDlcOption(v); }}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="DLC unlockers on owned games only"
-            description="Only show the CreamAPI, SmokeAPI and Ubisoft (Uplay R1/R2) DLC-unlock buttons on games you actually own — hide them on SLS-added games, where they do nothing. On by default."
-            checked={dlcOwnedOnly}
-            onChange={async (v) => {
-              setDlcOwnedOnlyState(v);
-              await setDlcOwnedOnly(v);
-              toaster.toast({ title: "SLSDeck", body: v ? "DLC unlockers: owned games only" : "DLC unlockers: all games" });
-            }}
           />
         </PanelSectionRow>
       </PanelSection>

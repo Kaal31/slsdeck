@@ -12,7 +12,7 @@ let cachedStoreOn: boolean | null = null;
  * sync, and the manual "Game fixes" (look up fixes by AppID).
  */
 export function AdvancedSection() {
-  const [dlc, setDlc] = useState(cachedDlc ?? false);
+  const [dlc, setDlc] = useState(cachedDlc ?? true);
   const [storeOn, setStoreOn] = useState(cachedStoreOn ?? true);
   const [pinOnFix, setPinOnFixState] = useState(true);
   const [autoApply, setAutoApplyState] = useState(false);
