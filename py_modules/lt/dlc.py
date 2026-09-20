@@ -179,8 +179,17 @@ def ensure_all_dlc_keys(appid: int) -> Dict[str, Any]:
     the resolved lua. Returns {success, keys, source}."""
     from . import downloads
     registered = 0
+    registered_depots = set()
     dlc_registered = 0
     source = ""
+    source_parts = []
+    # Keep Moon's ownership policy persistent across Steam restarts. DlcData
+    # remains the per-game fallback, while this native flag makes advertised
+    # DLC eligible during package reconstruction after a restart.
+    try:
+        slssteam.set_inject_all_advertised_dlc(True)
+    except Exception as exc:
+        logger.warn(f"SLSDeck: ensure_all_dlc_keys policy step failed for {appid}: {exc}")
     # 0) Register the game's DLC appids explicitly in moon's DlcData so they show
     # OWNED everywhere — not just in-game. moon's blanket unlock only fires while a
     # game is running (getAppId != 0); in the library/store view DLC still read as
@@ -201,22 +210,51 @@ def ensure_all_dlc_keys(appid: int) -> Dict[str, Any]:
         r = downloads.fetch_lua_text(appid)
         if r.get("success"):
             source = r.get("source", "")
+            if source:
+                source_parts.append(source)
             for m in re.finditer(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*["\']([0-9a-fA-F]{64})["\']',
                                  r.get("lua", "")):
                 depot, key = int(m.group(1)), m.group(2)
                 try:
-                    if slssteam.cache_depot_key(appid, depot, key):
+                    if depot not in registered_depots and slssteam.cache_depot_key(appid, depot, key):
                         registered += 1
+                        registered_depots.add(depot)
                 except Exception:
                     pass
     except Exception as exc:
         logger.warn(f"SLSDeck: ensure_all_dlc_keys lua step failed for {appid}: {exc}")
-    # 2) Hubcap manifest bundle (has DLC depots + .manifest binaries) — best source.
+    # 2) Preferred API bundle. Import its own keys as well as its manifest
+    # binaries; previously this path only noticed that files existed, labelled
+    # every provider "hubcap", and discarded the bundle's DLC keys.
     try:
         b = downloads.fetch_manifest_bundle(appid)
+        bundle_source = str(b.get("source") or "")
+        bundle_lua = str(b.get("lua") or "")
+        for m in re.finditer(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*["\']([0-9a-fA-F]{64})["\']',
+                             bundle_lua):
+            depot, key = int(m.group(1)), m.group(2)
+            try:
+                if depot not in registered_depots and slssteam.cache_depot_key(appid, depot, key):
+                    registered += 1
+                    registered_depots.add(depot)
+            except Exception:
+                pass
         if b.get("manifests"):
-            source = (source + "+hubcap").strip("+") if source else "hubcap"
-    except Exception:
-        pass
+            if bundle_source and bundle_source not in source_parts:
+                source_parts.append(bundle_source)
+            try:
+                import os
+                import shutil
+                store = slssteam.manifest_store_dir()
+                os.makedirs(store, exist_ok=True)
+                for path in b.get("manifests", {}).values():
+                    shutil.copy2(path, os.path.join(store, os.path.basename(path)))
+                from .steam import restore_manifests_to_depotcache
+                restore_manifests_to_depotcache(appid)
+            except Exception as manifest_exc:
+                logger.warn(f"SLSDeck: DLC manifest persistence failed for {appid}: {manifest_exc}")
+    except Exception as exc:
+        logger.warn(f"SLSDeck: ensure_all_dlc_keys bundle step failed for {appid}: {exc}")
+    source = "+".join(source_parts)
     return {"success": True, "keys": registered, "dlcRegistered": dlc_registered,
             "source": source or "none"}
