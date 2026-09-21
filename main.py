@@ -361,10 +361,30 @@ class Plugin:
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: archive boot reconcile failed: {exc}")
 
+        def _boot_dlc_reconcile():
+            """Restore Moon's durable DLC policy and repair depots Steam dropped.
+
+            Steam may reconcile appmanifests before Moon finishes publishing its
+            package-0 DLC snapshot.  The engine fix prevents that race; this is
+            the plugin-side safety net for already-affected installs.
+            """
+            try:
+                result = dlc.reconcile_auto_dlc_boot()
+                repaired = result.get("repairRequested") or []
+                if repaired:
+                    decky.logger.warning(
+                        "SLSDeck: requested DLC repair for "
+                        + ", ".join(str(value) for value in repaired))
+                if not result.get("success"):
+                    decky.logger.warning(
+                        f"SLSDeck: DLC boot reconcile incomplete: {result.get('errors')}")
+            except Exception as exc:
+                decky.logger.warning(f"SLSDeck: DLC boot reconcile failed: {exc}")
+
         warmups = (apis.init_apis, downloads.init_applist, downloads.init_games_db,
                    fixes.init_fixes_index, ryuu.init, slssteam.ensure_launch_wrapper,
                    slssteam.boot_desktop_icon_guard, slssteam.boot_injection_watchdog,
-                   _provision_if_steam_down, _boot_cloud_and_updates,
+                   _provision_if_steam_down, _boot_dlc_reconcile, _boot_cloud_and_updates,
                    _boot_archive_templates)
 
         # HV (cpuid_fault_emulation) per-game lifecycle: start the HV-Decky
@@ -2105,7 +2125,6 @@ class Plugin:
         return {"success": True, "enabled": settings.get_auto_add_dlc()}
 
     async def set_auto_add_dlc(self, enabled: bool) -> Dict[str, Any]:
-        settings.set_auto_add_dlc(enabled)
         # Native path on newer engines: flip InjectAllAdvertisedDlc so ALL
         # advertised DLC show owned in the store/library view (not just in-game).
         # Harmless no-op on older engines, where per-add DlcData is the fallback.
@@ -2119,9 +2138,11 @@ class Plugin:
         # left the toggle reading ON with nothing in config.yaml. Report it.
         engine = await self._run(slssteam.set_inject_all_advertised_dlc, bool(enabled))
         if not (engine or {}).get("success"):
-            return {"success": False, "enabled": bool(enabled), "settingSaved": True,
+            return {"success": False, "enabled": settings.get_auto_add_dlc(),
+                    "settingSaved": False,
                     "error": (engine or {}).get("error") or
                              "could not write InjectAllAdvertisedDlc to the SLSsteam config"}
+        settings.set_auto_add_dlc(enabled)
         return {"success": True, "enabled": bool(enabled)}
 
     async def get_disable_cloud(self) -> Dict[str, Any]:

@@ -1447,6 +1447,8 @@ def delete_luatools_for_app(appid: int) -> Dict[str, Any]:
     try:
         slssteam_removed = bool(slssteam.remove_app(appid).get("success"))
         slssteam.remove_dlc_parent(appid)
+        from . import settings as _settings
+        _settings.remove_auto_dlc_record(appid)
     except Exception as exc:
         logger.warn(f"SLSDeck: SLSsteam deregister failed for {appid}: {exc}")
     try:
@@ -1695,6 +1697,8 @@ def purge_all_added() -> Dict[str, Any]:
         for appid in appids:
             try:
                 slssteam.remove_dlc_parent(appid)
+                from . import settings as _settings
+                _settings.remove_auto_dlc_record(appid)
                 name = _get_loaded_app_name(appid) or f"UNKNOWN ({appid})"
                 _remove_loaded_app(appid)
                 _log_event("REMOVED", appid, name)

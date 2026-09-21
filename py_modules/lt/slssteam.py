@@ -2280,6 +2280,34 @@ def add_dlc_block(parent_appid: int, dlc_ids, names=None) -> Dict[str, Any]:
     return {"success": True, "added": len(ids)}
 
 
+def read_dlc_data() -> Dict[int, List[int]]:
+    """Read the configured ``DlcData`` map without requiring PyYAML.
+
+    This is also the migration source for installs created before SLSDeck began
+    persisting its compact auto-DLC expectation records.
+    """
+    content = _read()
+    if content is None:
+        return {}
+    bounds = _dlc_section(content)
+    if bounds is None:
+        return {}
+    _, body_start, body_end = bounds
+    body = content[body_start:body_end]
+    out: Dict[int, List[int]] = {}
+    current: Optional[int] = None
+    for line in body.splitlines():
+        parent = re.match(r"^[ \t]{2}(\d+)[ \t]*:[ \t]*$", line)
+        if parent:
+            current = int(parent.group(1))
+            out.setdefault(current, [])
+            continue
+        child = re.match(r"^[ \t]{4,}(\d+)[ \t]*:", line)
+        if current is not None and child:
+            out[current].append(int(child.group(1)))
+    return out
+
+
 def remove_dlc_parent(parent_appid: int) -> Dict[str, Any]:
     """Remove an entire parent block (and its DLCs) from DlcData."""
     try:

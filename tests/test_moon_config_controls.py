@@ -47,6 +47,14 @@ class MoonConfigControlsTests(unittest.TestCase):
             slssteam.set_manifest_donation(False)
         self.assertEqual(write.call_args.args[0][-2:], ["Donate:", "  Enabled: no"])
 
+    def test_read_dlc_data_parses_only_the_dlc_map(self):
+        config = """AdditionalApps:\n  - 1364780\nDlcData:\n  1364780:\n    1792750: \"DLC one\"\n    1792751: \"DLC two\"\nAchievements: yes\n"""
+        with patch.object(slssteam, "_read", return_value=config):
+            self.assertEqual(
+                slssteam.read_dlc_data(),
+                {1364780: [1792750, 1792751]},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

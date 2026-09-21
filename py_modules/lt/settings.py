@@ -746,6 +746,41 @@ def set_auto_add_dlc(value: bool) -> None:
     set_value("autoAddDlc", bool(value))
 
 
+def get_auto_dlc_records() -> Dict[str, Dict[str, Any]]:
+    """Durable DLC expectations used to detect Steam removing Moon depots.
+
+    Each record is intentionally small: the DLC appids Moon must authorize and
+    the confirmed content-depot ids which should remain mounted.  Provider
+    responses and keys stay in their existing caches.
+    """
+    raw = get_value("autoDlcRecords", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): dict(value)
+        for key, value in raw.items()
+        if str(key).isdigit() and isinstance(value, dict)
+    }
+
+
+def set_auto_dlc_record(appid: int, dlc_appids, depot_ids) -> None:
+    key = str(int(appid))
+    records = get_auto_dlc_records()
+    dlcs = sorted({int(value) for value in (dlc_appids or []) if str(value).isdigit()})
+    depots = sorted({int(value) for value in (depot_ids or []) if str(value).isdigit()})
+    if dlcs or depots:
+        records[key] = {"dlcAppids": dlcs, "depotIds": depots, "updatedAt": time.time()}
+    else:
+        records.pop(key, None)
+    set_value("autoDlcRecords", records)
+
+
+def remove_auto_dlc_record(appid: int) -> None:
+    records = get_auto_dlc_records()
+    records.pop(str(int(appid)), None)
+    set_value("autoDlcRecords", records)
+
+
 def get_disable_cloud() -> bool:
     """Disable Steam cloud saves on SLS-added games (moon DisableCloud — only
     affects added/unlocked games, not your legit ones). Off by default. Mutually
