@@ -1485,7 +1485,7 @@ async function applyFixRuntime(appid, overrides) {
         /* ignore */
     }
 }
-function configureTokeerLaunch(appid, tokeerHome, requiredProton = "GE-Proton10-34") {
+async function configureTokeerLaunch(appid, tokeerHome, requiredProton = "GE-Proton10-34") {
     const SC = window.SteamClient;
     if (!SC?.Apps?.SetAppLaunchOptions || !SC?.Apps?.SpecifyCompatTool) {
         return { success: false, error: "Steam's live app-configuration API is unavailable." };
@@ -1521,9 +1521,32 @@ function configureTokeerLaunch(appid, tokeerHome, requiredProton = "GE-Proton10-
         const next = `WINEDLLOVERRIDES="${deduped.join(";")}" ${quotedWrapper} ${rest}`
             .replace(/\s+/g, " ")
             .trim();
-        SC.Apps.SpecifyCompatTool(appid, requiredProton);
+        // A compatibility tool installed while Steam is running is present on disk
+        // before it appears in Steam's live tool registry.  Passing its undiscovered
+        // name to SpecifyCompatTool is silently ignored on affected client builds.
+        // Prefer Tokeer's exact GE build when Steam exposes it; otherwise select the
+        // built-in Proton Experimental so activation never proceeds with no layer.
+        let tools = [];
+        try {
+            const available = SC.Apps.GetAvailableCompatTools?.(appid);
+            tools = (available && typeof available.then === "function"
+                ? await available
+                : available) || [];
+        }
+        catch {
+            tools = [];
+        }
+        const names = tools.map((tool) => ({
+            id: String(tool.strToolName || tool.strToolIdentifier || ""),
+            display: String(tool.strDisplayName || ""),
+        }));
+        const required = requiredProton.toLowerCase();
+        const discovered = names.find((tool) => tool.id.toLowerCase() === required || tool.display.toLowerCase() === required);
+        const selectedProton = discovered?.id || "proton_experimental";
+        const usedFallback = !discovered;
+        SC.Apps.SpecifyCompatTool(appid, selectedProton);
         SC.Apps.SetAppLaunchOptions(appid, next);
-        return { success: true, options: next, proton: requiredProton };
+        return { success: true, options: next, proton: selectedProton, usedFallback };
     }
     catch (e) {
         return { success: false, error: String(e) };
@@ -1651,7 +1674,8 @@ async function isPinnedBuildReady(appid) {
     try {
         const [pin, download] = await Promise.all([getPinStatus(appid), appDownloadComplete(appid)]);
         return !!(pin.success && pin.pinned && download.success && download.complete &&
-            installedDepotsMatchPin(pin.depots || {}, pin.installedDepots || {}));
+            (pin.pinMatched === true ||
+                installedDepotsMatchPin(pin.depots || {}, pin.installedDepots || {})));
     }
     catch {
         return false;
@@ -4170,7 +4194,7 @@ async function setupAndVerifyTokeer(appid, onStatus, ubisoft = false) {
     onStatus?.(proton.skipped
         ? `${requiredProton} is already installed and healthy; skipping download. Merging Steam launch options live…`
         : `${requiredProton} installed/repaired. Selecting it and merging Steam launch options live…`);
-    const configured = configureTokeerLaunch(appid, runtime.home, requiredProton);
+    const configured = await configureTokeerLaunch(appid, runtime.home, requiredProton);
     if (!configured.success) {
         return {
             success: false,
@@ -4202,7 +4226,7 @@ async function setupAndVerifyTokeer(appid, onStatus, ubisoft = false) {
         ...verified,
         runtimeUpdated: !!runtime.updated,
         runtimeVersion: runtime.version,
-        proton: requiredProton,
+        proton: configured.proton || requiredProton,
         protonSkipped: !!proton.skipped,
         launchOptions: configured.options,
     };
@@ -5860,7 +5884,7 @@ function TokeerSection({ headless = false, activationRequest } = {}) {
             const r = await setupAndVerifyTokeer(resolvedAppid, setMessage, ticketUsesUbisoftVerifier(ticket));
             if (r.success) {
                 setVerify(r);
-                setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated ? "Runtime updated; " : "Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
+                setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated ? "Runtime updated; " : "Runtime already current; "}${r.proton || "Proton Experimental"} selected, launch options merged, and TLX1 generated.`);
             }
             else {
                 const failure = describeTokeerFailure(r);
@@ -6157,6 +6181,7 @@ function FixPicker({ appid, onReload, onClose }) {
                         depots: status.depots || current.depots,
                         installedBuildid: status.installedBuildid,
                         installedDepots: status.installedDepots || {},
+                        pinMatched: status.pinMatched,
                     }));
                 }
             }
@@ -6339,6 +6364,7 @@ function FixPicker({ appid, onReload, onClose }) {
                 depots: snapshotDepots,
                 installedBuildid: p.installedBuildid,
                 installedDepots: p.installedDepots,
+                pinMatched: p.pinMatched,
             });
             // Ask about THIS build specifically: the same game can have several
             // builds archived, so "is this game archived" is the wrong question.
@@ -6679,6 +6705,7 @@ function FixPicker({ appid, onReload, onClose }) {
                     depots: p.depots || {},
                     installedBuildid: p.installedBuildid,
                     installedDepots: p.installedDepots || {},
+                    pinMatched: p.pinMatched,
                 });
             }
             return result;
@@ -7300,7 +7327,7 @@ function FixPicker({ appid, onReload, onClose }) {
     return (SP_JSX.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }, children: [pinned && (SP_JSX.jsxs("div", { style: { fontSize: 11, opacity: 0.75, lineHeight: 1.5 }, children: [SP_JSX.jsxs("div", { children: [tokeerApplied
                                 ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
                                 : "", pinInfo.source === "lua.tools-fix" && pinInfo.buildid
-                                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {}) ? "Pin matched" : "Update pending"}`
+                                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${(pinInfo.pinMatched === true || installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {})) ? "Pin matched" : "Update pending"}`
                                 : `🔒 Version pinned — Build ${pinInfo.buildid || "unknown"} · ${Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.`] }), tokeerApplied && tokeerApplied.health !== "valid" && (SP_JSX.jsx("div", { style: { color: "#ffbf69" }, children: tokeerApplied.healthReason || "Tokeer activation needs verification." }))] })), SP_JSX.jsx(DFL.DialogButton, { style: { fontSize: 12, padding: "5px 8px" }, disabled: working || pinned || !!awaiting, onClick: doPinVersion, children: pinned
                     ? "🔒 Already pinned"
                     : busy === "game:manifest"
@@ -15427,6 +15454,7 @@ var index = definePlugin(() => {
                 const dl = e.autoDownload;
                 const isAssella = e.assella;
                 const liveReady = !!e.liveReady;
+                const isDlcPage = !!e.isDlcPage;
                 const earlyNotified = window.__slsdeckEarlyAddNotified;
                 const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
                 const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
@@ -15455,7 +15483,7 @@ var index = definePlugin(() => {
                     });
                 if (e.status === "done" && e.success) {
                     void refreshBadges();
-                    if (!isAssella) {
+                    if (!isAssella && !isDlcPage) {
                         const verification = queueAddVerification(e.appid, e.name, liveReady);
                         // A verified HotReload should materialize in this Steam session.
                         // Restart-fallback adds stay queued and are checked on the next
@@ -15472,9 +15500,11 @@ var index = definePlugin(() => {
                     if (isAssella && dl) {
                         reloadSteam().catch(() => { });
                     }
-                    getAutoFix()
-                        .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
-                        .catch(() => { });
+                    if (!isDlcPage) {
+                        getAutoFix()
+                            .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
+                            .catch(() => { });
+                    }
                     // Keep the optional "SLSDeck" collection in sync as games are added.
                     syncSlsCollection().catch(() => { });
                 }
