@@ -167,6 +167,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     depots?: { [d: string]: string };
     installedBuildid?: string;
     installedDepots?: { [d: string]: string };
+    pinMatched?: boolean;
   }>({});
   const [added, setAdded] = useState(false);
   // DLC unlockers (SmokeAPI / CreamAPI / Ubisoft) only make sense on games you
@@ -205,6 +206,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             depots: status.depots || current.depots,
             installedBuildid: status.installedBuildid,
             installedDepots: status.installedDepots || {},
+            pinMatched: status.pinMatched,
           }));
         }
       } catch {
@@ -377,6 +379,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
         depots: snapshotDepots,
         installedBuildid: p.installedBuildid,
         installedDepots: p.installedDepots,
+        pinMatched: p.pinMatched,
       });
       // Ask about THIS build specifically: the same game can have several
       // builds archived, so "is this game archived" is the wrong question.
@@ -729,6 +732,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             depots: p.depots || {},
             installedBuildid: p.installedBuildid,
             installedDepots: p.installedDepots || {},
+            pinMatched: p.pinMatched,
           });
         }
         return result;
@@ -1393,7 +1397,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             {tokeerApplied
               ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
               : ""}{pinInfo.source === "lua.tools-fix" && pinInfo.buildid
-                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {}) ? "Pin matched" : "Update pending"}`
+                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${(pinInfo.pinMatched === true || installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {})) ? "Pin matched" : "Update pending"}`
                 : `🔒 Version pinned — Build ${pinInfo.buildid || "unknown"} · ${Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.`}
           </div>
           {tokeerApplied && tokeerApplied.health !== "valid" && (

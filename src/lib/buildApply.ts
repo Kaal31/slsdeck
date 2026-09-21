@@ -70,7 +70,8 @@ export async function isPinnedBuildReady(appid: number): Promise<boolean> {
   try {
     const [pin, download] = await Promise.all([getPinStatus(appid), appDownloadComplete(appid)]);
     return !!(pin.success && pin.pinned && download.success && download.complete &&
-      installedDepotsMatchPin(pin.depots || {}, pin.installedDepots || {}));
+      (pin.pinMatched === true ||
+        installedDepotsMatchPin(pin.depots || {}, pin.installedDepots || {})));
   } catch {
     return false;
   }

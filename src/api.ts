@@ -214,7 +214,7 @@ export const hasLua = callable<[appid: number], { success: boolean; exists: bool
 export const startAdd = callable<[appid: number], { success: boolean; error?: string }>("start_add");
 export const getAddStatus = callable<[appid: number], { success: boolean; state: AddState }>("get_add_status");
 export const cancelAdd = callable<[appid: number], { success: boolean }>("cancel_add");
-export const popAddEvents = callable<[], { success: boolean; events: Array<{ appid: number; name: string; status: string; success: boolean; autoDownload?: boolean; error?: string; sourceFailures?: Array<{ source: string; type: string; code?: number; detail?: string }> }> }>("pop_add_events");
+export const popAddEvents = callable<[], { success: boolean; events: Array<{ appid: number; name: string; status: string; success: boolean; autoDownload?: boolean; isDlcPage?: boolean; baseAppid?: number; error?: string; sourceFailures?: Array<{ source: string; type: string; code?: number; detail?: string }> }> }>("pop_add_events");
 
 export const deleteLua = callable<[appid: number], { success: boolean; count: number; slssteamRemoved?: boolean }>("delete_lua");
 export const purgeAllAdded = callable<[], { success: boolean; removed: number; total: number; appids: number[]; remaining: number[]; error?: string }>("purge_all_added");
@@ -394,7 +394,7 @@ export const netsockCompatible = callable<[], { success: boolean; games: Array<{
 
 export const getDlcOption = callable<[], { success: boolean; enabled: boolean }>("get_dlc_option");
 
-export const getPinStatus = callable<[appid: number], { success: boolean; pinned: boolean; buildid?: string; pinSource?: string; depots?: { [depot: string]: string }; installedBuildid?: string; installedDepots?: { [depot: string]: string } }>("get_pin_status");
+export const getPinStatus = callable<[appid: number], { success: boolean; pinned: boolean; buildid?: string; pinSource?: string; depots?: { [depot: string]: string }; installedBuildid?: string; steamReportedBuildid?: string; installedDepots?: { [depot: string]: string }; pinMatched?: boolean; matchSource?: string }>("get_pin_status");
 export const pinGame = callable<[appid: number], { success: boolean; depots?: number; error?: string }>("pin_game");
 export const unpinGame = callable<[appid: number], { success: boolean; changed?: boolean }>("unpin_game");
 export const getPinOnFix = callable<[], { success: boolean; enabled: boolean }>("get_pin_on_fix");

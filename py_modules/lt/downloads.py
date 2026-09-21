@@ -1265,6 +1265,8 @@ def _add_worker(appid: int) -> None:
                 pass
             ok = bool(status == "done" and st.get("success"))
             auto_dl = False
+            is_dlc_page = False
+            base_appid = 0
             if ok:
                 # An earlier attempt made while injection was off can leave a
                 # phantom appmanifest behind (Steam thinks the game is already
@@ -1286,9 +1288,11 @@ def _add_worker(appid: int) -> None:
                 #    which moon then blanket-unlocks all sibling DLC for.
                 try:
                     from .settings import get_auto_add_dlc
+                    from . import dlc as _dlc
+                    info = _dlc.resolve_dlc(appid)
+                    is_dlc_page = bool(info.get("isDlc"))
+                    base_appid = int(info.get("base") or 0) if is_dlc_page else 0
                     if get_auto_add_dlc():
-                        from . import dlc as _dlc
-                        info = _dlc.resolve_dlc(appid)
                         target = appid
                         if info.get("isDlc") and info.get("base") and info["base"] != appid:
                             base = int(info["base"])
@@ -1340,6 +1344,10 @@ def _add_worker(appid: int) -> None:
                     "status": status,
                     "success": ok,
                     "autoDownload": auto_dl,
+                    # DLC store pages are entitlements under their base game;
+                    # they are not expected to materialize as library games.
+                    "isDlcPage": is_dlc_page,
+                    "baseAppid": base_appid,
                     "error": st.get("error", ""),
                     "sourceFailures": [
                         {"source": source, **failure}

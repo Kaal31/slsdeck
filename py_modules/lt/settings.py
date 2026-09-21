@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Any, Dict
 
 from .logger import logger
@@ -202,6 +203,10 @@ def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: st
             "depots": clean,
             "buildid": str(buildid or (previous.get("buildid") if previous_depots == clean else "") or ""),
             "source": str(source or (previous.get("source") if previous_depots == clean else "") or ""),
+            # Steam may keep the public BuildID and appmanifest InstalledDepots
+            # stale after Moon redirects a historical manifest. Correlate only
+            # Steam content-log completions that happened after this pin write.
+            "pinnedAt": time.time(),
         }
     else:
         snapshots.pop(key, None)

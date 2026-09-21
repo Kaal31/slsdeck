@@ -282,6 +282,55 @@ def get_installed_buildid(appid: int) -> str:
     return ""
 
 
+def get_completed_update_depots(appid: int, since_epoch: float = 0) -> Dict[str, Any]:
+    """Return Steam's latest completed mounted-depot set for an app.
+
+    Historical ManifestPins can make Steam mount the requested old manifests
+    while leaving appmanifest ``buildid`` and ``InstalledDepots`` on the public
+    build. ``content_log.txt`` is Steam's authoritative reconciliation record:
+    its ``finished update`` line contains the manifests actually mounted.
+    """
+    try:
+        appid = int(appid)
+        since_epoch = float(since_epoch or 0)
+    except Exception:
+        return {}
+    base = detect_steam_install_path()
+    path = os.path.join(base or "", "logs", "content_log.txt")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        # Only the tail is relevant and bounds work on long-lived Steam logs.
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - (4 * 1024 * 1024)))
+            text = fh.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return {}
+    line_re = re.compile(
+        rf"^\[(\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}})\]\s+"
+        rf"AppID {appid} finished update, \d+ mounted depots \(BuildID (\d+)\)\s*:\s*(.*)$",
+        re.MULTILINE,
+    )
+    matches = list(line_re.finditer(text))
+    for match in reversed(matches):
+        try:
+            completed_at = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            completed_at = 0
+        if since_epoch and completed_at and completed_at < since_epoch - 5:
+            continue
+        depots = {
+            depot: gid
+            for depot, gid in re.findall(r"(\d+)\s*\((\d+)\)", match.group(3))
+        }
+        if depots:
+            return {"depots": depots, "buildid": match.group(2),
+                    "completedAt": completed_at, "source": "content_log"}
+    return {}
+
+
 _GENERIC_DIRS = {
     "bin", "bin64", "binaries", "win64", "win32", "x64", "x86", "x86_64",
     "game", "games", "app", "apps", "release", "retail", "redist", "current",

@@ -1204,6 +1204,7 @@ class Plugin:
             depots: Dict[str, str] = {}
             buildid = ""
             pin_source = ""
+            pinned_at = 0.0
             if pinned:
                 try:
                     raw = await self._run(slssteam._read_pin_gids, int(appid))
@@ -1216,6 +1217,7 @@ class Plugin:
                     if not buildid:
                         buildid = str(snapshot.get("buildid") or "")
                     pin_source = str(snapshot.get("source") or "")
+                    pinned_at = float(snapshot.get("pinnedAt") or 0)
                 except Exception:
                     buildid = ""
                     pin_source = ""
@@ -1230,9 +1232,42 @@ class Plugin:
                 installed_buildid = await self._run(steam.get_installed_buildid, int(appid))
             except Exception:
                 installed_buildid = ""
+            steam_reported_buildid = installed_buildid
+            pin_matched = False
+            match_source = "appmanifest"
+            if pinned and depots:
+                # First accept a complete match in appmanifest. If Steam leaves
+                # that file stale after a Moon downgrade, use its own completed
+                # update record, which lists the manifests actually mounted.
+                pin_matched = all(installed_depots.get(d) == g for d, g in depots.items())
+                if not pin_matched:
+                    try:
+                        completed = await self._run(
+                            steam.get_completed_update_depots, int(appid), pinned_at
+                        )
+                        mounted = {str(d): str(g) for d, g in (completed.get("depots") or {}).items()}
+                        matching_mounted = {
+                            d: g for d, g in mounted.items() if d in depots
+                        }
+                        # Steam installs only the platform/language depots that
+                        # apply to this machine; a Lua may pin more. A completed
+                        # update is a match when every mounted pinned depot has
+                        # the requested GID and at least one pinned depot mounted.
+                        pin_matched = bool(matching_mounted) and all(
+                            depots.get(d) == g for d, g in matching_mounted.items()
+                        )
+                        if pin_matched:
+                            installed_depots = mounted
+                            match_source = "steam-content-log"
+                            if buildid:
+                                installed_buildid = buildid
+                    except Exception:
+                        pass
             return {"success": True, "pinned": bool(pinned), "buildid": buildid, "depots": depots,
                     "pinSource": pin_source, "installedBuildid": installed_buildid,
-                    "installedDepots": installed_depots}
+                    "steamReportedBuildid": steam_reported_buildid,
+                    "installedDepots": installed_depots, "pinMatched": pin_matched,
+                    "matchSource": match_source}
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 

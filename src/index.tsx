@@ -602,6 +602,7 @@ export default definePlugin(() => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
         const liveReady = !!(e as any).liveReady;
+        const isDlcPage = !!e.isDlcPage;
         const earlyNotified: Set<number> | undefined = (window as any).__slsdeckEarlyAddNotified;
         const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
         const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
@@ -630,7 +631,7 @@ export default definePlugin(() => {
         });
         if (e.status === "done" && e.success) {
           void refreshBadges();
-          if (!isAssella) {
+          if (!isAssella && !isDlcPage) {
             const verification = queueAddVerification(e.appid, e.name, liveReady);
             // A verified HotReload should materialize in this Steam session.
             // Restart-fallback adds stay queued and are checked on the next
@@ -645,9 +646,11 @@ export default definePlugin(() => {
           // in the current Steam session, so normal SLS adds must NOT restart.
           // Keep ASSella's existing reload behavior separate from this live path.
           if (isAssella && dl) { reloadSteam().catch(() => {}); }
-          getAutoFix()
-            .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
-            .catch(() => {});
+          if (!isDlcPage) {
+            getAutoFix()
+              .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
+              .catch(() => {});
+          }
           // Keep the optional "SLSDeck" collection in sync as games are added.
           syncSlsCollection().catch(() => {});
         } else if (!isAssella) {
