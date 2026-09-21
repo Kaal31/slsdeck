@@ -1355,7 +1355,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       const r=await setupAndVerifyTokeer(resolvedAppid,setMessage,ticketUsesUbisoftVerifier(ticket));
       if(r.success){
         setVerify(r);
-        setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
+        setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}${r.proton||"Proton Experimental"} selected, launch options merged, and TLX1 generated.`);
       }else{
         const failure=describeTokeerFailure(r);
         setVerify(null);
