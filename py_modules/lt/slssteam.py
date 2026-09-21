@@ -4032,11 +4032,12 @@ def client_fix_needed() -> Dict[str, Any]:
         with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
             text = fh.read()
     except Exception as exc:
-        return {"needed": True, "reason": f"could not read SLSsteam log: {exc}"}
+        return {"needed": False, "unknown": True,
+                "reason": f"could not read SLSsteam log; no explicit failure was detected: {exc}"}
     # Only the most recent session matters.
-    marker = "SLSsteam loading in steam"
-    if marker in text:
-        text = text[text.rfind(marker):]
+    session_starts = list(re.finditer(r"slssteam loading in steam", text, re.IGNORECASE))
+    if session_starts:
+        text = text[session_starts[-1].start():]
     lowered = text.lower()
     current = steam_client_version()
     supported = headcrab_compatible_client()
@@ -4054,17 +4055,26 @@ def client_fix_needed() -> Dict[str, Any]:
         return {"needed": False,
                 "reason": "SLSsteam loaded successfully against the current client "
                           "(steamclient.so hash accepted) — no client change needed"}
-    for bad in ("hash missmatch", "hash mismatch", "aborting", "refusing to load"):
-        if bad in lowered:
-            if current and supported and current == supported:
-                return {
-                    "needed": True,
-                    "engineOnly": True,
-                    "reason": "SLSsteam aborted, but Steam already matches Headcrab's "
-                              "supported client build — repair the engine and launcher only",
-                }
-            return {"needed": True,
-                    "reason": f"SLSsteam reported '{bad}' against the current client"}
+    # Headcrab changes the Steam client, so automatic repair requires Moon's
+    # explicit steamclient hash failure in the latest load session. Generic
+    # abort/pattern/exception messages describe engine failures and must not
+    # launch a client downgrade.
+    hash_failure = next((bad for bad in (
+        "unknown steamclient.so hash! aborting",
+        "steamclient.so hash missmatch",
+        "steamclient.so hash mismatch",
+    ) if bad in lowered), None)
+    if hash_failure:
+        if current and supported and current == supported:
+            return {
+                "needed": False,
+                "unknown": True,
+                "engineOnly": True,
+                "reason": "Moon reported a steamclient hash failure, but Steam already "
+                          "matches Headcrab's target; client repair was suppressed",
+            }
+        return {"needed": True,
+                "reason": f"latest Moon session reported '{hash_failure}'"}
     # Missing success text is not failure evidence. Newer Moon builds may change
     # or omit that exact sentence, rotate the log, or write through another user
     # home while injection remains fully functional. Only explicit abort/hash

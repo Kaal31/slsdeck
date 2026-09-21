@@ -55,12 +55,50 @@ class RepairEvidenceTests(unittest.TestCase):
     def test_explicit_abort_still_requests_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / ".SLSsteam.log"
-            log.write_text("SLSsteam loading in steam\nAborting! hash mismatch\n", encoding="utf-8")
+            log.write_text(
+                "SLSsteam loading in steam\nUnknown steamclient.so hash! Aborting...\n",
+                encoding="utf-8",
+            )
             with mock.patch.object(slssteam, "_home", return_value=tmp), \
                  mock.patch.object(slssteam, "steam_client_version", return_value="new"), \
                  mock.patch.object(slssteam, "headcrab_compatible_client", return_value="old"):
                 result = slssteam.client_fix_needed()
         self.assertTrue(result["needed"])
+
+    def test_unreadable_log_is_unknown_not_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / ".SLSsteam.log"
+            log.write_text("SLSsteam loading in steam\n", encoding="utf-8")
+            with mock.patch.object(slssteam, "_home", return_value=tmp), \
+                 mock.patch("builtins.open", side_effect=PermissionError("denied")):
+                result = slssteam.client_fix_needed()
+        self.assertFalse(result["needed"])
+        self.assertTrue(result["unknown"])
+
+    def test_pattern_abort_does_not_trigger_client_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / ".SLSsteam.log"
+            log.write_text(
+                "SLSsteam loading in steam\nFailed to find all patterns! Aborting...\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(slssteam, "_home", return_value=tmp):
+                result = slssteam.client_fix_needed()
+        self.assertFalse(result["needed"])
+        self.assertTrue(result["unknown"])
+
+    def test_only_latest_moon_session_can_trigger_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / ".SLSsteam.log"
+            log.write_text(
+                "SLSsteam loading in steam\nUnknown steamclient.so hash! Aborting...\n"
+                "SLSSTEAM LOADING IN STEAM\nMoon runtime active\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(slssteam, "_home", return_value=tmp):
+                result = slssteam.client_fix_needed()
+        self.assertFalse(result["needed"])
+        self.assertTrue(result["unknown"])
 
 
 if __name__ == "__main__":
