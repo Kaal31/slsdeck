@@ -1,8 +1,16 @@
-import { PanelSection, PanelSectionRow, ToggleField, ButtonItem } from "@decky/ui";
+import { PanelSection, PanelSectionRow, ToggleField, ButtonItem, DropdownItem, ProgressBarWithInfo } from "@decky/ui";
+import { toaster } from "@decky/api";
 import { ScrollableResult } from "../components/ScrollableResult";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { updatesCheck, updatesUpdateAll, getAutoUpdate, setAutoUpdate, UpdateItem,
-  getCheckEngineUpdates, setCheckEngineUpdates, getCheckHeadcrabUpdates, setCheckHeadcrabUpdates } from "../api";
+  getCheckEngineUpdates, setCheckEngineUpdates, getCheckHeadcrabUpdates, setCheckHeadcrabUpdates,
+  pluginUpdateStatus, pluginUpdateReleases, pluginPrepareReplacement, PluginRelease, PluginUpdateStatus } from "../api";
+
+enum PluginInstallType { REINSTALL = 1, UPDATE = 2, DOWNGRADE = 3 }
+
+function deckyBackend(): any {
+  return (window as any).DeckyBackend ?? (window.opener as any)?.DeckyBackend ?? null;
+}
 
 /**
  * Tool updates — keeps every GitHub-sourced tool/DLL (SmokeAPI, CreamAPI, Uplay
@@ -11,6 +19,13 @@ import { updatesCheck, updatesUpdateAll, getAutoUpdate, setAutoUpdate, UpdateIte
  */
 export function UpdatesSection() {
   const [ups, setUps] = useState<UpdateItem[]>([]);
+  const [plugin, setPlugin] = useState<PluginUpdateStatus | null>(null);
+  const [releases, setReleases] = useState<PluginRelease[]>([]);
+  const [selectedTag, setSelectedTag] = useState("");
+  const [pluginBusy, setPluginBusy] = useState(false);
+  const [pluginProgress, setPluginProgress] = useState(0);
+  const [pluginMsg, setPluginMsg] = useState("");
+  const pluginDownloadStarted = useRef(false);
   const [autoUp, setAutoUp] = useState(true);
   const [engineUp, setEngineUp] = useState(false);
   const [headcrabUp, setHeadcrabUp] = useState(false);
@@ -19,13 +34,87 @@ export function UpdatesSection() {
 
   const load = async () => {
     try { setUps((await updatesCheck()).items || []); } catch { /* */ }
+    try {
+      const status = await pluginUpdateStatus();
+      setPlugin(status);
+      const list = status.releases || (await pluginUpdateReleases()).releases || [];
+      setReleases(list);
+      setSelectedTag((previous) => previous && list.some((item) => item.tag === previous)
+        ? previous : (list[0]?.tag || ""));
+    } catch (error) { setPluginMsg(`Plugin update check failed: ${error}`); }
     try { setAutoUp(!!(await getAutoUpdate()).enabled); } catch { /* */ }
     try { setEngineUp(!!(await getCheckEngineUpdates()).enabled); } catch { /* */ }
     try { setHeadcrabUp(!!(await getCheckHeadcrabUpdates()).enabled); } catch { /* */ }
   };
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    const backend = deckyBackend();
+    if (!backend?.addEventListener) return;
+    const start = (name: string) => {
+      if (name !== "SLSDeckUniversal") return;
+      pluginDownloadStarted.current = true;
+      setPluginBusy(true); setPluginProgress(0); setPluginMsg("Downloading plugin…");
+    };
+    const progress = (percent: number) => {
+      setPluginProgress(Number(percent) || 0);
+    };
+    const finish = (name: string) => {
+      if (name !== "SLSDeckUniversal") return;
+      pluginDownloadStarted.current = false;
+      setPluginProgress(100); setPluginMsg("Plugin installed. Reloading…");
+      setPluginBusy(false);
+      backend.call("loader/reload_plugin", name).catch(() => {});
+    };
+    backend.addEventListener("loader/plugin_download_start", start);
+    backend.addEventListener("loader/plugin_download_info", progress);
+    backend.addEventListener("loader/plugin_download_finish", finish);
+    return () => {
+      backend.removeEventListener?.("loader/plugin_download_start", start);
+      backend.removeEventListener?.("loader/plugin_download_info", progress);
+      backend.removeEventListener?.("loader/plugin_download_finish", finish);
+    };
+  }, []);
+
   const updatable = ups.filter((u) => u.updateAvailable);
+  const selectedRelease = releases.find((item) => item.tag === selectedTag) || null;
+
+  const installSelected = async () => {
+    if (!plugin || !selectedRelease) return;
+    const backend = deckyBackend();
+    if (!backend?.call) {
+      toaster.toast({ title: "SLSDeck update", body: "Decky installer is unavailable in this window." });
+      return;
+    }
+    const installType = selectedRelease.runNumber > plugin.currentBuild
+      ? PluginInstallType.UPDATE
+      : selectedRelease.runNumber < plugin.currentBuild
+        ? PluginInstallType.DOWNGRADE : PluginInstallType.REINSTALL;
+    setPluginBusy(true);
+    setPluginMsg("Preparing Decky installer…");
+    try {
+      const armed = await pluginPrepareReplacement(selectedRelease.version, selectedRelease.assetUrl);
+      if (!armed.success) throw new Error(armed.error || "Could not arm safe replacement");
+      await backend.call(
+        "utilities/install_plugin",
+        selectedRelease.assetUrl,
+        "SLSDeckUniversal",
+        selectedRelease.version,
+        "",
+        installType,
+      );
+      setPluginMsg("Confirm the installation in Decky Loader.");
+      // Decky's call registers the request and returns before the user confirms.
+      // Keep the button usable if confirmation is cancelled; the backend marker
+      // also expires automatically and is cleared by the next successful build.
+      window.setTimeout(() => {
+        if (!pluginDownloadStarted.current) setPluginBusy(false);
+      }, 5000);
+    } catch (error) {
+      setPluginBusy(false);
+      setPluginMsg(`Install failed: ${error}`);
+    }
+  };
 
   const updateAll = async () => {
     setBusy(true); setMsg("Updating tools…");
@@ -45,7 +134,48 @@ export function UpdatesSection() {
   };
 
   return (
-    <PanelSection title="Tool updates">
+    <>
+    <PanelSection title="SLSDeck plugin updates">
+      <PanelSectionRow>
+        <div style={{ fontSize: 12, lineHeight: 1.5, width: "100%" }}>
+          <div>Installed: <b>{plugin?.currentVersion || "checking…"}</b></div>
+          <div style={{ opacity: 0.72 }}>
+            {plugin?.updateAvailable
+              ? `Update available: ${plugin.latest?.version}`
+              : plugin?.success ? "This update channel is current." : (plugin?.error || "Checking GitHub releases…")}
+          </div>
+        </div>
+      </PanelSectionRow>
+      {releases.length > 0 && <PanelSectionRow>
+        <DropdownItem
+          label="Install version"
+          description="Decky can update, reinstall, or downgrade this complete plugin ZIP. Managed dependencies and user data are preserved during replacement."
+          rgOptions={releases.map((item) => ({ data: item.tag, label: item.version }))}
+          selectedOption={selectedTag}
+          strDefaultLabel={selectedRelease?.version || "Choose a build"}
+          onChange={(option: any) => setSelectedTag(String(option.data || ""))}
+          disabled={pluginBusy}
+        />
+      </PanelSectionRow>}
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={installSelected} disabled={pluginBusy || !selectedRelease}>
+          {selectedRelease
+            ? selectedRelease.runNumber < (plugin?.currentBuild || 0) ? `Downgrade to ${selectedRelease.version}`
+              : selectedRelease.runNumber === (plugin?.currentBuild || 0) ? `Reinstall ${selectedRelease.version}`
+                : `Update to ${selectedRelease.version}`
+            : "No installable builds found"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {pluginBusy && <PanelSectionRow>
+        <ProgressBarWithInfo layout="inline" bottomSeparator="none" nProgress={pluginProgress} sOperationText={pluginMsg || "Working…"} />
+      </PanelSectionRow>}
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={load} disabled={pluginBusy || busy}>Check plugin and dependencies</ButtonItem>
+      </PanelSectionRow>
+      {pluginMsg && !pluginBusy && <PanelSectionRow><ScrollableResult text={pluginMsg} /></PanelSectionRow>}
+    </PanelSection>
+
+    <PanelSection title="Dependency updates">
       <PanelSectionRow>
         <ToggleField
           label="Auto-update tools on boot"
@@ -79,7 +209,7 @@ export function UpdatesSection() {
       )}
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={load} disabled={busy}>
-          Check for updates
+          Check dependencies
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
@@ -95,5 +225,6 @@ export function UpdatesSection() {
         </PanelSectionRow>
       )}
     </PanelSection>
+    </>
   );
 }

@@ -30,7 +30,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -257,6 +257,10 @@ class Plugin:
     # ── lifecycle ─────────────────────────────────────────────────────────
     async def _main(self):
         self.loop = asyncio.get_event_loop()
+        # A successful Decky replacement starts this new backend.  The marker
+        # has served its purpose; clearing it makes a later real uninstall
+        # destructive again according to the user's uninstall policy.
+        plugin_updates.clear_replacement_marker("new version started")
         # Dedicated pool for long blocking work (see _run_slow). Deliberately
         # small: its job is to CONTAIN slow calls, not to run many at once.
         self._slow_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slsdeck-slow")
@@ -513,6 +517,12 @@ class Plugin:
             pass
 
     async def _uninstall(self):
+        if plugin_updates.replacement_pending():
+            decky.logger.info(
+                "SLSDeck: Decky update/downgrade detected — preserving dependencies and user data"
+            )
+            await self._unload()
+            return
         full_purge = settings.get_full_purge_on_uninstall()
         decky.logger.info(
             "SLSDeck: uninstalled — " +
@@ -2308,6 +2318,15 @@ class Plugin:
     # ── dependency updates (latest-version + boot check) ───────────────────
     async def updates_check(self) -> Dict[str, Any]:
         return await self._run(updates.check_all)
+
+    async def plugin_update_status(self) -> Dict[str, Any]:
+        return await self._run(plugin_updates.status)
+
+    async def plugin_update_releases(self) -> Dict[str, Any]:
+        return await self._run(plugin_updates.list_releases)
+
+    async def plugin_prepare_replacement(self, targetVersion: str, assetUrl: str) -> Dict[str, Any]:
+        return await self._run(plugin_updates.prepare_replacement, str(targetVersion), str(assetUrl))
 
     async def updates_update_all(self, includeHeavy: bool = False) -> Dict[str, Any]:
         return await self._run(updates.update_all, bool(includeHeavy))

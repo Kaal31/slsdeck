@@ -9,6 +9,7 @@ on:
       - cloudredirect-dev
       - tokeer-testing
       - dlc-fix
+      - update-system
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
@@ -38,8 +39,14 @@ jobs:
         run: npm ci
       - name: Stamp unique rolling version
         env:
-          ROLLING_VERSION: 0.9.61-${{ github.ref_name }}.${{ github.run_number }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
+          BASE_VERSION="$(node -p "require('./package.json').version.split('-')[0]")"
+          ROLLING_VERSION="${BASE_VERSION}-${BRANCH}.${RUN_NUMBER}"
+          export ROLLING_VERSION
+          echo "ROLLING_VERSION=$ROLLING_VERSION" >> "$GITHUB_ENV"
           node - <<'NODE'
           const fs = require('fs');
           const expectedName = 'SLSDeckUniversal';
@@ -55,6 +62,13 @@ jobs:
           if (lock.name !== expectedName || lock.packages?.['']?.name !== expectedName) {
             throw new Error('package-lock.json plugin name does not match SLSDeckUniversal');
           }
+          fs.writeFileSync('build.json', JSON.stringify({
+            schema: 1,
+            channel: process.env.BRANCH,
+            version: process.env.ROLLING_VERSION,
+            runNumber: Number(process.env.RUN_NUMBER),
+            commit: process.env.COMMIT_SHA,
+          }, null, 2) + '\n');
           NODE
           grep -q '"name": "SLSDeckUniversal"' plugin.json
           grep -q "\"version\": \"$ROLLING_VERSION\"" plugin.json
@@ -86,7 +100,7 @@ jobs:
           ZIP="SLSDeckUniversal-${BRANCH}.zip"
           rm -rf artifact "$ZIP"
           mkdir -p artifact/SLSDeckUniversal
-          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          cp -a dist main.py plugin.json package.json build.json py_modules artifact/SLSDeckUniversal/
           for p in defaults assets LICENSE README.md; do
             if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
           done
@@ -117,6 +131,23 @@ jobs:
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target "$BRANCH"
           fi
           gh release upload "$TAG" "$ZIP" ubisoft-packages.zip --clobber
+          if [ "$BRANCH" = "update-system" ]; then
+            BUILD_TAG="${BRANCH}-build-${GITHUB_RUN_NUMBER}"
+            BUILD_ZIP="SLSDeckUniversal-${BRANCH}-${GITHUB_RUN_NUMBER}.zip"
+            cp "$ZIP" "$BUILD_ZIP"
+            if gh release view "$BUILD_TAG" >/dev/null 2>&1; then
+              gh release edit "$BUILD_TAG" \
+                --title "SLSDeck ${ROLLING_VERSION}" \
+                --notes "Immutable ${BRANCH} build ${ROLLING_VERSION}." \
+                --prerelease
+              gh release upload "$BUILD_TAG" "$BUILD_ZIP" --clobber
+            else
+              gh release create "$BUILD_TAG" "$BUILD_ZIP" \
+                --title "SLSDeck ${ROLLING_VERSION}" \
+                --notes "Immutable ${BRANCH} build ${ROLLING_VERSION}." \
+                --prerelease --target "$GITHUB_SHA"
+            fi
+          fi
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
