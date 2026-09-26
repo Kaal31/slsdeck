@@ -4,7 +4,10 @@ import { ScrollableResult } from "../components/ScrollableResult";
 import { useEffect, useRef, useState } from "react";
 import { updatesCheck, updatesUpdateAll, getAutoUpdate, setAutoUpdate, UpdateItem,
   getCheckEngineUpdates, setCheckEngineUpdates, getCheckHeadcrabUpdates, setCheckHeadcrabUpdates,
-  pluginUpdateStatus, pluginUpdateReleases, pluginPrepareReplacement, PluginRelease, PluginUpdateStatus } from "../api";
+  pluginUpdateStatus, pluginUpdateReleases, pluginPrepareReplacement, PluginRelease, PluginUpdateStatus,
+  getUiSettings, setUiSetting } from "../api";
+
+const UPDATE_BANNERS_EVENT = "slsdeck-update-banners";
 
 enum PluginInstallType { REINSTALL = 1, UPDATE = 2, DOWNGRADE = 3 }
 
@@ -26,6 +29,7 @@ export function UpdatesSection() {
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginProgress, setPluginProgress] = useState(0);
   const [pluginMsg, setPluginMsg] = useState("");
+  const [updateBanners, setUpdateBanners] = useState(true);
   const pluginDownloadStarted = useRef(false);
   const [autoUp, setAutoUp] = useState(true);
   const [engineUp, setEngineUp] = useState(false);
@@ -48,6 +52,10 @@ export function UpdatesSection() {
     try { setAutoUp(!!(await getAutoUpdate()).enabled); } catch { /* */ }
     try { setEngineUp(!!(await getCheckEngineUpdates()).enabled); } catch { /* */ }
     try { setHeadcrabUp(!!(await getCheckHeadcrabUpdates()).enabled); } catch { /* */ }
+    try {
+      const value = (await getUiSettings()).settings?.pluginUpdateBanners;
+      setUpdateBanners(value !== false);
+    } catch { /* default on */ }
   };
   useEffect(() => { load(); }, []);
 
@@ -201,6 +209,19 @@ export function UpdatesSection() {
       </PanelSectionRow>}
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={load} disabled={pluginBusy || busy}>Check plugin and dependencies</ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="Update banners in Quick Access"
+          description="Show the green banner at the top of SLSDeck when a newer build is available for the installed channel. On by default."
+          checked={updateBanners}
+          onChange={(enabled) => {
+            setUpdateBanners(enabled);
+            setUiSetting("pluginUpdateBanners", enabled).then(() => {
+              window.dispatchEvent(new CustomEvent(UPDATE_BANNERS_EVENT, { detail: enabled }));
+            }).catch(() => setUpdateBanners(!enabled));
+          }}
+        />
       </PanelSectionRow>
       {pluginMsg && !pluginBusy && <PanelSectionRow><ScrollableResult text={pluginMsg} /></PanelSectionRow>}
     </PanelSection>

@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, SlsStatus } from "./api";
+import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, PluginUpdateStatus, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -27,6 +27,7 @@ const ADVANCED_ROUTE = "/slsdeck";
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 const SLS_STATUS_CACHE_KEY = "slsdeck.slsStatusCache";
+const UPDATE_BANNERS_EVENT = "slsdeck-update-banners";
 
 function readCachedSlsStatus(): SlsStatus | null {
   try {
@@ -430,6 +431,8 @@ function Content() {
   // actions, game list or tools (there's nothing for them to act on yet).
   const [slsStatus, setSlsStatus] = useState<SlsStatus | null>(() => readCachedSlsStatus());
   const [slsStatusChecked, setSlsStatusChecked] = useState(false);
+  const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateStatus | null>(null);
+  const [updateBanners, setUpdateBanners] = useState(true);
   const installed = slsStatus?.installed === true;
 
   const refreshSlsStatus = useCallback(async () => {
@@ -468,6 +471,33 @@ function Content() {
     };
   }, [refreshSlsStatus]);
 
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const status = await pluginUpdateStatus();
+        if (active) setPluginUpdate(status);
+      } catch {
+        /* An unavailable GitHub check must not disturb the Quick Access panel. */
+      }
+    };
+    getUiSettings().then((result) => {
+      if (active) setUpdateBanners(result.settings?.pluginUpdateBanners !== false);
+    }).catch(() => {});
+    const onBannerSetting = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<boolean>;
+      setUpdateBanners(event.detail !== false);
+    };
+    window.addEventListener(UPDATE_BANNERS_EVENT, onBannerSetting as EventListener);
+    void check();
+    const interval = window.setInterval(check, 15 * 60 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener(UPDATE_BANNERS_EVENT, onBannerSetting as EventListener);
+    };
+  }, []);
+
   const anchor = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = anchor.current;
@@ -497,6 +527,32 @@ function Content() {
   return (
     <>
       <div ref={anchor} style={{ height: 0 }} />
+      {updateBanners && pluginUpdate?.updateAvailable && pluginUpdate.latest && (
+        <DialogButton
+          onClick={() => {
+            try {
+              Navigation.CloseSideMenus();
+              Navigation.Navigate(ADVANCED_ROUTE);
+            } catch (error) {
+              console.error("SLSDeck: could not open updater", error);
+            }
+          }}
+          style={{
+            width: "calc(100% - 20px)", margin: "8px 10px 6px", padding: "10px 12px",
+            minHeight: 52, height: "auto", borderRadius: 8, textAlign: "left",
+            color: "#effff2", border: "1px solid rgba(95, 220, 118, .78)",
+            background: "linear-gradient(135deg, rgba(31, 126, 55, .96), rgba(24, 91, 42, .96))",
+            boxShadow: "0 4px 14px rgba(13, 80, 30, .35)",
+          }}
+        >
+          <div style={{ width: "100%", lineHeight: 1.35 }}>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>SLSDeck update available</div>
+            <div style={{ fontSize: 11, opacity: .9 }}>
+              {pluginUpdate.currentChannel} → {pluginUpdate.latest.version} · Open Advanced → Options
+            </div>
+          </div>
+        </DialogButton>
+      )}
       <RepairBanner />
       <SlsSteamCompact status={slsStatus} statusChecked={slsStatusChecked} onRefreshStatus={refreshSlsStatus} />
       {/* Per-game surfaces first: "This game" and "Actions & fixes" both act on
