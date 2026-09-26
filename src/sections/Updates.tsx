@@ -11,6 +11,12 @@ const UPDATE_BANNERS_EVENT = "slsdeck-update-banners";
 
 enum PluginInstallType { REINSTALL = 1, UPDATE = 2, DOWNGRADE = 3 }
 
+const semverCompare = (left: string, right: string): number => {
+  const parse = (value: string) => (value.match(/\d+\.\d+\.\d+/)?.[0] || "0.0.0").split(".").map(Number);
+  const a = parse(left), b = parse(right);
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+};
+
 function deckyBackend(): any {
   return (window as any).DeckyBackend ?? (window.opener as any)?.DeckyBackend ?? null;
 }
@@ -106,11 +112,12 @@ export function UpdatesSection() {
       return;
     }
     const sameChannel = selectedRelease.channel === plugin.currentChannel;
+    const versionOrder = semverCompare(selectedRelease.version, plugin.currentVersion);
     const installType = !sameChannel || selectedRelease.rolling
       ? PluginInstallType.REINSTALL
-      : selectedRelease.runNumber > plugin.currentBuild
+      : versionOrder > 0
         ? PluginInstallType.UPDATE
-        : selectedRelease.runNumber < plugin.currentBuild
+        : versionOrder < 0
           ? PluginInstallType.DOWNGRADE : PluginInstallType.REINSTALL;
     setPluginBusy(true);
     setPluginMsg("Preparing Decky installer…");
@@ -198,8 +205,8 @@ export function UpdatesSection() {
           {selectedRelease
             ? selectedRelease.channel !== plugin?.currentChannel ? `Switch to ${selectedRelease.version}`
               : selectedRelease.rolling ? `Install ${selectedRelease.version}`
-                : selectedRelease.runNumber < (plugin?.currentBuild || 0) ? `Downgrade to ${selectedRelease.version}`
-                  : selectedRelease.runNumber === (plugin?.currentBuild || 0) ? `Reinstall ${selectedRelease.version}`
+                : semverCompare(selectedRelease.version, plugin?.currentVersion || "0.0.0") < 0 ? `Downgrade to ${selectedRelease.version}`
+                  : semverCompare(selectedRelease.version, plugin?.currentVersion || "0.0.0") === 0 ? `Reinstall ${selectedRelease.version}`
                     : `Update to ${selectedRelease.version}`
             : "No installable builds found"}
         </ButtonItem>

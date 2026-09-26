@@ -53,6 +53,12 @@ class PluginUpdateTests(unittest.TestCase):
             )
             self.assertTrue(rolling["success"])
 
+            semantic = plugin_updates.prepare_replacement(
+                "0.9.65",
+                "https://github.com/Kaal31/slsdeck/releases/download/update-system-v0.9.65/SLSDeckUniversal-update-system-0.9.65.zip",
+            )
+            self.assertTrue(semantic["success"])
+
             marker = Path(root, "decky-replacement.json")
             value = json.loads(marker.read_text(encoding="utf-8"))
             value["createdAt"] = time.time() - plugin_updates.MARKER_TTL_SECONDS - 1
@@ -128,6 +134,30 @@ class PluginUpdateTests(unittest.TestCase):
             result["releases"][0]["assetUrl"],
             "https://github.com/Kaal31/slsdeck/releases/download/update-system-latest/SLSDeckUniversal-update-system.zip",
         )
+
+    def test_semantic_release_versions_are_used_for_rolling_and_history(self):
+        raw = [
+            {
+                "tag_name": "update-system-latest", "name": "SLSDeck 0.9.66",
+                "assets": [{"name": "SLSDeckUniversal-update-system.zip", "browser_download_url": "latest"}],
+            },
+            {
+                "tag_name": "update-system-v0.9.66", "name": "SLSDeck 0.9.66",
+                "assets": [{"name": "SLSDeckUniversal-update-system-0.9.66.zip", "browser_download_url": "v66"}],
+            },
+            {
+                "tag_name": "update-system-v0.9.65", "name": "SLSDeck 0.9.65",
+                "assets": [{"name": "SLSDeckUniversal-update-system-0.9.65.zip", "browser_download_url": "v65"}],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as root, \
+             mock.patch.object(plugin_updates, "get_settings_dir", return_value=root), \
+             mock.patch.object(plugin_updates, "ensure_http_client", return_value=_Client(raw)):
+            result = plugin_updates.list_releases()
+
+        self.assertEqual([item["version"] for item in result["releases"]],
+                         ["0.9.66", "0.9.66", "0.9.65"])
+        self.assertEqual(result["releases"][1]["assetUrl"], "v66")
 
 
 if __name__ == "__main__":

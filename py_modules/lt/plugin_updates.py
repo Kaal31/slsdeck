@@ -28,7 +28,9 @@ _RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=100"
 _RELEASES_ATOM = f"https://github.com/{REPO}/releases.atom"
 _RELEASES_CACHE_NAME = "plugin-releases-cache.json"
 _BUILD_TAG = re.compile(rf"^{re.escape(CHANNEL)}-build-(\d+)$")
+_VERSION_TAG = re.compile(rf"^{re.escape(CHANNEL)}-v(\d+\.\d+\.\d+)$")
 _ROLLING_TAG = re.compile(r"^([a-z0-9][a-z0-9._-]*)-latest$")
+_SEMVER = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?![\d.-])")
 
 
 def _marker_path() -> str:
@@ -79,10 +81,12 @@ def prepare_replacement(target_version: str, asset_url: str) -> Dict[str, Any]:
     except (ValueError, IndexError):
         tag = ""
     build_match = _BUILD_TAG.match(tag)
+    version_match = _VERSION_TAG.match(tag)
     rolling_match = _ROLLING_TAG.match(tag)
-    allowed_tag = bool(build_match or rolling_match)
+    allowed_tag = bool(build_match or version_match or rolling_match)
     expected_asset = (
         f"SLSDeckUniversal-{CHANNEL}-{build_match.group(1)}.zip" if build_match
+        else f"SLSDeckUniversal-{CHANNEL}-{version_match.group(1)}.zip" if version_match
         else f"SLSDeckUniversal-{rolling_match.group(1)}.zip" if rolling_match
         else ""
     )
@@ -151,7 +155,13 @@ def _rolling_version_for(channel: str, release_name: str) -> tuple[str, int]:
     )
     if match:
         return match.group(1), int(match.group(2))
-    return f"{channel} (rolling latest)", 0
+    semver = _SEMVER.search(release_name)
+    return (".".join(semver.groups()), 0) if semver else (f"{channel} (rolling latest)", 0)
+
+
+def _version_key(version: str) -> tuple[int, int, int]:
+    match = _SEMVER.search(str(version or ""))
+    return tuple(map(int, match.groups())) if match else (0, 0, 0)
 
 
 def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -159,14 +169,16 @@ def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
     for release in raw:
         tag = str(release.get("tag_name") or "")
         build_match = _BUILD_TAG.match(tag)
+        version_match = _VERSION_TAG.match(tag)
         rolling_match = _ROLLING_TAG.match(tag)
-        if not build_match and not rolling_match:
+        if not build_match and not version_match and not rolling_match:
             continue
-        channel = CHANNEL if build_match else str(rolling_match.group(1))
+        channel = CHANNEL if (build_match or version_match) else str(rolling_match.group(1))
         release_name = str(release.get("name") or "")
         rolling_version, rolling_run = _rolling_version_for(channel, release_name)
         run_number = int(build_match.group(1)) if build_match else rolling_run
-        expected_asset = (f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
+        expected_asset = (f"SLSDeckUniversal-{CHANNEL}-{version_match.group(1)}.zip" if version_match
+                          else f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
                           else f"SLSDeckUniversal-{channel}.zip")
         zip_asset = next(
             (asset for asset in (release.get("assets") or [])
@@ -179,9 +191,9 @@ def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
             "tag": tag,
             "channel": channel,
             "rolling": bool(rolling_match),
-            "immutable": bool(build_match),
-            "version": (_version_for(run_number, release_name)
-                        if build_match else rolling_version),
+            "immutable": bool(build_match or version_match),
+            "version": (version_match.group(1) if version_match else
+                        _version_for(run_number, release_name) if build_match else rolling_version),
             "runNumber": run_number,
             "assetUrl": str(zip_asset["browser_download_url"]),
             "releaseUrl": str(release.get("html_url") or ""),
@@ -191,6 +203,7 @@ def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
     releases.sort(key=lambda item: (
         item["channel"] != CHANNEL,
         not item["rolling"],
+        tuple(-part for part in _version_key(item["version"])),
         -item["runNumber"],
         item["channel"],
     ))
@@ -221,12 +234,14 @@ def _atom_releases(payload: str) -> List[Dict[str, Any]]:
         release_url = (link.group(1).replace("&amp;", "&") if link else "")
         tag = release_url.rstrip("/").rsplit("/", 1)[-1]
         build_match = _BUILD_TAG.match(tag)
+        version_match = _VERSION_TAG.match(tag)
         rolling_match = _ROLLING_TAG.match(tag)
-        if not build_match and not rolling_match:
+        if not build_match and not version_match and not rolling_match:
             continue
-        channel = CHANNEL if build_match else str(rolling_match.group(1))
+        channel = CHANNEL if (build_match or version_match) else str(rolling_match.group(1))
         run_number = int(build_match.group(1)) if build_match else 0
-        asset_name = (f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
+        asset_name = (f"SLSDeckUniversal-{CHANNEL}-{version_match.group(1)}.zip" if version_match
+                      else f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
                       else f"SLSDeckUniversal-{channel}.zip")
         asset_url = f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}"
         releases.append({
@@ -316,5 +331,9 @@ def status() -> Dict[str, Any]:
         "currentVersion": _current_version(),
         "currentBuild": current_build,
         "latest": latest,
-        "updateAvailable": bool(latest and int(latest["runNumber"]) > current_build),
+        "updateAvailable": bool(latest and (
+            _version_key(str(latest.get("version") or "")) > _version_key(_current_version())
+            if _version_key(str(latest.get("version") or "")) != (0, 0, 0)
+            else int(latest["runNumber"]) > current_build
+        )),
     }
