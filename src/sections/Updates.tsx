@@ -204,10 +204,9 @@ export function UpdatesSection() {
         <ButtonItem layout="below" onClick={installSelected} disabled={pluginBusy || !selectedRelease}>
           {selectedRelease
             ? selectedRelease.channel !== plugin?.currentChannel ? `Switch to ${selectedRelease.version}`
-              : selectedRelease.rolling ? `Install ${selectedRelease.version}`
-                : semverCompare(selectedRelease.version, plugin?.currentVersion || "0.0.0") < 0 ? `Downgrade to ${selectedRelease.version}`
-                  : semverCompare(selectedRelease.version, plugin?.currentVersion || "0.0.0") === 0 ? `Reinstall ${selectedRelease.version}`
-                    : `Update to ${selectedRelease.version}`
+              : semverCompare(selectedRelease.version, plugin?.currentVersion || "0.0.0") < 0 ? `Downgrade to ${selectedRelease.version}`
+                : semverCompare(selectedRelease.version, plugin?.currentVersion || "0.0.0") === 0 ? `Reinstall ${selectedRelease.version}`
+                  : `Update to ${selectedRelease.version}`
             : "No installable builds found"}
         </ButtonItem>
       </PanelSectionRow>
