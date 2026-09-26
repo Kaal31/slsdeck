@@ -131,8 +131,8 @@ jobs:
           set -euo pipefail
           TAG="${BRANCH}-latest"
           ZIP="SLSDeckUniversal-${BRANCH}.zip"
-          TITLE="SLSDeck ${BRANCH} rolling"
-          NOTES="Rolling prerelease built automatically from the ${BRANCH} branch."
+          TITLE="SLSDeck ${ROLLING_VERSION}"
+          NOTES="Rolling prerelease ${ROLLING_VERSION}, built automatically from the ${BRANCH} branch at ${GITHUB_SHA}."
           git fetch origin --tags --force
           git tag -f "$TAG" HEAD
           git push origin "refs/tags/$TAG" --force

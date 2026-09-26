@@ -79,7 +79,7 @@ class PluginUpdateTests(unittest.TestCase):
             },
             {
                 "tag_name": "main-latest",
-                "name": "SLSDeck main latest",
+                "name": "SLSDeck 0.9.64-main.77",
                 "html_url": "main-release",
                 "published_at": "2026-09-22T00:00:00Z",
                 "assets": [{"name": "SLSDeckUniversal-main.zip", "browser_download_url": "main-good", "size": 30}],
@@ -97,6 +97,8 @@ class PluginUpdateTests(unittest.TestCase):
         self.assertEqual(immutable[0]["version"], "0.9.64-update-system.12")
         rolling = [item for item in result["releases"] if item["rolling"]]
         self.assertEqual(rolling[0]["channel"], "main")
+        self.assertEqual(rolling[0]["version"], "0.9.64-main.77")
+        self.assertEqual(rolling[0]["runNumber"], 77)
 
 
 if __name__ == "__main__":

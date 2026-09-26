@@ -142,6 +142,16 @@ def _version_for(run_number: int, release_name: str = "") -> str:
     return f"{base}-{CHANNEL}.{run_number}"
 
 
+def _rolling_version_for(channel: str, release_name: str) -> tuple[str, int]:
+    match = re.search(
+        rf"(\d+\.\d+\.\d+-{re.escape(channel)}\.(\d+))",
+        release_name,
+    )
+    if match:
+        return match.group(1), int(match.group(2))
+    return f"{channel} (rolling latest)", 0
+
+
 def list_releases() -> Dict[str, Any]:
     """Return rolling branch channels plus immutable update-system builds."""
     client = ensure_http_client("plugin-updates")
@@ -166,7 +176,9 @@ def list_releases() -> Dict[str, Any]:
         if not build_match and not rolling_match:
             continue
         channel = CHANNEL if build_match else str(rolling_match.group(1))
-        run_number = int(build_match.group(1)) if build_match else 0
+        release_name = str(release.get("name") or "")
+        rolling_version, rolling_run = _rolling_version_for(channel, release_name)
+        run_number = int(build_match.group(1)) if build_match else rolling_run
         expected_asset = (f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
                           else f"SLSDeckUniversal-{channel}.zip")
         zip_asset = next(
@@ -181,8 +193,8 @@ def list_releases() -> Dict[str, Any]:
             "channel": channel,
             "rolling": bool(rolling_match),
             "immutable": bool(build_match),
-            "version": (_version_for(run_number, str(release.get("name") or ""))
-                        if build_match else f"{channel} (rolling latest)"),
+            "version": (_version_for(run_number, release_name)
+                        if build_match else rolling_version),
             "runNumber": run_number,
             "assetUrl": str(zip_asset["browser_download_url"]),
             "releaseUrl": str(release.get("html_url") or ""),
@@ -205,9 +217,11 @@ def status() -> Dict[str, Any]:
     releases = result.get("releases") or []
     current_build = _current_build()
     current_channel = _current_channel()
+    current_rolling = [item for item in releases
+                       if item.get("channel") == current_channel and item.get("rolling")]
     immutable = [item for item in releases
                  if item.get("channel") == CHANNEL and item.get("immutable")]
-    latest = immutable[0] if immutable else None
+    latest = current_rolling[0] if current_rolling else (immutable[0] if immutable else None)
     return {
         **result,
         "channel": CHANNEL,
