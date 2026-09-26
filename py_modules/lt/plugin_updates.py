@@ -13,7 +13,6 @@ import os
 import posixpath
 import re
 import time
-import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from typing import Any, Dict, List
 
@@ -201,16 +200,25 @@ def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _atom_releases(payload: str) -> List[Dict[str, Any]]:
-    """Convert GitHub's public releases feed to the REST-shaped data we use."""
-    root = ET.fromstring(payload)
-    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    """Convert GitHub's public feed without XML modules blocked by Decky."""
+    def value(block: str, tag: str) -> str:
+        match = re.search(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", block,
+                          flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return ""
+        return (match.group(1).strip()
+                .replace("&amp;", "&").replace("&quot;", '"')
+                .replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">"))
+
     releases: List[Dict[str, Any]] = []
-    for entry in root.findall("atom:entry", namespace):
-        release_url = ""
-        for link in entry.findall("atom:link", namespace):
-            if link.get("rel", "alternate") == "alternate":
-                release_url = str(link.get("href") or "")
-                break
+    entries = re.findall(r"<entry(?:\s[^>]*)?>(.*?)</entry>", payload,
+                         flags=re.IGNORECASE | re.DOTALL)
+    for entry in entries:
+        link = re.search(
+            r"<link\b(?=[^>]*\brel=[\"']alternate[\"'])[^>]*\bhref=[\"']([^\"']+)[\"'][^>]*/?>",
+            entry, flags=re.IGNORECASE,
+        )
+        release_url = (link.group(1).replace("&amp;", "&") if link else "")
         tag = release_url.rstrip("/").rsplit("/", 1)[-1]
         build_match = _BUILD_TAG.match(tag)
         rolling_match = _ROLLING_TAG.match(tag)
@@ -223,9 +231,9 @@ def _atom_releases(payload: str) -> List[Dict[str, Any]]:
         asset_url = f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}"
         releases.append({
             "tag_name": tag,
-            "name": entry.findtext("atom:title", default="", namespaces=namespace),
+            "name": value(entry, "title"),
             "html_url": release_url,
-            "published_at": entry.findtext("atom:updated", default="", namespaces=namespace),
+            "published_at": value(entry, "updated"),
             "assets": [{"name": asset_name, "browser_download_url": asset_url, "size": 0}],
         })
     return releases
