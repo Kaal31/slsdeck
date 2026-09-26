@@ -8,7 +8,6 @@ import { routerHook } from "@decky/api";
 import { ReactElement } from "react";
 import { GameActionButtons } from "../components/GameActionButtons";
 import { GameDetailsBadge } from "../components/GameDetailsBadge";
-import { SlsDeckErrorBoundary } from "../components/SlsDeckErrorBoundary";
 
 /**
  * Inject the SLSDeck bar into the library app-details page by patching the
@@ -35,12 +34,7 @@ export function patchLibraryApp() {
               x?.props?.className?.includes(appDetailsClasses.InnerContainer)
           );
           if (typeof container === "object") {
-            container.props.children.splice(
-              1,
-              0,
-              <SlsDeckErrorBoundary surface="Library badge"><GameDetailsBadge /></SlsDeckErrorBoundary>,
-              <SlsDeckErrorBoundary surface="Library actions"><GameActionButtons /></SlsDeckErrorBoundary>
-            );
+            container.props.children.splice(1, 0, <GameDetailsBadge />, <GameActionButtons />);
           }
           return ret;
         }

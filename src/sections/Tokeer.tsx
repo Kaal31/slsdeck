@@ -17,6 +17,7 @@ import {
   openTokeerDiscord,
   readLatestTicketGate,
   readTokeerDiscord,
+  retainTokeerDiscordView,
   restoreTokeerTicketView,
   sendTokeerTicketMessage,
   uploadTokeerTicketFile,
@@ -168,7 +169,10 @@ export type TokeerActivationRequest = {
 };
 
 export function TokeerSection({ headless = false, activationRequest }: { headless?: boolean; activationRequest?: TokeerActivationRequest } = {}) {
-  useEffect(() => () => cancelTokeerAvailabilityRefresh(), []);
+  useEffect(() => {
+    const releaseView = retainTokeerDiscordView();
+    return () => { cancelTokeerAvailabilityRefresh(); releaseView(); };
+  }, []);
   const savedRef=useRef<SavedTokeerSession|null>(readSavedSession());
   const selectorLayoutRef=useRef<TokeerDiscordState|null>(readSelectorLayout());
   const sessionStartedRef=useRef(savedRef.current?.startedAt||Date.now());
@@ -717,10 +721,22 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
     return()=>{stopped=true;clearTimeout(timer);};
   },[ticket?.url]);
 
+  const markSteamTokeerApplied=async(appid:number)=>{
+    // Like Ubisoft completion, lock the installed depot manifests once the
+    // activation succeeds. The key remains applied if Moon cannot write a pin.
+    const applied=await tokeerMarkApplied(appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${appid}`,"steam",true);
+    window.dispatchEvent(new CustomEvent("slsdeck-tokeer-applied",{detail:{appid}}));
+    if(!applied.pin?.success){
+      toaster.toast({title:"SLSDeck · Tokeer pin",body:`Activation applied, but version pinning failed: ${applied.pin?.error||"check the installed game and Moon in Fixes."}`});
+    }
+    return applied;
+  };
+
   const runAutomation=async(ctx:TokeerTicketContext,resume?:SavedTokeerSession,generation=ticketGenerationRef.current)=>{
     if(automationRunningRef.current||!ctx.appid||!ctx.url)return;
     if(ticketAbortedRef.current||generation!==ticketGenerationRef.current)return;
     automationRunningRef.current=true;
+    const releaseView = retainTokeerDiscordView();
     const stale=()=>ticketAbortedRef.current||ticketCompletionPausedRef.current||generation!==ticketGenerationRef.current;
     const fail=(body:string)=>{
       if(stale())return;
@@ -803,7 +819,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
           const redeemed=await tokeerRedeem(resume.activation);
           if(stale())return;
           if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed.");return;}
-          await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+          await markSteamTokeerApplied(ctx.appid);
           void refreshBadges();
           stage="checking-game";
           checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
@@ -848,7 +864,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         const redeemed=await tokeerRedeem(received.code);
         if(stale())return;
         if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed. The received code is preserved for manual retry.");return;}
-        await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+        await markSteamTokeerApplied(ctx.appid);
         void refreshBadges();
         checkpoint({automationStage:"checking-game",automationError:"",ticket:trackedTicket});
         await completeNonUbisoftActivation("checking-game",trackedTicket);
@@ -861,7 +877,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         const redeemed=await tokeerRedeem(resume.activation);
         if(stale())return;
         if(!redeemed.success){fail(redeemed.error||redeemed.output||"Activation redemption failed.");return;}
-        await tokeerMarkApplied(ctx.appid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${ctx.appid}`,"steam",false);
+        await markSteamTokeerApplied(ctx.appid);
         void refreshBadges();
         setAutomationStage("done");setMessage("Tokeer activation was redeemed successfully. Launch the game from Steam.");
         try{window.localStorage.removeItem(TOKEER_SESSION_KEY);}catch{}
@@ -934,6 +950,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
         }
     }catch(e){if(!stale())fail(String(e));}
     finally{
+      releaseView();
       if(generation===ticketGenerationRef.current){automationRunningRef.current=false;setBusy("");}
     }
   };
@@ -1338,7 +1355,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       const r=await setupAndVerifyTokeer(resolvedAppid,setMessage,ticketUsesUbisoftVerifier(ticket));
       if(r.success){
         setVerify(r);
-        setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}GE-Proton10-34 selected, launch options merged, and TLX1 generated.`);
+        setMessage(`Tokeer prepared without restarting Steam. ${r.runtimeUpdated?"Runtime updated; ":"Runtime already current; "}${r.proton||"Proton Experimental"} selected, launch options merged, and TLX1 generated.`);
       }else{
         const failure=describeTokeerFailure(r);
         setVerify(null);
@@ -1390,7 +1407,7 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       const r=await tokeerRedeem(activation.trim());
       setMessage(r.success?"Activation written successfully. Launch the game from Steam.":(r.error||r.output||"Activation failed."));
       if(r.success){
-        await tokeerMarkApplied(resolvedAppid,parseTokeerGameLabel(selectedGame)?.name||selectedGame||`AppID ${resolvedAppid}`,"steam",false);
+        await markSteamTokeerApplied(resolvedAppid);
         void refreshBadges();
         if(ticket?.url){
           const tracked={...ticket};
@@ -1537,13 +1554,11 @@ export function TokeerSection({ headless = false, activationRequest }: { headles
       {ticket?.opened&&ticket.url&&(
         (activeUbisoftTicket&&ubisoftAppliedAt>0&&(ubisoftContinuationRunning||ticketCompletionPaused||ubisoftContinuationStage))||
         (!activeUbisoftTicket&&ticket.appid&&(ticketCompletionPaused||["waiting-code","checking-game","confirming-worked"].includes(automationStage)))
-      )&&<PanelSectionRow><ButtonItem layout="below" onClick={() => {
-        if (activeUbisoftTicket) {
-          if (ubisoftContinuationRunning&&!ticketCompletionPaused) pauseTicketCompletion();
-          else void continueUbisoftTicket();
-        } else if (ticketCompletionPaused) void resumeTicket();
-        else pauseTicketCompletion();
-      }}>{activeUbisoftTicket
+      )&&<PanelSectionRow><ButtonItem layout="below" onClick={
+        activeUbisoftTicket
+          ?(ubisoftContinuationRunning&&!ticketCompletionPaused?pauseTicketCompletion:continueUbisoftTicket)
+          :(ticketCompletionPaused?resumeTicket:pauseTicketCompletion)
+      }>{activeUbisoftTicket
         ?(ubisoftContinuationRunning&&!ticketCompletionPaused?"Pause ticket completion":"Continue Ubisoft ticket")
         :(ticketCompletionPaused?"Continue ticket":"Pause ticket completion")}</ButtonItem></PanelSectionRow>}
       {ticket?.opened&&ticket.url&&<PanelSectionRow><ButtonItem layout="below" disabled={!!busy&&!["Waiting for Discord activation code…","Waiting for Ubisoft verification confirmation…","Waiting for Discord dbdata.json…"].includes(busy)} onClick={cancelTicket}>Cancel ticket in Discord</ButtonItem></PanelSectionRow>}

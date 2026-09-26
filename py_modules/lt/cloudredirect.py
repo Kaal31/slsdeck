@@ -18,13 +18,17 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 from .paths import defaults_path, runtime_path
 import re
 import secrets
 import socket
 import subprocess
+import tarfile
+import tempfile
 import threading
 import time
+import zipfile
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .logger import logger
@@ -91,6 +95,11 @@ _AUTH_RESULT = None
 _TOKEN_REFRESH_LOCK = threading.Lock()
 _REMOTE_APPS_CACHE = {}
 _REMOTE_APPS_CACHE_SECONDS = 60
+_IMPORT_MAX_FILES = 20000
+_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024
+_MIGRATION_LOCK = threading.Lock()
+_MIGRATION_HISTORY = ".slsdeck-provider-migrations.json"
+_FOLDER_BRIDGE = "tokens_folder.json"
 
 
 def _native_config_dir() -> str:
@@ -312,19 +321,286 @@ def _wrap_cr(cmd: list) -> list:
         return base
 
 
+def _folder_writable(path: str) -> bool:
+    """Check access as the desktop/Steam user, not Decky's root backend."""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        return subprocess.run(
+            _wrap_cr(["test", "-w", path]), check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def _running_sls_apps() -> list[int]:
+    """Return SLS AppIDs found in live process environments."""
+    managed = {int(x) for x in slssteam.read_additional_apps() if int(x) > 0}
+    running = set()
+    if not managed:
+        return []
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return []
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        try:
+            with open(os.path.join("/proc", pid, "environ"), "rb") as fh:
+                entries = fh.read().split(b"\0")
+            for entry in entries:
+                if entry.startswith((b"SteamAppId=", b"SteamGameId=")):
+                    value = entry.split(b"=", 1)[1].decode("ascii", "ignore")
+                    if value.isdigit() and int(value) in managed:
+                        running.add(int(value))
+        except OSError:
+            continue
+    return sorted(running)
+
+
+def _file_digest(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _migration_history_append(result: dict) -> None:
+    path = os.path.join(_native_config_dir(), _MIGRATION_HISTORY)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            history = json.load(fh)
+        if not isinstance(history, list):
+            history = []
+    except Exception:
+        history = []
+    record = {k: v for k, v in result.items() if k not in ("success", "error")}
+    record["timestamp"] = int(time.time())
+    history.append(record)
+    _write_json_atomic(path, history[-50:])
+
+
+def _sync_provider_tree(source: str, destination: str, source_name: str,
+                        destination_name: str) -> dict:
+    """Incrementally merge provider data without deleting either side."""
+    result = {
+        "success": False, "source": source_name, "destination": destination_name,
+        "inspected": 0, "copied": 0, "updated": 0, "identical": 0,
+        "conflicts": 0, "failed": 0, "bytes": 0,
+    }
+    if not os.path.isdir(source):
+        result.update({"success": True, "note": "Source has no saves yet"})
+        return result
+    os.makedirs(destination, exist_ok=True)
+    for current, dirs, names in os.walk(source, followlinks=False):
+        dirs[:] = [d for d in dirs if d != ".slsdeck-conflicts" and
+                   not os.path.islink(os.path.join(current, d))]
+        relative = os.path.relpath(current, source)
+        target_dir = destination if relative == "." else os.path.join(destination, relative)
+        os.makedirs(target_dir, exist_ok=True)
+        for name in names:
+            src = os.path.join(current, name)
+            if os.path.islink(src) or not os.path.isfile(src):
+                continue
+            result["inspected"] += 1
+            dst = os.path.join(target_dir, name)
+            staged = ""
+            try:
+                src_stat = os.stat(src)
+                action = "copied"
+                final_dst = dst
+                if os.path.exists(dst):
+                    if not os.path.isfile(dst):
+                        raise OSError("destination entry is not a regular file")
+                    dst_stat = os.stat(dst)
+                    if src_stat.st_size == dst_stat.st_size and _file_digest(src) == _file_digest(dst):
+                        result["identical"] += 1
+                        continue
+                    delta = src_stat.st_mtime_ns - dst_stat.st_mtime_ns
+                    if delta > 1_000_000_000:
+                        action = "updated"
+                    elif delta < -1_000_000_000:
+                        result["identical"] += 1
+                        continue
+                    else:
+                        suffix = _file_digest(src)[:10]
+                        relative_file = os.path.relpath(dst, destination)
+                        final_dst = os.path.join(destination, ".slsdeck-conflicts", suffix,
+                                                 relative_file)
+                        os.makedirs(os.path.dirname(final_dst), exist_ok=True)
+                        if os.path.exists(final_dst) and _file_digest(src) == _file_digest(final_dst):
+                            result["identical"] += 1
+                            continue
+                        action = "conflicts"
+                staged = f"{final_dst}.slsdeck-stage-{os.getpid()}-{secrets.token_hex(3)}"
+                shutil.copy2(src, staged)
+                if os.path.getsize(staged) != src_stat.st_size or _file_digest(staged) != _file_digest(src):
+                    raise OSError("copy verification failed")
+                os.replace(staged, final_dst)
+                result[action] += 1
+                result["bytes"] += src_stat.st_size
+            except Exception as exc:
+                result["failed"] += 1
+                logger.warn(f"CloudRedirect migration: {src} failed: {exc}")
+                try:
+                    if staged and os.path.exists(staged):
+                        os.remove(staged)
+                except OSError:
+                    pass
+    result["success"] = result["failed"] == 0
+    if result["success"]:
+        chown_to_user(destination, recursive=True)
+    _migration_history_append(result)
+    return result
+
+
+def _install_folder_bridge(folder: str) -> dict:
+    """Support Moon builds that treat tokens_folder.json as provider root."""
+    bridge = os.path.join(_native_config_dir(), _FOLDER_BRIDGE)
+    try:
+        if os.path.islink(bridge):
+            if os.path.realpath(bridge) == os.path.realpath(folder):
+                return {"success": True, "path": bridge}
+            os.unlink(bridge)
+        elif os.path.exists(bridge):
+            os.replace(bridge, f"{bridge}.legacy-{int(time.time())}")
+        staged = f"{bridge}.slsdeck-stage-{os.getpid()}"
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
+        os.symlink(folder, staged, target_is_directory=True)
+        os.replace(staged, bridge)
+        chown_to_user(bridge, recursive=False)
+        return {"success": True, "path": bridge}
+    except Exception as exc:
+        return {"success": False, "error": f"Could not activate Moon folder bridge: {exc}"}
+
+
+def _remove_folder_bridge() -> None:
+    bridge = os.path.join(_native_config_dir(), _FOLDER_BRIDGE)
+    try:
+        if os.path.islink(bridge):
+            os.unlink(bridge)
+    except OSError as exc:
+        logger.warn(f"CloudRedirect: could not remove folder bridge: {exc}")
+
+
+def _transition_provider(provider: str, folder: str = "") -> dict:
+    """Reconcile local/folder data before atomically activating a provider."""
+    running = _running_sls_apps()
+    if running:
+        return {"success": False, "error": "Close running SLS games before changing save providers",
+                "runningAppIds": running}
+    with _MIGRATION_LOCK:
+        cfg = _read_provider_config()
+        previous = str(cfg.get("provider") or "local")
+        previous_folder = str(cfg.get("sync_folder_path") or "").strip()
+        cache = os.path.join(_native_config_dir(), "storage")
+        migrations = []
+        if provider == "folder" and (not folder or not os.path.isdir(folder) or not _folder_writable(folder)):
+            return {"success": False, "error": "The selected custom folder is unavailable or not writable"}
+        if previous in _PROVIDERS and previous != provider:
+            remote, remote_error = _discover_remote_apps(previous)
+            local = set()
+            if os.path.isdir(cache):
+                for account in os.listdir(cache):
+                    account_root = os.path.join(cache, account)
+                    if not account.isdigit() or not os.path.isdir(account_root):
+                        continue
+                    for appid in os.listdir(account_root):
+                        if appid.isdigit() and os.path.isdir(os.path.join(account_root, appid)):
+                            local.add((int(account), int(appid)))
+            missing = sorted(set(remote) - local)
+            if remote_error:
+                return {"success": False, "error": "Could not verify that all remote saves are cached locally: " + remote_error}
+            if missing:
+                return {"success": False,
+                        "error": "Some cloud-only saves are not cached locally; open those games before changing providers",
+                        "remoteOnly": [{"account": account, "appid": appid} for account, appid in missing]}
+        changing_folder = provider != "folder" or (
+            previous_folder and os.path.realpath(previous_folder) != os.path.realpath(folder)
+        )
+        if previous == "folder" and previous_folder and changing_folder:
+            imported = _sync_provider_tree(previous_folder, cache, "custom folder", "local cache")
+            migrations.append(imported)
+            if not imported["success"]:
+                return {"success": False, "error": "Could not safely import the current custom folder",
+                        "migration": imported}
+        if provider == "folder":
+            # The destination may already contain newer saves (for example an
+            # existing Syncthing folder). Import it before exporting the merge.
+            imported_destination = _sync_provider_tree(
+                folder, cache, "custom folder", "local cache",
+            )
+            migrations.append(imported_destination)
+            if not imported_destination["success"]:
+                return {"success": False, "error": "Could not safely import the selected custom folder",
+                        "migration": imported_destination}
+            exported = _sync_provider_tree(cache, folder, "local cache", "custom folder")
+            migrations.append(exported)
+            if not exported["success"]:
+                return {"success": False, "error": "Could not safely populate the custom folder",
+                        "migration": exported}
+            bridge = _install_folder_bridge(folder)
+            if not bridge["success"]:
+                return bridge
+        else:
+            _remove_folder_bridge()
+        new_cfg = dict(cfg)
+        new_cfg["provider"] = provider
+        if provider == "folder":
+            new_cfg["sync_folder_path"] = folder
+        _write_json_atomic(_native_config_path(), new_cfg)
+        status = provider_status()
+        status["migrations"] = migrations
+        status["restartRequired"] = True
+        if provider in _PROVIDERS:
+            status["migrationNote"] = "Local cache will synchronize through CloudRedirect after Steam restarts"
+        return status
+
+
 def provider_status() -> dict:
     """Return the native configuration consumed by cloudredirect-moon."""
     migrate_provider_data()
     cfg = _read_provider_config()
     provider = str(cfg.get("provider") or "local")
+    sync_folder_path = str(cfg.get("sync_folder_path") or "").strip()
+    folder_ready = provider == "folder" and bool(sync_folder_path) and os.path.isdir(sync_folder_path)
+    folder_writable = folder_ready and _folder_writable(sync_folder_path)
+    bridge_path = os.path.join(_native_config_dir(), _FOLDER_BRIDGE)
+    bridge_ready = (folder_ready and os.path.islink(bridge_path) and
+                    os.path.realpath(bridge_path) == os.path.realpath(sync_folder_path))
+    repair = None
+    if folder_writable and not bridge_ready:
+        # Self-heal configurations written before the Moon folder-root mismatch
+        # was handled. Reconcile both sides before the bridge is activated.
+        cache = os.path.join(_native_config_dir(), "storage")
+        imported = _sync_provider_tree(sync_folder_path, cache, "custom folder", "local cache")
+        repair = imported
+        if imported["success"]:
+            exported = _sync_provider_tree(cache, sync_folder_path, "local cache", "custom folder")
+            repair = dict(exported)
+            for key in ("inspected", "copied", "updated", "identical", "conflicts", "failed", "bytes"):
+                repair[key] = int(imported.get(key) or 0) + int(exported.get(key) or 0)
+            if exported["success"]:
+                bridge_ready = bool(_install_folder_bridge(sync_folder_path).get("success"))
     providers = [p for p in _PROVIDERS if _has_refresh_token(_token_path(p, cfg))]
     authenticated = provider in providers
     return {
         "success": True,
-        "configured": provider == "local" or authenticated,
+        "configured": provider == "local" or authenticated or (folder_writable and bridge_ready),
         "authenticated": authenticated,
         "provider": provider,
         "providers": providers,
+        "syncFolderPath": sync_folder_path,
+        "folderReady": folder_ready,
+        "folderWritable": folder_writable,
+        "folderBridgeReady": bridge_ready,
+        "repairMigration": repair,
         "syncAchievements": cfg.get("sync_achievements") is True,
         "syncPlaytime": cfg.get("sync_playtime") is True,
         "native": True,
@@ -333,14 +609,61 @@ def provider_status() -> dict:
 
 def set_provider(provider: str) -> dict:
     provider = str(provider or "").lower()
-    if provider not in ("local", "gdrive", "onedrive"):
+    if provider not in ("local", "folder", "gdrive", "onedrive"):
         return {"success": False, "error": "unknown provider"}
     migrate_provider_data()
-    cfg = _read_provider_config()
-    cfg["provider"] = provider
     try:
-        _write_json_atomic(_native_config_path(), cfg)
-        return provider_status()
+        cfg = _read_provider_config()
+        if provider == "folder":
+            folder = str(cfg.get("sync_folder_path") or "").strip()
+            if not folder:
+                return {"success": False, "error": "Choose a custom folder first"}
+            return _transition_provider(provider, folder)
+        if provider in _PROVIDERS and not _has_refresh_token(_token_path(provider, cfg)):
+            status = provider_status()
+            # Let the frontend present the provider and start OAuth without
+            # activating a provider that cannot initialize yet.
+            status.update({"provider": provider, "configured": False,
+                           "authenticated": False, "pendingProvider": True})
+            return status
+        return _transition_provider(provider)
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def set_sync_folder(path: str) -> dict:
+    """Select CloudRedirect Moon's folder/network-drive provider root."""
+    migrate_provider_data()
+    raw = str(path or "").strip()
+    if not raw:
+        return {"success": False, "error": "Choose a folder first"}
+    if raw == "~" or raw.startswith("~/"):
+        raw = os.path.join(slssteam._home(), raw[2:]) if raw != "~" else slssteam._home()
+    if not os.path.isabs(raw):
+        return {"success": False, "error": "Use an absolute folder path"}
+    expanded = os.path.abspath(raw)
+    if expanded == os.path.sep:
+        return {"success": False, "error": "The filesystem root cannot be used as a sync folder"}
+    config_root = os.path.realpath(_native_config_dir())
+    candidate = os.path.realpath(expanded)
+    if candidate == config_root or candidate.startswith(config_root + os.sep):
+        return {"success": False, "error": "Choose a folder outside CloudRedirect's local cache"}
+    try:
+        created = not os.path.exists(expanded)
+        mkdir = subprocess.run(
+            _wrap_cr(["mkdir", "-p", "--", expanded]), check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        if mkdir.returncode != 0:
+            detail = (mkdir.stderr or "").strip()
+            return {"success": False, "error": detail or "Could not create the selected folder"}
+        if not os.path.isdir(expanded):
+            return {"success": False, "error": "The selected path is not a folder"}
+        if created:
+            chown_to_user(expanded, recursive=False)
+        if not _folder_writable(expanded):
+            return {"success": False, "error": "The selected folder is not writable"}
+        return _transition_provider("folder", expanded)
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
@@ -362,6 +685,12 @@ def sign_out(provider: str = "") -> dict:
     migrate_provider_data()
     cfg = _read_provider_config()
     provider = str(provider or cfg.get("provider") or "local")
+    try:
+        result = _transition_provider("local")
+        if not result.get("success"):
+            return result
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
     if provider in _PROVIDERS:
         try:
             os.remove(_token_path(provider, cfg))
@@ -369,12 +698,7 @@ def sign_out(provider: str = "") -> dict:
             pass
         except OSError as exc:
             return {"success": False, "error": str(exc)}
-    cfg["provider"] = "local"
-    try:
-        _write_json_atomic(_native_config_path(), cfg)
-        return provider_status()
-    except Exception as exc:
-        return {"success": False, "error": str(exc)}
+    return provider_status()
 
 
 def _pkce(value: str) -> str:
@@ -562,8 +886,9 @@ def _exchange_auth_code(pending: dict, code: str, state: str) -> dict:
         }
         cfg = _read_provider_config()
         _write_json_atomic(_token_path(pending["provider"], cfg), token_data)
-        cfg["provider"] = pending["provider"]
-        _write_json_atomic(_native_config_path(), cfg)
+        transition = _transition_provider(pending["provider"])
+        if not transition.get("success"):
+            raise ValueError(transition.get("error") or "provider migration failed")
         return _auth_finish({"success": True, "status": "done",
                              "provider": pending["provider"], "authenticated": True})
     except Exception as exc:
@@ -705,6 +1030,26 @@ def _discover_remote_apps(provider: str) -> tuple[list, str]:
         return [], str(exc)
 
 
+def _discover_folder_apps(root: str) -> tuple[list, str]:
+    """List the account/AppID layout used by Moon's folder provider."""
+    if not root:
+        return [], "custom folder is not configured"
+    if not os.path.isdir(root):
+        return [], "custom folder is unavailable"
+    found = set()
+    try:
+        for account in os.listdir(root):
+            account_dir = os.path.join(root, account)
+            if not account.isdigit() or not os.path.isdir(account_dir):
+                continue
+            for appid in os.listdir(account_dir):
+                if appid.isdigit() and appid != "0" and os.path.isdir(os.path.join(account_dir, appid)):
+                    found.add((int(account), int(appid)))
+        return sorted(found), ""
+    except OSError as exc:
+        return [], str(exc)
+
+
 def list_local_apps() -> dict:
     """Merge local/inherited save trees with cloud-only provider folders."""
     root = os.path.join(_native_config_dir(), "storage")
@@ -736,8 +1081,12 @@ def list_local_apps() -> dict:
     remote_error = ""
     cfg = _read_provider_config()
     provider = str(cfg.get("provider") or "local")
-    if provider in _PROVIDERS and _has_refresh_token(_token_path(provider, cfg)):
+    remote = []
+    if provider == "folder":
+        remote, remote_error = _discover_folder_apps(str(cfg.get("sync_folder_path") or ""))
+    elif provider in _PROVIDERS and _has_refresh_token(_token_path(provider, cfg)):
         remote, remote_error = _discover_remote_apps(provider)
+    if remote:
         by_key = {(app["account"], app["appid"]): app for app in apps}
         for account, appid in remote:
             current = by_key.get((account, appid))
@@ -764,6 +1113,137 @@ def list_local_apps() -> dict:
     apps.sort(key=lambda item: (item["account"], item["appid"]))
     return {"success": True, "apps": apps, "storageRoot": root,
             "provider": provider, "remoteError": remote_error}
+
+
+def _import_source_root(selected_path: str, staging: str) -> tuple[str, bool]:
+    """Return the directory whose contents should land in the AppID folder."""
+    if not os.path.isfile(selected_path):
+        raise ValueError("The selected save file no longer exists")
+
+    from .utils import safe_extract
+    extracted = os.path.join(staging, "extracted")
+    os.makedirs(extracted, exist_ok=True)
+    if zipfile.is_zipfile(selected_path):
+        with zipfile.ZipFile(selected_path, "r") as archive:
+            members = [m for m in archive.infolist() if not m.is_dir()]
+            if len(members) > _IMPORT_MAX_FILES:
+                raise ValueError("The save archive contains too many files")
+            total = sum(max(0, int(m.file_size)) for m in members)
+            if total > _IMPORT_MAX_BYTES:
+                raise ValueError("The expanded save archive is larger than 4 GB")
+            safe_extract(archive, extracted, "zip")
+    elif tarfile.is_tarfile(selected_path):
+        with tarfile.open(selected_path, "r:*") as archive:
+            members = [m for m in archive.getmembers() if m.isfile()]
+            if len(members) > _IMPORT_MAX_FILES:
+                raise ValueError("The save archive contains too many files")
+            total = sum(max(0, int(m.size)) for m in members)
+            if total > _IMPORT_MAX_BYTES:
+                raise ValueError("The expanded save archive is larger than 4 GB")
+            safe_extract(archive, extracted, "tar")
+    else:
+        if selected_path.lower().endswith((".7z", ".7z.001", ".rar")):
+            raise ValueError("Unsupported archive format. Please use ZIP or TAR.")
+        # A loose/unpacked save is imported exactly as selected.
+        loose = os.path.join(staging, "loose")
+        os.makedirs(loose, exist_ok=True)
+        shutil.copy2(selected_path, os.path.join(loose, os.path.basename(selected_path)))
+        return loose, False
+
+    entries = [name for name in os.listdir(extracted) if name not in ("__MACOSX", ".DS_Store")]
+    if not entries:
+        raise ValueError("The selected archive contains no save files")
+    # Save exports commonly wrap everything in one named folder. Import that
+    # folder's contents rather than nesting the wrapper below the AppID.
+    if len(entries) == 1 and os.path.isdir(os.path.join(extracted, entries[0])):
+        return os.path.join(extracted, entries[0]), True
+    return extracted, False
+
+
+def _copy_import_tree(source: str, destination: str) -> tuple[int, int]:
+    files = total = 0
+    for current, dirs, names in os.walk(source, followlinks=False):
+        dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(current, name))]
+        relative = os.path.relpath(current, source)
+        target_dir = destination if relative == "." else os.path.join(destination, relative)
+        os.makedirs(target_dir, exist_ok=True)
+        for name in names:
+            src = os.path.join(current, name)
+            if os.path.islink(src) or not os.path.isfile(src):
+                continue
+            size = os.path.getsize(src)
+            files += 1
+            total += size
+            if files > _IMPORT_MAX_FILES or total > _IMPORT_MAX_BYTES:
+                raise ValueError("The selected save exceeds the import safety limit")
+            dst = os.path.join(target_dir, name)
+            staged = f"{dst}.slsdeck-import-{os.getpid()}-{secrets.token_hex(3)}"
+            shutil.copyfile(src, staged)
+            os.replace(staged, dst)
+    return files, total
+
+
+def import_save(appid: int, selected_path: str) -> dict:
+    """Import a loose save or safe archive into CloudRedirect's active store."""
+    try:
+        appid = int(appid)
+    except Exception:
+        return {"success": False, "error": "Choose a game first"}
+    if appid <= 0:
+        return {"success": False, "error": "Choose a game first"}
+    raw_path = str(selected_path or "").strip()
+    if not raw_path:
+        return {"success": False, "error": "Choose an existing save file or archive"}
+    selected_path = os.path.abspath(os.path.expanduser(raw_path))
+    if not os.path.isfile(selected_path):
+        return {"success": False, "error": "Choose an existing save file or archive"}
+    if appid in _running_sls_apps():
+        return {"success": False, "error": "Close the game before importing its saves"}
+    account = _recent_steam_account_id()
+    if not account:
+        return {"success": False, "error": "Could not determine the current Steam account"}
+
+    cfg = _read_provider_config()
+    provider = str(cfg.get("provider") or "local")
+    cache_root = os.path.join(_native_config_dir(), "storage")
+    active_root = cache_root
+    if provider == "folder":
+        folder = str(cfg.get("sync_folder_path") or "").strip()
+        if not folder or not os.path.isdir(folder) or not _folder_writable(folder):
+            return {"success": False, "error": "The configured custom folder is unavailable or not writable"}
+        active_root = folder
+    destination = os.path.join(active_root, account, str(appid))
+    backup = ""
+    try:
+        with _MIGRATION_LOCK, tempfile.TemporaryDirectory(prefix="slsdeck-save-import-") as staging:
+            source, wrapper_removed = _import_source_root(selected_path, staging)
+            if os.path.isdir(destination) and os.listdir(destination):
+                backup = os.path.join(_native_config_dir(), "import-backups", account,
+                                      str(appid), f"{int(time.time())}-{secrets.token_hex(3)}")
+                os.makedirs(os.path.dirname(backup), exist_ok=True)
+                shutil.copytree(destination, backup)
+            os.makedirs(destination, exist_ok=True)
+            files, size = _copy_import_tree(source, destination)
+            if not files:
+                raise ValueError("The selected archive contains no importable save files")
+            chown_to_user(destination, recursive=True)
+            if backup:
+                chown_to_user(backup, recursive=True)
+            # The custom-folder provider is the active authority, but the local
+            # cache remains CloudRedirect's recovery/index source.
+            if provider == "folder":
+                mirrored = _sync_provider_tree(active_root, cache_root,
+                                               "custom folder", "local cache")
+                if not mirrored.get("success"):
+                    raise RuntimeError("Save imported, but the local cache mirror could not be updated")
+        _REMOTE_APPS_CACHE.clear()
+        logger.log(f"CloudRedirect: imported {files} save file(s) for {appid} from {selected_path}")
+        return {"success": True, "appid": appid, "account": int(account),
+                "files": files, "bytes": size, "destination": destination,
+                "backup": backup, "wrapperRemoved": wrapper_removed,
+                "provider": provider}
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        return {"success": False, "error": str(exc), "backup": backup}
 
 
 def _recent_steam_account_id() -> str:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Any, Dict
 
 from .logger import logger
@@ -184,7 +185,8 @@ def get_pinned_manifest_snapshots() -> Dict[str, Dict[str, Any]]:
     return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
 
 
-def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: str = "") -> None:
+def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: str = "",
+                                 source: str = "") -> None:
     clean = {
         str(depot): str(gid)
         for depot, gid in (depots or {}).items()
@@ -200,6 +202,11 @@ def set_pinned_manifest_snapshot(appid: int, depots: Dict[Any, Any], buildid: st
         snapshots[key] = {
             "depots": clean,
             "buildid": str(buildid or (previous.get("buildid") if previous_depots == clean else "") or ""),
+            "source": str(source or (previous.get("source") if previous_depots == clean else "") or ""),
+            # Steam may keep the public BuildID and appmanifest InstalledDepots
+            # stale after Moon redirects a historical manifest. Correlate only
+            # Steam content-log completions that happened after this pin write.
+            "pinnedAt": time.time(),
         }
     else:
         snapshots.pop(key, None)
@@ -257,7 +264,7 @@ def get_all() -> Dict[str, Any]:
 
 
 def get_slssteam_dlc_enabled() -> bool:
-    return bool(get_value("slssteamDlc", False))
+    return bool(get_value("slssteamDlc", True))
 
 
 def set_slssteam_dlc_enabled(value: bool) -> None:
@@ -657,6 +664,21 @@ def set_tokeer_applied_game(appid: int, record: Dict[str, Any]) -> None:
     set_value("tokeerAppliedGames", games)
 
 
+def clear_tokeer_applied_game(appid: int, expected_applied_at: int) -> bool:
+    """Remove only the activation we inspected, not a concurrent new one."""
+    key = str(int(appid))
+    with _LOCK:
+        _load_locked()
+        games = dict(_CACHE.get("tokeerAppliedGames") or {})
+        current = games.get(key)
+        if not isinstance(current, dict) or int(current.get("appliedAt") or 0) != int(expected_applied_at):
+            return False
+        games.pop(key)
+        _CACHE["tokeerAppliedGames"] = games
+        _persist_locked()
+        return True
+
+
 def get_badge_game_page() -> bool:
     return bool(get_value("badgeGamePage", True))
 
@@ -716,12 +738,47 @@ def set_auto_fix(value: bool) -> None:
 
 def get_auto_add_dlc() -> bool:
     """When adding a game, also fetch the FULL manifest (all depots incl. DLC) so
-    the base install pulls all content DLC. Off by default."""
-    return bool(get_value("autoAddDlc", False))
+    the base install pulls all content DLC. On by default."""
+    return bool(get_value("autoAddDlc", True))
 
 
 def set_auto_add_dlc(value: bool) -> None:
     set_value("autoAddDlc", bool(value))
+
+
+def get_auto_dlc_records() -> Dict[str, Dict[str, Any]]:
+    """Durable DLC expectations used to detect Steam removing Moon depots.
+
+    Each record is intentionally small: the DLC appids Moon must authorize and
+    the confirmed content-depot ids which should remain mounted.  Provider
+    responses and keys stay in their existing caches.
+    """
+    raw = get_value("autoDlcRecords", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): dict(value)
+        for key, value in raw.items()
+        if str(key).isdigit() and isinstance(value, dict)
+    }
+
+
+def set_auto_dlc_record(appid: int, dlc_appids, depot_ids) -> None:
+    key = str(int(appid))
+    records = get_auto_dlc_records()
+    dlcs = sorted({int(value) for value in (dlc_appids or []) if str(value).isdigit()})
+    depots = sorted({int(value) for value in (depot_ids or []) if str(value).isdigit()})
+    if dlcs or depots:
+        records[key] = {"dlcAppids": dlcs, "depotIds": depots, "updatedAt": time.time()}
+    else:
+        records.pop(key, None)
+    set_value("autoDlcRecords", records)
+
+
+def remove_auto_dlc_record(appid: int) -> None:
+    records = get_auto_dlc_records()
+    records.pop(str(int(appid)), None)
+    set_value("autoDlcRecords", records)
 
 
 def get_disable_cloud() -> bool:
@@ -1014,7 +1071,6 @@ UI_SETTINGS_DEFAULTS = {
     "toastOnSourceFailure": False,
     "uiViewMode": "detailed",  # "detailed" or "compact"
     "autoArtSyncOnAdd": True,
-    "workshopButton": False,
     "hubcapUpdates": False,
 }
 

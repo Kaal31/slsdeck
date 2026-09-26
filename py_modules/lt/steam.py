@@ -282,6 +282,55 @@ def get_installed_buildid(appid: int) -> str:
     return ""
 
 
+def get_completed_update_depots(appid: int, since_epoch: float = 0) -> Dict[str, Any]:
+    """Return Steam's latest completed mounted-depot set for an app.
+
+    Historical ManifestPins can make Steam mount the requested old manifests
+    while leaving appmanifest ``buildid`` and ``InstalledDepots`` on the public
+    build. ``content_log.txt`` is Steam's authoritative reconciliation record:
+    its ``finished update`` line contains the manifests actually mounted.
+    """
+    try:
+        appid = int(appid)
+        since_epoch = float(since_epoch or 0)
+    except Exception:
+        return {}
+    base = detect_steam_install_path()
+    path = os.path.join(base or "", "logs", "content_log.txt")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        # Only the tail is relevant and bounds work on long-lived Steam logs.
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - (4 * 1024 * 1024)))
+            text = fh.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return {}
+    line_re = re.compile(
+        rf"^\[(\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}})\]\s+"
+        rf"AppID {appid} finished update, \d+ mounted depots \(BuildID (\d+)\)\s*:\s*(.*)$",
+        re.MULTILINE,
+    )
+    matches = list(line_re.finditer(text))
+    for match in reversed(matches):
+        try:
+            completed_at = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            completed_at = 0
+        if since_epoch and completed_at and completed_at < since_epoch - 5:
+            continue
+        depots = {
+            depot: gid
+            for depot, gid in re.findall(r"(\d+)\s*\((\d+)\)", match.group(3))
+        }
+        if depots:
+            return {"depots": depots, "buildid": match.group(2),
+                    "completedAt": completed_at, "source": "content_log"}
+    return {}
+
+
 _GENERIC_DIRS = {
     "bin", "bin64", "binaries", "win64", "win32", "x64", "x86", "x86_64",
     "game", "games", "app", "apps", "release", "retail", "redist", "current",
@@ -1032,20 +1081,7 @@ def download_preflight(appid: int) -> Dict[str, Any]:
         f"{appid} is in AdditionalApps" if listed else
         f"{appid} missing from AdditionalApps in config.yaml")
 
-    # 3. DisableUpdates must be off, or SLSsteam hands Steam zero depots.
-    du_ok = False
-    try:
-        cfg = open(slssteam.config_path(), "r", encoding="utf-8").read()
-        m = re.search(r"^DisableUpdates[ \t]*:[ \t]*(\S+)", cfg, re.MULTILINE)
-        du_ok = bool(m and m.group(1).strip().lower() in ("no", "false"))
-        detail = (f"DisableUpdates: {m.group(1)}" if m else
-                  "DisableUpdates key ABSENT - SLSsteam defaults it to yes, which "
-                  "gives unowned apps zero depots")
-    except Exception as exc:
-        detail = f"could not read config.yaml: {exc}"
-    add("disable_updates_off", du_ok, detail)
-
-    # 4. Depot keys present in config.vdf RIGHT NOW. This is the one that keeps
+    # 3. Depot keys present in config.vdf RIGHT NOW. This is the one that keeps
     #    silently reverting: Steam rewrites config.vdf from memory on exit.
     want, have = set(), set()
     try:
@@ -1142,7 +1178,7 @@ def download_diagnosis(appid: int) -> Dict[str, Any]:
     md, td = out.get("mountedDepots"), out.get("targetDepots")
     if td == 0:
         out["summary"] = ("Steam targeted ZERO depots - it never attempted a download. "
-                          "That points at ownership/DisableUpdates, NOT at depot keys.")
+                          "That points at ownership/registration, NOT at depot keys.")
     elif md == 0 and "decryption" in str(out.get("result", "")).lower():
         out["summary"] = ("Steam targeted depots but could not decrypt them - the depot "
                           "keys were not in config.vdf when it tried.")

@@ -12,22 +12,22 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, SlsStatus } from "./api";
+import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, pluginPrepareReplacement, PluginUpdateStatus, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
-import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
+import { disposeTokeerDiscordView } from "./lib/tokeerDiscordCapture";
 import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 import { StoreRouletteModal } from "./sections/Minigame";
 import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY } from "./lib/storeRoulettePrefs";
-import { SlsDeckErrorBoundary } from "./components/SlsDeckErrorBoundary";
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 const SLS_STATUS_CACHE_KEY = "slsdeck.slsStatusCache";
+const UPDATE_BANNERS_EVENT = "slsdeck-update-banners";
 
 function readCachedSlsStatus(): SlsStatus | null {
   try {
@@ -330,8 +330,8 @@ function RepairBanner() {
   const [reason, setReason] = useState("");
   // A broken config.yaml is the OTHER way the engine goes silently dead:
   // injection can be perfectly healthy while a malformed/missing key makes
-  // SLSsteam fall back to its own defaults (DisableUpdates: yes hands added
-  // games zero depots). Both faults surface through this one banner.
+  // SLSsteam fall back to defaults that do not match the managed setup. Both
+  // faults surface through this one banner.
   const [cfgIssues, setCfgIssues] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");
@@ -431,6 +431,9 @@ function Content() {
   // actions, game list or tools (there's nothing for them to act on yet).
   const [slsStatus, setSlsStatus] = useState<SlsStatus | null>(() => readCachedSlsStatus());
   const [slsStatusChecked, setSlsStatusChecked] = useState(false);
+  const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateStatus | null>(null);
+  const [updateBanners, setUpdateBanners] = useState(true);
+  const [pluginUpdateBusy, setPluginUpdateBusy] = useState(false);
   const installed = slsStatus?.installed === true;
 
   const refreshSlsStatus = useCallback(async () => {
@@ -446,18 +449,33 @@ function Content() {
     }
   }, []);
 
-  useEffect(() => {
-    if (!installed) return;
-    // Refresh Discord-backed vault/game availability independently of the
-    // Anti-Denuvo page. The cache itself coalesces callers and preserves the
-    // last good result when Discord is logged out or temporarily unrendered.
-    const refresh = () => refreshTokeerAvailabilityCache(false).catch(() => {});
-    const first = setTimeout(refresh, 12000);
-    const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
-    return () => { clearTimeout(first); clearInterval(interval); };
-  }, [installed]);
-
-
+  const installBannerUpdate = async () => {
+    const release = pluginUpdate?.latest;
+    if (!release || pluginUpdateBusy) return;
+    const backend = (window as any).DeckyBackend ?? (window.opener as any)?.DeckyBackend ?? null;
+    if (!backend?.call) {
+      toaster.toast({ title: "SLSDeck update", body: "Decky installer is unavailable." });
+      return;
+    }
+    setPluginUpdateBusy(true);
+    try {
+      const armed = await pluginPrepareReplacement(release.version, release.assetUrl);
+      if (!armed.success) throw new Error(armed.error || "Could not prepare plugin replacement");
+      await backend.call(
+        "utilities/install_plugin",
+        release.assetUrl,
+        "SLSDeckUniversal",
+        release.version,
+        "",
+        2,
+      );
+      toaster.toast({ title: "SLSDeck update", body: "Confirm the update in Decky Loader." });
+    } catch (error) {
+      toaster.toast({ title: "SLSDeck update failed", body: String(error) });
+    } finally {
+      window.setTimeout(() => setPluginUpdateBusy(false), 3000);
+    }
+  };
 
   useEffect(() => {
     const readActionsFixes = () => {
@@ -481,6 +499,33 @@ function Content() {
       window.removeEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes as EventListener);
     };
   }, [refreshSlsStatus]);
+
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const status = await pluginUpdateStatus();
+        if (active) setPluginUpdate(status);
+      } catch {
+        /* An unavailable GitHub check must not disturb the Quick Access panel. */
+      }
+    };
+    getUiSettings().then((result) => {
+      if (active) setUpdateBanners(result.settings?.pluginUpdateBanners !== false);
+    }).catch(() => {});
+    const onBannerSetting = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<boolean>;
+      setUpdateBanners(event.detail !== false);
+    };
+    window.addEventListener(UPDATE_BANNERS_EVENT, onBannerSetting as EventListener);
+    void check();
+    const interval = window.setInterval(check, 15 * 60 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener(UPDATE_BANNERS_EVENT, onBannerSetting as EventListener);
+    };
+  }, []);
 
   const anchor = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -511,6 +556,31 @@ function Content() {
   return (
     <>
       <div ref={anchor} style={{ height: 0 }} />
+      {updateBanners && pluginUpdate?.updateAvailable && pluginUpdate.latest && (
+        <div
+          style={{
+            width: "calc(100% - 20px)", margin: "8px 10px 6px", padding: "10px 12px",
+            minHeight: 52, height: "auto", borderRadius: 8, textAlign: "left",
+            color: "#effff2", border: "1px solid rgba(95, 220, 118, .78)",
+            background: "linear-gradient(135deg, rgba(31, 126, 55, .96), rgba(24, 91, 42, .96))",
+            boxShadow: "0 4px 14px rgba(13, 80, 30, .35)",
+          }}
+        >
+          <div style={{ width: "100%", lineHeight: 1.35 }}>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>SLSDeck update available</div>
+            <div style={{ fontSize: 11, opacity: .9, marginBottom: 8 }}>
+              {pluginUpdate.currentVersion} → {pluginUpdate.latest.version} · {pluginUpdate.currentChannel}
+            </div>
+            <DialogButton
+              onClick={installBannerUpdate}
+              disabled={pluginUpdateBusy}
+              style={{ width: "100%", minHeight: 34, height: 34, fontWeight: 700 }}
+            >
+              {pluginUpdateBusy ? "Preparing update…" : `Update to ${pluginUpdate.latest.version}`}
+            </DialogButton>
+          </div>
+        </div>
+      )}
       <RepairBanner />
       <SlsSteamCompact status={slsStatus} statusChecked={slsStatusChecked} onRefreshStatus={refreshSlsStatus} />
       {/* Per-game surfaces first: "This game" and "Actions & fixes" both act on
@@ -564,9 +634,7 @@ export default definePlugin(() => {
 
   // Full-page "Advanced" surface (junkstore-style sidebar page).
   try {
-    routerHook.addRoute(ADVANCED_ROUTE, () => (
-      <SlsDeckErrorBoundary surface="Advanced page"><AdvancedPage /></SlsDeckErrorBoundary>
-    ), { exact: true });
+    routerHook.addRoute(ADVANCED_ROUTE, () => <AdvancedPage />, { exact: true });
   } catch (e) {
     console.error("SLSDeck: failed to register Advanced route", e);
   }
@@ -618,6 +686,7 @@ export default definePlugin(() => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
         const liveReady = !!(e as any).liveReady;
+        const isDlcPage = !!e.isDlcPage;
         const earlyNotified: Set<number> | undefined = (window as any).__slsdeckEarlyAddNotified;
         const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
         const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
@@ -646,7 +715,7 @@ export default definePlugin(() => {
         });
         if (e.status === "done" && e.success) {
           void refreshBadges();
-          if (!isAssella) {
+          if (!isAssella && !isDlcPage) {
             const verification = queueAddVerification(e.appid, e.name, liveReady);
             // A verified HotReload should materialize in this Steam session.
             // Restart-fallback adds stay queued and are checked on the next
@@ -661,9 +730,11 @@ export default definePlugin(() => {
           // in the current Steam session, so normal SLS adds must NOT restart.
           // Keep ASSella's existing reload behavior separate from this live path.
           if (isAssella && dl) { reloadSteam().catch(() => {}); }
-          getAutoFix()
-            .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
-            .catch(() => {});
+          if (!isDlcPage) {
+            getAutoFix()
+              .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
+              .catch(() => {});
+          }
           // Keep the optional "SLSDeck" collection in sync as games are added.
           syncSlsCollection().catch(() => {});
         } else if (!isAssella) {
@@ -701,11 +772,12 @@ export default definePlugin(() => {
 
   return {
     name: "SLSDeck",
-    titleView: <SlsDeckErrorBoundary surface="Quick Access title"><QamTitle /></SlsDeckErrorBoundary>,
-    content: <SlsDeckErrorBoundary surface="Quick Access panel"><Content /></SlsDeckErrorBoundary>,
+    titleView: <QamTitle />,
+    content: <Content />,
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");
+      disposeTokeerDiscordView();
       dependencyLifecycleToken.active = false;
       try { clearTimeout(dependencyRepairFirst); } catch { /* ignore */ }
       try { clearInterval(dependencyRepairRetry); } catch { /* ignore */ }

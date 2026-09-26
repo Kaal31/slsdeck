@@ -1,17 +1,59 @@
-import { ButtonItem, DialogButton, DropdownItem, Navigation, PanelSection, PanelSectionRow, TextField, ToggleField } from "@decky/ui";
+import { ButtonItem, DialogButton, DropdownItem, Focusable, ModalRoot, Navigation, PanelSection, PanelSectionRow, TextField, ToggleField, showModal } from "@decky/ui";
+import { FileSelectionType, openFilePicker } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import {
   CloudRedirectLocalApp, CloudRedirectProvider, CloudRedirectProviderStatus, crAuthCallback, crAuthPoll, crAuthStart,
-  crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crListLocalApps, crProviderStatus,
-  crSetEnabled, crSetProvider, crSetProviderToggle, crSignOut,
+  crEnsureInstalledAuto, crGameArtwork, crGetEnabled, crImportSave, crListLocalApps, crProviderStatus, getInstalledApps,
+  crSetEnabled, crSetProvider, crSetProviderToggle, crSetSyncFolder, crSignOut,
 } from "../api";
 
 const PROVIDERS: Array<{ data: CloudRedirectProvider; label: string }> = [
-  { data: "local", label: "Local folder" },
+  { data: "local", label: "Built-in local storage" },
+  { data: "folder", label: "Custom folder" },
   { data: "gdrive", label: "Google Drive" },
   { data: "onedrive", label: "OneDrive" },
 ];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function SaveGamePickerModal({
+  games, closeModal, onResult,
+}: {
+  games: Array<{ appid: number; name: string }>;
+  closeModal?: () => void;
+  onResult: (game: { appid: number; name: string } | null) => void;
+}) {
+  const settled = useRef(false);
+  const close = () => {
+    if (!settled.current) onResult(null);
+    closeModal?.();
+  };
+  return <ModalRoot closeModal={close}>
+    <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Which game owns this save?</div>
+    <div style={{ fontSize: 12, opacity: .7, marginBottom: 10 }}>
+      The imported files will be placed in this game's CloudRedirect folder.
+    </div>
+    <Focusable style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "56vh", overflowY: "scroll" }}>
+      {games.map((game) => <DialogButton key={game.appid} style={{ textAlign: "left", padding: "8px 10px" }}
+        onClick={() => { settled.current = true; onResult(game); closeModal?.(); }}>
+        <div style={{ fontSize: 14 }}>{game.name}</div>
+        <div style={{ fontSize: 11, opacity: .6 }}>AppID {game.appid}</div>
+      </DialogButton>)}
+    </Focusable>
+  </ModalRoot>;
+}
+
+function pickSaveGame(games: Array<{ appid: number; name: string }>): Promise<{ appid: number; name: string } | null> {
+  return new Promise((resolve) => showModal(<SaveGamePickerModal games={games} onResult={resolve} />));
+}
+
+function migrationMessage(result: CloudRedirectProviderStatus, fallback: string): string {
+  const migrations = result.migrations || (result.repairMigration ? [result.repairMigration] : []);
+  if (!migrations.length) return fallback;
+  const copied = migrations.reduce((n, item) => n + (item.copied || 0) + (item.updated || 0), 0);
+  const conflicts = migrations.reduce((n, item) => n + (item.conflicts || 0), 0);
+  const failed = migrations.reduce((n, item) => n + (item.failed || 0), 0);
+  return `${fallback} Migration verified: ${copied} copied/updated${conflicts ? `, ${conflicts} conflicts preserved` : ""}${failed ? `, ${failed} failed` : ""}.`;
+}
 
 function formatSize(bytes: number, local = true): string {
   if (!local) return "Cloud only";
@@ -23,7 +65,8 @@ function formatSize(bytes: number, local = true): string {
 }
 
 function formatRemoteSave(timestamp: number | undefined, provider: CloudRedirectProvider | undefined, remote = false): string {
-  const providerName = provider === "gdrive" ? "Google Drive" : provider === "onedrive" ? "OneDrive" : "local storage";
+  const providerName = provider === "gdrive" ? "Google Drive" : provider === "onedrive" ? "OneDrive" :
+    provider === "folder" ? "custom folder" : "local storage";
   if (!timestamp) return provider === "local" ? "No stored save metadata yet" :
     remote ? `Stored in ${providerName}` : `Not synced to ${providerName} yet`;
   try {
@@ -110,6 +153,8 @@ export function CloudRedirectSection() {
   const [saves, setSaves] = useState<CloudRedirectLocalApp[]>([]);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [authWaiting, setAuthWaiting] = useState(false);
+  const [folderPath, setFolderPath] = useState("");
+  const [importGames, setImportGames] = useState<Array<{ appid: number; name: string }>>([]);
   const alive = useRef(true);
   const authWatch = useRef(0);
 
@@ -118,6 +163,10 @@ export function CloudRedirectSection() {
     try {
       const provider = await crProviderStatus();
       setState(provider);
+      setFolderPath(provider.syncFolderPath || "");
+      if (provider.repairMigration?.success) {
+        setMsg(migrationMessage(provider, "Repaired the existing Custom Folder configuration. Restart Steam to finish."));
+      }
       const auth = await crAuthPoll();
       if (auth.status === "done" && provider.authenticated) {
         setMsg("Cloud provider connected."); setAuthWaiting(false); setCallbackUrl("");
@@ -129,6 +178,14 @@ export function CloudRedirectSection() {
       const catalog = await crListLocalApps();
       setSaves(catalog.apps || []);
       if (catalog.remoteError) setMsg(`Local saves shown; cloud discovery unavailable: ${catalog.remoteError}`);
+    } catch { /* best effort */ }
+    try {
+      const installed = await getInstalledApps();
+      const games = (installed.apps || [])
+        .map((app) => ({ appid: Number(app.appid), name: app.gameName || `AppID ${app.appid}` }))
+        .filter((app) => app.appid > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      setImportGames(games);
     } catch { /* best effort */ }
   };
   useEffect(() => {
@@ -169,11 +226,35 @@ export function CloudRedirectSection() {
     setBusy(true);
     try {
       const result = await crSetProvider(value);
+      if (!result.success) {
+        if (value === "folder" && (result.error || "").includes("Choose a custom folder")) {
+          setState((old) => ({ ...old, provider: "folder", configured: false }));
+          setMsg("Enter and save a custom folder path below.");
+          setBusy(false);
+          return;
+        }
+        throw new Error(result.error || "Provider transition failed");
+      }
       setState(result);
-      setMsg(value === "local" ? "Using CloudRedirect's local storage folder." :
-        result.authenticated ? "Existing sign-in restored." : "Provider selected. Connect it below.");
+      const base = value === "local" ? "Using CloudRedirect's built-in local storage. Restart Steam to finish." : value === "folder" ?
+        (result.configured ? "Using the selected custom folder. Restart Steam to finish." : "Enter and save a custom folder path below.") :
+        result.authenticated ? "Existing sign-in restored. Restart Steam to finish." : "Provider selected. Connect it below.";
+      setMsg(migrationMessage(result, base));
     } catch (error) { setMsg(`Error: ${error}`); }
     setBusy(false);
+  };
+
+  const saveFolder = async () => {
+    setBusy(true);
+    try {
+      const result = await crSetSyncFolder(folderPath.trim());
+      setState(result);
+      if (!result.success) throw new Error(result.error || "Could not use that folder");
+      setFolderPath(result.syncFolderPath || folderPath.trim());
+      setMsg(migrationMessage(result, "Custom folder activated. Restart Steam before using it."));
+      await load();
+    } catch (error) { setMsg(`Folder setup failed: ${error}`); }
+    if (alive.current) setBusy(false);
   };
 
   const connect = async () => {
@@ -220,6 +301,29 @@ export function CloudRedirectSection() {
     setBusy(false);
   };
 
+  const importSave = async () => {
+    const game = await pickSaveGame(importGames);
+    if (!game) return;
+    let path = "";
+    try {
+      const picked: any = await openFilePicker(
+        FileSelectionType.FILE, "/home/deck/Downloads", true, true,
+      );
+      path = picked?.realpath || picked?.path || "";
+    } catch { return; }
+    if (!path) return;
+    setBusy(true); setMsg("Importing save…");
+    try {
+      const result = await crImportSave(game.appid, path);
+      if (!result.success) throw new Error(result.error || "Save import failed");
+      const wrapper = result.wrapperRemoved ? " The archive's outer folder was removed." : "";
+      const backup = result.backup ? " Existing saves were backed up first." : "";
+      setMsg(`Imported ${result.files || 0} save file${result.files === 1 ? "" : "s"}.${wrapper}${backup}`);
+      await load();
+    } catch (error) { setMsg(`Save import failed: ${error}`); }
+    if (alive.current) setBusy(false);
+  };
+
   const selected = PROVIDERS.find((item) => item.data === (state.provider || "local"));
   const saveCount = saves.length;
   const remoteOnlyCount = saves.filter((app) => app.remote && app.local === false).length;
@@ -237,11 +341,21 @@ export function CloudRedirectSection() {
     <PanelSectionRow><DropdownItem label="Storage provider"
       description="Configuration is read directly by cloudredirect-moon."
       rgOptions={PROVIDERS} selectedOption={selected?.data || "local"}
-      strDefaultLabel={selected?.label || "Local folder"}
+      strDefaultLabel={selected?.label || "Built-in local storage"}
       onChange={(option: any) => selectProvider(option.data)} disabled={busy} /></PanelSectionRow>
-    {state.provider !== "local" && !state.authenticated &&
+    {state.provider === "folder" && <>
+      <PanelSectionRow><TextField label="Custom sync folder"
+        description="Absolute path on internal storage, SD card, external drive, network mount, or a Syncthing/Dropbox folder."
+        value={folderPath}
+        onChange={(event: any) => setFolderPath(event?.target?.value ?? String(event || ""))}
+      /></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={saveFolder} disabled={busy || !folderPath.trim()}>
+        Use this folder
+      </ButtonItem></PanelSectionRow>
+    </>}
+    {state.provider !== "local" && state.provider !== "folder" && !state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={connect} disabled={busy}>Connect provider</ButtonItem></PanelSectionRow>}
-    {state.provider !== "local" && !state.authenticated && authWaiting && <>
+    {state.provider !== "local" && state.provider !== "folder" && !state.authenticated && authWaiting && <>
       <PanelSectionRow><div style={{ fontSize: 11, lineHeight: 1.45, opacity: .78 }}>
         Automatic capture is active. If the browser still ends on an unreachable localhost page, copy its complete address-bar URL and paste it below.
       </div></PanelSectionRow>
@@ -255,14 +369,19 @@ export function CloudRedirectSection() {
         Finish sign-in
       </ButtonItem></PanelSectionRow>
     </>}
-    {state.provider !== "local" && state.authenticated &&
+    {state.provider !== "local" && state.provider !== "folder" && state.authenticated &&
       <PanelSectionRow><ButtonItem layout="below" onClick={disconnect} disabled={busy}>Sign out</ButtonItem></PanelSectionRow>}
     <PanelSectionRow><ToggleField label="Sync achievements" checked={!!state.syncAchievements}
       onChange={(v) => toggleOption("sync_achievements", v)} disabled={busy} /></PanelSectionRow>
     <PanelSectionRow><ToggleField label="Sync playtime" checked={!!state.syncPlaytime}
       onChange={(v) => toggleOption("sync_playtime", v)} disabled={busy} /></PanelSectionRow>
-    <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" ? "#5ee6c4" : "#f5a623" }}>
+    <PanelSectionRow><ButtonItem layout="below" onClick={importSave} disabled={busy || !importGames.length}
+      description="Choose an SLS game, then select a loose save file or ZIP/TAR archive from Downloads.">
+      Add save file or archive
+    </ButtonItem></PanelSectionRow>
+    <PanelSectionRow><div style={{ fontSize: 11, color: state.authenticated || state.provider === "local" || state.configured ? "#5ee6c4" : "#f5a623" }}>
       {state.provider === "local" ? `Local provider ready · ${saveCount} game save ${saveCount === 1 ? "folder" : "folders"}` :
+        state.provider === "folder" ? (state.configured ? `✓ Custom folder ready · ${state.syncFolderPath}` : "Custom folder needs a writable path.") :
         state.authenticated ? `✓ ${selected?.label} connected · ${saveCount} managed ${saveCount === 1 ? "game" : "games"}${remoteOnlyCount ? ` · ${remoteOnlyCount} cloud only` : ""}` :
         `${selected?.label || "Cloud provider"} needs sign-in.`}
     </div></PanelSectionRow>

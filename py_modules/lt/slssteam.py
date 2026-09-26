@@ -357,20 +357,34 @@ def _push_injection_event(kind: str, message: str) -> None:
 
 def trigger_steam_install(appid, library: int = 0) -> Dict[str, Any]:
     """Ask the LIVE SLSsteam hook to start downloading an added game via its
-    /tmp/SLSsteam.API IPC ("install|appid|library"). Works in the running Steam
-    session with no restart. Harmless (a no-op) when injection isn't active."""
+    private runtime API ("install|appid|library")."""
     try:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "invalid appid"}
+    candidates = []
     try:
-        with open("/tmp/SLSsteam.API", "w", encoding="utf-8") as fh:
-            fh.write("install|%d|%d\n" % (appid, int(library)))
-        logger.log(f"SLSsteam: API install trigger -> {appid} (library {library})")
-        return {"success": True}
-    except Exception as exc:
-        logger.warn(f"SLSsteam: API install trigger failed: {exc}")
-        return {"success": False, "error": str(exc)}
+        import pwd
+        uid = pwd.getpwnam(_decky_user()).pw_uid
+        candidates.append(f"/run/user/{uid}/SLSsteam/api")
+    except Exception:
+        pass
+    candidates.append(os.path.join(_home(), ".cache", "SLSsteam", "api"))
+    # Compatibility with older, pre-private-runtime engines only when their
+    # contract already exists. Never recreate this insecure legacy endpoint.
+    candidates.append("/tmp/SLSsteam.API")
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("install|%d|%d\n" % (appid, int(library)))
+            logger.log(f"SLSsteam: API install trigger -> {appid} via {path} (library {library})")
+            return {"success": True, "path": path}
+        except Exception as exc:
+            logger.warn(f"SLSsteam: API install trigger failed via {path}: {exc}")
+    return {"success": False, "error": "live SLSsteam API contract not found",
+            "checked": candidates}
 
 
 def validate_steam_app(appid) -> Dict[str, Any]:
@@ -389,7 +403,9 @@ def validate_steam_app(appid) -> Dict[str, Any]:
     except Exception:
         return {"success": False, "error": "invalid appid"}
     try:
-        cmd = _wrap_as_user(["steam", f"steam://validate/{appid}"])
+        steam_candidates = _steam_sh_candidates()
+        steam_cmd = steam_candidates[0] if steam_candidates else "steam"
+        cmd = _wrap_as_user([steam_cmd, f"steam://validate/{appid}"])
         subprocess.Popen(
             cmd, env=_rich_env(), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -913,15 +929,8 @@ def ensure_config() -> bool:
 # Missing key(s)"), so omitting a key is NOT neutral -- it silently opts into
 # whatever upstream chose.
 _REQUIRED_BOOL_KEYS = {
-    # Needed for the /tmp/SLSsteam.API IPC (schema + install triggers).
+    # Needed for Moon's private per-user runtime API (schema + install triggers).
     "API": "yes",
-    # CRITICAL. SLSsteam's own default is `yes`, and it implements this by
-    # hooking CUserAppManager::BuildDepotDependency so that unowned apps (i.e.
-    # everything in AdditionalApps) are handed ZERO depots. Steam then resolves
-    # "0 active: 0 target:", downloads nothing, and writes an appmanifest with
-    # StateFlags 4 / SizeOnDisk 0 -- a game that shows as installed but is empty.
-    # It must be `no` or no added game can ever download.
-    "DisableUpdates": "no",
     # Both SLSsteam and slsteam-moon ship this OFF ("Enables playing of not owned
     # games"), and SLSDeck's bundled template inherited that default -- which
     # directly contradicts the plugin's entire purpose. Adding a game to
@@ -1324,6 +1333,15 @@ def _rich_env() -> Dict[str, str]:
     env["PATH"] = base + ((":" + env["PATH"]) if env.get("PATH") else "")
     env.setdefault("XDG_DATA_HOME", os.path.join(_home(), ".local", "share"))
     env.setdefault("XDG_CONFIG_HOME", os.path.join(_home(), ".config"))
+    try:
+        import pwd as _pwd
+        uid = _pwd.getpwnam(_decky_user()).pw_uid
+        runtime = f"/run/user/{uid}"
+        if os.path.isdir(runtime):
+            env["XDG_RUNTIME_DIR"] = runtime
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime}/bus"
+    except Exception:
+        pass
     return env
 
 
@@ -1363,6 +1381,10 @@ def _wrap_as_user(cmd: List[str]) -> List[str]:
               f"HOME={env['HOME']}", f"PATH={env['PATH']}",
               f"XDG_DATA_HOME={env['XDG_DATA_HOME']}",
               f"XDG_CONFIG_HOME={env['XDG_CONFIG_HOME']}"]
+    if env.get("XDG_RUNTIME_DIR"):
+        prefix.append(f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}")
+    if env.get("DBUS_SESSION_BUS_ADDRESS"):
+        prefix.append(f"DBUS_SESSION_BUS_ADDRESS={env['DBUS_SESSION_BUS_ADDRESS']}")
     return prefix + cmd
 
 
@@ -2256,6 +2278,34 @@ def add_dlc_block(parent_appid: int, dlc_ids, names=None) -> Dict[str, Any]:
         return {"success": False, "error": "Failed to write SLSsteam config"}
     logger.log(f"SLSsteam: registered {len(ids)} DLC under {parent} (DlcData)")
     return {"success": True, "added": len(ids)}
+
+
+def read_dlc_data() -> Dict[int, List[int]]:
+    """Read the configured ``DlcData`` map without requiring PyYAML.
+
+    This is also the migration source for installs created before SLSDeck began
+    persisting its compact auto-DLC expectation records.
+    """
+    content = _read()
+    if content is None:
+        return {}
+    bounds = _dlc_section(content)
+    if bounds is None:
+        return {}
+    _, body_start, body_end = bounds
+    body = content[body_start:body_end]
+    out: Dict[int, List[int]] = {}
+    current: Optional[int] = None
+    for line in body.splitlines():
+        parent = re.match(r"^[ \t]{2}(\d+)[ \t]*:[ \t]*$", line)
+        if parent:
+            current = int(parent.group(1))
+            out.setdefault(current, [])
+            continue
+        child = re.match(r"^[ \t]{4,}(\d+)[ \t]*:", line)
+        if current is not None and child:
+            out[current].append(int(child.group(1)))
+    return out
 
 
 def remove_dlc_parent(parent_appid: int) -> Dict[str, Any]:
@@ -3354,6 +3404,102 @@ def _config_scalar(text: str, key: str) -> str:
 _TRUE_WORDS = {"true", "1", "yes", "on"}
 
 
+def _get_moon_bool(key: str, default: bool) -> Dict[str, Any]:
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found", "enabled": default}
+    enabled = default
+    present = False
+    for ln in lines:
+        m = re.match(rf"^{re.escape(key)}[ \t]*:[ \t]*(\S+)", ln)
+        if m:
+            enabled = m.group(1).strip().strip('"').lower() in _TRUE_WORDS
+            present = True
+            break
+    return {"success": True, "enabled": enabled, "present": present}
+
+
+def _set_moon_bool(key: str, enabled: bool) -> Dict[str, Any]:
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    newval = "yes" if enabled else "no"
+    found = False
+    for i, ln in enumerate(lines):
+        if re.match(rf"^{re.escape(key)}[ \t]*:", ln):
+            lines[i] = f"{key}: {newval}"
+            found = True
+            break
+    if not found:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.append(f"{key}: {newval}")
+    ok = _write_config_lines(lines)
+    return {"success": ok, "enabled": enabled}
+
+
+def get_auto_update_apps() -> Dict[str, Any]:
+    """Moon defaults to updating every managed app unless individually pinned."""
+    return _get_moon_bool("AutoUpdateApps", True)
+
+
+def set_auto_update_apps(enabled: bool) -> Dict[str, Any]:
+    return _set_moon_bool("AutoUpdateApps", enabled)
+
+
+def get_manifest_donation() -> Dict[str, Any]:
+    """Read Donate.Enabled without disturbing the rest of Moon's Donate map."""
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found", "enabled": True}
+    enabled = True
+    present = False
+    in_donate = False
+    for ln in lines:
+        if re.match(r"^Donate[ \t]*:", ln):
+            in_donate = True
+            continue
+        if in_donate and ln.strip() and not ln.startswith((" ", "\t", "#")):
+            break
+        if in_donate:
+            m = re.match(r"^[ \t]+Enabled[ \t]*:[ \t]*(\S+)", ln)
+            if m:
+                enabled = m.group(1).strip().strip('"').lower() in _TRUE_WORDS
+                present = True
+                break
+    return {"success": True, "enabled": enabled, "present": present}
+
+
+def set_manifest_donation(enabled: bool) -> Dict[str, Any]:
+    """Change only Donate.Enabled, preserving URL, limits, and user comments."""
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    newval = "yes" if enabled else "no"
+    donate_at = None
+    end = len(lines)
+    for i, ln in enumerate(lines):
+        if re.match(r"^Donate[ \t]*:", ln):
+            donate_at = i
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip() and not lines[j].startswith((" ", "\t", "#")):
+                    end = j
+                    break
+            for j in range(i + 1, end):
+                if re.match(r"^[ \t]+Enabled[ \t]*:", lines[j]):
+                    lines[j] = f"  Enabled: {newval}"
+                    ok = _write_config_lines(lines)
+                    return {"success": ok, "enabled": enabled}
+            lines.insert(i + 1, f"  Enabled: {newval}")
+            ok = _write_config_lines(lines)
+            return {"success": ok, "enabled": enabled}
+    if lines and lines[-1].strip() != "":
+        lines.append("")
+    lines.extend(["Donate:", f"  Enabled: {newval}"])
+    ok = _write_config_lines(lines)
+    return {"success": ok, "enabled": enabled}
+
+
 def get_achievements() -> Dict[str, Any]:
     lines = _config_lines()
     if lines is None:
@@ -3908,15 +4054,18 @@ def client_fix_needed() -> Dict[str, Any]:
     fix."""
     log_path = os.path.join(_home(), ".SLSsteam.log")
     if not os.path.isfile(log_path):
-        return {"needed": True, "reason": "SLSsteam has never loaded (no ~/.SLSsteam.log)"}
+        return {"needed": False, "unknown": True,
+                "reason": "SLSsteam load log is unavailable; no explicit failure was detected"}
     try:
-        text = open(log_path, "r", encoding="utf-8", errors="ignore").read()
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
     except Exception as exc:
-        return {"needed": True, "reason": f"could not read SLSsteam log: {exc}"}
+        return {"needed": False, "unknown": True,
+                "reason": f"could not read SLSsteam log; no explicit failure was detected: {exc}"}
     # Only the most recent session matters.
-    marker = "SLSsteam loading in steam"
-    if marker in text:
-        text = text[text.rfind(marker):]
+    session_starts = list(re.finditer(r"slssteam loading in steam", text, re.IGNORECASE))
+    if session_starts:
+        text = text[session_starts[-1].start():]
     lowered = text.lower()
     current = steam_client_version()
     supported = headcrab_compatible_client()
@@ -3934,18 +4083,32 @@ def client_fix_needed() -> Dict[str, Any]:
         return {"needed": False,
                 "reason": "SLSsteam loaded successfully against the current client "
                           "(steamclient.so hash accepted) — no client change needed"}
-    for bad in ("hash missmatch", "hash mismatch", "aborting", "refusing to load"):
-        if bad in lowered:
-            if current and supported and current == supported:
-                return {
-                    "needed": True,
-                    "engineOnly": True,
-                    "reason": "SLSsteam aborted, but Steam already matches Headcrab's "
-                              "supported client build — repair the engine and launcher only",
-                }
-            return {"needed": True,
-                    "reason": f"SLSsteam reported '{bad}' against the current client"}
-    return {"needed": True, "reason": "SLSsteam did not report a successful load"}
+    # Headcrab changes the Steam client, so automatic repair requires Moon's
+    # explicit steamclient hash failure in the latest load session. Generic
+    # abort/pattern/exception messages describe engine failures and must not
+    # launch a client downgrade.
+    hash_failure = next((bad for bad in (
+        "unknown steamclient.so hash! aborting",
+        "steamclient.so hash missmatch",
+        "steamclient.so hash mismatch",
+    ) if bad in lowered), None)
+    if hash_failure:
+        if current and supported and current == supported:
+            return {
+                "needed": False,
+                "unknown": True,
+                "engineOnly": True,
+                "reason": "Moon reported a steamclient hash failure, but Steam already "
+                          "matches Headcrab's target; client repair was suppressed",
+            }
+        return {"needed": True,
+                "reason": f"latest Moon session reported '{hash_failure}'"}
+    # Missing success text is not failure evidence. Newer Moon builds may change
+    # or omit that exact sentence, rotate the log, or write through another user
+    # home while injection remains fully functional. Only explicit abort/hash
+    # markers above justify offering the destructive client repair.
+    return {"needed": False, "unknown": True,
+            "reason": "SLSsteam log has no explicit success or failure marker"}
 
 
 def _gaming_mode_client_fix_entry(relaunch_desktop: bool = False) -> int:
@@ -4561,6 +4724,84 @@ def _write_config_lines(lines) -> bool:
     return ok
 
 
+# SLSonline uses Moon's FakeAppIds map. Only the selected game's entry is
+# managed here; no Steam launch options or other YAML settings are rewritten.
+_SLSONLINE_APPID = 480
+_FAKE_APPID_HEADER = re.compile(r"^FakeAppIds[ \t]*:[ \t]*(?:#.*)?$")
+_FAKE_APPID_ENTRY = re.compile(r"^[ \t]+['\"]?(\d+)['\"]?[ \t]*:[ \t]*(\d+)(?:[ \t]+#.*)?$")
+
+
+def _fake_appid_block(lines):
+    headers = [i for i, line in enumerate(lines) if re.match(r"^FakeAppIds[ \t]*:", line)]
+    if len(headers) > 1:
+        raise ValueError("Duplicate FakeAppIds sections in config.yaml")
+    if not headers:
+        return None, None, {}
+    start = headers[0]
+    if not _FAKE_APPID_HEADER.match(lines[start]):
+        raise ValueError("Unsupported inline FakeAppIds map in config.yaml")
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace() or lines[end].startswith("#")):
+        end += 1
+    entries = {}
+    for i in range(start + 1, end):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = _FAKE_APPID_ENTRY.match(line)
+        if not match:
+            raise ValueError("Unsupported FakeAppIds entry in config.yaml")
+        appid = int(match.group(1))
+        if appid in entries:
+            raise ValueError(f"Duplicate FakeAppIds entry for {appid}")
+        entries[appid] = (i, int(match.group(2)))
+    return start, end, entries
+
+
+def slsonline_status(appid: int) -> Dict[str, Any]:
+    if int(appid) <= 0:
+        return {"success": False, "error": "invalid appid"}
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    try:
+        _, _, entries = _fake_appid_block(lines)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    current = entries.get(int(appid))
+    return {"success": True, "enabled": current is not None,
+            "fakeAppId": current[1] if current else None}
+
+
+def set_slsonline(appid: int, enabled: bool) -> Dict[str, Any]:
+    if int(appid) <= 0:
+        return {"success": False, "error": "invalid appid"}
+    lines = _config_lines()
+    if lines is None:
+        return {"success": False, "error": "config.yaml not found"}
+    try:
+        start, end, entries = _fake_appid_block(lines)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    current = entries.get(int(appid))
+    if enabled == (current is not None):
+        return {"success": True, "enabled": enabled,
+                "fakeAppId": current[1] if current else None, "changed": False}
+    if enabled:
+        if start is None:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend(["FakeAppIds:", f"  {appid}: {_SLSONLINE_APPID}"])
+        else:
+            lines.insert(end, f"  {appid}: {_SLSONLINE_APPID}")
+    else:
+        del lines[current[0]]
+    if not _write_config_lines(lines):
+        return {"success": False, "error": "Could not write config.yaml"}
+    return {"success": True, "enabled": bool(enabled),
+            "fakeAppId": _SLSONLINE_APPID if enabled else None, "changed": True}
+
+
 def _purge_pins_lines(lines, appid: int):
     """Remove the ManifestPins sub-block for appid; drop the header if empty.
     Returns (new_lines, changed)."""
@@ -4715,7 +4956,8 @@ def _read_pin_gids(appid: int) -> Dict[int, str]:
     return out
 
 
-def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
+def pin_app_gids(appid, depot_gids: Dict[int, str], buildid: str = "",
+                 source: str = "") -> Dict[str, Any]:
     """Pin the game to a SPECIFIC set of depot manifest gids (build-accurate),
     e.g. the setManifestid gids from a fix's manifest .lua — as opposed to
     pin_app_current which locks whatever is installed now. slsteam-moon fetches
@@ -4725,6 +4967,10 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "invalid appid"}
+    buildid = str(buildid or "").strip()
+    if buildid and not buildid.isdigit():
+        buildid = ""
+    source = str(source or "").strip()
     clean = {}
     for d, g in (depot_gids or {}).items():
         try:
@@ -4788,18 +5034,21 @@ def pin_app_gids(appid, depot_gids: Dict[int, str]) -> Dict[str, Any]:
     if ok:
         try:
             from . import settings
-            settings.set_pinned_manifest_snapshot(appid, clean, "")
-            if changed:
+            settings.set_pinned_manifest_snapshot(appid, clean, buildid, source)
+            if buildid:
+                settings.set_pinned_build(appid, buildid)
+            elif changed:
                 settings.set_pinned_build(appid, "")
         except Exception:
             pass
         try:
             from . import buildhistory
-            buildhistory.snapshot(appid, clean, source="pin")
+            buildhistory.snapshot(appid, clean, buildid=buildid, source=source or "pin")
         except Exception:
             pass
     return {"success": ok, "depots": len(clean), "changed": changed,
-            "wasPinned": was_pinned, "alreadyOnBuild": already_on_build}
+            "wasPinned": was_pinned, "alreadyOnBuild": already_on_build,
+            "buildid": buildid, "source": source}
 
 
 def is_pinned(appid) -> bool:

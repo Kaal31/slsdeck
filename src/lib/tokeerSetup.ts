@@ -92,7 +92,7 @@ export async function setupAndVerifyTokeer(
       ? `${requiredProton} is already installed and healthy; skipping download. Merging Steam launch options live…`
       : `${requiredProton} installed/repaired. Selecting it and merging Steam launch options live…`
   );
-  const configured = configureTokeerLaunch(appid, runtime.home, requiredProton);
+  const configured = await configureTokeerLaunch(appid, runtime.home, requiredProton);
   if (!configured.success) {
     return {
       success: false,
@@ -125,7 +125,7 @@ export async function setupAndVerifyTokeer(
     ...verified,
     runtimeUpdated: !!runtime.updated,
     runtimeVersion: runtime.version,
-    proton: requiredProton,
+    proton: configured.proton || requiredProton,
     protonSkipped: !!proton.skipped,
     launchOptions: configured.options,
   };

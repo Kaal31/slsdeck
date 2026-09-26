@@ -28,9 +28,9 @@ from typing import Any, Dict, List, Optional
 import decky
 
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
-                dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, online_patch,
-                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_workshop, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle,
+                dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
+                nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -138,6 +138,11 @@ class Plugin:
             try:
                 game_appid = int(key)
             except Exception:
+                continue
+            reason = await self._run(tokeer_health.reset_reason, game_appid, value)
+            if reason:
+                if settings.clear_tokeer_applied_game(game_appid, int(value.get("appliedAt") or 0)):
+                    tokeer_health.invalidate(game_appid)
                 continue
             health = await self._run(tokeer_health.evaluate, game_appid, value)
             record = {**value, **health, "appid": game_appid, "applied": True}
@@ -252,6 +257,10 @@ class Plugin:
     # ── lifecycle ─────────────────────────────────────────────────────────
     async def _main(self):
         self.loop = asyncio.get_event_loop()
+        # A successful Decky replacement starts this new backend.  The marker
+        # has served its purpose; clearing it makes a later real uninstall
+        # destructive again according to the user's uninstall policy.
+        plugin_updates.clear_replacement_marker("new version started")
         # Dedicated pool for long blocking work (see _run_slow). Deliberately
         # small: its job is to CONTAIN slow calls, not to run many at once.
         self._slow_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slsdeck-slow")
@@ -356,10 +365,30 @@ class Plugin:
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: archive boot reconcile failed: {exc}")
 
+        def _boot_dlc_reconcile():
+            """Restore Moon's durable DLC policy and repair depots Steam dropped.
+
+            Steam may reconcile appmanifests before Moon finishes publishing its
+            package-0 DLC snapshot.  The engine fix prevents that race; this is
+            the plugin-side safety net for already-affected installs.
+            """
+            try:
+                result = dlc.reconcile_auto_dlc_boot()
+                repaired = result.get("repairRequested") or []
+                if repaired:
+                    decky.logger.warning(
+                        "SLSDeck: requested DLC repair for "
+                        + ", ".join(str(value) for value in repaired))
+                if not result.get("success"):
+                    decky.logger.warning(
+                        f"SLSDeck: DLC boot reconcile incomplete: {result.get('errors')}")
+            except Exception as exc:
+                decky.logger.warning(f"SLSDeck: DLC boot reconcile failed: {exc}")
+
         warmups = (apis.init_apis, downloads.init_applist, downloads.init_games_db,
                    fixes.init_fixes_index, ryuu.init, slssteam.ensure_launch_wrapper,
                    slssteam.boot_desktop_icon_guard, slssteam.boot_injection_watchdog,
-                   _provision_if_steam_down, _boot_cloud_and_updates,
+                   _provision_if_steam_down, _boot_dlc_reconcile, _boot_cloud_and_updates,
                    _boot_archive_templates)
 
         # HV (cpuid_fault_emulation) per-game lifecycle: start the HV-Decky
@@ -399,10 +428,6 @@ class Plugin:
             watchdog.start_watchdog(self.loop)
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: failed to start watchdog: {exc}")
-        try:
-            hubcap_workshop.start_watcher()
-        except Exception as exc:
-            decky.logger.warning(f"SLSDeck: failed to start Hubcap Workshop watcher: {exc}")
 
         # Optional SLS-game manifest updater. The worker waits 90 seconds before
         # its first pass and then checks every two hours; with the toggle off it
@@ -459,10 +484,6 @@ class Plugin:
         except Exception:
             pass
         try:
-            hubcap_workshop.stop_watcher()
-        except Exception:
-            pass
-        try:
             hubcap_updates.stop()
         except Exception:
             pass
@@ -496,19 +517,17 @@ class Plugin:
             pass
 
     async def _uninstall(self):
+        if plugin_updates.replacement_pending():
+            decky.logger.info(
+                "SLSDeck: Decky update/downgrade detected — preserving dependencies and user data"
+            )
+            await self._unload()
+            return
         full_purge = settings.get_full_purge_on_uninstall()
         decky.logger.info(
             "SLSDeck: uninstalled — " +
             ("full purge requested" if full_purge else "live-safe deactivate only")
         )
-        try:
-            hubcap_workshop.stop_watcher()
-        except Exception:
-            pass
-        try:
-            hubcap_updates.stop()
-        except Exception:
-            pass
         # IMPORTANT: Decky runs this while Steam is LIVE with moon injected. moon
         # keeps a CFileWatcher on ~/.config/SLSsteam/config.yaml inside the Steam
         # process, so rmtree-ing the moon data / stplug-in / added-game
@@ -1214,6 +1233,8 @@ class Plugin:
             pinned = await self._run(slssteam.is_pinned, int(appid))
             depots: Dict[str, str] = {}
             buildid = ""
+            pin_source = ""
+            pinned_at = 0.0
             if pinned:
                 try:
                     raw = await self._run(slssteam._read_pin_gids, int(appid))
@@ -1221,11 +1242,15 @@ class Plugin:
                 except Exception:
                     depots = {}
                 try:
+                    snapshot = settings.get_pinned_manifest_snapshots().get(str(int(appid))) or {}
                     buildid = settings.get_pinned_build(int(appid))
                     if not buildid:
-                        buildid = str((settings.get_pinned_manifest_snapshots().get(str(int(appid))) or {}).get("buildid") or "")
+                        buildid = str(snapshot.get("buildid") or "")
+                    pin_source = str(snapshot.get("source") or "")
+                    pinned_at = float(snapshot.get("pinnedAt") or 0)
                 except Exception:
                     buildid = ""
+                    pin_source = ""
             # Snapshot creation is not limited to already-pinned games. Steam's
             # appmanifest records the installed BuildID and exact depot GIDs,
             # which are sufficient mandatory material for a game snapshot.
@@ -1237,8 +1262,42 @@ class Plugin:
                 installed_buildid = await self._run(steam.get_installed_buildid, int(appid))
             except Exception:
                 installed_buildid = ""
+            steam_reported_buildid = installed_buildid
+            pin_matched = False
+            match_source = "appmanifest"
+            if pinned and depots:
+                # First accept a complete match in appmanifest. If Steam leaves
+                # that file stale after a Moon downgrade, use its own completed
+                # update record, which lists the manifests actually mounted.
+                pin_matched = all(installed_depots.get(d) == g for d, g in depots.items())
+                if not pin_matched:
+                    try:
+                        completed = await self._run(
+                            steam.get_completed_update_depots, int(appid), pinned_at
+                        )
+                        mounted = {str(d): str(g) for d, g in (completed.get("depots") or {}).items()}
+                        matching_mounted = {
+                            d: g for d, g in mounted.items() if d in depots
+                        }
+                        # Steam installs only the platform/language depots that
+                        # apply to this machine; a Lua may pin more. A completed
+                        # update is a match when every mounted pinned depot has
+                        # the requested GID and at least one pinned depot mounted.
+                        pin_matched = bool(matching_mounted) and all(
+                            depots.get(d) == g for d, g in matching_mounted.items()
+                        )
+                        if pin_matched:
+                            installed_depots = mounted
+                            match_source = "steam-content-log"
+                            if buildid:
+                                installed_buildid = buildid
+                    except Exception:
+                        pass
             return {"success": True, "pinned": bool(pinned), "buildid": buildid, "depots": depots,
-                    "installedBuildid": installed_buildid, "installedDepots": installed_depots}
+                    "pinSource": pin_source, "installedBuildid": installed_buildid,
+                    "steamReportedBuildid": steam_reported_buildid,
+                    "installedDepots": installed_depots, "pinMatched": pin_matched,
+                    "matchSource": match_source}
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
@@ -1259,8 +1318,26 @@ class Plugin:
         """slsteam-moon live achievements toggle (config.yaml Achievements)."""
         return await self._run(slssteam.get_achievements)
 
+    async def slsonline_status(self, appid: int) -> Dict[str, Any]:
+        return await self._run(slssteam.slsonline_status, int(appid))
+
+    async def set_slsonline(self, appid: int, enabled: bool) -> Dict[str, Any]:
+        return await self._run(slssteam.set_slsonline, int(appid), bool(enabled))
+
     async def set_achievements(self, enabled: bool) -> Dict[str, Any]:
         return await self._run(slssteam.set_achievements, bool(enabled))
+
+    async def get_auto_update_apps(self) -> Dict[str, Any]:
+        return await self._run(slssteam.get_auto_update_apps)
+
+    async def set_auto_update_apps(self, enabled: bool) -> Dict[str, Any]:
+        return await self._run(slssteam.set_auto_update_apps, bool(enabled))
+
+    async def get_manifest_donation(self) -> Dict[str, Any]:
+        return await self._run(slssteam.get_manifest_donation)
+
+    async def set_manifest_donation(self, enabled: bool) -> Dict[str, Any]:
+        return await self._run(slssteam.set_manifest_donation, bool(enabled))
 
     # ── SmokeAPI DLC unlocker (steam_api proxy) ────────────────────────────
     async def smokeapi_status(self, appid: int) -> Dict[str, Any]:
@@ -1662,11 +1739,15 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
-    async def pin_for_luatools_fix(self, appid: int, fix_id: str) -> Dict[str, Any]:
+    async def pin_for_luatools_fix(self, appid: int, fix_id: str,
+                                   buildid: str = "") -> Dict[str, Any]:
         """Pin to the exact build a specific lua.tools fix targets (its own
         manifest), so the update-vs-skip decision is accurate per-fix."""
         try:
-            return await self._run(pinsource.auto_pin_from_luatools_fix, int(appid), str(fix_id))
+            return await self._run(
+                pinsource.auto_pin_from_luatools_fix,
+                int(appid), str(fix_id), str(buildid or "")
+            )
         except Exception as exc:
             return {"success": False, "pinned": False, "error": str(exc)}
 
@@ -1711,15 +1792,9 @@ class Plugin:
         """Live Hubcap manifest-generation quota for the configured key."""
         return await self._run(pinsource.hubcap_usage)
 
-    async def hubcap_workshop_manifest(self, workshop_id: int) -> Dict[str, Any]:
-        """Fetch + publish a Hubcap manifest by Workshop item id."""
-        return await self._run(pinsource.hubcap_workshop_manifest, int(workshop_id))
-
-    async def hubcap_workshop_watcher_status(self) -> Dict[str, Any]:
-        return hubcap_workshop.status()
-
-    async def hubcap_workshop_rescan(self) -> Dict[str, Any]:
-        return await self._run(hubcap_workshop.scan_once)
+    async def hubcap_workshop_manifest(self, appid: int) -> Dict[str, Any]:
+        """Fetch + publish the Hubcap Workshop manifest for a game."""
+        return await self._run(pinsource.hubcap_workshop_manifest, int(appid))
 
     async def hubcap_updates_status(self) -> Dict[str, Any]:
         return hubcap_updates.status()
@@ -1877,6 +1952,9 @@ class Plugin:
     async def cr_set_provider(self, provider: str) -> Dict[str, Any]:
         return await self._run(cloudredirect.set_provider, provider)
 
+    async def cr_set_sync_folder(self, path: str) -> Dict[str, Any]:
+        return await self._run(cloudredirect.set_sync_folder, path)
+
     async def cr_set_provider_toggle(self, key: str, enabled: bool) -> Dict[str, Any]:
         return await self._run(cloudredirect.set_provider_toggle, key, bool(enabled))
 
@@ -1941,6 +2019,10 @@ class Plugin:
                 pass
             app["remoteTime"] = remote_time
         return result
+
+    async def cr_import_save(self, appid: int, path: str) -> Dict[str, Any]:
+        """Import a loose save or archive into a CloudRedirect game folder."""
+        return await self._run(cloudredirect.import_save, int(appid), path)
 
     async def cr_game_artwork(self, appid: int) -> Dict[str, Any]:
         """Return Steam's local hero/wide artwork when public CDN art is absent.
@@ -2053,7 +2135,6 @@ class Plugin:
         return {"success": True, "enabled": settings.get_auto_add_dlc()}
 
     async def set_auto_add_dlc(self, enabled: bool) -> Dict[str, Any]:
-        settings.set_auto_add_dlc(enabled)
         # Native path on newer engines: flip InjectAllAdvertisedDlc so ALL
         # advertised DLC show owned in the store/library view (not just in-game).
         # Harmless no-op on older engines, where per-add DlcData is the fallback.
@@ -2067,9 +2148,11 @@ class Plugin:
         # left the toggle reading ON with nothing in config.yaml. Report it.
         engine = await self._run(slssteam.set_inject_all_advertised_dlc, bool(enabled))
         if not (engine or {}).get("success"):
-            return {"success": False, "enabled": bool(enabled), "settingSaved": True,
+            return {"success": False, "enabled": settings.get_auto_add_dlc(),
+                    "settingSaved": False,
                     "error": (engine or {}).get("error") or
                              "could not write InjectAllAdvertisedDlc to the SLSsteam config"}
+        settings.set_auto_add_dlc(enabled)
         return {"success": True, "enabled": bool(enabled)}
 
     async def get_disable_cloud(self) -> Dict[str, Any]:
@@ -2181,6 +2264,12 @@ class Plugin:
     async def netsock_compatible(self) -> Dict[str, Any]:
         return {"success": True, "games": await self._run(netsock.compatible_list)}
 
+    async def multiplayer_proxy_status(self, appid: int) -> Dict[str, Any]:
+        return await self._run(multiplayer_proxies.status, appid)
+
+    async def multiplayer_proxy_install(self, appid: int, kind: str) -> Dict[str, Any]:
+        return await self._run(multiplayer_proxies.install, appid, kind)
+
     # ── CloudRedirect (cloud saves for added games) ────────────────────────
     async def cr_get_enabled(self) -> Dict[str, Any]:
         return await self._run(cloudredirect.get_enabled)
@@ -2229,6 +2318,15 @@ class Plugin:
     # ── dependency updates (latest-version + boot check) ───────────────────
     async def updates_check(self) -> Dict[str, Any]:
         return await self._run(updates.check_all)
+
+    async def plugin_update_status(self) -> Dict[str, Any]:
+        return await self._run(plugin_updates.status)
+
+    async def plugin_update_releases(self) -> Dict[str, Any]:
+        return await self._run(plugin_updates.list_releases)
+
+    async def plugin_prepare_replacement(self, targetVersion: str, assetUrl: str) -> Dict[str, Any]:
+        return await self._run(plugin_updates.prepare_replacement, str(targetVersion), str(assetUrl))
 
     async def updates_update_all(self, includeHeavy: bool = False) -> Dict[str, Any]:
         return await self._run(updates.update_all, bool(includeHeavy))

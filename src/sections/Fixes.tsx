@@ -31,11 +31,14 @@ import {
   unfix,
   customDeleteFixes,
   tokeerAppliedStatus,
+  triggerSteamInstall,
+  validateSteamApp,
+  noInternetFixBegin,
 } from "../api";
 import { importCustomFlow } from "../components/CustomImport";
 import { applyFixRuntime, resetFixRuntime, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
-import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
+import { runBuildAccurateApply, isPinnedBuildReady } from "../lib/buildApply";
 import { refreshBadges } from "../lib/badges";
 
 export function FixesSection() {
@@ -49,7 +52,7 @@ export function FixesSection() {
   const [installed, setInstalled] = useState<InstalledFix[]>([]);
   const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord[]>([]);
   const [openDesc, setOpenDesc] = useState<string | null>(null);
-  const [awaiting, setAwaiting] = useState<{ label: string; run: () => Promise<void>; mode?: "download" | "reinstall" } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ appid: number; label: string; run: () => Promise<void> } | null>(null);
   const [dlComplete, setDlComplete] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dlRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -80,13 +83,13 @@ export function FixesSection() {
     if (dlRef.current) clearInterval(dlRef.current);
     setDlComplete(false);
     dlRef.current = setInterval(async () => {
-      setDlComplete(await isDownloadComplete(appid));
+      setDlComplete(await isPinnedBuildReady(appid));
     }, 3000);
+    void isPinnedBuildReady(appid).then(setDlComplete);
   };
 
   // Build-accurate apply: pin the fix's build, update the game, then apply
-  // (auto) or wait for the user to press Apply (guided). Skips the update if the
-  // game is already installed & downloaded.
+  // (auto) or wait for the user to press Apply (guided).
   const runApply = async (
     appid: number,
     label: string,
@@ -102,6 +105,10 @@ export function FixesSection() {
       /* default guided */
     }
     const doApply = async () => {
+      if (pinFn && !(await isPinnedBuildReady(appid))) {
+        toaster.toast({ title: "SLSDeck", body: "Steam has not installed the pinned build yet. Retry verification if the update stays idle." });
+        throw new Error("pinned-build-not-ready");
+      }
       setAwaiting(null);
       if (dlRef.current) clearInterval(dlRef.current);
       setApplyState({ status: "queued" });
@@ -130,17 +137,11 @@ export function FixesSection() {
           else if (phase === "updating") setApplyState({ status: "updating" } as AddState);
           else if (phase === "awaiting_download")
             setApplyState({ status: "awaiting download" } as AddState);
-          else if (phase === "awaiting_reinstall") {
-            setApplyState({ status: "reinstall required" } as AddState);
-            toaster.toast({ title: "SLSDeck", body: "Exact build pinned. Uninstall and reinstall the game, then apply this fix again." });
-          }
           else if (phase === "applying") setApplyState({ status: "queued" });
         },
       });
-      if (result === "reinstall") {
-        setAwaiting({ label, run: doApply, mode: "reinstall" });
-      } else if (result === "awaiting") {
-        setAwaiting({ label, run: doApply, mode: "download" });
+      if (result === "awaiting") {
+        setAwaiting({ appid, label, run: doApply });
         startDlPoll(appid);
       }
     } catch {
@@ -241,7 +242,7 @@ export function FixesSection() {
           fix.appid, fix.id, pathRes.installPath!, fix.manifest_id || "", fix.depot_id || "",
           "lua.tools fix", gameName
         ),
-      fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id) : undefined
+      fix.has_manifest ? () => pinForLuatoolsFix(fix.appid, fix.id, fix.build || "") : undefined
     );
   };
 
@@ -466,16 +467,24 @@ export function FixesSection() {
         <>
           <PanelSectionRow>
             <div style={{ fontSize: 12, opacity: 0.85, padding: "4px 0" }}>
-              {awaiting.mode === "reinstall"
-                ? "Exact build pinned — uninstall and reinstall the game, then select this fix again."
-                : <>Pinned — waiting for Steam to update the game. {dlComplete ? "Download complete — press Apply now." : "Let the download finish, then Apply."}</>}
+              Pinned — waiting for Steam to install the matching build. {dlComplete ? "Installed depot manifests match — apply the fix now." : "Wait for Steam to verify or update the game."}
             </div>
           </PanelSectionRow>
-          {awaiting.mode !== "reinstall" && <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => awaiting.run().catch(() => {})}>
-              {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
+          {!dlComplete && <PanelSectionRow>
+            <ButtonItem layout="below" onClick={async () => {
+              await noInternetFixBegin(awaiting.appid).catch(() => ({}));
+              await triggerSteamInstall(awaiting.appid).catch(() => ({}));
+              const result = await validateSteamApp(awaiting.appid).catch(() => ({ success: false }));
+              if (!result.success) toaster.toast({ title: "SLSDeck", body: "Open the game's Properties → Installed Files → Verify integrity in Steam." });
+            }}>
+              Retry Steam verification
             </ButtonItem>
           </PanelSectionRow>}
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={!dlComplete} onClick={() => awaiting.run().catch(() => {})}>
+              Apply {awaiting.label} now
+            </ButtonItem>
+          </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem
               layout="below"

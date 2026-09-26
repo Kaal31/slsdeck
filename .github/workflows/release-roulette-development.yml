@@ -3,10 +3,14 @@ name: Release roulette development branches
 on:
   push:
     branches:
+      - main
       - roulette-dev
       - multi-language
       - manifest-sources
       - cloudredirect-dev
+      - tokeer-testing
+      - dlc-fix
+      - update-system
     paths-ignore:
       - "dist/**"
   workflow_dispatch:
@@ -36,8 +40,29 @@ jobs:
         run: npm ci
       - name: Stamp unique rolling version
         env:
-          ROLLING_VERSION: 0.9.61-${{ github.ref_name }}.${{ github.run_number }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          BASE_VERSION="$(node -p "require('./package.json').version.split('-')[0]")"
+          RELEASE_VERSION="$(gh release view "${BRANCH}-latest" --json name --jq '.name' 2>/dev/null \
+            | sed -nE 's/^SLSDeck ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' || true)"
+          export BASE_VERSION RELEASE_VERSION
+          ROLLING_VERSION="$(node - <<'NODE'
+          const parse = value => String(value || '').split('.').map(Number);
+          const valid = value => /^\d+\.\d+\.\d+$/.test(value || '');
+          const base = valid(process.env.BASE_VERSION) ? parse(process.env.BASE_VERSION) : [0, 0, 0];
+          const released = valid(process.env.RELEASE_VERSION) ? parse(process.env.RELEASE_VERSION) : null;
+          const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+          const next = released && compare(released, base) >= 0
+            ? [released[0], released[1], released[2] + 1]
+            : [base[0], base[1], base[2] + 1];
+          process.stdout.write(next.join('.'));
+          NODE
+          )"
+          export ROLLING_VERSION
+          echo "ROLLING_VERSION=$ROLLING_VERSION" >> "$GITHUB_ENV"
           node - <<'NODE'
           const fs = require('fs');
           const expectedName = 'SLSDeckUniversal';
@@ -53,6 +78,13 @@ jobs:
           if (lock.name !== expectedName || lock.packages?.['']?.name !== expectedName) {
             throw new Error('package-lock.json plugin name does not match SLSDeckUniversal');
           }
+          fs.writeFileSync('build.json', JSON.stringify({
+            schema: 1,
+            channel: process.env.BRANCH,
+            version: process.env.ROLLING_VERSION,
+            runNumber: Number(process.env.RUN_NUMBER),
+            commit: process.env.COMMIT_SHA,
+          }, null, 2) + '\n');
           NODE
           grep -q '"name": "SLSDeckUniversal"' plugin.json
           grep -q "\"version\": \"$ROLLING_VERSION\"" plugin.json
@@ -72,10 +104,21 @@ jobs:
       - name: Restore tracked dist support files
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
       - name: Build Ubisoft package dependency
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 .github/scripts/build-ubisoft-packages.py
+          set -euo pipefail
+          if ! python3 .github/scripts/build-ubisoft-packages.py; then
+            echo "LuaTools care-package service unavailable; reusing the last validated rolling asset."
+            gh release download "${GITHUB_REF_NAME}-latest" \
+              --pattern ubisoft-packages.zip \
+              --output ubisoft-packages.zip \
+              --clobber
+          fi
           unzip -t ubisoft-packages.zip
           unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
+          unzip -p ubisoft-packages.zip ubisoft-packages/hostedgames.json > hostedgames.release.json
+          cmp assets/ubisoft-packages/hostedgames.json hostedgames.release.json
       - name: Package Decky plugin
         env:
           BRANCH: ${{ github.ref_name }}
@@ -84,7 +127,7 @@ jobs:
           ZIP="SLSDeckUniversal-${BRANCH}.zip"
           rm -rf artifact "$ZIP"
           mkdir -p artifact/SLSDeckUniversal
-          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          cp -a dist main.py plugin.json package.json build.json py_modules artifact/SLSDeckUniversal/
           for p in defaults assets LICENSE README.md; do
             if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
           done
@@ -104,8 +147,8 @@ jobs:
           set -euo pipefail
           TAG="${BRANCH}-latest"
           ZIP="SLSDeckUniversal-${BRANCH}.zip"
-          TITLE="SLSDeck ${BRANCH} rolling"
-          NOTES="Rolling prerelease built automatically from the ${BRANCH} branch."
+          TITLE="SLSDeck ${ROLLING_VERSION}"
+          NOTES="Rolling prerelease ${ROLLING_VERSION}, built automatically from the ${BRANCH} branch at ${GITHUB_SHA}."
           git fetch origin --tags --force
           git tag -f "$TAG" HEAD
           git push origin "refs/tags/$TAG" --force
@@ -115,6 +158,23 @@ jobs:
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease --target "$BRANCH"
           fi
           gh release upload "$TAG" "$ZIP" ubisoft-packages.zip --clobber
+          if [ "$BRANCH" = "update-system" ]; then
+            BUILD_TAG="${BRANCH}-v${ROLLING_VERSION}"
+            BUILD_ZIP="SLSDeckUniversal-${BRANCH}-${ROLLING_VERSION}.zip"
+            cp "$ZIP" "$BUILD_ZIP"
+            if gh release view "$BUILD_TAG" >/dev/null 2>&1; then
+              gh release edit "$BUILD_TAG" \
+                --title "SLSDeck ${ROLLING_VERSION}" \
+                --notes "Immutable ${BRANCH} build ${ROLLING_VERSION}." \
+                --prerelease
+              gh release upload "$BUILD_TAG" "$BUILD_ZIP" --clobber
+            else
+              gh release create "$BUILD_TAG" "$BUILD_ZIP" \
+                --title "SLSDeck ${ROLLING_VERSION}" \
+                --notes "Immutable ${BRANCH} build ${ROLLING_VERSION}." \
+                --prerelease --target "$GITHUB_SHA"
+            fi
+          fi
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:

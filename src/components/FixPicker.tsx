@@ -1,5 +1,5 @@
 import { DialogButton, Focusable, ModalRoot, Navigation, showModal } from "@decky/ui";
-import { openFilePicker, FileSelectionType } from "@decky/api";
+import { openFilePicker, FileSelectionType, toaster } from "@decky/api";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import {
   AddState,
@@ -21,7 +21,14 @@ import {
   getRyuuKey,
   netsockStatus,
   netsockSet,
+  multiplayerProxyStatus,
+  multiplayerProxyInstall,
+  MultiplayerProxyKind,
+  MultiplayerProxyStatus,
   NetsockStatus,
+  SlsOnlineStatus,
+  slsonlineStatus,
+  setSlsonline,
   LuatoolsCatalogFix,
   applyLuatoolsFix,
   getAutoApply,
@@ -54,18 +61,19 @@ import {
   CustomItem,
   getDlcOwnedOnly,
   triggerSteamInstall,
+  validateSteamApp,
   tokeerAppliedStatus,
   TokeerAppliedRecord,
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
-import { runBuildAccurateApply, isDownloadComplete } from "../lib/buildApply";
+import { runBuildAccurateApply, installedDepotsMatchPin, isDownloadComplete, isPinnedBuildReady } from "../lib/buildApply";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
-import { launchGame } from "../lib/launchGame";
 import { noInternetFixBegin } from "../api";
 import { cancelTokeerAvailabilityRefresh, getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame, TokeerAvailableGame } from "../lib/tokeerAvailability";
 import { TokeerSection } from "../sections/Tokeer";
+import { retainTokeerDiscordView } from "../lib/tokeerDiscordCapture";
 
 function FullStatusModal({ text, closeModal }: { text: string; closeModal?: () => void }) {
   return (
@@ -139,9 +147,13 @@ function BadgeChip({ badge, inline }: { badge?: string; inline?: boolean }) {
 }
 
 export function FixPicker({ appid, onReload, onClose }: { appid: number; onReload?: () => void; onClose?: () => void }) {
-  useEffect(() => () => cancelTokeerAvailabilityRefresh(), [appid]);
+  useEffect(() => {
+    const releaseView = retainTokeerDiscordView();
+    return () => { cancelTokeerAvailabilityRefresh(); releaseView(); };
+  }, [appid]);
   const [check, setCheck] = useState<FixCheck | null>(null);
   const [tokeerGame, setTokeerGame] = useState<TokeerAvailableGame | null>(null);
+  const [tokeerDownload, setTokeerDownload] = useState({ appid, complete: false });
   const [tokeerRefreshing, setTokeerRefreshing] = useState(false);
   const [tokeerLookup, setTokeerLookup] = useState<{ name: string; cachedGames: number; updatedAt?: number }>({ name: "", cachedGames: 0 });
   const [tokeerApplied, setTokeerApplied] = useState<TokeerAppliedRecord | null>(null);
@@ -149,7 +161,14 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [applied, setApplied] = useState<InstalledFix[]>([]);
   const [installPath, setInstallPath] = useState("");
   const [pinned, setPinned] = useState(false);
-  const [pinInfo, setPinInfo] = useState<{ buildid?: string; depots?: { [d: string]: string } }>({});
+  const [pinInfo, setPinInfo] = useState<{
+    buildid?: string;
+    source?: string;
+    depots?: { [d: string]: string };
+    installedBuildid?: string;
+    installedDepots?: { [d: string]: string };
+    pinMatched?: boolean;
+  }>({});
   const [added, setAdded] = useState(false);
   // DLC unlockers (SmokeAPI / CreamAPI / Ubisoft) only make sense on games you
   // own. When this pref is on (default), hide them on SLS-added games.
@@ -166,13 +185,50 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const [hv, setHv] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; gids?: { [d: string]: string } } | null>(null);
   const [crak, setCrak] = useState<{ found: boolean; buildid?: string; status?: string; href?: string; badges?: string[]; gids?: { [d: string]: string } } | null>(null);
   const [hasRyuuKey, setHasRyuuKey] = useState(true);
+
+  // For fix-derived pins, keep the installed side live while Steam verifies or
+  // downloads. This lets the banner move from "Update pending" to "Pin matched"
+  // without requiring the user to close and reopen Fixes.
+  useEffect(() => {
+    if (!pinned || pinInfo.source !== "lua.tools-fix") return;
+    let mounted = true;
+    let reading = false;
+    const readInstalledPin = async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const status = await getPinStatus(appid);
+        if (mounted && status.success && status.pinned) {
+          setPinInfo((current) => ({
+            ...current,
+            buildid: status.buildid || current.buildid,
+            source: status.pinSource || current.source,
+            depots: status.depots || current.depots,
+            installedBuildid: status.installedBuildid,
+            installedDepots: status.installedDepots || {},
+            pinMatched: status.pinMatched,
+          }));
+        }
+      } catch {
+        /* keep the last confirmed comparison */
+      } finally {
+        reading = false;
+      }
+    };
+    void readInstalledPin();
+    const timer = setInterval(readInstalledPin, 3000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, [appid, pinned, pinInfo.source]);
   const [busy, setBusy] = useState("");
   const [ns, setNs] = useState<NetsockStatus | null>(null);
+  const [proxies, setProxies] = useState<MultiplayerProxyStatus | null>(null);
+  const eosProxyLabel = appid === 1904480 ? "EOS Proxy (Absolum)" : "EOS Proxy";
+  const [slsOnline, setSlsOnline] = useState<SlsOnlineStatus | null>(null);
   const [msg, setMsg] = useState("");
   const [autoApply, setAutoApplyState] = useState(false);
   // Guided build-accurate apply: after pin+update we wait for the user to press
   // "Apply now". `awaiting` holds the deferred apply and the originating fix row.
-  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void>; mode?: "download" | "reinstall" } | null>(null);
+  const [awaiting, setAwaiting] = useState<{ key: string; label: string; run: () => Promise<void> } | null>(null);
   const [activeFixKey, setActiveFixKey] = useState("");
   const [fixState, setFixState] = useState<AddState>({});
   const [dlComplete, setDlComplete] = useState(false);
@@ -180,6 +236,26 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
   const dlPoll = useRef<ReturnType<typeof setInterval> | null>(null);
   const stopFlag = useRef(false);
   const tokeerRefreshApp = useRef(0);
+  const tokeerDownloadReady = tokeerDownload.appid === appid && tokeerDownload.complete;
+
+  useEffect(() => {
+    let mounted = true;
+    let checking = false;
+    setTokeerDownload({ appid, complete: false });
+    const checkDownload = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const complete = await isDownloadComplete(appid);
+        if (mounted) setTokeerDownload({ appid, complete });
+      } finally {
+        checking = false;
+      }
+    };
+    void checkDownload();
+    const timer = setInterval(checkDownload, 5000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, [appid]);
 
   const stop = () => {
     if (poll.current) {
@@ -297,7 +373,14 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       const snapshotDepots = p.pinned
         ? (p.depots || {})
         : (Object.keys(p.depots || {}).length ? p.depots : p.installedDepots);
-      setPinInfo({ buildid: snapshotBuild, depots: snapshotDepots });
+      setPinInfo({
+        buildid: snapshotBuild,
+        source: p.pinSource,
+        depots: snapshotDepots,
+        installedBuildid: p.installedBuildid,
+        installedDepots: p.installedDepots,
+        pinMatched: p.pinMatched,
+      });
       // Ask about THIS build specifically: the same game can have several
       // builds archived, so "is this game archived" is the wrong question.
       if (snapshotBuild) {
@@ -338,6 +421,16 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       setNs(await netsockStatus(appid));
     } catch {
       setNs(null);
+    }
+    try {
+      setProxies(await multiplayerProxyStatus(appid));
+    } catch {
+      setProxies(null);
+    }
+    try {
+      setSlsOnline(await slsonlineStatus(appid));
+    } catch {
+      setSlsOnline(null);
     }
     try {
       setAutoApplyState((await getAutoApply()).enabled);
@@ -399,6 +492,14 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setFixState({});
     setDlComplete(false);
     refresh();
+  }, [appid]);
+
+  useEffect(() => {
+    const onTokeerApplied = (event: Event) => {
+      if ((event as CustomEvent<{appid: number}>).detail?.appid === appid) void refresh();
+    };
+    window.addEventListener("slsdeck-tokeer-applied", onTokeerApplied);
+    return () => window.removeEventListener("slsdeck-tokeer-applied", onTokeerApplied);
   }, [appid]);
 
   const watch = (
@@ -490,15 +591,15 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     );
   };
 
-  // Poll the game's download completion while we're waiting (guided mode) so the
-  // "Apply now" card can hint when it's ready.
+  // The guided fix can apply only when Steam has installed the pinned depots.
   const startDlPoll = () => {
     stopDl();
     setDlComplete(false);
     dlPoll.current = setInterval(async () => {
-      const done = await isDownloadComplete(appid);
+      const done = await isPinnedBuildReady(appid);
       setDlComplete(done);
     }, 3000);
+    void isPinnedBuildReady(appid).then(setDlComplete);
   };
 
   // Shared build-accurate apply runner. `startExtract` kicks off the actual
@@ -519,6 +620,10 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy(key);
     resetFixRuntime(appid);
     const doApply = async () => {
+      if (pinFn && !(await isPinnedBuildReady(appid))) {
+        setMsg("Steam has not installed the pinned build yet. Wait for the update or retry verification.");
+        throw new Error("pinned-build-not-ready");
+      }
       setAwaiting(null);
       stopDl();
       setBusy(`${key}:apply`);
@@ -557,22 +662,17 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
               `Pinned via ${info?.source || "source"} — updating the game in Steam to that build…`
             );
           else if (phase === "awaiting_download")
-            setMsg("Steam is updating the game. When the download finishes, press “Apply now”.");
-          else if (phase === "awaiting_reinstall")
-            setMsg("The exact fix build is pinned. Uninstall and reinstall the game, then press this fix again; Steam cannot reliably downgrade an installed game by launching it.");
+            setMsg("Steam is updating the game. Apply the fix once the installed depot manifests match the pin.");
           else if (phase === "applying") setMsg(`Applying ${label}…`);
         },
       });
-      if (result === "reinstall") {
+      if (result === "awaiting") {
         setBusy("");
-        setAwaiting({ key, label, run: doApply, mode: "reinstall" });
-      } else if (result === "awaiting") {
-        setBusy("");
-        setAwaiting({ key, label, run: doApply, mode: "download" });
+        setAwaiting({ key, label, run: doApply });
         startDlPoll();
       }
     } catch (e) {
-      if (!String(e).includes("apply-start-failed")) {
+      if (!String(e).includes("apply-start-failed") && !String(e).includes("pinned-build-not-ready")) {
         setBusy("");
         setFixState({ status: "failed", error: `${e}`.replace(/^Error:\s*/, "") });
       }
@@ -621,7 +721,22 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           appid, fix.id, installPath, fix.manifest_id || "", fix.depot_id || "",
           "lua.tools fix", check?.gameName || ""
         ),
-      fix.has_manifest ? () => pinForLuatoolsFix(appid, fix.id) : undefined
+      fix.has_manifest ? async () => {
+        const result = await pinForLuatoolsFix(appid, fix.id, fix.build || "");
+        if (result.pinned) {
+          const p = await getPinStatus(appid);
+          setPinned(!!p.pinned);
+          setPinInfo({
+            buildid: p.buildid,
+            source: p.pinSource,
+            depots: p.depots || {},
+            installedBuildid: p.installedBuildid,
+            installedDepots: p.installedDepots || {},
+            pinMatched: p.pinMatched,
+          });
+        }
+        return result;
+      } : undefined
     );
   };
 
@@ -1116,6 +1231,40 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
     setBusy("");
   };
 
+  const installProxy = async (kind: MultiplayerProxyKind) => {
+    setBusy(kind);
+    setMsg(`Downloading and applying ${kind === "uc-online2" ? "UC Online 2" : eosProxyLabel}…`);
+    try {
+      const result = await multiplayerProxyInstall(appid, kind);
+      setMsg(result.success ? (result.warning || "Multiplayer fix applied. Restart the game.") : (result.error || "Apply failed"));
+      if (result.success) {
+        await refresh();
+        void refreshBadges();
+      }
+    } catch (e) {
+      setMsg(`Apply failed: ${e}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const toggleSlsOnline = async (enabled: boolean) => {
+    setBusy("slsonline");
+    try {
+      const result = await setSlsonline(appid, enabled);
+      if (result.success) {
+        setSlsOnline(result);
+        setMsg(enabled ? "SLSonline enabled for this game (FakeAppId 480)." : "SLSonline disabled for this game.");
+      } else {
+        setMsg(result.error || "Could not change SLSonline.");
+      }
+    } catch (e) {
+      setMsg(`Error: ${e}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
   const isApplied = (fixType: string) =>
     applied.some((f) => (f.fixType || "").toLowerCase() === fixType.toLowerCase());
   const working = busy !== "";
@@ -1192,34 +1341,36 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-              {awaiting.mode === "reinstall" ? "Exact build pinned — reinstall required" : "Pinned — waiting for Steam to update the game"}
+              Pinned — waiting for Steam to install the matching build
             </div>
             <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>
-              {awaiting.mode === "reinstall"
-                ? "The fix's exact build is pinned. Uninstall this game, reinstall it from Steam, then press the fix again. The fix will only apply after the installed depot manifests match."
-                : dlComplete
-                ? "Download complete. Press Apply now to install the fix onto this build."
-                : "Press Start download now to retry Steam's pinned-build update. The game is launched too, which helps Steam begin the download if it is still idle."}
+              {dlComplete
+                ? "Steam's installed depot manifests match the pin. You can apply the fix now."
+                : "Steam is verifying or updating to the pinned build. If it stays idle, retry verification. The fix can apply once the installed depot manifests match."}
             </div>
-            {awaiting.mode !== "reinstall" && !dlComplete && (
+            {!dlComplete && (
               <DialogButton
                 style={{ ...bs, marginBottom: 6 }}
                 onClick={async () => {
                   await noInternetFixBegin(appid).catch(() => ({}));
                   await triggerSteamInstall(appid).catch(() => ({}));
-                  launchGame(appid);
+                  const result = await validateSteamApp(appid).catch(() => ({ success: false }));
+                  if (!result.success) {
+                    setMsg("Could not request Steam verification. Open the game's Properties → Installed Files → Verify integrity in Steam.");
+                  }
                 }}
               >
-                ▶ Start download now
+                Retry Steam verification
               </DialogButton>
             )}
             <Focusable style={{ display: "flex", gap: 6 }} flow-children="row">
-              {awaiting.mode !== "reinstall" && <DialogButton
+              <DialogButton
                 style={bs}
+                disabled={!dlComplete}
                 onClick={() => awaiting.run().catch(() => {})}
               >
-                {dlComplete ? `Apply ${awaiting.label} now` : "Apply now (download not done)"}
-              </DialogButton>}
+                Apply {awaiting.label} now
+              </DialogButton>
               <DialogButton
                 style={bs}
                 onClick={() => {
@@ -1245,11 +1396,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           <div>
             {tokeerApplied
               ? (tokeerApplied.health === "valid" ? "🔑 Tokeer key applied · " : "⚠️ Tokeer needs verification · ")
-              : ""}🔒 Version pinned{pinInfo.buildid
-              ? ` — Build ${pinInfo.buildid}`
-              : (pinInfo.depots && Object.keys(pinInfo.depots).length
-                  ? ` — ${Object.keys(pinInfo.depots).length} depot(s)`
-                  : "")} — the game won't update past the pinned version.
+              : ""}{pinInfo.source === "lua.tools-fix" && pinInfo.buildid
+                ? `🔒 Target Build ${pinInfo.buildid} · Installed Build ${pinInfo.installedBuildid || "unknown"} · ${(pinInfo.pinMatched === true || installedDepotsMatchPin(pinInfo.depots || {}, pinInfo.installedDepots || {})) ? "Pin matched" : "Update pending"}`
+                : `🔒 Version pinned — Build ${pinInfo.buildid || "unknown"} · ${Object.keys(pinInfo.depots || {}).length} depot(s) — the game won't update past the pinned version.`}
           </div>
           {tokeerApplied && tokeerApplied.health !== "valid" && (
             <div style={{ color: "#ffbf69" }}>{tokeerApplied.healthReason || "Tokeer activation needs verification."}</div>
@@ -1277,13 +1426,21 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           {tokeerApplied.healthReason || (tokeerApplied.kind === "ubisoft" ? "Ubisoft activation data installed" : "Activation redeemed")} · Version not pinned
         </div>
       </div>}
-      {tokeerGame && !tokeerApplied && <TokeerSection headless activationRequest={{
+      {tokeerGame && !tokeerApplied && tokeerDownloadReady && <TokeerSection headless activationRequest={{
         appid,
         gameName: tokeerGame.name || tokeerLookup.name,
         availabilityLabel: tokeerGame.label,
         remaining: tokeerGame.remaining,
         total: tokeerGame.total,
       }} />}
+      {tokeerGame && !tokeerApplied && !tokeerDownloadReady && (
+        <div style={{border:"1px solid rgba(202,168,255,.28)",borderRadius:8,padding:8,background:"rgba(202,168,255,.06)"}}>
+          <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>
+            Tokeer activation{tokeerGame.remaining!==undefined?` · ${tokeerGame.remaining}${tokeerGame.total!==undefined?` / ${tokeerGame.total}`:""} keys available`:""}
+          </div>
+          <div style={{fontSize:11,opacity:.72}}>Activation is available once the game finishes downloading.</div>
+        </div>
+      )}
       {!tokeerGame && !tokeerApplied && (
         <div style={{ fontSize: 11, opacity: 0.65, padding: "5px 2px" }}>
           Tokeer: {tokeerRefreshing
@@ -1295,6 +1452,21 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
       )}
       {rows.length === 0 && (
         <div style={{ fontSize: 12, opacity: 0.6 }}>No ryuu fixes indexed for this game.</div>
+      )}
+      {slsOnline && (
+        <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+            SLSonline{slsOnline.success && slsOnline.enabled ? ` · ✓ On (FakeAppId ${slsOnline.fakeAppId})` : ""}
+          </div>
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
+            Uses Moon's FakeAppIds mapping for online features. Other games and Steam launch options are kept as they are.
+          </div>
+          {slsOnline.success ? (
+            <DialogButton style={bs} disabled={working} onClick={() => toggleSlsOnline(!slsOnline.enabled)}>
+              {busy === "slsonline" ? "Working…" : slsOnline.enabled ? "Disable SLSonline" : "Enable SLSonline"}
+            </DialogButton>
+          ) : <div style={{ fontSize: 11, color: "#ffcc66" }}>{slsOnline.error || "SLSonline status unavailable"}</div>}
+        </div>
       )}
       {ns && (
         <div
@@ -1336,6 +1508,32 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           )}
         </div>
       )}
+      {(["uc-online2", "eos-proxy"] as MultiplayerProxyKind[]).map((kind) => {
+        const item = proxies?.fixes?.[kind];
+        if (!item) return null;
+        const label = kind === "uc-online2" ? "UC Online 2" : eosProxyLabel;
+        return (
+          <div key={kind} style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, padding: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+              {label} · Manual only · {item.installed ? "✓ Applied" : item.targets.length ? "Available" : "No matching DLL"}
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>
+              {kind === "uc-online2"
+                ? "Replaces this game's existing Steam API DLLs with the upstream proxy."
+                : "Replaces this game's EOS SDK DLL and keeps the original as a .yes file for the proxy."}
+              {kind === "eos-proxy" && appid === 1904480 ? " Uses the dedicated Absolum release and cache." : ""}
+              {item.targets.length ? ` Targets: ${item.targets.join(", ")}` : " Install the game first."}
+              {item.installed ? " Use Un-fix and unpin below to restore the originals." : ""}
+              {kind === "eos-proxy" ? " Requires working Steam authentication; game support varies." : " Game support varies."}
+            </div>
+            {!item.installed && item.targets.length > 0 && (
+              <DialogButton style={bs} disabled={working} onClick={() => installProxy(kind)}>
+                {busy === kind ? "Applying…" : `Apply ${label} fix`}
+              </DialogButton>
+            )}
+          </div>
+        );
+      })}
       {rows.map((row) => {
         const avail = !!row.info?.available;
         const done = isApplied(row.fixType);
