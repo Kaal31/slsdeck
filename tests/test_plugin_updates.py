@@ -12,21 +12,23 @@ from lt import plugin_updates  # noqa: E402
 
 
 class _Response:
-    status_code = 200
-
-    def __init__(self, value):
+    def __init__(self, value=None, status_code=200, text=""):
         self._value = value
+        self.status_code = status_code
+        self.text = text
+        self.content = text.encode("utf-8")
 
     def json(self):
         return self._value
 
 
 class _Client:
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, *responses):
+        self.responses = list(responses)
 
     def get(self, *_args, **_kwargs):
-        return _Response(self.value)
+        value = self.responses.pop(0)
+        return value if isinstance(value, _Response) else _Response(value)
 
 
 class PluginUpdateTests(unittest.TestCase):
@@ -99,6 +101,33 @@ class PluginUpdateTests(unittest.TestCase):
         self.assertEqual(rolling[0]["channel"], "main")
         self.assertEqual(rolling[0]["version"], "0.9.64-main.77")
         self.assertEqual(rolling[0]["runNumber"], 77)
+
+    def test_release_list_uses_public_feed_when_api_is_rate_limited(self):
+        atom = """<?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry><id>tag:github.com,2008:Repository/1/update-system-latest</id>
+            <updated>2026-09-26T00:00:00Z</updated>
+            <link rel="alternate" href="https://github.com/Kaal31/slsdeck/releases/tag/update-system-latest"/>
+            <title>SLSDeck 0.9.64-update-system.112</title></entry>
+          <entry><id>tag:github.com,2008:Repository/1/update-system-build-112</id>
+            <updated>2026-09-26T00:00:00Z</updated>
+            <link rel="alternate" href="https://github.com/Kaal31/slsdeck/releases/tag/update-system-build-112"/>
+            <title>SLSDeck 0.9.64-update-system.112</title></entry>
+        </feed>"""
+        client = _Client(_Response(status_code=403), _Response(text=atom))
+        with tempfile.TemporaryDirectory() as root, \
+             mock.patch.object(plugin_updates, "get_settings_dir", return_value=root), \
+             mock.patch.object(plugin_updates, "ensure_http_client", return_value=client):
+            result = plugin_updates.list_releases()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source"], "public-feed")
+        self.assertEqual(result["channels"], ["update-system"])
+        self.assertEqual(result["releases"][0]["runNumber"], 112)
+        self.assertEqual(
+            result["releases"][0]["assetUrl"],
+            "https://github.com/Kaal31/slsdeck/releases/download/update-system-latest/SLSDeckUniversal-update-system.zip",
+        )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import os
 import posixpath
 import re
 import time
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from typing import Any, Dict, List
 
@@ -25,6 +26,8 @@ CHANNEL = "update-system"
 MARKER_TTL_SECONDS = 5 * 60
 _MARKER_NAME = "decky-replacement.json"
 _RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=100"
+_RELEASES_ATOM = f"https://github.com/{REPO}/releases.atom"
+_RELEASES_CACHE_NAME = "plugin-releases-cache.json"
 _BUILD_TAG = re.compile(rf"^{re.escape(CHANNEL)}-build-(\d+)$")
 _ROLLING_TAG = re.compile(r"^([a-z0-9][a-z0-9._-]*)-latest$")
 
@@ -152,24 +155,9 @@ def _rolling_version_for(channel: str, release_name: str) -> tuple[str, int]:
     return f"{channel} (rolling latest)", 0
 
 
-def list_releases() -> Dict[str, Any]:
-    """Return rolling branch channels plus immutable update-system builds."""
-    client = ensure_http_client("plugin-updates")
-    try:
-        response = client.get(
-            _RELEASES_API,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "SLSDeck/updater"},
-            timeout=20,
-            follow_redirects=True,
-        )
-        if response.status_code != 200:
-            return {"success": False, "error": f"GitHub HTTP {response.status_code}", "releases": []}
-        raw = response.json()
-    except Exception as exc:
-        return {"success": False, "error": str(exc), "releases": []}
-
+def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
     releases: List[Dict[str, Any]] = []
-    for release in raw if isinstance(raw, list) else []:
+    for release in raw:
         tag = str(release.get("tag_name") or "")
         build_match = _BUILD_TAG.match(tag)
         rolling_match = _ROLLING_TAG.match(tag)
@@ -210,6 +198,97 @@ def list_releases() -> Dict[str, Any]:
     channels = sorted({str(item["channel"]) for item in releases},
                       key=lambda value: (value != CHANNEL, value))
     return {"success": True, "releases": releases, "channels": channels}
+
+
+def _atom_releases(payload: str) -> List[Dict[str, Any]]:
+    """Convert GitHub's public releases feed to the REST-shaped data we use."""
+    root = ET.fromstring(payload)
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    releases: List[Dict[str, Any]] = []
+    for entry in root.findall("atom:entry", namespace):
+        release_url = ""
+        for link in entry.findall("atom:link", namespace):
+            if link.get("rel", "alternate") == "alternate":
+                release_url = str(link.get("href") or "")
+                break
+        tag = release_url.rstrip("/").rsplit("/", 1)[-1]
+        build_match = _BUILD_TAG.match(tag)
+        rolling_match = _ROLLING_TAG.match(tag)
+        if not build_match and not rolling_match:
+            continue
+        channel = CHANNEL if build_match else str(rolling_match.group(1))
+        run_number = int(build_match.group(1)) if build_match else 0
+        asset_name = (f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
+                      else f"SLSDeckUniversal-{channel}.zip")
+        asset_url = f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}"
+        releases.append({
+            "tag_name": tag,
+            "name": entry.findtext("atom:title", default="", namespaces=namespace),
+            "html_url": release_url,
+            "published_at": entry.findtext("atom:updated", default="", namespaces=namespace),
+            "assets": [{"name": asset_name, "browser_download_url": asset_url, "size": 0}],
+        })
+    return releases
+
+
+def _cache_path() -> str:
+    return os.path.join(get_settings_dir(), _RELEASES_CACHE_NAME)
+
+
+def _save_release_cache(result: Dict[str, Any]) -> None:
+    path = _cache_path()
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({**result, "cachedAt": time.time()}, handle)
+        os.replace(tmp, path)
+    except Exception as exc:
+        logger.warn(f"SLSDeck updater: could not save release cache: {exc}")
+
+
+def list_releases() -> Dict[str, Any]:
+    """Return releases, bypassing REST rate limits via Atom and a local cache."""
+    client = ensure_http_client("plugin-updates")
+    api_error = ""
+    try:
+        response = client.get(
+            _RELEASES_API,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "SLSDeck/updater"},
+            timeout=20,
+            follow_redirects=True,
+        )
+        if response.status_code == 200:
+            raw = response.json()
+            result = _normalise_releases(raw if isinstance(raw, list) else [])
+            _save_release_cache(result)
+            return result
+        api_error = f"GitHub API HTTP {response.status_code}"
+    except Exception as exc:
+        api_error = str(exc)
+
+    try:
+        response = client.get(
+            _RELEASES_ATOM,
+            headers={"Accept": "application/atom+xml", "User-Agent": "SLSDeck/updater"},
+            timeout=20,
+            follow_redirects=True,
+        )
+        if response.status_code == 200:
+            payload = response.text if isinstance(response.text, str) else response.content.decode("utf-8")
+            result = _normalise_releases(_atom_releases(payload))
+            result["source"] = "public-feed"
+            _save_release_cache(result)
+            return result
+        feed_error = f"GitHub feed HTTP {response.status_code}"
+    except Exception as exc:
+        feed_error = str(exc)
+
+    cached = _read_json(_cache_path())
+    if isinstance(cached.get("releases"), list):
+        cached.update({"success": True, "source": "cache", "warning": f"{api_error}; {feed_error}"})
+        return cached
+    return {"success": False, "error": f"{api_error}; {feed_error}", "releases": [], "channels": []}
 
 
 def status() -> Dict[str, Any]:
