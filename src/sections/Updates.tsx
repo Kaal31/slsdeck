@@ -21,6 +21,7 @@ export function UpdatesSection() {
   const [ups, setUps] = useState<UpdateItem[]>([]);
   const [plugin, setPlugin] = useState<PluginUpdateStatus | null>(null);
   const [releases, setReleases] = useState<PluginRelease[]>([]);
+  const [selectedChannel, setSelectedChannel] = useState("update-system");
   const [selectedTag, setSelectedTag] = useState("");
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginProgress, setPluginProgress] = useState(0);
@@ -39,8 +40,10 @@ export function UpdatesSection() {
       setPlugin(status);
       const list = status.releases || (await pluginUpdateReleases()).releases || [];
       setReleases(list);
-      setSelectedTag((previous) => previous && list.some((item) => item.tag === previous)
-        ? previous : (list[0]?.tag || ""));
+      const availableChannels = Array.from(new Set(list.map((item) => item.channel)));
+      const defaultChannel = availableChannels.includes(status.currentChannel)
+        ? status.currentChannel : availableChannels.includes("update-system") ? "update-system" : (availableChannels[0] || "");
+      setSelectedChannel((previous) => availableChannels.includes(previous) ? previous : defaultChannel);
     } catch (error) { setPluginMsg(`Plugin update check failed: ${error}`); }
     try { setAutoUp(!!(await getAutoUpdate()).enabled); } catch { /* */ }
     try { setEngineUp(!!(await getCheckEngineUpdates()).enabled); } catch { /* */ }
@@ -77,7 +80,15 @@ export function UpdatesSection() {
   }, []);
 
   const updatable = ups.filter((u) => u.updateAvailable);
-  const selectedRelease = releases.find((item) => item.tag === selectedTag) || null;
+  const channels = Array.from(new Set(releases.map((item) => item.channel)));
+  const channelReleases = releases.filter((item) => item.channel === selectedChannel);
+  const selectedRelease = channelReleases.find((item) => item.tag === selectedTag) || channelReleases[0] || null;
+
+  useEffect(() => {
+    if (!channelReleases.some((item) => item.tag === selectedTag)) {
+      setSelectedTag(channelReleases[0]?.tag || "");
+    }
+  }, [selectedChannel, releases]);
 
   const installSelected = async () => {
     if (!plugin || !selectedRelease) return;
@@ -86,10 +97,13 @@ export function UpdatesSection() {
       toaster.toast({ title: "SLSDeck update", body: "Decky installer is unavailable in this window." });
       return;
     }
-    const installType = selectedRelease.runNumber > plugin.currentBuild
-      ? PluginInstallType.UPDATE
-      : selectedRelease.runNumber < plugin.currentBuild
-        ? PluginInstallType.DOWNGRADE : PluginInstallType.REINSTALL;
+    const sameChannel = selectedRelease.channel === plugin.currentChannel;
+    const installType = !sameChannel || selectedRelease.rolling
+      ? PluginInstallType.REINSTALL
+      : selectedRelease.runNumber > plugin.currentBuild
+        ? PluginInstallType.UPDATE
+        : selectedRelease.runNumber < plugin.currentBuild
+          ? PluginInstallType.DOWNGRADE : PluginInstallType.REINSTALL;
     setPluginBusy(true);
     setPluginMsg("Preparing Decky installer…");
     try {
@@ -139,6 +153,7 @@ export function UpdatesSection() {
       <PanelSectionRow>
         <div style={{ fontSize: 12, lineHeight: 1.5, width: "100%" }}>
           <div>Installed: <b>{plugin?.currentVersion || "checking…"}</b></div>
+          <div>Channel: <b>{plugin?.currentChannel || "unknown"}</b></div>
           <div style={{ opacity: 0.72 }}>
             {plugin?.updateAvailable
               ? `Update available: ${plugin.latest?.version}`
@@ -146,12 +161,25 @@ export function UpdatesSection() {
           </div>
         </div>
       </PanelSectionRow>
+      {channels.length > 0 && <PanelSectionRow>
+        <DropdownItem
+          label="Release channel"
+          description="Switch to a prebuilt rolling release from another branch. Branches without this updater may require manually reinstalling update-system to return."
+          rgOptions={channels.map((channel) => ({ data: channel, label: channel }))}
+          selectedOption={selectedChannel}
+          strDefaultLabel={selectedChannel || "Choose a channel"}
+          onChange={(option: any) => setSelectedChannel(String(option.data || ""))}
+          disabled={pluginBusy}
+        />
+      </PanelSectionRow>}
       {releases.length > 0 && <PanelSectionRow>
         <DropdownItem
           label="Install version"
-          description="Decky can update, reinstall, or downgrade this complete plugin ZIP. Managed dependencies and user data are preserved during replacement."
-          rgOptions={releases.map((item) => ({ data: item.tag, label: item.version }))}
-          selectedOption={selectedTag}
+          description={selectedChannel === "update-system"
+            ? "Choose rolling latest or an immutable historical build. Managed dependencies and user data are preserved."
+            : "This channel currently publishes only its prebuilt rolling latest release."}
+          rgOptions={channelReleases.map((item) => ({ data: item.tag, label: item.version }))}
+          selectedOption={selectedRelease?.tag || ""}
           strDefaultLabel={selectedRelease?.version || "Choose a build"}
           onChange={(option: any) => setSelectedTag(String(option.data || ""))}
           disabled={pluginBusy}
@@ -160,9 +188,11 @@ export function UpdatesSection() {
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={installSelected} disabled={pluginBusy || !selectedRelease}>
           {selectedRelease
-            ? selectedRelease.runNumber < (plugin?.currentBuild || 0) ? `Downgrade to ${selectedRelease.version}`
-              : selectedRelease.runNumber === (plugin?.currentBuild || 0) ? `Reinstall ${selectedRelease.version}`
-                : `Update to ${selectedRelease.version}`
+            ? selectedRelease.channel !== plugin?.currentChannel ? `Switch to ${selectedRelease.version}`
+              : selectedRelease.rolling ? `Install ${selectedRelease.version}`
+                : selectedRelease.runNumber < (plugin?.currentBuild || 0) ? `Downgrade to ${selectedRelease.version}`
+                  : selectedRelease.runNumber === (plugin?.currentBuild || 0) ? `Reinstall ${selectedRelease.version}`
+                    : `Update to ${selectedRelease.version}`
             : "No installable builds found"}
         </ButtonItem>
       </PanelSectionRow>

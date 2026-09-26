@@ -45,6 +45,12 @@ class PluginUpdateTests(unittest.TestCase):
             self.assertTrue(accepted["success"])
             self.assertTrue(plugin_updates.replacement_pending())
 
+            rolling = plugin_updates.prepare_replacement(
+                "main (rolling latest)",
+                "https://github.com/Kaal31/slsdeck/releases/download/main-latest/SLSDeckUniversal-main.zip",
+            )
+            self.assertTrue(rolling["success"])
+
             marker = Path(root, "decky-replacement.json")
             value = json.loads(marker.read_text(encoding="utf-8"))
             value["createdAt"] = time.time() - plugin_updates.MARKER_TTL_SECONDS - 1
@@ -52,7 +58,7 @@ class PluginUpdateTests(unittest.TestCase):
             self.assertFalse(plugin_updates.replacement_pending())
             self.assertFalse(marker.exists())
 
-    def test_release_list_only_accepts_immutable_update_system_plugin_zips(self):
+    def test_release_list_accepts_safe_channels_and_immutable_builds(self):
         raw = [
             {
                 "tag_name": "update-system-build-12",
@@ -69,17 +75,28 @@ class PluginUpdateTests(unittest.TestCase):
                 "name": "SLSDeck 0.9.64-update-system.9",
                 "html_url": "release9",
                 "published_at": "2026-09-20T00:00:00Z",
-                "assets": [{"name": "plugin.zip", "browser_download_url": "good9", "size": 9}],
+                "assets": [{"name": "SLSDeckUniversal-update-system-9.zip", "browser_download_url": "good9", "size": 9}],
             },
-            {"tag_name": "main-latest", "assets": [{"name": "wrong.zip", "browser_download_url": "wrong"}]},
+            {
+                "tag_name": "main-latest",
+                "name": "SLSDeck main latest",
+                "html_url": "main-release",
+                "published_at": "2026-09-22T00:00:00Z",
+                "assets": [{"name": "SLSDeckUniversal-main.zip", "browser_download_url": "main-good", "size": 30}],
+            },
+            {"tag_name": "unsafe", "assets": [{"name": "SLSDeckUniversal-unsafe.zip", "browser_download_url": "wrong"}]},
         ]
         with mock.patch.object(plugin_updates, "ensure_http_client", return_value=_Client(raw)):
             result = plugin_updates.list_releases()
 
         self.assertTrue(result["success"])
-        self.assertEqual([item["runNumber"] for item in result["releases"]], [12, 9])
-        self.assertEqual(result["releases"][0]["assetUrl"], "good12")
-        self.assertEqual(result["releases"][0]["version"], "0.9.64-update-system.12")
+        self.assertEqual(result["channels"], ["update-system", "main"])
+        immutable = [item for item in result["releases"] if item["immutable"]]
+        self.assertEqual([item["runNumber"] for item in immutable], [12, 9])
+        self.assertEqual(immutable[0]["assetUrl"], "good12")
+        self.assertEqual(immutable[0]["version"], "0.9.64-update-system.12")
+        rolling = [item for item in result["releases"] if item["rolling"]]
+        self.assertEqual(rolling[0]["channel"], "main")
 
 
 if __name__ == "__main__":

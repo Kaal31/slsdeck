@@ -322,13 +322,17 @@ export const minigameRoll = callable<
 
 // ── dependency updates (latest-version + boot check) ────────────────────────
 export type UpdateItem = { name: string; repo: string; heavy: boolean; current: string; latest: string; updateAvailable: boolean };
-export type PluginRelease = { tag: string; version: string; runNumber: number; assetUrl: string; releaseUrl: string; publishedAt: string; size: number };
+export type PluginRelease = {
+  tag: string; channel: string; rolling: boolean; immutable: boolean;
+  version: string; runNumber: number; assetUrl: string; releaseUrl: string; publishedAt: string; size: number;
+};
 export type PluginUpdateStatus = {
-  success: boolean; error?: string; channel: string; currentVersion: string; currentBuild: number;
+  success: boolean; error?: string; channel: string; currentChannel: string;
+  currentVersion: string; currentBuild: number; channels?: string[];
   latest?: PluginRelease | null; updateAvailable: boolean; releases?: PluginRelease[];
 };
 export const pluginUpdateStatus = callable<[], PluginUpdateStatus>("plugin_update_status");
-export const pluginUpdateReleases = callable<[], { success: boolean; error?: string; releases: PluginRelease[] }>("plugin_update_releases");
+export const pluginUpdateReleases = callable<[], { success: boolean; error?: string; releases: PluginRelease[]; channels?: string[] }>("plugin_update_releases");
 export const pluginPrepareReplacement = callable<[targetVersion: string, assetUrl: string], { success: boolean; error?: string; expiresIn?: number }>("plugin_prepare_replacement");
 export const updatesCheck = callable<[], { success: boolean; items?: UpdateItem[]; updates?: UpdateItem[] }>("updates_check");
 export const updatesUpdateAll = callable<[includeHeavy?: boolean], { success: boolean; updated?: string[]; skipped?: string[]; failed?: string[] }>("updates_update_all");

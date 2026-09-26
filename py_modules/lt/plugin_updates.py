@@ -24,8 +24,9 @@ REPO = "Kaal31/slsdeck"
 CHANNEL = "update-system"
 MARKER_TTL_SECONDS = 5 * 60
 _MARKER_NAME = "decky-replacement.json"
-_RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=50"
+_RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=100"
 _BUILD_TAG = re.compile(rf"^{re.escape(CHANNEL)}-build-(\d+)$")
+_ROLLING_TAG = re.compile(r"^([a-z0-9][a-z0-9._-]*)-latest$")
 
 
 def _marker_path() -> str:
@@ -56,13 +57,36 @@ def _current_build() -> int:
     return int(match.group(1)) if match else 0
 
 
+def _current_channel() -> str:
+    build = _read_json(os.path.join(get_plugin_dir(), "build.json"))
+    channel = str(build.get("channel") or "").strip()
+    if channel:
+        return channel
+    match = re.search(r"-([a-z0-9][a-z0-9._-]*)\.\d+$", _current_version())
+    return match.group(1) if match else "unknown"
+
+
 def prepare_replacement(target_version: str, asset_url: str) -> Dict[str, Any]:
     """Arm one imminent Decky replacement without trusting arbitrary URLs."""
     expected_prefix = f"https://github.com/{REPO}/releases/download/"
-    asset_name = posixpath.basename(urlparse(asset_url).path)
+    parsed = urlparse(asset_url)
+    asset_name = posixpath.basename(parsed.path)
+    parts = parsed.path.split("/")
+    try:
+        tag = parts[parts.index("download") + 1]
+    except (ValueError, IndexError):
+        tag = ""
+    build_match = _BUILD_TAG.match(tag)
+    rolling_match = _ROLLING_TAG.match(tag)
+    allowed_tag = bool(build_match or rolling_match)
+    expected_asset = (
+        f"SLSDeckUniversal-{CHANNEL}-{build_match.group(1)}.zip" if build_match
+        else f"SLSDeckUniversal-{rolling_match.group(1)}.zip" if rolling_match
+        else ""
+    )
     if (not asset_url.startswith(expected_prefix)
-            or not asset_name.startswith("SLSDeckUniversal-")
-            or not asset_name.endswith(".zip")):
+            or not allowed_tag
+            or asset_name != expected_asset):
         return {"success": False, "error": "Refusing an untrusted plugin package URL."}
     marker = {
         "schema": 1,
@@ -119,7 +143,7 @@ def _version_for(run_number: int, release_name: str = "") -> str:
 
 
 def list_releases() -> Dict[str, Any]:
-    """Return immutable update-system builds, newest first."""
+    """Return rolling branch channels plus immutable update-system builds."""
     client = ensure_http_client("plugin-updates")
     try:
         response = client.get(
@@ -137,39 +161,57 @@ def list_releases() -> Dict[str, Any]:
     releases: List[Dict[str, Any]] = []
     for release in raw if isinstance(raw, list) else []:
         tag = str(release.get("tag_name") or "")
-        match = _BUILD_TAG.match(tag)
-        if not match:
+        build_match = _BUILD_TAG.match(tag)
+        rolling_match = _ROLLING_TAG.match(tag)
+        if not build_match and not rolling_match:
             continue
-        run_number = int(match.group(1))
+        channel = CHANNEL if build_match else str(rolling_match.group(1))
+        run_number = int(build_match.group(1)) if build_match else 0
+        expected_asset = (f"SLSDeckUniversal-{CHANNEL}-{run_number}.zip" if build_match
+                          else f"SLSDeckUniversal-{channel}.zip")
         zip_asset = next(
             (asset for asset in (release.get("assets") or [])
-             if str(asset.get("name") or "").endswith(".zip")
-             and "ubisoft-packages" not in str(asset.get("name") or "")),
+             if str(asset.get("name") or "") == expected_asset),
             None,
         )
         if not zip_asset or not zip_asset.get("browser_download_url"):
             continue
         releases.append({
             "tag": tag,
-            "version": _version_for(run_number, str(release.get("name") or "")),
+            "channel": channel,
+            "rolling": bool(rolling_match),
+            "immutable": bool(build_match),
+            "version": (_version_for(run_number, str(release.get("name") or ""))
+                        if build_match else f"{channel} (rolling latest)"),
             "runNumber": run_number,
             "assetUrl": str(zip_asset["browser_download_url"]),
             "releaseUrl": str(release.get("html_url") or ""),
             "publishedAt": str(release.get("published_at") or ""),
             "size": int(zip_asset.get("size") or 0),
         })
-    releases.sort(key=lambda item: item["runNumber"], reverse=True)
-    return {"success": True, "releases": releases}
+    releases.sort(key=lambda item: (
+        item["channel"] != CHANNEL,
+        not item["rolling"],
+        -item["runNumber"],
+        item["channel"],
+    ))
+    channels = sorted({str(item["channel"]) for item in releases},
+                      key=lambda value: (value != CHANNEL, value))
+    return {"success": True, "releases": releases, "channels": channels}
 
 
 def status() -> Dict[str, Any]:
     result = list_releases()
     releases = result.get("releases") or []
     current_build = _current_build()
-    latest = releases[0] if releases else None
+    current_channel = _current_channel()
+    immutable = [item for item in releases
+                 if item.get("channel") == CHANNEL and item.get("immutable")]
+    latest = immutable[0] if immutable else None
     return {
         **result,
         "channel": CHANNEL,
+        "currentChannel": current_channel,
         "currentVersion": _current_version(),
         "currentBuild": current_build,
         "latest": latest,
