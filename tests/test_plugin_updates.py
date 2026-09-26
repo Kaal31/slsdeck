@@ -114,7 +114,8 @@ class PluginUpdateTests(unittest.TestCase):
           <entry><id>tag:github.com,2008:Repository/1/update-system-latest</id>
             <updated>2026-09-26T00:00:00Z</updated>
             <link rel="alternate" href="https://github.com/Kaal31/slsdeck/releases/tag/update-system-latest"/>
-            <title>SLSDeck 0.9.64-update-system.112</title></entry>
+            <title>SLSDeck 0.9.64-update-system.112</title>
+            <content type="html">&lt;h2&gt;Changes&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Add update banner&lt;/li&gt;&lt;/ul&gt;</content></entry>
           <entry><id>tag:github.com,2008:Repository/1/update-system-build-112</id>
             <updated>2026-09-26T00:00:00Z</updated>
             <link rel="alternate" href="https://github.com/Kaal31/slsdeck/releases/tag/update-system-build-112"/>
@@ -130,6 +131,7 @@ class PluginUpdateTests(unittest.TestCase):
         self.assertEqual(result["source"], "public-feed")
         self.assertEqual(result["channels"], ["update-system"])
         self.assertEqual(result["releases"][0]["runNumber"], 112)
+        self.assertEqual(result["releases"][0]["changelog"], "Changes\n- Add update banner")
         self.assertEqual(
             result["releases"][0]["assetUrl"],
             "https://github.com/Kaal31/slsdeck/releases/download/update-system-latest/SLSDeckUniversal-update-system.zip",

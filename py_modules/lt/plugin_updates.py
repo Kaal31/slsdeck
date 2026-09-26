@@ -164,6 +164,18 @@ def _version_key(version: str) -> tuple[int, int, int]:
     return tuple(map(int, match.groups())) if match else (0, 0, 0)
 
 
+def _plain_changelog(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r"<br\s*/?>|</p>|</li>|</h\d>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<li[^>]*>", "- ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = (text.replace("&amp;", "&").replace("&quot;", '"')
+            .replace("&apos;", "'").replace("&#39;", "'")
+            .replace("&lt;", "<").replace("&gt;", ">"))
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
 def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
     releases: List[Dict[str, Any]] = []
     for release in raw:
@@ -199,6 +211,7 @@ def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
             "releaseUrl": str(release.get("html_url") or ""),
             "publishedAt": str(release.get("published_at") or ""),
             "size": int(zip_asset.get("size") or 0),
+            "changelog": _plain_changelog(str(release.get("body") or "")),
         })
     releases.sort(key=lambda item: (
         item["channel"] != CHANNEL,
@@ -249,6 +262,7 @@ def _atom_releases(payload: str) -> List[Dict[str, Any]]:
             "name": value(entry, "title"),
             "html_url": release_url,
             "published_at": value(entry, "updated"),
+            "body": value(entry, "content"),
             "assets": [{"name": asset_name, "browser_download_url": asset_url, "size": 0}],
         })
     return releases

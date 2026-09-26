@@ -325,6 +325,7 @@ export type UpdateItem = { name: string; repo: string; heavy: boolean; current: 
 export type PluginRelease = {
   tag: string; channel: string; rolling: boolean; immutable: boolean;
   version: string; runNumber: number; assetUrl: string; releaseUrl: string; publishedAt: string; size: number;
+  changelog?: string;
 };
 export type PluginUpdateStatus = {
   success: boolean; error?: string; channel: string; currentChannel: string;

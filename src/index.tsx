@@ -571,6 +571,11 @@ function Content() {
             <div style={{ fontSize: 11, opacity: .9, marginBottom: 8 }}>
               {pluginUpdate.currentVersion} → {pluginUpdate.latest.version} · {pluginUpdate.currentChannel}
             </div>
+            {!!pluginUpdate.latest.changelog && (
+              <div style={{ fontSize: 11, opacity: .95, marginBottom: 8, whiteSpace: "pre-line", maxHeight: 72, overflow: "hidden" }}>
+                {pluginUpdate.latest.changelog.split("\n").slice(0, 3).join("\n")}
+              </div>
+            )}
             <DialogButton
               onClick={installBannerUpdate}
               disabled={pluginUpdateBusy}

@@ -200,6 +200,12 @@ export function UpdatesSection() {
           disabled={pluginBusy}
         />
       </PanelSectionRow>}
+      {!!selectedRelease?.changelog && <PanelSectionRow>
+        <div style={{ width: "100%" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>What's new in {selectedRelease.version}</div>
+          <ScrollableResult text={selectedRelease.changelog} maxHeight={130} copy={false} />
+        </div>
+      </PanelSectionRow>}
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={installSelected} disabled={pluginBusy || !selectedRelease}>
           {selectedRelease

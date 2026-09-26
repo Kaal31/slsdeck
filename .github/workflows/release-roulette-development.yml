@@ -149,6 +149,15 @@ jobs:
           TITLE="SLSDeck ${ROLLING_VERSION}"
           NOTES="Rolling prerelease ${ROLLING_VERSION}, built automatically from the ${BRANCH} branch at ${GITHUB_SHA}."
           git fetch origin --tags --force
+          PREVIOUS_SHA="$(git rev-list -n 1 "$TAG" 2>/dev/null || true)"
+          if [ -n "$PREVIOUS_SHA" ] && [ "$PREVIOUS_SHA" != "$GITHUB_SHA" ]; then
+            CHANGES="$(git log --no-merges --pretty=format:'- %s' "${PREVIOUS_SHA}..${GITHUB_SHA}" | awk 'NR <= 20')"
+          else
+            CHANGES=""
+          fi
+          if [ -z "$CHANGES" ]; then CHANGES="- Maintenance release."; fi
+          NOTES="$(printf 'SLSDeck %s for the `%s` channel.\n\n## Changes\n%s\n\nBuilt from commit `%s`.' \
+            "$ROLLING_VERSION" "$BRANCH" "$CHANGES" "$GITHUB_SHA")"
           git tag -f "$TAG" HEAD
           git push origin "refs/tags/$TAG" --force
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -164,13 +173,13 @@ jobs:
             if gh release view "$BUILD_TAG" >/dev/null 2>&1; then
               gh release edit "$BUILD_TAG" \
                 --title "SLSDeck ${ROLLING_VERSION}" \
-                --notes "Immutable ${BRANCH} build ${ROLLING_VERSION}." \
+                --notes "$NOTES" \
                 --prerelease
               gh release upload "$BUILD_TAG" "$BUILD_ZIP" --clobber
             else
               gh release create "$BUILD_TAG" "$BUILD_ZIP" \
                 --title "SLSDeck ${ROLLING_VERSION}" \
-                --notes "Immutable ${BRANCH} build ${ROLLING_VERSION}." \
+                --notes "$NOTES" \
                 --prerelease --target "$GITHUB_SHA"
             fi
           fi
