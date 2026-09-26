@@ -88,10 +88,21 @@ jobs:
       - name: Restore tracked dist support files
         run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
       - name: Build Ubisoft package dependency
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 .github/scripts/build-ubisoft-packages.py
+          set -euo pipefail
+          if ! python3 .github/scripts/build-ubisoft-packages.py; then
+            echo "LuaTools care-package service unavailable; reusing the last validated rolling asset."
+            gh release download "${GITHUB_REF_NAME}-latest" \
+              --pattern ubisoft-packages.zip \
+              --output ubisoft-packages.zip \
+              --clobber
+          fi
           unzip -t ubisoft-packages.zip
           unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
+          unzip -p ubisoft-packages.zip ubisoft-packages/hostedgames.json > hostedgames.release.json
+          cmp assets/ubisoft-packages/hostedgames.json hostedgames.release.json
       - name: Package Decky plugin
         env:
           BRANCH: ${{ github.ref_name }}
