@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, PluginUpdateStatus, SlsStatus } from "./api";
+import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, pluginPrepareReplacement, PluginUpdateStatus, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -433,6 +433,7 @@ function Content() {
   const [slsStatusChecked, setSlsStatusChecked] = useState(false);
   const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateStatus | null>(null);
   const [updateBanners, setUpdateBanners] = useState(true);
+  const [pluginUpdateBusy, setPluginUpdateBusy] = useState(false);
   const installed = slsStatus?.installed === true;
 
   const refreshSlsStatus = useCallback(async () => {
@@ -447,6 +448,34 @@ function Content() {
       return null;
     }
   }, []);
+
+  const installBannerUpdate = async () => {
+    const release = pluginUpdate?.latest;
+    if (!release || pluginUpdateBusy) return;
+    const backend = (window as any).DeckyBackend ?? (window.opener as any)?.DeckyBackend ?? null;
+    if (!backend?.call) {
+      toaster.toast({ title: "SLSDeck update", body: "Decky installer is unavailable." });
+      return;
+    }
+    setPluginUpdateBusy(true);
+    try {
+      const armed = await pluginPrepareReplacement(release.version, release.assetUrl);
+      if (!armed.success) throw new Error(armed.error || "Could not prepare plugin replacement");
+      await backend.call(
+        "utilities/install_plugin",
+        release.assetUrl,
+        "SLSDeckUniversal",
+        release.version,
+        "",
+        2,
+      );
+      toaster.toast({ title: "SLSDeck update", body: "Confirm the update in Decky Loader." });
+    } catch (error) {
+      toaster.toast({ title: "SLSDeck update failed", body: String(error) });
+    } finally {
+      window.setTimeout(() => setPluginUpdateBusy(false), 3000);
+    }
+  };
 
   useEffect(() => {
     const readActionsFixes = () => {
@@ -528,15 +557,7 @@ function Content() {
     <>
       <div ref={anchor} style={{ height: 0 }} />
       {updateBanners && pluginUpdate?.updateAvailable && pluginUpdate.latest && (
-        <DialogButton
-          onClick={() => {
-            try {
-              Navigation.CloseSideMenus();
-              Navigation.Navigate(ADVANCED_ROUTE);
-            } catch (error) {
-              console.error("SLSDeck: could not open updater", error);
-            }
-          }}
+        <div
           style={{
             width: "calc(100% - 20px)", margin: "8px 10px 6px", padding: "10px 12px",
             minHeight: 52, height: "auto", borderRadius: 8, textAlign: "left",
@@ -547,11 +568,18 @@ function Content() {
         >
           <div style={{ width: "100%", lineHeight: 1.35 }}>
             <div style={{ fontSize: 14, fontWeight: 800 }}>SLSDeck update available</div>
-            <div style={{ fontSize: 11, opacity: .9 }}>
-              {pluginUpdate.currentChannel} → {pluginUpdate.latest.version} · Open Advanced → Options
+            <div style={{ fontSize: 11, opacity: .9, marginBottom: 8 }}>
+              {pluginUpdate.currentVersion} → {pluginUpdate.latest.version} · {pluginUpdate.currentChannel}
             </div>
+            <DialogButton
+              onClick={installBannerUpdate}
+              disabled={pluginUpdateBusy}
+              style={{ width: "100%", minHeight: 34, height: 34, fontWeight: 700 }}
+            >
+              {pluginUpdateBusy ? "Preparing update…" : `Update to ${pluginUpdate.latest.version}`}
+            </DialogButton>
           </div>
-        </DialogButton>
+        </div>
       )}
       <RepairBanner />
       <SlsSteamCompact status={slsStatus} statusChecked={slsStatusChecked} onRefreshStatus={refreshSlsStatus} />
