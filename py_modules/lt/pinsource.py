@@ -28,6 +28,8 @@ from . import luatools, settings, slssteam
 # "-- setManifestid(...) from LuaTools" hint line).
 _RE_SETMANIFEST = re.compile(
     r'setManifestid\s*\(\s*(\d+)\s*,\s*["\'](\d+)["\']', re.IGNORECASE)
+_RE_BUILD = re.compile(
+    r'Version-locked\s+to\s+Build\s+(\d+)', re.IGNORECASE)
 
 HUBCAP_MANIFEST = "https://hubcapmanifest.com/api/v1/manifest/{appid}?api_key={key}"
 HUBCAP_USAGE = "https://hubcapmanifest.com/api/v1/generate/usage"
@@ -110,6 +112,12 @@ def parse_setmanifestid(text: str) -> Dict[int, str]:
         except Exception:
             continue
     return out
+
+
+def parse_buildid(text: str) -> str:
+    """Read lua.tools' human-facing BuildID metadata comment, when present."""
+    match = _RE_BUILD.search(text or "")
+    return match.group(1) if match else ""
 
 
 def _lua_from_zip(data: bytes) -> Optional[str]:
@@ -208,14 +216,17 @@ def auto_pin_from_source(appid: int) -> Dict[str, object]:
     if not gids:
         return {"success": True, "pinned": False, "source": src,
                 "error": "manifest lua had no setManifestid"}
-    r = dict(slssteam.pin_app_gids(appid, gids))
+    buildid = parse_buildid(text)
+    r = dict(slssteam.pin_app_gids(appid, gids, buildid=buildid, source=src))
     r["pinned"] = bool(r.get("success"))
     r["source"] = src
+    r["buildid"] = buildid
     logger.log(f"SLSDeck: pinned {appid} to {len(gids)} depot(s) via {src}")
     return r
 
 
-def auto_pin_from_luatools_fix(appid: int, fix_id: str) -> Dict[str, object]:
+def auto_pin_from_luatools_fix(appid: int, fix_id: str,
+                               buildid_hint: str = "") -> Dict[str, object]:
     """Pin to the EXACT build a specific lua.tools fix targets, using that fix's
     paired manifest (slot=manifest). This makes the update-vs-skip decision
     accurate per-fix instead of relying on the generic per-app manifest. The
@@ -236,8 +247,12 @@ def auto_pin_from_luatools_fix(appid: int, fix_id: str) -> Dict[str, object]:
     if not gids:
         return {"success": True, "pinned": False, "source": "lua.tools",
                 "error": "fix manifest had no setManifestid"}
-    r = dict(slssteam.pin_app_gids(appid, gids))
+    buildid = parse_buildid(text) or (str(buildid_hint).strip() if str(buildid_hint).strip().isdigit() else "")
+    r = dict(slssteam.pin_app_gids(
+        appid, gids, buildid=buildid, source="lua.tools-fix"
+    ))
     r["pinned"] = bool(r.get("success"))
     r["source"] = "lua.tools"
+    r["buildid"] = buildid
     logger.log(f"SLSDeck: pinned {appid} to {len(gids)} depot(s) via lua.tools fix {fix_id}")
     return r

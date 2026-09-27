@@ -8,7 +8,8 @@ import {
 } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
-import { InstalledApp, deleteLua, getInstalledApps, purgeAllAdded } from "../api";
+import { InstalledApp, deleteLua, getInstalledApps, getReloadOnPurge, purgeAllAdded, reloadSteamBackend } from "../api";
+import { markSlsPurged, refreshBadges } from "../lib/badges";
 
 interface Props {
   refreshToken: number;
@@ -24,6 +25,7 @@ function sourceLabel(s: InstalledApp["source"]): string {
 export function InstalledSection({ refreshToken, onChanged }: Props) {
   const [apps, setApps] = useState<InstalledApp[]>([]);
   const [loading, setLoading] = useState(true);
+  const [reloadOnPurge, setReloadOnPurge] = useState(true);
 
   const load = async () => {
     setLoading(true);
@@ -39,21 +41,39 @@ export function InstalledSection({ refreshToken, onChanged }: Props) {
 
   useEffect(() => {
     load();
+    getReloadOnPurge().then((result) => setReloadOnPurge(!!result.enabled)).catch(() => {});
   }, [refreshToken]);
 
   const confirmPurge = () => {
     showModal(
       <ConfirmModal
         strTitle="Purge all added games?"
-        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every AdditionalApps registration and its lua manifest — and clears the added-games history. It does NOT delete installed game files. Restart Steam afterwards. This cannot be undone (restore a backup if you need them back).`}
-        strOKButtonText="Purge all"
+        strDescription={`This removes ALL ${apps.length} added game(s) from SLSsteam — every registration and lua manifest. It does NOT delete installed game files. ${reloadOnPurge ? "Steam and any running game will close, then Steam will restart after the purge." : "Steam will stay open and Moon will refresh the library in-session."} This cannot be undone (restore a backup if needed).`}
+        strOKButtonText={reloadOnPurge ? "Purge and reload Steam" : "Purge all"}
         onOK={async () => {
           try {
             const res = await purgeAllAdded();
+            const purgedIds = (res.appids || apps.map((app) => Number(app.appid)))
+              .filter((id) => !(res.remaining || []).includes(id));
+            markSlsPurged(purgedIds);
             if (res.success) {
-              toaster.toast({ title: "SLSDeck", body: `Purged ${res.removed} game(s)` });
+              window.dispatchEvent(new CustomEvent("slsdeck-purge-added-games", {
+                detail: { appids: purgedIds, purgedAt: Date.now() },
+              }));
+              toaster.toast({ title: "SLSDeck", body: reloadOnPurge
+                ? `Purged ${res.removed} game(s) — restarting Steam…`
+                : `Purged ${res.removed} game(s)` });
               await load();
+              await refreshBadges();
               onChanged();
+              if (reloadOnPurge) {
+                // Compatibility fallback for old Moon builds which cannot
+                // reconcile the final removal snapshot in-session.
+                window.setTimeout(() => { void reloadSteamBackend(); }, 750);
+              }
+            } else {
+              toaster.toast({ title: "SLSDeck", body: `${res.error || "Purge incomplete"}: ${(res.remaining || []).join(", ")}` });
+              await load();
             }
           } catch (e) {
             toaster.toast({ title: "SLSDeck", body: `Error: ${e}` });

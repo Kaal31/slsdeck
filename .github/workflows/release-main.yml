@@ -1,11 +1,6 @@
 name: Release main
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "dist/**"
   workflow_dispatch:
 
 permissions:

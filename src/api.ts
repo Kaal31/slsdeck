@@ -214,10 +214,10 @@ export const hasLua = callable<[appid: number], { success: boolean; exists: bool
 export const startAdd = callable<[appid: number], { success: boolean; error?: string }>("start_add");
 export const getAddStatus = callable<[appid: number], { success: boolean; state: AddState }>("get_add_status");
 export const cancelAdd = callable<[appid: number], { success: boolean }>("cancel_add");
-export const popAddEvents = callable<[], { success: boolean; events: Array<{ appid: number; name: string; status: string; success: boolean; autoDownload?: boolean; error?: string; sourceFailures?: Array<{ source: string; type: string; code?: number; detail?: string }> }> }>("pop_add_events");
+export const popAddEvents = callable<[], { success: boolean; events: Array<{ appid: number; name: string; status: string; success: boolean; autoDownload?: boolean; isDlcPage?: boolean; baseAppid?: number; error?: string; sourceFailures?: Array<{ source: string; type: string; code?: number; detail?: string }> }> }>("pop_add_events");
 
 export const deleteLua = callable<[appid: number], { success: boolean; count: number; slssteamRemoved?: boolean }>("delete_lua");
-export const purgeAllAdded = callable<[], { success: boolean; removed: number; total: number }>("purge_all_added");
+export const purgeAllAdded = callable<[], { success: boolean; removed: number; total: number; appids: number[]; remaining: number[]; error?: string }>("purge_all_added");
 export const getInstalledLua = callable<[], { success: boolean; scripts: InstalledScript[]; error?: string }>("get_installed_lua");
 export const getEverAdded = callable<[], { success: boolean; appids: number[] }>("get_ever_added");
 export const getInstalledApps = callable<[], { success: boolean; apps: InstalledApp[]; error?: string }>("get_installed_apps");
@@ -252,13 +252,23 @@ export const crIconPath = callable<[], { success: boolean; path: string }>("cr_i
 export const crArtwork = callable<[], { success: boolean; cover: string; capsule: string; hero: string; logo: string }>("cr_artwork");
 export const crGetShortcut = callable<[], { success: boolean; appId: number }>("cr_get_shortcut");
 export const crSetShortcut = callable<[appId: number], { success: boolean }>("cr_set_shortcut");
-export type CloudRedirectProvider = "local" | "gdrive" | "onedrive";
+export type CloudRedirectProvider = "local" | "folder" | "gdrive" | "onedrive";
 export interface CloudRedirectProviderStatus {
   success: boolean; configured?: boolean; authenticated?: boolean;
   provider?: CloudRedirectProvider; providers?: string[];
+  syncFolderPath?: string; folderReady?: boolean; folderWritable?: boolean;
+  folderBridgeReady?: boolean; restartRequired?: boolean; migrationNote?: string; pendingProvider?: boolean;
+  migrations?: CloudRedirectMigration[]; repairMigration?: CloudRedirectMigration | null;
+  runningAppIds?: number[];
   syncAchievements?: boolean; syncPlaytime?: boolean; native?: boolean; error?: string;
 }
+export interface CloudRedirectMigration {
+  success: boolean; source?: string; destination?: string; inspected?: number;
+  copied?: number; updated?: number; identical?: number; conflicts?: number;
+  failed?: number; bytes?: number; note?: string;
+}
 export const crSetProvider = callable<[provider: string], CloudRedirectProviderStatus>("cr_set_provider");
+export const crSetSyncFolder = callable<[path: string], CloudRedirectProviderStatus>("cr_set_sync_folder");
 export const crSetProviderToggle = callable<[key: string, enabled: boolean], CloudRedirectProviderStatus>("cr_set_provider_toggle");
 export const crSignOut = callable<[provider?: string], CloudRedirectProviderStatus>("cr_sign_out");
 export const crAuthStart = callable<[provider: string], { success: boolean; status?: string; authUrl?: string; error?: string }>("cr_auth_start");
@@ -266,13 +276,21 @@ export const crAuthPoll = callable<[], { success: boolean; status?: string; prov
 export const crAuthCallback = callable<[value: string], { success: boolean; status?: string; provider?: string; authenticated?: boolean; error?: string }>("cr_auth_callback");
 export interface CloudRedirectLocalApp {
   appid: number;
+  name?: string;
   account: number;
   files: number;
   size: number;
   remoteTime?: number;
+  local?: boolean;
+  remote?: boolean;
 }
-export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; error?: string }>("cr_list_local_apps");
+export const crListLocalApps = callable<[], { success: boolean; apps?: CloudRedirectLocalApp[]; storageRoot?: string; provider?: CloudRedirectProvider; remoteError?: string; error?: string }>("cr_list_local_apps");
 export const crGameArtwork = callable<[appid: number], { success: boolean; image?: string; error?: string }>("cr_game_artwork");
+export const crImportSave = callable<[appid: number, path: string], {
+  success: boolean; appid?: number; account?: number; files?: number; bytes?: number;
+  destination?: string; backup?: string; wrapperRemoved?: boolean;
+  provider?: CloudRedirectProvider; error?: string;
+}>("cr_import_save");
 
 export interface MinigameItem {
   appid: number;
@@ -284,7 +302,11 @@ export interface MinigameItem {
   currency?: string;
 }
 export interface StoreRouletteFilters {
+  priceEnabled?: boolean;
+  priceDirection?: "min" | "max";
+  priceCents?: number;
   qualityMode?: boolean;
+  personalized?: boolean;
   genre?: string;
   players?: string;
   deck?: string;
@@ -298,50 +320,20 @@ export const minigameRoll = callable<
   { success: boolean; items?: MinigameItem[]; winnerIndex?: number; winner?: MinigameItem; error?: string }
 >("minigame_roll");
 
-// ── OpenSave (cloud saves engine) ───────────────────────────────────────────
-export type OsState = "synced" | "syncing" | "conflict" | "idle" | "untracked" | "unavailable" | "unknown";
-export const osStatus = callable<
-  [],
-  { success: boolean; installed: boolean; version?: string; latestTag?: string; updateAvailable?: boolean;
-    daemonRunning?: boolean; provider?: string; providerConnected?: boolean; trackedGames?: number;
-    conflicts?: number; flatpakInstalled?: boolean }
->("os_status");
-export const osEnsureCli = callable<[force?: boolean], { success: boolean; installed?: boolean; updated?: boolean; version?: string; tag?: string; error?: string }>("os_ensure_cli");
-export const osEnsureDaemon = callable<[], { success: boolean; running?: boolean; log?: string }>("os_ensure_daemon");
-export const osScan = callable<[], { success: boolean; found?: number; error?: string }>("os_scan");
-export const osSyncAll = callable<[], { success: boolean; error?: string }>("os_sync_all");
-export const osSyncGame = callable<[appid: number], { success: boolean; error?: string; id?: string }>("os_sync_game");
-export const osStatusGame = callable<
-  [appid: number],
-  { success: boolean; installed: boolean; tracked: boolean; state: OsState; snapshots?: number | null; name?: string; id?: string }
->("os_status_game");
-export const osEnsureTracked = callable<[appid: number], { success: boolean; tracked?: boolean; id?: string; name?: string; error?: string }>("os_ensure_tracked");
-export const osSnapshots = callable<
-  [appid: number],
-  { success: boolean; found?: boolean; snapshots?: Array<{ id: string; date: string; comment: string }>; id?: string }
->("os_snapshots");
-export const osRollback = callable<[appid: number, snapId: string], { success: boolean; error?: string }>("os_rollback");
-export const osConflicts = callable<[], { success: boolean; conflicts?: string[] }>("os_conflicts");
-export const osResolve = callable<[appid: number, choice: string], { success: boolean; error?: string }>("os_resolve");
-export const osExportAll = callable<[folder: string], { success: boolean; exported?: number; total?: number; folder?: string; note?: string; error?: string }>("os_export_all");
-export const osCloudAuthStart = callable<[provider: string], { success: boolean; provider?: string; authUrl?: string; autoCallback?: boolean; error?: string }>("os_cloud_auth_start");
-export const osCloudAuthCallback = callable<[code: string], { success: boolean; email?: string; error?: string }>("os_cloud_auth_callback");
-export const osCloudDisconnect = callable<[], { success: boolean; error?: string }>("os_cloud_disconnect");
-export const osCloudWebdav = callable<[url: string, username: string, password: string], { success: boolean; error?: string }>("os_cloud_webdav");
-export const osCloudEnabled = callable<[enabled: boolean], { success: boolean; error?: string }>("os_cloud_enabled");
-export const osCloudPushAll = callable<[], { success: boolean; uploaded?: number; note?: string; error?: string }>("os_cloud_push_all");
-export const osRelayJoin = callable<[code: string], { success: boolean; error?: string }>("os_relay_join");
-export const osRelayStatus = callable<[], { success: boolean; raw?: string }>("os_relay_status");
-export const osRelayLeave = callable<[], { success: boolean; error?: string }>("os_relay_leave");
-export const osDiagnostics = callable<
-  [],
-  { success: boolean; binPath: string; exists: boolean; executable: boolean; user: string;
-    daemonUrl?: string; addrFile?: string; addrExists?: boolean;
-    versionRc: number | null; versionOut: string; daemonRc: number | null; daemonOut: string; [k: string]: any }
->("os_diagnostics");
-
 // ── dependency updates (latest-version + boot check) ────────────────────────
 export type UpdateItem = { name: string; repo: string; heavy: boolean; current: string; latest: string; updateAvailable: boolean };
+export type PluginRelease = {
+  tag: string; channel: string; rolling: boolean; immutable: boolean;
+  version: string; runNumber: number; assetUrl: string; releaseUrl: string; publishedAt: string; size: number;
+};
+export type PluginUpdateStatus = {
+  success: boolean; error?: string; channel: string; currentChannel: string;
+  currentVersion: string; currentBuild: number; channels?: string[];
+  latest?: PluginRelease | null; updateAvailable: boolean; releases?: PluginRelease[];
+};
+export const pluginUpdateStatus = callable<[], PluginUpdateStatus>("plugin_update_status");
+export const pluginUpdateReleases = callable<[], { success: boolean; error?: string; releases: PluginRelease[]; channels?: string[] }>("plugin_update_releases");
+export const pluginPrepareReplacement = callable<[targetVersion: string, assetUrl: string], { success: boolean; error?: string; expiresIn?: number }>("plugin_prepare_replacement");
 export const updatesCheck = callable<[], { success: boolean; items?: UpdateItem[]; updates?: UpdateItem[] }>("updates_check");
 export const updatesUpdateAll = callable<[includeHeavy?: boolean], { success: boolean; updated?: string[]; skipped?: string[]; failed?: string[] }>("updates_update_all");
 export const updatesUpdateOne = callable<[name: string, includeHeavy?: boolean], { success: boolean; name?: string; error?: string; flagOnly?: boolean }>("updates_update_one");
@@ -399,11 +391,22 @@ export interface NetsockStatus {
 }
 export const netsockStatus = callable<[appid: number], NetsockStatus>("netsock_status");
 export const netsockSet = callable<[appid: number, enabled: boolean], NetsockStatus>("netsock_set");
+export type MultiplayerProxyKind = "uc-online2" | "eos-proxy";
+export interface MultiplayerProxyStatus {
+  success: boolean;
+  fixes?: Record<MultiplayerProxyKind, { installed: boolean; targets: string[] }>;
+  error?: string;
+}
+export const multiplayerProxyStatus = callable<[appid: number], MultiplayerProxyStatus>("multiplayer_proxy_status");
+export const multiplayerProxyInstall = callable<[appid: number, kind: MultiplayerProxyKind], { success: boolean; warning?: string; error?: string }>("multiplayer_proxy_install");
+export interface SlsOnlineStatus { success: boolean; enabled?: boolean; fakeAppId?: number | null; changed?: boolean; error?: string }
+export const slsonlineStatus = callable<[appid: number], SlsOnlineStatus>("slsonline_status");
+export const setSlsonline = callable<[appid: number, enabled: boolean], SlsOnlineStatus>("set_slsonline");
 export const netsockCompatible = callable<[], { success: boolean; games: Array<{ appid: number; name: string }> }>("netsock_compatible");
 
 export const getDlcOption = callable<[], { success: boolean; enabled: boolean }>("get_dlc_option");
 
-export const getPinStatus = callable<[appid: number], { success: boolean; pinned: boolean; buildid?: string; depots?: { [depot: string]: string }; installedBuildid?: string; installedDepots?: { [depot: string]: string } }>("get_pin_status");
+export const getPinStatus = callable<[appid: number], { success: boolean; pinned: boolean; buildid?: string; pinSource?: string; depots?: { [depot: string]: string }; installedBuildid?: string; steamReportedBuildid?: string; installedDepots?: { [depot: string]: string }; pinMatched?: boolean; matchSource?: string }>("get_pin_status");
 export const pinGame = callable<[appid: number], { success: boolean; depots?: number; error?: string }>("pin_game");
 export const unpinGame = callable<[appid: number], { success: boolean; changed?: boolean }>("unpin_game");
 export const getPinOnFix = callable<[], { success: boolean; enabled: boolean }>("get_pin_on_fix");
@@ -585,6 +588,10 @@ export const setAutoRepoint = callable<[enabled: boolean], { success: boolean }>
 // slsteam-moon live achievements (config.yaml Achievements). `moon` = engine supports it.
 export const getAchievements = callable<[], { success: boolean; enabled: boolean; present?: boolean; moon?: boolean }>("get_achievements");
 export const setAchievements = callable<[enabled: boolean], { success: boolean; enabled?: boolean }>("set_achievements");
+export const getAutoUpdateApps = callable<[], { success: boolean; enabled: boolean; present?: boolean }>("get_auto_update_apps");
+export const setAutoUpdateApps = callable<[enabled: boolean], { success: boolean; enabled?: boolean; error?: string }>("set_auto_update_apps");
+export const getManifestDonation = callable<[], { success: boolean; enabled: boolean; present?: boolean }>("get_manifest_donation");
+export const setManifestDonation = callable<[enabled: boolean], { success: boolean; enabled?: boolean; error?: string }>("set_manifest_donation");
 // Pin the game to a fix's manifest build without applying (build-accurate flow).
 export interface PinResult {
   success: boolean;
@@ -594,10 +601,11 @@ export interface PinResult {
   wasPinned?: boolean;
   error?: string;
   unsupported?: boolean;
+  buildid?: string;
 }
 export const pinForFix = callable<[appid: number], PinResult>("pin_for_fix");
 // Pin to a SPECIFIC lua.tools fix's build (its own manifest) — accurate per-fix.
-export const pinForLuatoolsFix = callable<[appid: number, fixId: string], PinResult>(
+export const pinForLuatoolsFix = callable<[appid: number, fixId: string, buildid?: string], PinResult>(
   "pin_for_luatools_fix"
 );
 
@@ -640,6 +648,13 @@ export const hubcapWorkshopManifest = callable<
   [appid: number],
   { success: boolean; path?: string; bytes?: number; error?: string; status?: number }
 >("hubcap_workshop_manifest");
+export interface HubcapUpdatesStatus {
+  success: boolean; enabled: boolean; keyAvailable: boolean; running?: boolean;
+  checking?: boolean; lastCheck?: number; checked?: number; updated?: number;
+  skipped?: number; failed?: number; error?: string;
+}
+export const hubcapUpdatesStatus = callable<[], HubcapUpdatesStatus>("hubcap_updates_status");
+export const setHubcapUpdates = callable<[enabled: boolean], HubcapUpdatesStatus>("set_hubcap_updates");
 export const getWrapperOption = callable<[], { success: boolean; skip: boolean }>("get_wrapper_option");
 export const setWrapperOption = callable<[skip: boolean], { success: boolean }>("set_wrapper_option");
 export const setDlcOption = callable<[enabled: boolean], { success: boolean }>("set_dlc_option");
@@ -682,6 +697,8 @@ export const refreshPatterns = callable<[], {
 }>("refresh_patterns");
 export const getAutoDownload = callable<[], { success: boolean; enabled: boolean }>("get_auto_download");
 export const setAutoDownload = callable<[enabled: boolean], { success: boolean }>("set_auto_download");
+export const getReloadOnPurge = callable<[], { success: boolean; enabled: boolean }>("get_reload_on_purge");
+export const setReloadOnPurge = callable<[enabled: boolean], { success: boolean }>("set_reload_on_purge");
 
 // ── DLC + cloud toggles ─────────────────────────────────────────────────────
 export const getAutoAddDlc = callable<[], { success: boolean; enabled: boolean }>("get_auto_add_dlc");

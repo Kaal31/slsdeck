@@ -6,9 +6,9 @@ SLSsteam reads ONE file, ``~/.config/SLSsteam/config.yaml``, and it is
 unforgiving: a key that is missing, malformed, duplicated, or carries the wrong
 scalar type makes the engine log ``Issues during config loading encountered!
 Missing key(s)`` and silently fall back to its own compiled-in defaults. Those
-defaults are the opposite of what this plugin needs (``DisableUpdates: yes``
-hands unowned apps zero depots; ``PlayNotOwnedGames: no`` refuses to treat added
-games as playable), so a subtly-broken config presents as "SLSsteam is installed
+defaults can be the opposite of what this plugin needs (notably,
+``PlayNotOwnedGames: no`` refuses to treat added games as playable), so a
+subtly-broken config presents as "SLSsteam is installed
 and injected but nothing works" — exactly the state the yellow repair banner
 exists to catch.
 
@@ -19,8 +19,7 @@ Design rules (all deliberate)
 -----------------------------
 * **Line-based, not a YAML round-trip.** No PyYAML in the plugin runtime, and
   even if there were, dumping a parsed tree would obliterate every comment in
-  the file — including the warnings that tell a user why ``DisableUpdates``
-  must stay ``no``. Every transform below rewrites only the line it owns.
+  the file. Every transform below rewrites only the line it owns.
 * **Never destructive.** ``AdditionalApps`` is the user's entire added-games
   list. A heal that loses it is worse than the breakage it fixes, so we take a
   timestamped backup first, write through SLSsteam's atomic writer, and refuse
@@ -50,14 +49,15 @@ from . import slssteam
 _BOOL_KEYS = (
     "DisableFamilyShareLock", "UseWhitelist", "AutoFilterList",
     "PlayNotOwnedGames", "SafeMode", "Notifications", "WarnHashMissmatch",
-    "NotifyInit", "API", "DisableCloud", "DisableUpdates", "ExtendedLogging",
+    "NotifyInit", "API", "DisableCloud", "ExtendedLogging",
     # Newer-engine keys. Absent from config.default.yaml (so _pass_missing_keys
     # correctly will not add them -- they are optional), but they MUST still be
     # normalised when present: moon reads yes/no only, so an
     # "InjectAllAdvertisedDlc: true" silently falls back to the compiled-in
     # default while the "Add DLC automatically" toggle still reads ON. That is
     # exactly the silent divergence this module exists to catch.
-    "Achievements", "InjectAllAdvertisedDlc",
+    "DisableParentalRestrictions", "Achievements", "InjectAllAdvertisedDlc",
+    "AutoUpdateApps", "PatternCache", "AsyncProvision",
 )
 
 _TRUEISH = ("yes", "true", "on", "1", "enable", "enabled", "y")
@@ -73,7 +73,8 @@ _LIST_KEYS = ("AppIds", "AdditionalApps", "FakeOffline")
 # promoted safely (we'd have to invent a key), so it's reported and blanked --
 # blanking restores a valid empty map, which is the template's own default.
 _MAP_KEYS = ("DlcData", "AppTokens", "FakeAppIds", "GameTitles",
-             "SubscriptionTimestamps", "DenuvoGames")
+             "SubscriptionTimestamps", "DenuvoGames", "SteamIdOverride",
+             "AchievementOwners", "Donate")
 
 # Quoted string scalars. An unterminated quote (e.g. `Title: " ;`) makes the
 # YAML parser swallow following lines until it finds a closing quote, which can

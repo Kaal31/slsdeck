@@ -1,11 +1,11 @@
 // Force Steam to download/update a game to its pinned build by launching it.
 //
 // Pinning a build only changes the *target* manifest; Steam won't fetch the new
-// files until something makes it re-check. Our IPC trigger (/tmp/SLSsteam.API
-// "install|appid") only reaches SLSsteam-added games — for a game the account
-// actually owns it's a no-op, which is why "pinned, waiting for download" can sit
-// forever. Launching the game makes Steam run its normal update-before-play
-// check, so a build whose installed manifest differs from the pinned target
+// files until something makes it re-check. API "install|appid" reaches
+// SLSsteam-added games through Moon's private per-user runtime socket. For an
+// owned game it can still be a no-op, so "pinned, waiting for download" can sit
+// forever. Launching makes Steam run its normal update-before-play check; when
+// the installed manifest differs from the pinned target, the target build
 // downloads first. Works for owned and added games alike.
 //
 // For a Steam app the RunGame gameId is just the appid (non-Steam shortcuts use a

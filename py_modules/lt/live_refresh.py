@@ -157,9 +157,10 @@ def patch_downloads(downloads: Any) -> None:
 
     original_process = downloads._process_and_install_lua
 
-    def process_with_live_refresh(appid: int, zip_path: str) -> None:
+    def process_with_live_refresh(appid: int, zip_path: str, *args: Any,
+                                  **kwargs: Any) -> Any:
         start = snapshot()
-        original_process(appid, zip_path)
+        processed = original_process(appid, zip_path, *args, **kwargs)
         state = downloads._get_state(appid)
         installed_path = str(state.get("installedPath") or "")
         if installed_path:
@@ -185,6 +186,7 @@ def patch_downloads(downloads: Any) -> None:
             logger.warn(
                 f"SLSDeck: live add not confirmed for {appid}: {reason or 'unknown'}; "
                 "restart fallback retained")
+        return processed
 
     def add_worker_with_live_refresh(appid: int) -> None:
         try:

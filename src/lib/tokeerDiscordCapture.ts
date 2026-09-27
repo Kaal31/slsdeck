@@ -390,6 +390,65 @@ async function findSharedJsContext(): Promise<CdpTab | null> {
     || null;
 }
 
+// The offscreen view still plays Discord audio. Keep it only while a panel or
+// Discord operation needs it, then release Chromium's view after a short grace
+// period so a quick switch between Fixes and Tokeer does not reload Discord.
+const VIEW_IDLE_MS = 15000;
+let viewUsers = 0;
+let viewCloseTimer: ReturnType<typeof setTimeout> | null = null;
+let viewClosing: Promise<void> | null = null;
+let viewDisposed = false;
+
+async function closeIdleTokeerView(): Promise<void> {
+  if (viewClosing) return viewClosing;
+  viewClosing = (async () => {
+    const shared = await findSharedJsContext();
+    if (viewUsers && !viewDisposed) return;
+    if (!shared?.webSocketDebuggerUrl) return;
+    const closed = await evalJson(shared.webSocketDebuggerUrl, `(function(){try{
+      var v=window.SLSDECK_TOKEER_VIEW;
+      if(!v)return true;
+      try{v.m_browserView.SetVisible(false);}catch(e){}
+      v.Destroy();
+      window.SLSDECK_TOKEER_VIEW=undefined;
+      return true;
+    }catch(e){return false;}})()`, 3000);
+    if (closed) invalidateDiscordCaptureCaches();
+  })().finally(() => { viewClosing = null; });
+  return viewClosing;
+}
+
+function scheduleTokeerViewClose(): void {
+  if (viewCloseTimer) clearTimeout(viewCloseTimer);
+  viewCloseTimer = null;
+  if (viewUsers || viewDisposed) return;
+  viewCloseTimer = setTimeout(() => {
+    viewCloseTimer = null;
+    if (!viewUsers) void closeIdleTokeerView();
+  }, VIEW_IDLE_MS);
+}
+
+export function retainTokeerDiscordView(): () => void {
+  if (viewCloseTimer) clearTimeout(viewCloseTimer);
+  viewCloseTimer = null;
+  viewUsers++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    viewUsers = Math.max(0, viewUsers - 1);
+    scheduleTokeerViewClose();
+  };
+}
+
+export function disposeTokeerDiscordView(): void {
+  viewDisposed = true;
+  viewUsers = 0;
+  if (viewCloseTimer) clearTimeout(viewCloseTimer);
+  viewCloseTimer = null;
+  void closeIdleTokeerView();
+}
+
 async function hasTokeerBrowserView(): Promise<boolean> {
   const shared = await findSharedJsContext();
   if (!shared?.webSocketDebuggerUrl) return false;
@@ -1795,6 +1854,10 @@ export async function cancelTokeerTicket(ticketUrl = ""): Promise<{ success: boo
  * BrowserView shares Steam CEF's Discord session, so a prior visible login is
  * reused. */
 export async function connectTokeerDiscordHidden(fastRestore = false): Promise<boolean> {
+  const releaseView = retainTokeerDiscordView();
+  try {
+  // Finish a pending destroy before deciding whether to reuse the old view.
+  if (viewClosing) await viewClosing;
   // Reuse only our managed BrowserView. A normal Steam external-web tab may be
   // readable through CDP but cannot be repositioned inside the plugin page.
   if (await hasTokeerBrowserView()) {
@@ -1820,6 +1883,9 @@ export async function connectTokeerDiscordHidden(fastRestore = false): Promise<b
     return !!created?.webSocketDebuggerUrl;
   } catch {
     return false;
+  }
+  } finally {
+    releaseView();
   }
 }
 

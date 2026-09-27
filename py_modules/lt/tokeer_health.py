@@ -99,6 +99,7 @@ def capture(appid: int, kind: str, evidence_path: str = "") -> Dict[str, Any]:
     live_pin = {str(d): str(g) for d, g in (slssteam._read_pin_gids(appid) or {}).items()}
     snapshot: Dict[str, Any] = {
         "activationBuildId": str(steam.get_installed_buildid(appid) or ""),
+        "activationLibraryPath": str(installation.get("libraryPath") or ""),
         "activationDepots": depots,
         "pinExpected": bool(live_pin),
         "activationFingerprint": game_fingerprint(appid),
@@ -115,6 +116,30 @@ def capture(appid: int, kind: str, evidence_path: str = "") -> Dict[str, Any]:
         except Exception:
             pass
     return snapshot
+
+
+def reset_reason(appid: int, record: Dict[str, Any]) -> str:
+    """Forget stale activation evidence only when Steam's library is available.
+
+    A removable library can disappear while a drive is unplugged; absence in
+    that case does not prove the game was uninstalled.
+    """
+    installation = _installation(appid)
+    if installation:
+        if str(steam.get_installed_buildid(appid) or "").strip() == "0":
+            return "installed build reset to 0"
+        return ""
+    library = str(record.get("activationLibraryPath") or "")
+    if library:
+        if not os.path.isdir(os.path.join(library, "steamapps")):
+            return ""
+    else:
+        # Older records lack the library path. If any configured library is
+        # offline, we cannot tell which one held the game.
+        libraries = steam._all_library_paths()
+        if not libraries or any(not os.path.isdir(os.path.join(path, "steamapps")) for path in libraries):
+            return ""
+    return "game uninstalled"
 
 
 def _result(status: str, reason: str, **extra: Any) -> Dict[str, Any]:

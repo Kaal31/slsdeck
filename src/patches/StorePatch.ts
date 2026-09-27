@@ -22,11 +22,11 @@ import {
   tokeerPreflight,
   tokeerAppliedStatus,
 } from "../api";
-import { applyFixRuntime } from "../lib/fixRuntime";
+import { applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { BADGE_LABELS, BADGE_COLORS, BADGE_STATE_EVENT, ONLINE_RE, markSlsAddPending, refreshBadges } from "../lib/badges";
 import { isInLibrary } from "../lib/ownership";
-import { hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame } from "../lib/tokeerAvailability";
+import { getTokeerAvailabilityForGame, hasFreshTokeerFixCache, readTokeerAvailabilityCache, refreshTokeerAvailabilityCache, resolveTokeerAvailabilityForGame } from "../lib/tokeerAvailability";
 import { describeTokeerFailure, setupAndVerifyTokeer } from "../lib/tokeerSetup";
 
 /**
@@ -54,6 +54,7 @@ let mounted = false;
 let ws: WebSocket | null = null;
 let msgId = 1;
 let currentAppId = "";
+let fixModalGeneration = 0;
 let wsReady = false;
 let isConnecting = false;
 let storeDisabled = false;
@@ -85,6 +86,12 @@ function evaluate(expr: string): void {
 
 function setStatus(text: string): void {
   evaluate(`window.__ltStatus&&window.__ltStatus(${JSON.stringify(text)})`);
+}
+
+function updateFixModal(appid: number, generation: number, kind: "fixes" | "tokeer" | "error", data: unknown): void {
+  evaluate(
+    `window.__ltFixUpdate&&window.__ltFixUpdate(${appid},${generation},${JSON.stringify(kind)},${JSON.stringify(data)})`
+  );
 }
 
 function removeBar(): void {
@@ -162,27 +169,18 @@ function buildBar(appid: number, installed: boolean, fixAvailable: boolean): str
 // Mirrors the desktop SLSDeck "Fixes" modal: one row per fix (Online /
 // Generic) with a Manifest button (add the game) and a Fix button (apply that
 // fix), plus Un-Fix and Close.
-function buildFixModal(
-  appid: number,
-  name: string,
-  onlineAvail: boolean,
-  genericAvail: boolean,
-  unsteamAvail: boolean,
-  ryuuJson: string,
-  catalogJson: string,
-  tokeerJson: string
-): string {
+function buildFixModal(appid: number, name: string, generation: number): string {
   return `(function(){
-    var APPID=${appid};
+    var APPID=${appid}, GENERATION=${generation};
     var old=document.getElementById('lt-fix-modal'); if(old) old.remove();
-    var ov=document.createElement('div'); ov.id='lt-fix-modal';
+    var ov=document.createElement('div');ov.id='lt-fix-modal';
     ov.style.cssText='position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);font-family:Arial,Helvetica,sans-serif;';
-    var card=document.createElement('div');
-    card.style.cssText='background:#1b2838;color:#e6edf3;border:1px solid #2a3f5a;border-radius:12px;padding:18px 18px 14px;min-width:340px;max-width:90vw;box-shadow:0 10px 40px rgba(0,0,0,0.6);';
-    var h=document.createElement('div'); h.textContent='Fixes — '+${JSON.stringify(name || `AppID ${appid}`)};
-    h.style.cssText='font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';
-    card.appendChild(h);
-    function inv(o){ try{ window.ltInvoke(JSON.stringify(o)); }catch(e){} }
+    var card=document.createElement('div');card.style.cssText='background:#1b2838;color:#e6edf3;border:1px solid #2a3f5a;border-radius:12px;padding:18px 18px 14px;min-width:340px;max-width:90vw;box-shadow:0 10px 40px rgba(0,0,0,0.6);';
+    var h=document.createElement('div');h.textContent='Fixes — '+${JSON.stringify(name || `AppID ${appid}`)};
+    h.style.cssText='font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';card.appendChild(h);
+    var body=document.createElement('div');body.style.cssText='max-height:60vh;overflow-y:auto;';card.appendChild(body);
+    var tokeerSlot=document.createElement('div');card.appendChild(tokeerSlot);
+    function inv(o){try{window.ltInvoke(JSON.stringify(o));}catch(e){}}
     function row(label,avail,fixKey){
       var box=document.createElement('div');
       box.style.cssText='border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:10px;margin-bottom:8px;opacity:'+(avail?'1':'0.6')+';';
@@ -196,7 +194,10 @@ function buildFixModal(
       r.appendChild(mk('Fix','#5ba32b',!avail,function(){ inv({action:'fixApply',appid:APPID,fix:fixKey}); }));
       box.appendChild(r); return box;
     }
-    var RYUU=${ryuuJson};
+    function renderFixes(data){
+      body.replaceChildren();
+      h.textContent='Fixes — '+(data.gameName||${JSON.stringify(name || `AppID ${appid}`)});
+      var RYUU=data.ryuuFixes||[];
     RYUU.forEach(function(e){
       var online=(e.badge||'').toLowerCase()==='online';
       var lbl=online?'Online Fix':'Crack / Bypass Fix';
@@ -208,16 +209,9 @@ function buildFixModal(
       var b=document.createElement('button'); b.textContent='Apply this fix';
       b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';
       b.onclick=function(){ inv({action:'fixApplyUrl',appid:APPID,url:e.url,fixType:(online?'Online Fix':'Generic Fix'),file:e.file}); };
-      box.appendChild(b); card.appendChild(box);
+      box.appendChild(b); body.appendChild(box);
     });
-    var TOKEER=${tokeerJson};
-    if(TOKEER&&TOKEER.name){
-      var tb=document.createElement('div');tb.style.cssText='border:1px solid rgba(202,168,255,.35);background:rgba(202,168,255,.07);border-radius:8px;padding:10px;margin-bottom:8px;';
-      var tt=document.createElement('div');tt.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+(TOKEER.total==null?'':(' / '+TOKEER.total))+' keys available';tt.style.cssText='font-size:14px;font-weight:600;margin-bottom:4px;';tb.appendChild(tt);
-      var td=document.createElement('div');td.textContent='Live Discord availability matched for this game. Uses the same Tokeer setup and validation as the library Fixes menu.';td.style.cssText='font-size:11px;opacity:.75;line-height:1.4;margin-bottom:7px;';tb.appendChild(td);
-      var tx=document.createElement('button');tx.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+' keys';tx.style.cssText='width:100%;background:#7655a8;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';tx.onclick=function(){inv({action:'tokeer',appid:APPID});};tb.appendChild(tx);card.appendChild(tb);
-    }
-    var CATALOG=${catalogJson};
+      var CATALOG=data.luatoolsCatalog||[];
     CATALOG.forEach(function(e,i){
       var box=document.createElement('div');box.style.cssText='border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;margin-bottom:8px;';
       var tags=(e.tags||[]).map(function(t){return typeof t==='string'?t:(t&&(t.name||t.label||t.text||t.title||t.tag))||'';}).filter(Boolean);
@@ -225,15 +219,27 @@ function buildFixModal(
       if(tags.length){var tg=document.createElement('div');tg.textContent=tags.join(' · ');tg.style.cssText='font-size:11px;color:#caa8ff;margin-bottom:4px;';box.appendChild(tg);}
       var meta=[e.release_date?('Released '+String(e.release_date).slice(0,10)):'',e.build?('build '+e.build):''].filter(Boolean).join(' · ');if(meta){var m=document.createElement('div');m.textContent=meta;m.style.cssText='font-size:11px;opacity:.6;margin-bottom:4px;';box.appendChild(m);}
       if(e.description){var d=document.createElement('div');d.textContent=e.description;d.style.cssText='font-size:11px;opacity:.78;white-space:pre-wrap;line-height:1.4;margin-bottom:7px;max-height:150px;overflow:auto;';box.appendChild(d);}
-      var b=document.createElement('button');b.textContent='Apply lua.tools fix';b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';b.onclick=function(){inv({action:'ltApply',appid:APPID,fix:e});};box.appendChild(b);card.appendChild(box);
+      var b=document.createElement('button');b.textContent='Apply lua.tools fix';b.style.cssText='width:100%;background:#5ba32b;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';b.onclick=function(){inv({action:'ltApply',appid:APPID,fix:e});};box.appendChild(b);body.appendChild(box);
     });
-    if(${onlineAvail ? "true" : "false"}) card.appendChild(row('Online Fix (perondepot)', true, 'online'));
-    // The generic/crack fix had no row at all: genericAvail was accepted as a
-    // parameter and then never used, so a fix the backend was perfectly able to
-    // apply (fixApply already handles fix:'generic') was unreachable from the
-    // store page, while its Online and Unsteam siblings both had buttons.
-    if(${genericAvail ? "true" : "false"}) card.appendChild(row('Crack / Bypass Fix (generic)', true, 'generic'));
-    card.appendChild(row('Online Fix (Unsteam) · Universal', ${unsteamAvail ? "true" : "false"}, 'unsteam'));
+      if(data.onlineFix&&data.onlineFix.available)body.appendChild(row('Online Fix (perondepot)',true,'online'));
+      if(data.genericFix&&data.genericFix.available)body.appendChild(row('Crack / Bypass Fix (generic)',true,'generic'));
+      body.appendChild(row('Online Fix (Unsteam) · Universal',!data.unsteamFix||data.unsteamFix.available!==false,'unsteam'));
+    }
+    function renderTokeer(TOKEER){
+      tokeerSlot.replaceChildren();
+    if(TOKEER&&TOKEER.name){
+      var tb=document.createElement('div');tb.style.cssText='border:1px solid rgba(202,168,255,.35);background:rgba(202,168,255,.07);border-radius:8px;padding:10px;margin-bottom:8px;';
+      var tt=document.createElement('div');tt.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+(TOKEER.total==null?'':(' / '+TOKEER.total))+' keys available';tt.style.cssText='font-size:14px;font-weight:600;margin-bottom:4px;';tb.appendChild(tt);
+      var td=document.createElement('div');td.textContent='Live Discord availability matched for this game. Uses the same Tokeer setup and validation as the library Fixes menu.';td.style.cssText='font-size:11px;opacity:.75;line-height:1.4;margin-bottom:7px;';tb.appendChild(td);
+      var tx=document.createElement('button');tx.textContent='Tokeer · '+(TOKEER.remaining==null?'?':TOKEER.remaining)+' keys';tx.style.cssText='width:100%;background:#7655a8;color:#fff;border:none;border-radius:4px;padding:8px;font-size:13px;font-weight:600;cursor:pointer;';tx.onclick=function(){inv({action:'tokeer',appid:APPID});};tb.appendChild(tx);tokeerSlot.appendChild(tb);
+    }
+    }
+    window.__ltFixUpdate=function(appid,generation,kind,data){
+      if(appid!==APPID||generation!==GENERATION||!ov.isConnected)return;
+      if(kind==='fixes'){renderFixes(data);window.__ltStatus('');}
+      else if(kind==='tokeer')renderTokeer(data);
+      else if(kind==='error')window.__ltStatus('Could not check fixes');
+    };
     var st=document.createElement('div'); st.id='lt-store-status';
     st.style.cssText='font-size:12px;color:#c6d4df;text-align:center;min-height:15px;margin:4px 0 10px;';
     window.__ltStatus=function(t){ var e=document.getElementById('lt-store-status'); if(e) e.textContent=t; };
@@ -247,6 +253,7 @@ function buildFixModal(
     ov.appendChild(card);
     ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
     document.body.appendChild(ov);
+    window.__ltStatus('Checking fixes…');
   })();`;
 }
 
@@ -448,31 +455,35 @@ async function onAction(payloadStr: string): Promise<void> {
   }
   // The Fix button opens the picker modal (Manifest + Fix per fix type).
   if (action === "fix") {
-    setStatus("Checking fixes…");
-    try {
-      const f = await checkFixesFull(appid);
-      const cached = readTokeerAvailabilityCache();
-      let tokeer: any = null;
-      try {
-        const live = hasFreshTokeerFixCache(cached) ? cached : await refreshTokeerAvailabilityCache(true);
-        if (live) tokeer = await resolveTokeerAvailabilityForGame(appid, f?.gameName || "");
-      } catch { tokeer = null; }
-      evaluate(
-        buildFixModal(
-          appid,
-          f?.gameName || "",
-          !!f?.onlineFix?.available,
-          !!f?.genericFix?.available,
-          f?.unsteamFix?.available !== false,
-          JSON.stringify((f as any)?.ryuuFixes || []),
-          JSON.stringify((f as any)?.luatoolsCatalog || []),
-          JSON.stringify(tokeer)
-        )
-      );
-      setStatus("");
-    } catch {
-      setStatus("Could not check fixes");
-    }
+    const generation = ++fixModalGeneration;
+    const knownName = appDisplayName(appid) || `AppID ${appid}`;
+    evaluate(buildFixModal(appid, knownName, generation));
+
+    // Fix providers and Discord availability are independent. Open the menu
+    // immediately, then populate each part whenever its own lookup completes.
+    const fixesPromise = checkFixesFull(appid);
+    void fixesPromise
+      .then((fixes) => updateFixModal(appid, generation, "fixes", fixes))
+      .catch(() => updateFixModal(appid, generation, "error", null));
+
+    const cached = readTokeerAvailabilityCache();
+    const cachedGame = getTokeerAvailabilityForGame(appid, knownName);
+    if (cachedGame) updateFixModal(appid, generation, "tokeer", cachedGame);
+    const availabilityPromise = hasFreshTokeerFixCache(cached)
+      ? Promise.resolve(cached)
+      : refreshTokeerAvailabilityCache(true);
+    void availabilityPromise
+      .then(async (live) => {
+        if (!live) return cachedGame;
+        const immediate = await resolveTokeerAvailabilityForGame(appid, knownName);
+        if (immediate) return immediate;
+        // Store-only games may not be present in Steam's app overview cache.
+        // Fall back to the authoritative name returned by the fixes lookup.
+        const fixes = await fixesPromise.catch(() => null);
+        return fixes ? resolveTokeerAvailabilityForGame(appid, fixes.gameName || knownName) : null;
+      })
+      .then((game) => updateFixModal(appid, generation, "tokeer", game))
+      .catch(() => updateFixModal(appid, generation, "tokeer", cachedGame));
     return;
   }
 
@@ -497,7 +508,7 @@ async function onAction(payloadStr: string): Promise<void> {
       const f = msg.fix || {};
       if (f.has_manifest) {
         setStatus("Loading this fix's exact manifest…");
-        const pin = await pinForLuatoolsFix(appid, String(f.id || ""));
+        const pin = await pinForLuatoolsFix(appid, String(f.id || ""), String(f.build || ""));
         if (!pin.pinned) {
           setStatus(pin.error || "This fix's paired manifest could not be pinned; nothing was applied");
           return;

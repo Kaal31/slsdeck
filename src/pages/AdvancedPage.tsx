@@ -30,6 +30,8 @@ import {
   getAutoApply, setAutoApply,
   getAutoRepoint, setAutoRepoint,
   getAchievements, setAchievements,
+  getAutoUpdateApps, setAutoUpdateApps,
+  getManifestDonation, setManifestDonation,
   getHideToolsQam, setHideToolsQam,
   getOnlineUsername, setOnlineUsername,
   getHideOnOwned, setHideOnOwned,
@@ -42,6 +44,7 @@ import {
   getAutoClientRepin, setAutoClientRepin,
   getCheckDependenciesOnBoot, setCheckDependenciesOnBoot,
   getAutoDownload, setAutoDownload,
+  getReloadOnPurge, setReloadOnPurge,
   getAutoAddDlc, setAutoAddDlc,
   getDisableCloud, setDisableCloud,
   getDisableDlcUnlockOwned, setDisableDlcUnlockOwned,
@@ -67,8 +70,10 @@ function readDeckyHvVisible(): boolean {
 /* ── Injection recovery (auto-heal after a Steam client update) ─────────── */
 function AddDownloadToggle() {
   const [on, setOn] = useState(false);
+  const [reloadOnPurge, setReloadOnPurgeState] = useState(false);
   useEffect(() => {
     getAutoDownload().then((r) => setOn(!!r.enabled)).catch(() => {});
+    getReloadOnPurge().then((r) => setReloadOnPurgeState(!!r.enabled)).catch(() => {});
   }, []);
   return (
     <PanelSection title="Adding games">
@@ -80,16 +85,28 @@ function AddDownloadToggle() {
           onChange={async (v) => { setOn(v); await setAutoDownload(v); }}
         />
       </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="Reload when purging all"
+          description="Compatibility fallback that restarts Steam after Purge All. Off uses Moon's in-session hot removal."
+          checked={reloadOnPurge}
+          onChange={async (v) => { setReloadOnPurgeState(v); await setReloadOnPurge(v); }}
+        />
+      </PanelSectionRow>
     </PanelSection>
   );
 }
 
 function DlcCloudToggles() {
-  const [autoDlc, setAutoDlc] = useState(false);
+  const [dlc, setDlc] = useState(true);
+  const [dlcOwnedOnly, setDlcOwnedOnlyState] = useState(true);
+  const [autoDlc, setAutoDlc] = useState(true);
   const [noCloud, setNoCloud] = useState(false);
   const [noOwnedDlc, setNoOwnedDlc] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
+    getDlcOption().then((r) => setDlc(!!r.enabled)).catch(() => {});
+    getDlcOwnedOnly().then((r) => setDlcOwnedOnlyState(!!r.enabled)).catch(() => {});
     getAutoAddDlc().then((r) => setAutoDlc(!!r.enabled)).catch(() => {});
     getDisableCloud().then((r) => setNoCloud(!!r.enabled)).catch(() => {});
     getDisableDlcUnlockOwned().then((r) => setNoOwnedDlc(!!r.enabled)).catch(() => {});
@@ -98,8 +115,28 @@ function DlcCloudToggles() {
     <PanelSection title="DLC & cloud">
       <PanelSectionRow>
         <ToggleField
+          label="Unlock DLC when adding a game"
+          description="Marks the game's DLC as owned and auto-installs the matching in-process DLC unlocker when the game is on disk — SmokeAPI for Steam titles, Uplay R1/R2 for Ubisoft Connect titles (each only applies to games that use it). SLSsteam already unlocks most Steam DLC on its own. In-game (entitlement) DLC unlocks right away; DLC that downloads as separate files still needs those files. On by default."
+          checked={dlc}
+          onChange={async (v) => { setDlc(v); await setDlcOption(v); }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="DLC unlockers on owned games only"
+          description="Only show the CreamAPI, SmokeAPI and Ubisoft (Uplay R1/R2) DLC-unlock buttons on games you actually own — hide them on SLS-added games, where they do nothing. On by default."
+          checked={dlcOwnedOnly}
+          onChange={async (v) => {
+            setDlcOwnedOnlyState(v);
+            await setDlcOwnedOnly(v);
+            toaster.toast({ title: "SLSDeck", body: v ? "DLC unlockers: owned games only" : "DLC unlockers: all games" });
+          }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
           label="Add DLC automatically"
-          description="When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. Off by default."
+          description="When adding a game, also register all its DLC depot keys (from the full manifest) so the base install downloads content DLC too. Richer with a Hubcap key set. On by default."
           checked={autoDlc}
           onChange={async (v) => {
             setAutoDlc(v);
@@ -316,8 +353,6 @@ function OptionsPane({
   showDeckyHv: boolean;
   onShowDeckyHvChange: (enabled: boolean) => void;
 }) {
-  const [dlc, setDlc] = useState(false);
-  const [dlcOwnedOnly, setDlcOwnedOnlyState] = useState(true);
   const [groupCollection, setGroupCollectionState] = useState(false);
   const [backupCustom, setBackupCustomState] = useState(false);
   const [storeOn, setStoreOn] = useState(true);
@@ -346,14 +381,14 @@ function OptionsPane({
   const [hideToolsQam, setHideToolsQamState] = useState(true);
   const [achievements, setAchievementsState] = useState(true);
   const [achMoon, setAchMoon] = useState(true);
+  const [autoUpdateApps, setAutoUpdateAppsState] = useState(true);
+  const [manifestDonation, setManifestDonationState] = useState(true);
   const [notifyGameAdds, setNotifyGameAdds] = useState(true);
   const [surfaceFailedSources, setSurfaceFailedSources] = useState(false);
   const [rouletteQam, setRouletteQam] = useState(() => readRouletteBool(ROULETTE_QAM_KEY));
   const [rouletteTabDisabled, setRouletteTabDisabled] = useState(() => readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
 
   useEffect(() => {
-    getDlcOption().then((r) => setDlc(!!r.enabled)).catch(() => {});
-    getDlcOwnedOnly().then((r) => setDlcOwnedOnlyState(!!r.enabled)).catch(() => {});
     getGroupCollection().then((r) => setGroupCollectionState(!!r.enabled)).catch(() => {});
     getBackupCustom().then((r) => setBackupCustomState(!!r.enabled)).catch(() => {});
     getStoreDisabled().then((r) => setStoreOn(!r.disabled)).catch(() => {});
@@ -362,6 +397,8 @@ function OptionsPane({
     getAutoApply().then((r) => setAutoApplyState(!!r.enabled)).catch(() => {});
     getAutoRepoint().then((r) => setAutoRepointState(!!r.enabled)).catch(() => {});
     getAchievements().then((r) => { setAchievementsState(!!r.enabled); setAchMoon(r.moon !== false); }).catch(() => {});
+    getAutoUpdateApps().then((r) => setAutoUpdateAppsState(r.enabled !== false)).catch(() => {});
+    getManifestDonation().then((r) => setManifestDonationState(r.enabled !== false)).catch(() => {});
     getHideToolsQam().then((r) => setHideToolsQamState(!!r.enabled)).catch(() => {});
     getHideOnOwned().then((r) => setHideOwned(!!r.enabled)).catch(() => {});
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
@@ -471,29 +508,6 @@ function OptionsPane({
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="DLC unlocking">
-        <PanelSectionRow>
-          <ToggleField
-            label="Unlock DLC when adding a game"
-            description="Marks the game's DLC as owned and auto-installs the matching in-process DLC unlocker when the game is on disk — SmokeAPI for Steam titles, Uplay R1/R2 for Ubisoft Connect titles (each only applies to games that use it). SLSsteam already unlocks most Steam DLC on its own. In-game (entitlement) DLC unlocks right away; DLC that downloads as separate files still needs those files."
-            checked={dlc}
-            onChange={async (v) => { setDlc(v); await setDlcOption(v); }}
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="DLC unlockers on owned games only"
-            description="Only show the CreamAPI, SmokeAPI and Ubisoft (Uplay R1/R2) DLC-unlock buttons on games you actually own — hide them on SLS-added games, where they do nothing. On by default."
-            checked={dlcOwnedOnly}
-            onChange={async (v) => {
-              setDlcOwnedOnlyState(v);
-              await setDlcOwnedOnly(v);
-              toaster.toast({ title: "SLSDeck", body: v ? "DLC unlockers: owned games only" : "DLC unlockers: all games" });
-            }}
-          />
-        </PanelSectionRow>
-      </PanelSection>
-
       <PanelSection title="Quick Access menu">
         <PanelSectionRow>
           <ToggleField
@@ -581,6 +595,36 @@ function OptionsPane({
             }
             checked={achievements}
             onChange={async (v) => { setAchievementsState(v); await setAchievements(v); }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Automatically update managed games"
+            description="Keep unpinned SLS games on their latest available build. Per-game manifest pins still take precedence. Restart Steam after changing."
+            checked={autoUpdateApps}
+            onChange={async (v) => {
+              setAutoUpdateAppsState(v);
+              const r = await setAutoUpdateApps(v);
+              if (!r?.success) {
+                setAutoUpdateAppsState(!v);
+                toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the Moon config" });
+              }
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Share owned manifest request codes"
+            description="Allow Moon to contribute short-lived manifest request codes only for depots this Steam account owns. Off disables both active requests and passive capture."
+            checked={manifestDonation}
+            onChange={async (v) => {
+              setManifestDonationState(v);
+              const r = await setManifestDonation(v);
+              if (!r?.success) {
+                setManifestDonationState(!v);
+                toaster.toast({ title: "SLSDeck", body: r?.error || "Could not write the Moon config" });
+              }
+            }}
           />
         </PanelSectionRow>
         <PanelSectionRow>

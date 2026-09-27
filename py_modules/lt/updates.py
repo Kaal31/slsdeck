@@ -25,17 +25,19 @@ from . import settings, ghrel
 
 
 # ── per-dependency refresh callbacks (lazy imports avoid import cycles) ───────
-def _refresh_opensave(force: bool = True) -> Dict[str, Any]:
-    from . import opensave
-    return opensave.ensure_cli(force=force)
-
-
 def _refresh_smokeapi(force: bool = True) -> Dict[str, Any]:
     from . import smokeapi
     r = smokeapi.ensure_dlls(force=True)
     if r.get("success"):
         settings.set_dep_version("SmokeAPI", ghrel.latest_tag("acidicoala/SmokeAPI"))
     return r
+
+
+def _refresh_multiplayer_proxy(kind: str) -> Callable[[bool], Dict[str, Any]]:
+    def _do(force: bool = True) -> Dict[str, Any]:
+        from . import multiplayer_proxies
+        return multiplayer_proxies.ensure_dlls(kind, force=force)
+    return _do
 
 
 def _refresh_unlocker(kind: str, repo: str) -> Callable[[bool], Dict[str, Any]]:
@@ -62,6 +64,10 @@ def _flag_only(name: str) -> Callable[[bool], Dict[str, Any]]:
 _REGISTRY: List[Dict[str, Any]] = [
     {"name": "SmokeAPI", "repo": "acidicoala/SmokeAPI", "heavy": False,
      "dep_key": "SmokeAPI", "refresh": _refresh_smokeapi},
+    {"name": "UC Online 2", "repo": "UnionCrax-Team/uc-online2", "heavy": False,
+     "dep_key": "uc-online2", "refresh": _refresh_multiplayer_proxy("uc-online2")},
+    {"name": "EOS Proxy", "repo": "yesyes0649/eos-proxy", "heavy": False,
+     "dep_key": "eos-proxy", "refresh": _refresh_multiplayer_proxy("eos-proxy")},
     # CreamAPI is bundled (defaults/creamapi) — no upstream release to check.
     {"name": "Uplay R1 Unlocker", "repo": "acidicoala/UplayR1Unlocker", "heavy": False,
      "dep_key": "uplayr1", "refresh": _refresh_unlocker("uplayr1", "acidicoala/UplayR1Unlocker")},

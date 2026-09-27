@@ -3,6 +3,7 @@ import {
   connectTokeerDiscordHidden,
   openSelectorAndReadOptions,
   readTokeerDiscord,
+  retainTokeerDiscordView,
   restoreTokeerTicketView,
   TokeerDiscordState,
 } from "./tokeerDiscordCapture";
@@ -169,6 +170,7 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
   if (refreshPromise) return refreshPromise;
   const generation = ++refreshGeneration;
   const run = (async () => {
+    const releaseView = retainTokeerDiscordView();
     // Hard wall-clock budget for the WHOLE refresh. The old loop bounded only the
     // number of retries (20 x 500ms), but each readTokeerDiscord can itself take
     // seconds (target resolution + a 5s Runtime.evaluate), so a Discord page that
@@ -208,6 +210,7 @@ export async function refreshTokeerAvailabilityCache(force = false): Promise<Tok
         try { await restoreTokeerTicketView(savedTicketUrl); } catch {}
       }
       if (generation === refreshGeneration) refreshPromise = null;
+      releaseView();
     }
   })();
   refreshPromise = run;

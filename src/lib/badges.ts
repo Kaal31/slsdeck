@@ -236,6 +236,25 @@ export function markSlsAddPending(appid: number, pending = true): void {
   try { window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT)); } catch { /* ignore */ }
 }
 
+/** Immediately retire purged registrations from the live badge cache while
+ * retaining their SLS provenance. Steam can keep old capsules around until its
+ * next restart; those must show no badge, never flicker SLS and settle on LEGIT. */
+export function markSlsPurged(appids: number[]): void {
+  for (const raw of appids || []) {
+    const id = Number(raw);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    slsIds.delete(id);
+    everAddedIds.add(id);
+    pendingSlsIds.delete(id);
+    const timer = pendingSlsTimers.get(id);
+    if (timer) clearTimeout(timer);
+    pendingSlsTimers.delete(id);
+  }
+  removeAllBadges();
+  debouncedScan();
+  try { window.dispatchEvent(new CustomEvent(BADGE_STATE_EVENT)); } catch { /* ignore */ }
+}
+
 function classifyApplied(appid: number): Kind[] {
   const out: Kind[] = [];
   if (opts.onlineFix && onlineIds.has(appid)) out.push("onlinefix");

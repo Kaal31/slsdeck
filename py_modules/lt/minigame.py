@@ -6,6 +6,7 @@ import html
 import json
 import random
 import re
+import threading
 import time
 from typing import Any, Dict, List, Set, Tuple
 
@@ -18,6 +19,13 @@ _DECK_URL = "https://store.steampowered.com/saleaction/ajaxgetdeckappcompatibili
 _CACHE_SECONDS = 60 * 60
 _MEMORY: Dict[str, Tuple[float, List[Tuple[int, str, int]]]] = {}
 _TOTAL_RESULTS: Dict[str, int] = {}
+_SEARCH_PAGE_MEMORY: Dict[str, Tuple[float, List[Tuple[int, str, int]], int]] = {}
+_STORE_GAME_MEMORY: Dict[str, Tuple[float, Dict[str, Any] | None]] = {}
+_STORE_GAME_MEMORY_LOCK = threading.Lock()
+_SEARCH_REQUEST_LOCK = threading.Lock()
+_LAST_SEARCH_REQUEST = 0.0
+_SEARCH_COOLDOWN_UNTIL = 0.0
+_SEARCH_REQUEST_INTERVAL = 0.65
 _TAG_IDS = {
     "action": 19, "rpg": 122, "strategy": 9, "simulation": 599,
     "adventure": 21, "horror": 1667, "racing": 699, "sports": 701,
@@ -28,7 +36,11 @@ _TAG_IDS = {
 def _filters(value: Dict[str, Any] | None = None) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     return {
+        "priceEnabled": bool(raw.get("priceEnabled", False)),
+        "priceDirection": "max" if str(raw.get("priceDirection") or "").lower() == "max" else "min",
+        "priceCents": max(100, min(100000, int(raw.get("priceCents") or 6000))),
         "qualityMode": bool(raw.get("qualityMode", False)),
+        "personalized": bool(raw.get("personalized", False)),
         "genre": str(raw.get("genre") or "").lower() if str(raw.get("genre") or "").lower() in _TAG_IDS else "",
         "players": str(raw.get("players") or "").lower() if str(raw.get("players") or "").lower() in ("singleplayer", "multiplayer", "coop") else "",
         "deck": str(raw.get("deck") or "").lower() if str(raw.get("deck") or "").lower() in ("playable", "verified") else "",
@@ -44,6 +56,7 @@ def _search_key(value: Dict[str, Any]) -> str:
         "genre": value.get("genre"),
         "players": value.get("players"),
         "deck": value.get("deck"),
+        "personalized": bool(value.get("personalized")),
         # Review-filtered catalogs deliberately use Reviews_DESC pages. Keep
         # them separate from ordinary Random/price caches.
         "reviewFiltered": bool(value.get("qualityMode") or value.get("minRating") or value.get("minReviews")),
@@ -63,11 +76,13 @@ def _usable(app: Any) -> Tuple[int, str] | None:
 
 def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
                  filters: Dict[str, Any] | None = None) -> Tuple[List[Tuple[int, str, int]], int]:
+    global _LAST_SEARCH_REQUEST, _SEARCH_COOLDOWN_UNTIL
     selected = _filters(filters)
     params: Dict[str, Any] = {
         "query": "", "start": max(0, int(start)), "count": max(1, int(count)),
         "sort_by": sort_by, "category1": "998", "infinite": "1",
-        "ignore_preferences": "1", "ndl": "1", "cc": "US", "l": "english",
+        "ignore_preferences": "0" if selected["personalized"] else "1",
+        "ndl": "1", "cc": "US", "l": "english",
     }
     tags = [_TAG_IDS[value] for value in (selected["genre"], selected["players"]) if value]
     if tags:
@@ -76,11 +91,33 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
         params["deck_compatibility"] = "verified"
     elif selected["deck"] == "playable":
         params["deck_compatibility"] = "verified,playable"
+    page_key = json.dumps(params, sort_keys=True)
+    cached = _SEARCH_PAGE_MEMORY.get(page_key)
+    if cached and time.time() - cached[0] < _CACHE_SECONDS:
+        return list(cached[1]), cached[2]
     payload: Dict[str, Any] | None = None
     last_error = "Steam Store returned an invalid response"
-    for attempt in range(3):
+    with _SEARCH_REQUEST_LOCK:
+        # Another roulette worker may have filled this page while we waited.
+        cached = _SEARCH_PAGE_MEMORY.get(page_key)
+        if cached and time.time() - cached[0] < _CACHE_SECONDS:
+            return list(cached[1]), cached[2]
+        wait = max(_SEARCH_COOLDOWN_UNTIL - time.time(),
+                   _SEARCH_REQUEST_INTERVAL - (time.time() - _LAST_SEARCH_REQUEST))
+        if wait > 0:
+            time.sleep(min(wait, 30.0))
         try:
             response = get_http_client().get(_SEARCH_URL, params=params, timeout=30.0)
+            _LAST_SEARCH_REQUEST = time.time()
+            if response.status_code == 429:
+                try:
+                    retry_after = max(5, min(60, int(response.headers.get("Retry-After") or 15)))
+                except (TypeError, ValueError):
+                    retry_after = 15
+                _SEARCH_COOLDOWN_UNTIL = time.time() + retry_after
+                if cached:
+                    return list(cached[1]), cached[2]
+                raise RuntimeError(f"Steam Store is rate-limiting searches; retry in about {retry_after} seconds")
             response.raise_for_status()
             if not str(getattr(response, "text", "") or "").strip():
                 raise ValueError("Steam Store returned an empty response")
@@ -88,11 +125,8 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
             if not isinstance(decoded, dict):
                 raise ValueError("Steam Store returned an unexpected response")
             payload = decoded
-            break
         except Exception as exc:
             last_error = str(exc) or last_error
-            if attempt < 2:
-                time.sleep(0.35 * (attempt + 1))
     if payload is None:
         raise RuntimeError(f"Steam Store search is temporarily unavailable: {last_error}")
     markup = str(payload.get("results_html") or "")
@@ -110,36 +144,54 @@ def _search_page(start: int, count: int = 100, sort_by: str = "_ASC",
         if title and price_cents > 0:
             seen.add(appid)
             found.append((appid, title, price_cents))
+    _SEARCH_PAGE_MEMORY[page_key] = (time.time(), list(found), total)
     return found, total
 
 
-def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) -> List[Tuple[int, str, int]]:
+def _catalog(min_price_cents: int = 0, max_price_cents: int = 0,
+             filters: Dict[str, Any] | None = None,
+             force_refresh: bool = False) -> List[Tuple[int, str, int]]:
     global _MEMORY, _TOTAL_RESULTS
     selected = _filters(filters)
     search_key = _search_key(selected)
-    cache_key = f"{min_price_cents}:{search_key}"
+    cache_key = f"{min_price_cents}:{max_price_cents}:{search_key}"
     cached = _MEMORY.get(cache_key)
-    if cached and time.time() - cached[0] < _CACHE_SECONDS:
+    if not force_refresh and cached and time.time() - cached[0] < _CACHE_SECONDS:
         return cached[1]
 
     # Steam retired the unauthenticated ISteamApps/GetAppList endpoint. Its
     # replacement requires an API key, whereas the Store's own paginated
     # search feed remains public. Read a random page from the Games category.
-    if not _TOTAL_RESULTS.get(search_key):
+    review_filtered = bool(selected["qualityMode"] or selected["minRating"] or selected["minReviews"])
+    if not _TOTAL_RESULTS.get(search_key) and not review_filtered:
         _, _TOTAL_RESULTS[search_key] = _search_page(0, 1, "_ASC", selected)
     pool: List[Tuple[int, str, int]] = []
     expensive = min_price_cents > 0
-    review_filtered = bool(selected["qualityMode"] or selected["minRating"] or selected["minReviews"])
     if review_filtered:
         # Random Store pages are overwhelmingly populated by little-reviewed
         # releases, so post-validating a small random batch frequently produces
         # no winner. Draw from a broad slice of Steam's review-sorted catalog;
         # the exact count/rating thresholds are still verified below against
         # the live review-summary API.
+        # The first Reviews_DESC page both seeds the pool and supplies the total
+        # count. Previously we made a separate count request followed by eight
+        # serial pages (the 650 ms Store throttle alone cost over five seconds).
+        first_page, reported_total = _search_page(0, 100, "Reviews_DESC", selected)
+        _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS.get(search_key, 0), reported_total)
+        pool.extend(first_page)
         page_count = max(1, (_TOTAL_RESULTS[search_key] + 99) // 100)
-        review_page_count = min(20, page_count)
-        sample_count = min(8, review_page_count)
-        for page_number in random.sample(range(review_page_count), sample_count):
+        review_page_count = min(120, page_count)
+        # Keep the cold path at exactly three Store calls, but spread them over
+        # the catalog instead of drawing every page from its anime-heavy front.
+        # The live details/review checks below remain authoritative.
+        page_bands = []
+        upper_end = min(20, review_page_count)
+        if upper_end > 1:
+            page_bands.append(range(1, upper_end))
+        if review_page_count > upper_end:
+            page_bands.append(range(upper_end, review_page_count))
+        for band in page_bands:
+            page_number = random.choice(band)
             page, reported_total = _search_page(page_number * 100, 100, "Reviews_DESC", selected)
             _TOTAL_RESULTS[search_key] = max(_TOTAL_RESULTS[search_key], reported_total)
             pool.extend(page)
@@ -161,7 +213,12 @@ def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) ->
             return pages[page_number]
 
         low, high, last_eligible_page = 0, page_count - 1, -1
-        while low <= high:
+        # An exact boundary can require 10-12 rapid Store calls on the current
+        # catalog. A coarse five-probe boundary is enough for random selection
+        # and keeps one slider change well below Steam's anonymous rate limit.
+        probes = 0
+        while low <= high and probes < 5:
+            probes += 1
             middle = (low + high) // 2
             page = priced_page(middle)
             if any(price >= min_price_cents for _, _, price in page):
@@ -171,7 +228,7 @@ def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) ->
                 high = middle - 1
 
         if last_eligible_page >= 0:
-            sample_count = min(6, last_eligible_page + 1)
+            sample_count = min(3, last_eligible_page + 1)
             chosen_pages = random.sample(range(last_eligible_page + 1), sample_count)
             for page_number in chosen_pages:
                 pool.extend(priced_page(page_number))
@@ -186,7 +243,7 @@ def _catalog(min_price_cents: int = 0, filters: Dict[str, Any] | None = None) ->
                 break
     deduplicated: Dict[int, Tuple[str, int]] = {}
     for appid, name, price_cents in pool:
-        if price_cents >= max(1, min_price_cents):
+        if price_cents >= max(1, min_price_cents) and (not max_price_cents or price_cents <= max_price_cents):
             deduplicated[appid] = (name, price_cents)
     result = [(appid, name, price) for appid, (name, price) in deduplicated.items()]
     _MEMORY[cache_key] = (time.time(), result)
@@ -220,8 +277,18 @@ def _deck_category(appid: int) -> int:
         return 0
 
 
-def _store_game(appid: int, min_price_cents: int,
+def _store_game(appid: int, min_price_cents: int, max_price_cents: int = 0,
                 filters: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
+    selected = _filters(filters)
+    cache_key = json.dumps({
+        "appid": int(appid), "min": int(min_price_cents or 0),
+        "max": int(max_price_cents or 0), "filters": selected,
+    }, sort_keys=True)
+    with _STORE_GAME_MEMORY_LOCK:
+        cached = _STORE_GAME_MEMORY.get(cache_key)
+        if cached and time.time() - cached[0] < _CACHE_SECONDS:
+            return dict(cached[1]) if cached[1] else None
+    result: Dict[str, Any] | None = None
     try:
         response = get_http_client().get(
             _DETAIL_URL,
@@ -247,7 +314,8 @@ def _store_game(appid: int, min_price_cents: int,
         # details price is authoritative for both eligibility and display.
         if actual_price_cents < max(1, int(min_price_cents or 0)):
             return None
-        selected = _filters(filters)
+        if max_price_cents and actual_price_cents > int(max_price_cents):
+            return None
         # Quality mode owns the two overlapping review constraints. Preserve
         # the manual values in settings for later, but ignore them until the
         # preset is turned off so the result cannot be ambiguous.
@@ -279,7 +347,7 @@ def _store_game(appid: int, min_price_cents: int,
             classifications.extend(str(item.get("description") or "").lower() for item in group if isinstance(item, dict))
         if any(marker in label for label in classifications for marker in online_markers):
             return None
-        return {
+        result = {
             "appid": appid,
             "name": str(data["name"]),
             "image": str(data.get("header_image") or ""),
@@ -288,7 +356,16 @@ def _store_game(appid: int, min_price_cents: int,
             "currency": str(price.get("currency") or "USD"),
         }
     except Exception:
+        # A timeout, 429, or temporary Store/API failure does not establish
+        # that this AppID is invalid. Do not poison the hour-long validation
+        # cache with a transient negative result.
         return None
+    with _STORE_GAME_MEMORY_LOCK:
+        _STORE_GAME_MEMORY[cache_key] = (time.time(), dict(result) if result else None)
+        # Bound the process-lifetime cache while retaining its newest entries.
+        while len(_STORE_GAME_MEMORY) > 2048:
+            _STORE_GAME_MEMORY.pop(next(iter(_STORE_GAME_MEMORY)), None)
+    return result
 
 
 def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_cents: int = 0,
@@ -296,18 +373,46 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_ce
     excluded: Set[int] = {int(value) for value in (excluded_appids or []) if int(value) > 0}
     min_price_cents = max(0, int(min_price_cents or 0))
     selected = _filters(filters)
-    catalog = [(appid, name, price) for appid, name, price in _catalog(min_price_cents, selected) if appid not in excluded]
+    # New slider settings supersede the legacy minimum-price argument. Keeping
+    # the argument supported lets older frontends continue to work.
+    max_price_cents = 0
+    if selected["priceEnabled"]:
+        if selected["priceDirection"] == "max":
+            min_price_cents = 0
+            max_price_cents = selected["priceCents"]
+        else:
+            min_price_cents = selected["priceCents"]
+    catalog = [(appid, name, price) for appid, name, price in _catalog(min_price_cents, max_price_cents, selected) if appid not in excluded]
     if not catalog:
         return {"success": False, "error": "No paid Steam games matched the selected price and filters; try broadening them"}
 
     # Validate the prize against Store appdetails so the reel cannot land on a
     # tool, DLC, soundtrack, demo, or removed catalog entry.
-    candidates = random.sample(catalog, min(72 if any(selected.values()) else 48, len(catalog)))
-    winner = None
-    for appid, _, _ in candidates:
-        winner = _store_game(appid, min_price_cents, selected)
-        if winner:
-            break
+    filters_active = bool(
+        selected["priceEnabled"] or selected["qualityMode"] or selected["genre"]
+        or selected["players"] or selected["deck"] or selected["minRating"]
+        or selected["minReviews"] or selected["releaseFrom"] or selected["releaseTo"]
+    )
+    def choose_winner(pool: List[Tuple[int, str, int]]) -> Dict[str, Any] | None:
+        candidates = random.sample(pool, min(72 if filters_active else 48, len(pool)))
+        for appid, _, _ in candidates:
+            candidate = _store_game(appid, min_price_cents, max_price_cents, selected)
+            if candidate:
+                return candidate
+        return None
+
+    winner = choose_winner(catalog)
+    if not winner:
+        # A filtered catalog is deliberately a small, fast sample. Once its
+        # remaining entries have been excluded or rejected, take a different
+        # sample instead of treating the one-hour cached slice as the entirety
+        # of Steam. Search pages themselves stay cached, limiting Store traffic.
+        fresh_catalog = [
+            item for item in _catalog(
+                min_price_cents, max_price_cents, selected, force_refresh=True,
+            ) if item[0] not in excluded
+        ]
+        winner = choose_winner(fresh_catalog) if fresh_catalog else None
     if not winner:
         return {"success": False, "error": "Could not find a live Steam game matching every selected filter; try broadening them"}
 
@@ -315,7 +420,7 @@ def roll(excluded_appids: List[int] | None = None, count: int = 36, min_price_ce
     # Only the winning card must satisfy the selected price floor. Fill the
     # surrounding reel from the normal paid catalog so very rare tiers (such
     # as $1000+) still produce a full, varied animation.
-    filler_pool = [item for item in _catalog(0, {}) if item[0] not in excluded and item[0] != winner["appid"]]
+    filler_pool = [item for item in _catalog(0, 0, {}) if item[0] not in excluded and item[0] != winner["appid"]]
     if not filler_pool:
         return {"success": False, "error": "Steam Store catalog is unavailable"}
     filler = random.sample(filler_pool, count - 1) if len(filler_pool) >= count - 1 else random.choices(filler_pool, k=count - 1)

@@ -12,11 +12,11 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, SlsStatus } from "./api";
+import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, pluginPrepareReplacement, PluginUpdateStatus, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
-import { refreshTokeerAvailabilityCache, TOKEER_CACHE_TTL_MS } from "./lib/tokeerAvailability";
+import { disposeTokeerDiscordView } from "./lib/tokeerDiscordCapture";
 import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 import { StoreRouletteModal } from "./sections/Minigame";
@@ -27,6 +27,7 @@ const ADVANCED_ROUTE = "/slsdeck";
 const ACTIONS_FIXES_QAM_KEY = "slsdeck.actionsFixesQam";
 const ACTIONS_FIXES_QAM_EVENT = "slsdeck-actions-fixes-qam";
 const SLS_STATUS_CACHE_KEY = "slsdeck.slsStatusCache";
+const UPDATE_BANNERS_EVENT = "slsdeck-update-banners";
 
 function readCachedSlsStatus(): SlsStatus | null {
   try {
@@ -86,6 +87,8 @@ function QamTitle() {
 }
 
 type PendingAddVerification = { appid: number; name: string; sessionOrigin: number; createdAt: number; liveReady: boolean };
+const PURGE_ADDED_GAMES_EVENT = "slsdeck-purge-added-games";
+const purgedAtByAppId = new Map<number, number>();
 
 function readPendingAddVerifications(): PendingAddVerification[] {
   try {
@@ -98,10 +101,12 @@ function writePendingAddVerifications(items: PendingAddVerification[]): void {
   try { window.localStorage.setItem(PENDING_ADD_VERIFY_KEY, JSON.stringify(items.slice(-50))); } catch { /* ignore */ }
 }
 
-function queueAddVerification(appid: number, name: string, liveReady: boolean): void {
+function queueAddVerification(appid: number, name: string, liveReady: boolean): PendingAddVerification {
   const items = readPendingAddVerifications().filter((item) => item.appid !== Number(appid));
-  items.push({ appid: Number(appid), name: name || `AppID ${appid}`, sessionOrigin: performance.timeOrigin, createdAt: Date.now(), liveReady });
+  const item = { appid: Number(appid), name: name || `AppID ${appid}`, sessionOrigin: performance.timeOrigin, createdAt: Date.now(), liveReady };
+  items.push(item);
   writePendingAddVerifications(items);
+  return item;
 }
 
 /** Steam's library stores are not always exposed to Decky in Desktop/Big
@@ -123,9 +128,12 @@ function steamLibraryHasApp(appid: number): boolean | null {
   return libraryCollectionAvailable ? false : null;
 }
 
-async function verifyAddedGameReachedSteam(appid: number, name: string): Promise<void> {
+async function verifyAddedGameReachedSteam(appid: number, name: string, createdAt = Date.now()): Promise<void> {
+  const wasPurged = () => (purgedAtByAppId.get(Number(appid)) || 0) >= createdAt;
+  if (wasPurged()) return;
   let authoritative = false;
   for (let attempt = 0; attempt < 15; attempt++) {
+    if (wasPurged()) return;
     const present = steamLibraryHasApp(appid);
     if (present === true) {
       writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
@@ -138,6 +146,7 @@ async function verifyAddedGameReachedSteam(appid: number, name: string): Promise
   // pending record so a later Gaming Mode session can verify it, but never emit
   // a false failure notification from an unavailable frontend data source.
   if (!authoritative) return;
+  if (wasPurged()) return;
   // Registration in config.yaml is not enough: this is the final frontend
   // proof that Steam actually accepted the injected package/appinfo entry.
   toaster.toast({
@@ -148,9 +157,21 @@ async function verifyAddedGameReachedSteam(appid: number, name: string): Promise
   writePendingAddVerifications(readPendingAddVerifications().filter((item) => item.appid !== appid));
 }
 
-function verifyAddsPendingFromPreviousSteamSession(): void {
-  const previous = readPendingAddVerifications().filter((item) => item.sessionOrigin !== performance.timeOrigin);
-  previous.forEach((item) => { void verifyAddedGameReachedSteam(item.appid, item.name); });
+async function verifyAddsPendingFromPreviousSteamSession(): Promise<void> {
+  let previous = readPendingAddVerifications().filter((item) => item.sessionOrigin !== performance.timeOrigin);
+  try {
+    // A purge intentionally deregisters games. Old verification records survive
+    // a Steam/Desktop restart in localStorage, so only verify apps the backend
+    // still considers registered.
+    const installed = await getInstalledApps();
+    if (installed.success) {
+      const registered = new Set((installed.apps || []).map((app) => Number(app.appid)));
+      previous = previous.filter((item) => registered.has(Number(item.appid)));
+      const currentSession = readPendingAddVerifications().filter((item) => item.sessionOrigin === performance.timeOrigin);
+      writePendingAddVerifications([...previous, ...currentSession]);
+    }
+  } catch { /* retain records if backend status is temporarily unavailable */ }
+  previous.forEach((item) => { void verifyAddedGameReachedSteam(item.appid, item.name, item.createdAt); });
 }
 
 type DependencyLifecycleToken = { active: boolean; stableSince: number };
@@ -309,8 +330,8 @@ function RepairBanner() {
   const [reason, setReason] = useState("");
   // A broken config.yaml is the OTHER way the engine goes silently dead:
   // injection can be perfectly healthy while a malformed/missing key makes
-  // SLSsteam fall back to its own defaults (DisableUpdates: yes hands added
-  // games zero depots). Both faults surface through this one banner.
+  // SLSsteam fall back to defaults that do not match the managed setup. Both
+  // faults surface through this one banner.
   const [cfgIssues, setCfgIssues] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");
@@ -410,6 +431,9 @@ function Content() {
   // actions, game list or tools (there's nothing for them to act on yet).
   const [slsStatus, setSlsStatus] = useState<SlsStatus | null>(() => readCachedSlsStatus());
   const [slsStatusChecked, setSlsStatusChecked] = useState(false);
+  const [pluginUpdate, setPluginUpdate] = useState<PluginUpdateStatus | null>(null);
+  const [updateBanners, setUpdateBanners] = useState(true);
+  const [pluginUpdateBusy, setPluginUpdateBusy] = useState(false);
   const installed = slsStatus?.installed === true;
 
   const refreshSlsStatus = useCallback(async () => {
@@ -425,18 +449,33 @@ function Content() {
     }
   }, []);
 
-  useEffect(() => {
-    if (!installed) return;
-    // Refresh Discord-backed vault/game availability independently of the
-    // Anti-Denuvo page. The cache itself coalesces callers and preserves the
-    // last good result when Discord is logged out or temporarily unrendered.
-    const refresh = () => refreshTokeerAvailabilityCache(false).catch(() => {});
-    const first = setTimeout(refresh, 12000);
-    const interval = setInterval(refresh, TOKEER_CACHE_TTL_MS);
-    return () => { clearTimeout(first); clearInterval(interval); };
-  }, [installed]);
-
-
+  const installBannerUpdate = async () => {
+    const release = pluginUpdate?.latest;
+    if (!release || pluginUpdateBusy) return;
+    const backend = (window as any).DeckyBackend ?? (window.opener as any)?.DeckyBackend ?? null;
+    if (!backend?.call) {
+      toaster.toast({ title: "SLSDeck update", body: "Decky installer is unavailable." });
+      return;
+    }
+    setPluginUpdateBusy(true);
+    try {
+      const armed = await pluginPrepareReplacement(release.version, release.assetUrl);
+      if (!armed.success) throw new Error(armed.error || "Could not prepare plugin replacement");
+      await backend.call(
+        "utilities/install_plugin",
+        release.assetUrl,
+        "SLSDeckUniversal",
+        release.version,
+        "",
+        2,
+      );
+      toaster.toast({ title: "SLSDeck update", body: "Confirm the update in Decky Loader." });
+    } catch (error) {
+      toaster.toast({ title: "SLSDeck update failed", body: String(error) });
+    } finally {
+      window.setTimeout(() => setPluginUpdateBusy(false), 3000);
+    }
+  };
 
   useEffect(() => {
     const readActionsFixes = () => {
@@ -460,6 +499,33 @@ function Content() {
       window.removeEventListener(ACTIONS_FIXES_QAM_EVENT, onActionsFixes as EventListener);
     };
   }, [refreshSlsStatus]);
+
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const status = await pluginUpdateStatus();
+        if (active) setPluginUpdate(status);
+      } catch {
+        /* An unavailable GitHub check must not disturb the Quick Access panel. */
+      }
+    };
+    getUiSettings().then((result) => {
+      if (active) setUpdateBanners(result.settings?.pluginUpdateBanners !== false);
+    }).catch(() => {});
+    const onBannerSetting = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<boolean>;
+      setUpdateBanners(event.detail !== false);
+    };
+    window.addEventListener(UPDATE_BANNERS_EVENT, onBannerSetting as EventListener);
+    void check();
+    const interval = window.setInterval(check, 15 * 60 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener(UPDATE_BANNERS_EVENT, onBannerSetting as EventListener);
+    };
+  }, []);
 
   const anchor = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -490,6 +556,31 @@ function Content() {
   return (
     <>
       <div ref={anchor} style={{ height: 0 }} />
+      {updateBanners && pluginUpdate?.updateAvailable && pluginUpdate.latest && (
+        <div
+          style={{
+            width: "calc(100% - 20px)", margin: "8px 10px 6px", padding: "10px 12px",
+            minHeight: 52, height: "auto", borderRadius: 8, textAlign: "left",
+            color: "#effff2", border: "1px solid rgba(95, 220, 118, .78)",
+            background: "linear-gradient(135deg, rgba(31, 126, 55, .96), rgba(24, 91, 42, .96))",
+            boxShadow: "0 4px 14px rgba(13, 80, 30, .35)",
+          }}
+        >
+          <div style={{ width: "100%", lineHeight: 1.35 }}>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>SLSDeck update available</div>
+            <div style={{ fontSize: 11, opacity: .9, marginBottom: 8 }}>
+              {pluginUpdate.currentVersion} → {pluginUpdate.latest.version} · {pluginUpdate.currentChannel}
+            </div>
+            <DialogButton
+              onClick={installBannerUpdate}
+              disabled={pluginUpdateBusy}
+              style={{ width: "100%", minHeight: 34, height: 34, fontWeight: 700 }}
+            >
+              {pluginUpdateBusy ? "Preparing update…" : `Update to ${pluginUpdate.latest.version}`}
+            </DialogButton>
+          </div>
+        </div>
+      )}
       <RepairBanner />
       <SlsSteamCompact status={slsStatus} statusChecked={slsStatusChecked} onRefreshStatus={refreshSlsStatus} />
       {/* Per-game surfaces first: "This game" and "Actions & fixes" both act on
@@ -561,6 +652,14 @@ export default definePlugin(() => {
   };
   document.addEventListener("visibilitychange", noteCefTransition);
   window.addEventListener("pageshow", noteCefTransition);
+  const invalidatePurgedVerifications = (rawEvent: Event) => {
+    const event = rawEvent as CustomEvent<{ appids?: number[]; purgedAt?: number }>;
+    const ids = new Set((event.detail?.appids || []).map(Number).filter((appid) => appid > 0));
+    const purgedAt = Number(event.detail?.purgedAt) || Date.now();
+    ids.forEach((appid) => purgedAtByAppId.set(appid, purgedAt));
+    writePendingAddVerifications(readPendingAddVerifications().filter((item) => !ids.has(Number(item.appid))));
+  };
+  window.addEventListener(PURGE_ADDED_GAMES_EVENT, invalidatePurgedVerifications);
 
   const dependencyRepairFirst = setTimeout(() => {
     repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
@@ -587,6 +686,7 @@ export default definePlugin(() => {
         const dl = (e as any).autoDownload;
         const isAssella = (e as any).assella;
         const liveReady = !!(e as any).liveReady;
+        const isDlcPage = !!e.isDlcPage;
         const earlyNotified: Set<number> | undefined = (window as any).__slsdeckEarlyAddNotified;
         const hadEarlyNotification = !!earlyNotified?.delete(Number(e.appid));
         const skipDuplicate = e.status === "done" && e.success && hadEarlyNotification;
@@ -615,22 +715,26 @@ export default definePlugin(() => {
         });
         if (e.status === "done" && e.success) {
           void refreshBadges();
-          if (!isAssella) {
-            queueAddVerification(e.appid, e.name, liveReady);
+          if (!isAssella && !isDlcPage) {
+            const verification = queueAddVerification(e.appid, e.name, liveReady);
             // A verified HotReload should materialize in this Steam session.
             // Restart-fallback adds stay queued and are checked on the next
             // Steam/webhelper session instead of raising a premature warning.
             if (liveReady) {
-              window.setTimeout(() => { void verifyAddedGameReachedSteam(e.appid, e.name); }, 5000);
+              window.setTimeout(() => {
+                void verifyAddedGameReachedSteam(e.appid, e.name, verification.createdAt);
+              }, 5000);
             }
           }
           // slsteam-moon's verified HotReload path updates package/license/appinfo
           // in the current Steam session, so normal SLS adds must NOT restart.
           // Keep ASSella's existing reload behavior separate from this live path.
           if (isAssella && dl) { reloadSteam().catch(() => {}); }
-          getAutoFix()
-            .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
-            .catch(() => {});
+          if (!isDlcPage) {
+            getAutoFix()
+              .then((r) => (r.enabled ? addAutoFixPending(e.appid) : undefined))
+              .catch(() => {});
+          }
           // Keep the optional "SLSDeck" collection in sync as games are added.
           syncSlsCollection().catch(() => {});
         } else if (!isAssella) {
@@ -673,11 +777,13 @@ export default definePlugin(() => {
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");
+      disposeTokeerDiscordView();
       dependencyLifecycleToken.active = false;
       try { clearTimeout(dependencyRepairFirst); } catch { /* ignore */ }
       try { clearInterval(dependencyRepairRetry); } catch { /* ignore */ }
       try { document.removeEventListener("visibilitychange", noteCefTransition); } catch { /* ignore */ }
       try { window.removeEventListener("pageshow", noteCefTransition); } catch { /* ignore */ }
+      try { window.removeEventListener(PURGE_ADDED_GAMES_EVENT, invalidatePurgedVerifications); } catch { /* ignore */ }
       try { clearInterval(addNotifier); } catch { /* ignore */ }
       try { clearInterval(autoFixSweep); } catch { /* ignore */ }
       try { clearInterval(collectionSync); } catch { /* ignore */ }

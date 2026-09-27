@@ -1,4 +1,4 @@
-"""Shared GitHub 'latest release' resolver (used by opensave + updates).
+"""Shared GitHub latest-release resolver used by dependency updates.
 
 Small, cached wrapper around ``/repos/<owner>/<repo>/releases/latest`` so several
 modules can ask "what's the newest tag / matching asset?" without each

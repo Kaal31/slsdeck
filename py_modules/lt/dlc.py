@@ -10,6 +10,7 @@ public appdetails API and does the config work.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, List
 
 from .logger import logger
@@ -179,8 +180,22 @@ def ensure_all_dlc_keys(appid: int) -> Dict[str, Any]:
     the resolved lua. Returns {success, keys, source}."""
     from . import downloads
     registered = 0
+    registered_depots = set()
     dlc_registered = 0
     source = ""
+    source_parts = []
+    errors = []
+    dlc_ids: List[int] = []
+    # Keep Moon's ownership policy persistent across Steam restarts. DlcData
+    # remains the per-game fallback, while this native flag makes advertised
+    # DLC eligible during package reconstruction after a restart.
+    try:
+        policy = slssteam.set_inject_all_advertised_dlc(True)
+        if not policy.get("success"):
+            errors.append(policy.get("error") or "Moon DLC policy write failed")
+    except Exception as exc:
+        errors.append(f"Moon DLC policy: {exc}")
+        logger.warn(f"SLSDeck: ensure_all_dlc_keys policy step failed for {appid}: {exc}")
     # 0) Register the game's DLC appids explicitly in moon's DlcData so they show
     # OWNED everywhere — not just in-game. moon's blanket unlock only fires while a
     # game is running (getAppId != 0); in the library/store view DLC still read as
@@ -190,33 +205,161 @@ def ensure_all_dlc_keys(appid: int) -> Dict[str, Any]:
     try:
         info = resolve_dlc(appid)
         base = int(info.get("base") or appid)
-        dlc_ids = info.get("dlcs") or []
+        dlc_ids = [int(value) for value in (info.get("dlcs") or [])]
         if dlc_ids:
             rr = slssteam.add_dlc_block(base, dlc_ids)
-            dlc_registered = int(rr.get("added", 0))
+            if rr.get("success"):
+                dlc_registered = int(rr.get("added", 0))
+            else:
+                errors.append(rr.get("error") or "DlcData write failed")
     except Exception as exc:
+        errors.append(f"DlcData: {exc}")
         logger.warn(f"SLSDeck: ensure_all_dlc_keys DlcData step failed for {appid}: {exc}")
     # 1) The resolved lua text (lua.tools/Charon) — parse ALL addappid keys.
     try:
         r = downloads.fetch_lua_text(appid)
         if r.get("success"):
             source = r.get("source", "")
+            if source:
+                source_parts.append(source)
             for m in re.finditer(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*["\']([0-9a-fA-F]{64})["\']',
                                  r.get("lua", "")):
                 depot, key = int(m.group(1)), m.group(2)
                 try:
-                    if slssteam.cache_depot_key(appid, depot, key):
+                    if depot not in registered_depots and slssteam.cache_depot_key(appid, depot, key):
                         registered += 1
+                        registered_depots.add(depot)
                 except Exception:
                     pass
     except Exception as exc:
+        errors.append(f"lua source: {exc}")
         logger.warn(f"SLSDeck: ensure_all_dlc_keys lua step failed for {appid}: {exc}")
-    # 2) Hubcap manifest bundle (has DLC depots + .manifest binaries) — best source.
+    # 2) Preferred API bundle. Import its own keys as well as its manifest
+    # binaries; previously this path only noticed that files existed, labelled
+    # every provider "hubcap", and discarded the bundle's DLC keys.
     try:
         b = downloads.fetch_manifest_bundle(appid)
+        bundle_source = str(b.get("source") or "")
+        bundle_lua = str(b.get("lua") or "")
+        for m in re.finditer(r'addappid\s*\(\s*(\d+)\s*,\s*\d+\s*,\s*["\']([0-9a-fA-F]{64})["\']',
+                             bundle_lua):
+            depot, key = int(m.group(1)), m.group(2)
+            try:
+                if depot not in registered_depots and slssteam.cache_depot_key(appid, depot, key):
+                    registered += 1
+                    registered_depots.add(depot)
+            except Exception:
+                pass
         if b.get("manifests"):
-            source = (source + "+hubcap").strip("+") if source else "hubcap"
-    except Exception:
-        pass
-    return {"success": True, "keys": registered, "dlcRegistered": dlc_registered,
-            "source": source or "none"}
+            if bundle_source and bundle_source not in source_parts:
+                source_parts.append(bundle_source)
+            try:
+                import os
+                import shutil
+                store = slssteam.manifest_store_dir()
+                os.makedirs(store, exist_ok=True)
+                for path in b.get("manifests", {}).values():
+                    shutil.copy2(path, os.path.join(store, os.path.basename(path)))
+                from .steam import restore_manifests_to_depotcache
+                restore_manifests_to_depotcache(appid)
+            except Exception as manifest_exc:
+                errors.append(f"manifest persistence: {manifest_exc}")
+                logger.warn(f"SLSDeck: DLC manifest persistence failed for {appid}: {manifest_exc}")
+    except Exception as exc:
+        errors.append(f"manifest bundle: {exc}")
+        logger.warn(f"SLSDeck: ensure_all_dlc_keys bundle step failed for {appid}: {exc}")
+    source = "+".join(source_parts)
+
+    # Persist only depots positively classified as DLC.  This avoids treating
+    # optional language/OS/base depots as missing during the boot comparison.
+    confirmed_dlc_depots = []
+    if registered_depots:
+        relation = enrich_depot_relationships(appid, [str(value) for value in registered_depots])
+        confirmed_dlc_depots = sorted(
+            int(depot) for depot, row in (relation.get("depots") or {}).items()
+            if row.get("kind") == "dlc" and str(depot).isdigit()
+        )
+    try:
+        from . import settings
+        settings.set_auto_dlc_record(appid, dlc_ids, confirmed_dlc_depots)
+    except Exception as exc:
+        errors.append(f"DLC expectation record: {exc}")
+
+    # Entitlement-only DLC legitimately has no keys. Content DLC does not. A
+    # provider miss must not look identical to a successful registration.
+    if dlc_ids and not registered and not confirmed_dlc_depots:
+        errors.append("no DLC depot keys or confirmed DLC content depots were resolved")
+    return {"success": not errors, "keys": registered,
+            "registeredDepots": sorted(registered_depots),
+            "dlcDepots": confirmed_dlc_depots,
+            "dlcRegistered": dlc_registered, "source": source or "none",
+            "errors": errors, "error": "; ".join(errors)}
+
+
+def reconcile_auto_dlc_boot() -> Dict[str, Any]:
+    """Reassert persistent Moon DLC state and repair depots lost at startup.
+
+    No provider/network lookup is performed here.  The expected DLC appids and
+    confirmed content depots were recorded during the successful add operation.
+    """
+    from . import settings, steam
+
+    enabled = settings.get_auto_add_dlc()
+    errors: List[str] = []
+    restored: List[int] = []
+    repair_requested: List[int] = []
+    policy = slssteam.set_inject_all_advertised_dlc(enabled)
+    if not policy.get("success"):
+        errors.append(policy.get("error") or "Moon DLC policy write failed")
+        return {"success": False, "enabled": enabled, "errors": errors,
+                "restored": restored, "repairRequested": repair_requested}
+    if not enabled:
+        return {"success": True, "enabled": False, "errors": [],
+                "restored": [], "repairRequested": []}
+
+    records = settings.get_auto_dlc_records()
+    # One-time, self-selecting migration: only parents already present in
+    # Moon's DlcData are backfilled. This covers games configured by an older
+    # plugin build (including an already-affected Street Fighter 6 install)
+    # without scanning every added game in the library.
+    for parent in slssteam.read_dlc_data():
+        if str(parent) in records:
+            continue
+        migrated = ensure_all_dlc_keys(parent)
+        if not migrated.get("success"):
+            errors.append(f"{parent}: legacy DLC state migration incomplete: "
+                          f"{migrated.get('error') or 'unknown error'}")
+    records = settings.get_auto_dlc_records()
+
+    for key, record in records.items():
+        appid = int(key)
+        dlc_ids = record.get("dlcAppids") or []
+        if dlc_ids:
+            result = slssteam.add_dlc_block(appid, dlc_ids)
+            if not result.get("success"):
+                errors.append(f"{appid}: {result.get('error') or 'DlcData restore failed'}")
+                continue
+            restored.append(appid)
+
+        expected = {str(value) for value in (record.get("depotIds") or [])}
+        if not expected:
+            continue
+        installed = {str(value) for value in (steam.get_installed_depots(appid) or {})}
+        missing = sorted(expected - installed, key=int)
+        if not installed or not missing:
+            continue
+        # Moon watches config.yaml live; give the watcher a short bounded window
+        # to publish the restored package before asking Steam to validate.
+        if slssteam._injection_functional():
+            time.sleep(0.35)
+            slssteam.trigger_steam_install(appid)
+            slssteam.validate_steam_app(appid)
+            repair_requested.append(appid)
+            logger.warn(
+                f"SLSDeck: Steam dropped DLC depots for {appid}: {', '.join(missing)}; "
+                "restored Moon ownership and requested validation")
+        else:
+            errors.append(f"{appid}: missing DLC depots {', '.join(missing)}; Moon is not live")
+
+    return {"success": not errors, "enabled": True, "errors": errors,
+            "restored": restored, "repairRequested": repair_requested}

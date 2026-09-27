@@ -4,28 +4,21 @@
 // Hubcap / ~/Downloads), the correct order is: pin the manifest to that build →
 // let Steam update the game to it → apply the fix onto the matching build.
 //
-// Flow:
-//   1. Pin the fix's build (pinForFix). Harmless no-op if no build source.
-//   2. If the game is already installed AND its download is complete, skip the
-//      update entirely and go straight to applying (covers "installed with the
-//      pinned manifest but no fix applied yet").
-//   3. If no build could be pinned, just apply now (legacy behaviour).
-//   4. Otherwise trigger the Steam update to the pinned build, then:
-//        - guided (default): stop and let the user press Apply once the download
-//          bar completes;
-//        - auto: poll for completion and apply automatically.
+// Pin the fix's build, let Steam reconcile the installed depots with Moon's
+// pinned target, and apply the fix only after the on-disk depot GIDs match.
 import {
   appDownloadComplete,
   getGameInstallPath,
+  getPinStatus,
   triggerSteamInstall,
   noInternetFixBegin,
+  validateSteamApp,
 } from "../api";
 
 export type ApplyPhase =
   | "pinning"
   | "pin_failed"
   | "updating"
-  | "awaiting_reinstall"
   | "awaiting_download"
   | "applying";
 
@@ -43,7 +36,7 @@ export interface BuildApplyHooks {
   pinFn?: () => Promise<{ pinned: boolean; source?: string; changed?: boolean; error?: string }>;
 }
 
-export type BuildApplyResult = "applied" | "awaiting" | "reinstall";
+export type BuildApplyResult = "applied" | "awaiting";
 
 async function installed(appid: number): Promise<boolean> {
   try {
@@ -57,6 +50,28 @@ async function installed(appid: number): Promise<boolean> {
 export async function isDownloadComplete(appid: number): Promise<boolean> {
   try {
     return !!(await appDownloadComplete(appid)).complete;
+  } catch {
+    return false;
+  }
+}
+
+/** A pin is ready only when every pinned depot is installed at its exact GID. */
+export function installedDepotsMatchPin(
+  pinned: Record<string, string>, installed: Record<string, string>
+): boolean {
+  const entries = Object.entries(pinned);
+  if (!entries.length) return false;
+  return entries.every(([depot, gid]) =>
+    depot in installed && String(installed[depot]) === String(gid)
+  );
+}
+
+export async function isPinnedBuildReady(appid: number): Promise<boolean> {
+  try {
+    const [pin, download] = await Promise.all([getPinStatus(appid), appDownloadComplete(appid)]);
+    return !!(pin.success && pin.pinned && download.success && download.complete &&
+      (pin.pinMatched === true ||
+        installedDepotsMatchPin(pin.depots || {}, pin.installedDepots || {})));
   } catch {
     return false;
   }
@@ -77,18 +92,15 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
   let pinned = false;
   // Default true: if we can't tell, assume the build changed so we force an
   // update rather than silently applying onto a stale build.
-  let pinChanged = true;
   try {
     const pin = await h.pinFn();
     source = pin.source || "none";
     pinned = !!pin.pinned;
-    pinChanged = pin.changed !== false;
   } catch {
     /* pin is best-effort */
   }
 
   const isInstalled = await installed(h.appid);
-  const downloadComplete = isInstalled ? await isDownloadComplete(h.appid) : false;
 
   // A source advertised a paired manifest, so failure to pin it must stop the
   // operation. Applying anyway would put the fix on latest/the wrong build.
@@ -97,28 +109,15 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
     throw new Error("The selected fix's paired manifest could not be pinned.");
   }
 
-  // 3) Skip the update ONLY when the game is already pinned to *this exact build*
-  //    (the pin didn't change) and is installed & fully downloaded. That's the
-  //    "installed with the pinned manifest, fix not yet applied" case. If the pin
-  //    changed (a different/newer build), we must NOT skip — otherwise the
-  //    manifest upgrade would never download and the fix would land on the old
-  //    build.
-  if (!pinChanged && isInstalled && downloadComplete) {
+  // A pin file is not evidence that Steam has downloaded that build. Read
+  // InstalledDepots from Steam's appmanifest, even when the pin did not change.
+  if (isInstalled && await isPinnedBuildReady(h.appid)) {
     h.onPhase("applying");
     await h.doApply();
     return "applied";
   }
 
-  // Steam does not reliably switch an already-installed app to historical
-  // ManifestPins by launching or validating it. It frequently launches the
-  // current build instead. Keep the exact pin, but require a reinstall; the
-  // next apply attempt verifies the installed depot GIDs before extraction.
-  if (pinChanged && isInstalled) {
-    h.onPhase("awaiting_reinstall", { source });
-    return "reinstall";
-  }
-
-  // 4) Trigger Steam to update/download the game to the pinned build. First apply
+  // Trigger Steam to update/download the game to the pinned build. First apply
   //    the "no internet" fix (strip the steam.cfg update-block, restored once the
   //    download starts) so Steam doesn't fail the update with "no internet".
   h.onPhase("updating", { source });
@@ -127,10 +126,19 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
   } catch {
     /* best-effort */
   }
+  // Moon reloads config.yaml through its file watcher. Give that watcher one
+  // turn before asking Steam to construct the install plan from the new pin.
+  await new Promise((resolve) => setTimeout(resolve, 750));
   try {
     await triggerSteamInstall(h.appid);
   } catch {
     /* the user can still start the download manually */
+  }
+  if (isInstalled) {
+    // Install IPC can be a no-op for an app Steam considers fully installed.
+    // Steam's Verify action makes it reconcile Moon's newly pinned TARGET
+    // against the actual ACTIVE depots; do not launch the stale game.
+    try { await validateSteamApp(h.appid); } catch { /* user can retry */ }
   }
 
   if (!h.autoApply) {
@@ -147,7 +155,7 @@ export async function runBuildAccurateApply(h: BuildApplyHooks): Promise<BuildAp
     if (h.shouldStop?.()) return "awaiting";
     await new Promise((r) => setTimeout(r, 3000));
     if (h.shouldStop?.()) return "awaiting";
-    if (await isDownloadComplete(h.appid)) {
+    if (await isPinnedBuildReady(h.appid)) {
       h.onPhase("applying");
       await h.doApply();
       return "applied";

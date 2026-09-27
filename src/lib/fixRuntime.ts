@@ -218,11 +218,11 @@ export async function applyFixRuntime(appid: number, overrides?: string): Promis
   }
 }
 
-export function configureTokeerLaunch(
+export async function configureTokeerLaunch(
   appid: number,
   tokeerHome: string,
   requiredProton = "GE-Proton10-34"
-): { success: boolean; options?: string; proton?: string; error?: string } {
+): Promise<{ success: boolean; options?: string; proton?: string; usedFallback?: boolean; error?: string }> {
   const SC: any = (window as any).SteamClient;
   if (!SC?.Apps?.SetAppLaunchOptions || !SC?.Apps?.SpecifyCompatTool) {
     return { success: false, error: "Steam's live app-configuration API is unavailable." };
@@ -262,9 +262,34 @@ export function configureTokeerLaunch(
       .replace(/\s+/g, " ")
       .trim();
 
-    SC.Apps.SpecifyCompatTool(appid, requiredProton);
+    // A compatibility tool installed while Steam is running is present on disk
+    // before it appears in Steam's live tool registry.  Passing its undiscovered
+    // name to SpecifyCompatTool is silently ignored on affected client builds.
+    // Prefer Tokeer's exact GE build when Steam exposes it; otherwise select the
+    // built-in Proton Experimental so activation never proceeds with no layer.
+    let tools: any[] = [];
+    try {
+      const available = SC.Apps.GetAvailableCompatTools?.(appid);
+      tools = (available && typeof available.then === "function"
+        ? await available
+        : available) || [];
+    } catch {
+      tools = [];
+    }
+    const names = tools.map((tool: any) => ({
+      id: String(tool.strToolName || tool.strToolIdentifier || ""),
+      display: String(tool.strDisplayName || ""),
+    }));
+    const required = requiredProton.toLowerCase();
+    const discovered = names.find((tool) =>
+      tool.id.toLowerCase() === required || tool.display.toLowerCase() === required
+    );
+    const selectedProton = discovered?.id || "proton_experimental";
+    const usedFallback = !discovered;
+
+    SC.Apps.SpecifyCompatTool(appid, selectedProton);
     SC.Apps.SetAppLaunchOptions(appid, next);
-    return { success: true, options: next, proton: requiredProton };
+    return { success: true, options: next, proton: selectedProton, usedFallback };
   } catch (e) {
     return { success: false, error: String(e) };
   }

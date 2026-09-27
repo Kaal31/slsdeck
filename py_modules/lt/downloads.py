@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import io
 import json
 import os
 import re
@@ -74,6 +75,11 @@ GAMES_DB_LOCK = threading.Lock()
 _CANCEL: Dict[int, "threading.Event"] = {}
 _CANCEL_LOCK = threading.Lock()
 
+# Serialize final registration against bulk purge. Network/manifest work may
+# stay concurrent, but a game must not be registered from a stale add after the
+# purge has taken its snapshot.
+_REGISTRATION_LOCK = threading.RLock()
+
 # Keep DOWNLOAD_STATE from growing for the life of the process. Only terminal
 # entries are pruned, and only the oldest, so an in-flight add is never dropped.
 _MAX_TRACKED_STATES = 64
@@ -99,6 +105,14 @@ def _request_cancel(appid: int) -> None:
 
 def _is_cancelled(appid: int) -> bool:
     return _cancel_event(appid).is_set()
+
+
+def _register_app(appid: int, name: str, cancel_appid: int | None = None) -> Dict[str, Any]:
+    """Register unless a concurrent bulk purge cancelled this add."""
+    with _REGISTRATION_LOCK:
+        if _is_cancelled(appid if cancel_appid is None else cancel_appid):
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+        return slssteam.add_app(appid, name)
 
 
 def _prune_states() -> None:
@@ -504,7 +518,8 @@ def fetch_app_name(appid: int) -> str:
 
 
 # ── install ───────────────────────────────────────────────────────────────
-def _process_and_install_lua(appid: int, zip_path: str) -> None:
+def _process_and_install_lua(appid: int, zip_path: str,
+                             prefer_source_newest: bool = False) -> Dict[str, Any]:
     if _is_cancelled(appid):
         raise RuntimeError("cancelled")
 
@@ -563,6 +578,7 @@ def _process_and_install_lua(appid: int, zip_path: str) -> None:
 
         result, err = smart_merge.install(appid, coll, {
             "home": home, "steam_root": steam_root, "appinfo_text": appinfo_text,
+            "prefer_source_newest": bool(prefer_source_newest),
         })
         if not result:
             raise RuntimeError(f"smart_merge: {err}")
@@ -706,6 +722,7 @@ def _process_and_install_lua(appid: int, zip_path: str) -> None:
         except Exception as exc:
             logger.error(f"SLSDeck: content check failed for {appid}: {exc}")
             _set_state(appid, {"status": "done"})
+        return result
     finally:
         try:
             shutil.rmtree(coll, ignore_errors=True)
@@ -728,7 +745,11 @@ def _finalize_registration(appid: int, source_name: str) -> None:
     sls = {"success": False}
     sls_error = ""
     try:
-        sls = slssteam.add_app(appid, fetched)
+        sls = _register_app(appid, fetched)
+        if sls.get("cancelled"):
+            _set_state(appid, {"status": "cancelled", "success": False,
+                               "error": "Cancelled by purge"})
+            return
         if not sls.get("success"):
             sls_error = str(sls.get("error") or "SLSsteam registration failed")
     except Exception as sls_exc:
@@ -775,6 +796,26 @@ def _try_luatools_manifest(appid: int, dest_path: str) -> bool:
         return False
 
 
+def _is_hubcap_source(api: Dict[str, Any]) -> bool:
+    """Identify Hubcap/Morrenus without depending on the user-facing name."""
+    name = str(api.get("name") or "").lower()
+    url = str(api.get("url") or "").lower()
+    return ("hubcapmanifest.com" in url or "<moapikey>" in url
+            or "hubcap" in name or "morrenus" in name)
+
+
+def _partition_game_manifest_apis(apis: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Keep Hubcap above health-ranked/free providers for game manifests.
+
+    A configured Hubcap source is the authoritative game bundle. Missing keys,
+    HTTP failures and game-not-found responses still fall through normally.
+    Fix catalog/source ordering is deliberately unrelated to this function.
+    """
+    hubcap = [api for api in apis if _is_hubcap_source(api)]
+    fallback = [api for api in apis if not _is_hubcap_source(api)]
+    return hubcap, fallback
+
+
 # Backup general lua source: Charon / BlissBlender GitHub-raw DB. Keyless, returns
 # a full manifest .lua per appid. Tried only after ryuu/sushi/hubcap all miss.
 _CHARON_DBS = (
@@ -796,6 +837,8 @@ def fetch_manifest_bundle(appid: int) -> Dict[str, Any]:
     to a local .manifest file path.
     """
     out: Dict[str, str] = {}
+    bundle_source = "local cache"
+    lua_text = ""
     tmpdir = tempfile.mkdtemp(prefix=f"assella_mf_{appid}_")
 
     # 1) Already-local manifests (ManifestStore + depotcache): <depot>_<gid>.manifest
@@ -822,7 +865,9 @@ def fetch_manifest_bundle(appid: int) -> Dict[str, Any]:
         client = ensure_http_client("SLSDeck: assella-bundle")
         dest_zip = os.path.join(tmpdir, f"{appid}.zip")
         got_zip = False
-        for api in (load_api_manifest() or []):
+        configured = load_api_manifest() or []
+        hubcap_apis, fallback_apis = _partition_game_manifest_apis(configured)
+        for api in [*hubcap_apis, *fallback_apis]:
             template = api.get("url", "")
             template, missing = substitute_keys(template)
             if missing or not template:
@@ -836,6 +881,7 @@ def fetch_manifest_bundle(appid: int) -> Dict[str, Any]:
                 with open(dest_zip, "wb") as fh:
                     fh.write(r.content)
                 got_zip = True
+                bundle_source = str(api.get("name") or "manifest API")
                 break
             except Exception:
                 continue
@@ -843,6 +889,11 @@ def fetch_manifest_bundle(appid: int) -> Dict[str, Any]:
             with zipfile.ZipFile(dest_zip, "r") as z:
                 for nm in z.namelist():
                     bn = os.path.basename(nm)
+                    if bn == f"{appid}.lua" or (not lua_text and re.fullmatch(r"\d+\.lua", bn)):
+                        try:
+                            lua_text = z.read(nm).decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
                     m = re.fullmatch(r"(\d+)_(\d+)\.manifest", bn)
                     if m:
                         dst = os.path.join(tmpdir, bn)
@@ -856,7 +907,8 @@ def fetch_manifest_bundle(appid: int) -> Dict[str, Any]:
     except Exception as exc:
         logger.warn(f"SLSDeck: ASSella manifest-zip fetch failed for {appid}: {exc}")
 
-    return {"success": bool(out), "dir": tmpdir, "manifests": out}
+    return {"success": bool(out), "dir": tmpdir, "manifests": out,
+            "source": bundle_source if out else "", "lua": lua_text}
 
 
 def fetch_lua_text(appid: int) -> Dict[str, Any]:
@@ -864,7 +916,33 @@ def fetch_lua_text(appid: int) -> Dict[str, Any]:
     the same free sources the SLS add flow uses, WITHOUT installing anything to
     stplug-in. For the ASSella (direct download) resolver. Tries lua.tools (if
     signed in) then the keyless Charon DB. Returns {success, lua, source}."""
-    # 1) lua.tools (signed-in) — richest, carries keys + setManifestid.
+    # 1) Hubcap is authoritative when configured. A missing key, absent game or
+    # failed request falls through without changing the old behaviour.
+    try:
+        client = ensure_http_client("SLSDeck: manifest-lua-hubcap")
+        apis = load_api_manifest() or []
+        hubcap_apis, _ = _partition_game_manifest_apis(apis)
+        for api in hubcap_apis:
+            template, missing = substitute_keys(str(api.get("url") or ""))
+            if missing or not template:
+                continue
+            r = client.get(template.replace("<appid>", str(int(appid))),
+                           headers={"User-Agent": USER_AGENT},
+                           follow_redirects=True, timeout=45)
+            if r.status_code != int(api.get("success_code", 200)) or r.content[:2] != b"PK":
+                continue
+            with zipfile.ZipFile(io.BytesIO(r.content), "r") as z:
+                names = z.namelist()
+                preferred = next((n for n in names if os.path.basename(n) == f"{appid}.lua"), None)
+                chosen = preferred or next((n for n in names if re.fullmatch(r"\d+\.lua", os.path.basename(n))), None)
+                if chosen:
+                    lua = z.read(chosen).decode("utf-8", errors="ignore")
+                    if "addappid" in lua:
+                        return {"success": True, "lua": lua,
+                                "source": str(api.get("name") or "Hubcap")}
+    except Exception as exc:
+        logger.warn(f"SLSDeck: Hubcap lua resolve failed for {appid}: {exc}")
+    # 2) lua.tools (signed-in) — authenticated fallback, carries keys + pins.
     try:
         from . import luatools
         lua = luatools.fetch_manifest_lua(appid)
@@ -872,7 +950,7 @@ def fetch_lua_text(appid: int) -> Dict[str, Any]:
             return {"success": True, "lua": lua, "source": "lua.tools"}
     except Exception as exc:
         logger.warn(f"SLSDeck: ASSella lua.tools resolve failed for {appid}: {exc}")
-    # 2) Charon DB — keyless GitHub-raw lua, covers a lot of games.
+    # 3) Charon DB — keyless GitHub-raw lua, covers a lot of games.
     try:
         client = ensure_http_client("SLSDeck: assella-charon")
         for tmpl in _CHARON_DBS:
@@ -962,6 +1040,7 @@ def _try_free_provider_manifest(appid: int, dest_path: str) -> bool:
 def _download_zip_for_app(appid: int) -> None:
     client = ensure_http_client("SLSDeck: download")
     apis = load_api_manifest()
+    hubcap_apis, fallback_apis = _partition_game_manifest_apis(apis)
 
     dest_path = os.path.join(ensure_temp_download_dir(), f"{appid}.zip")
     _set_state(appid, {
@@ -969,15 +1048,18 @@ def _download_zip_for_app(appid: int) -> None:
         "totalBytes": 0, "dest": dest_path, "apiErrors": {},
     })
 
-    # lua.tools first (when signed in) — the user's own authenticated source.
-    if _try_luatools_manifest(appid, dest_path):
-        return
-
-    if not apis:
-        _set_state(appid, {"status": "failed", "error": "No manifest sources available"})
-        return
-
-    for api in apis:
+    # Game-manifest priority is intentionally separate from fix sources:
+    #   Hubcap (when its key is configured and this game exists)
+    #   -> lua.tools (when signed in and this game exists)
+    #   -> the existing health-ranked sources and normal fallbacks.
+    # Both authenticated tiers fail open, so a missing key, expired session,
+    # HTTP error or absent game preserves the old fallback behaviour.
+    source_plan: List[Dict[str, Any]] = [*hubcap_apis, {"__lua_tools__": True}, *fallback_apis]
+    for api in source_plan:
+        if api.get("__lua_tools__"):
+            if _try_luatools_manifest(appid, dest_path):
+                return
+            continue
         name = api.get("name", "Unknown")
         template = api.get("url", "")
         success_code = int(api.get("success_code", 200))
@@ -1103,7 +1185,11 @@ def _download_zip_for_app(appid: int) -> None:
         if _is_cancelled(appid):
             return
         fetched = _fetch_app_name(appid) or f"UNKNOWN ({appid})"
-        sls = slssteam.add_app(appid, fetched)
+        sls = _register_app(appid, fetched)
+        if sls.get("cancelled"):
+            _set_state(appid, {"status": "cancelled", "success": False,
+                               "error": "Cancelled by purge"})
+            return
         if sls.get("success"):
             try:
                 _append_loaded_app(appid, fetched)
@@ -1161,7 +1247,16 @@ def _add_worker(appid: int) -> None:
         # cancel and a "done" write must never surface as a successful add.
         if _is_cancelled(appid):
             status = "cancelled"
-            _set_state(appid, {"status": "cancelled"})
+            _set_state(appid, {"status": "cancelled", "success": False,
+                               "error": "Cancelled by purge"})
+            # The purge may have interrupted this worker after it wrote a Lua
+            # file but before final registration. Clean any late residue before
+            # the worker exits so it cannot return after a Steam restart.
+            with _REGISTRATION_LOCK:
+                try:
+                    delete_luatools_for_app(appid)
+                except Exception as cleanup_exc:
+                    logger.warn(f"SLSDeck: cancelled-add cleanup failed for {appid}: {cleanup_exc}")
         if status in ("done", "failed"):
             name = ""
             try:
@@ -1170,6 +1265,8 @@ def _add_worker(appid: int) -> None:
                 pass
             ok = bool(status == "done" and st.get("success"))
             auto_dl = False
+            is_dlc_page = False
+            base_appid = 0
             if ok:
                 # An earlier attempt made while injection was off can leave a
                 # phantom appmanifest behind (Steam thinks the game is already
@@ -1191,18 +1288,21 @@ def _add_worker(appid: int) -> None:
                 #    which moon then blanket-unlocks all sibling DLC for.
                 try:
                     from .settings import get_auto_add_dlc
+                    from . import dlc as _dlc
+                    info = _dlc.resolve_dlc(appid)
+                    is_dlc_page = bool(info.get("isDlc"))
+                    base_appid = int(info.get("base") or 0) if is_dlc_page else 0
                     if get_auto_add_dlc():
-                        from . import dlc as _dlc
-                        info = _dlc.resolve_dlc(appid)
                         target = appid
                         if info.get("isDlc") and info.get("base") and info["base"] != appid:
                             base = int(info["base"])
                             try:
                                 bname = _fetch_app_name(base) or f"AppID {base}"
-                                slssteam.add_app(base, bname)
-                                _append_loaded_app(base, bname)
-                                target = base
-                                logger.log(f"SLSDeck: chain-added base game {base} for DLC {appid} — moon unlocks all its DLC")
+                                base_add = _register_app(base, bname, cancel_appid=appid)
+                                if base_add.get("success"):
+                                    _append_loaded_app(base, bname)
+                                    target = base
+                                    logger.log(f"SLSDeck: chain-added base game {base} for DLC {appid} — moon unlocks all its DLC")
                             except Exception as be:
                                 logger.warn(f"SLSDeck: chain-add base failed for DLC {appid}: {be}")
                         r = _dlc.ensure_all_dlc_keys(target)
@@ -1244,6 +1344,10 @@ def _add_worker(appid: int) -> None:
                     "status": status,
                     "success": ok,
                     "autoDownload": auto_dl,
+                    # DLC store pages are entitlements under their base game;
+                    # they are not expected to materialize as library games.
+                    "isDlcPage": is_dlc_page,
+                    "baseAppid": base_appid,
                     "error": st.get("error", ""),
                     "sourceFailures": [
                         {"source": source, **failure}
@@ -1343,6 +1447,8 @@ def delete_luatools_for_app(appid: int) -> Dict[str, Any]:
     try:
         slssteam_removed = bool(slssteam.remove_app(appid).get("success"))
         slssteam.remove_dlc_parent(appid)
+        from . import settings as _settings
+        _settings.remove_auto_dlc_record(appid)
     except Exception as exc:
         logger.warn(f"SLSDeck: SLSsteam deregister failed for {appid}: {exc}")
     try:
@@ -1559,27 +1665,64 @@ def check_apis_for_app(appid: int) -> Dict[str, Any]:
 
 def purge_all_added() -> Dict[str, Any]:
     """Remove ALL added games at once: strip every SLSsteam AdditionalApps entry
-    and delete its lua manifest. Does NOT delete installed game files. Also clears
-    the everAdded history since nothing is registered anymore. Restart Steam to
-    apply."""
-    apps = get_installed_apps().get("apps", []) or []
-    appids = []
-    for a in apps:
-        try:
-            appids.append(int(a.get("appid")))
-        except Exception:
-            continue
-    removed = 0
-    for appid in appids:
-        try:
-            if delete_luatools_for_app(appid).get("success"):
-                removed += 1
-        except Exception as exc:
-            logger.warn(f"SLSDeck: purge failed for {appid}: {exc}")
-    try:
-        from .settings import clear_ever_added
-        clear_ever_added()
-    except Exception:
-        pass
-    logger.log(f"SLSDeck: purged {removed} added game(s)")
-    return {"success": True, "removed": removed, "total": len(appids)}
+    and delete its lua manifest. Does NOT delete installed game files. The
+    ever-added history is retained so a stale Steam capsule can never be
+    mislabelled as a legitimate owned game. Restart Steam to apply."""
+    # Cancel all background adds first. Then take the same lock used by their
+    # final registration: an add already inside the lock lands before our fresh
+    # snapshot and is removed, while one waiting behind us observes cancellation
+    # and cannot recreate the most recently added game after the purge.
+    with DOWNLOAD_LOCK:
+        active_appids = [
+            int(appid) for appid, state in DOWNLOAD_STATE.items()
+            if state.get("status") not in {"done", "failed", "cancelled"}
+        ]
+    for appid in active_appids:
+        _request_cancel(appid)
+        _set_state(appid, {"status": "cancelled", "success": False,
+                           "error": "Cancelled by purge"})
+
+    with _REGISTRATION_LOCK:
+        apps = get_installed_apps().get("apps", []) or []
+        appids = []
+        for a in apps:
+            try:
+                appids.append(int(a.get("appid")))
+            except Exception:
+                continue
+        # Active ids also cover partial Lua files which were not registered at
+        # snapshot time.
+        appids = sorted(set(appids) | set(active_appids))
+        batch = slssteam.remove_apps(appids)
+        for appid in appids:
+            try:
+                slssteam.remove_dlc_parent(appid)
+                from . import settings as _settings
+                _settings.remove_auto_dlc_record(appid)
+                name = _get_loaded_app_name(appid) or f"UNKNOWN ({appid})"
+                _remove_loaded_app(appid)
+                _log_event("REMOVED", appid, name)
+            except Exception as exc:
+                logger.warn(f"SLSDeck: purge bookkeeping failed for {appid}: {exc}")
+    # Do not let the persistent notifier consume an old successful-add event
+    # after the corresponding game was intentionally purged.
+    purged_ids = set(appids)
+    with _ADD_EVENTS_LOCK:
+        _ADD_EVENTS[:] = [
+            event for event in _ADD_EVENTS
+            if int(event.get("appid") or 0) not in purged_ids
+        ]
+    # A final authoritative read catches incomplete removals and makes a partial
+    # purge visible to the UI instead of reporting success while one card stays.
+    remaining = sorted(set(batch.get("remaining") or []) | set(slssteam.read_additional_apps()) & purged_ids)
+    success = not remaining
+    removed = len(appids) - len(remaining)
+    logger.log(f"SLSDeck: purged {removed} added game(s); {len(remaining)} remain")
+    return {
+        "success": success,
+        "removed": removed,
+        "total": len(appids),
+        "appids": appids,
+        "remaining": remaining,
+        "error": "Some registrations could not be removed" if remaining else "",
+    }

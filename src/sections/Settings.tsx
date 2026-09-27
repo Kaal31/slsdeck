@@ -4,6 +4,7 @@ import {
   ButtonItem,
   TextField,
   Navigation,
+  ToggleField,
 } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { toaster } from "@decky/api";
@@ -27,6 +28,9 @@ import {
   LuatoolsStatus,
   hubcapUsage,
   HubcapUsage,
+  hubcapUpdatesStatus,
+  setHubcapUpdates,
+  HubcapUpdatesStatus,
 } from "../api";
 import { captureHubcapKey } from "../lib/hubcapCapture";
 import { captureRyuuKey, captureSteamKey } from "../lib/keyCapture";
@@ -45,6 +49,7 @@ export function SettingsSection() {
   const [hub, setHub] = useState<HubcapUsage | null>(null);
   const [hubBusy, setHubBusy] = useState(false);
   const [hubCapturing, setHubCapturing] = useState(false);
+  const [hubUpdates, setHubUpdatesState] = useState<HubcapUpdatesStatus | null>(null);
   const [ryuuCapturing, setRyuuCapturing] = useState(false);
   const [steamCapturing, setSteamCapturing] = useState(false);
 
@@ -60,6 +65,11 @@ export function SettingsSection() {
     }
   };
 
+  const loadHubUpdates = async () => {
+    try { setHubUpdatesState(await hubcapUpdatesStatus()); }
+    catch { setHubUpdatesState(null); }
+  };
+
   const load = async () => {
     try {
       const res = await getApiKeyFields();
@@ -71,6 +81,7 @@ export function SettingsSection() {
     } catch {
       setFields([]);
     }
+    await loadHubUpdates();
     try {
       const res = await getRyuuKey();
       const k = res.success ? res.key || "" : "";
@@ -340,6 +351,38 @@ export function SettingsSection() {
               Save {f.label}
             </ButtonItem>
           </PanelSectionRow>
+          {f.placeholder === "<moapikey>" && (
+            <PanelSectionRow>
+              <ToggleField
+                label="Hubcap updates"
+                description={hubUpdates?.keyAvailable
+                  ? "Automatically checks installed SLS games after boot and every two hours, then publishes newer Hubcap manifests through Moon. Pinned games are skipped."
+                  : "Add and save a Hubcap key to enable automatic manifest updates."}
+                checked={!!hubUpdates?.enabled}
+                disabled={!hubUpdates?.keyAvailable}
+                onChange={async (value) => {
+                  const previous = !!hubUpdates?.enabled;
+                  setHubUpdatesState((s) => s ? { ...s, enabled: value } : s);
+                  try {
+                    const result = await setHubcapUpdates(value);
+                    setHubUpdatesState(result);
+                    if (!result.success) {
+                      toaster.toast({ title: "Hubcap updates", body: result.error || "Could not change setting" });
+                      setHubUpdatesState((s) => s ? { ...s, enabled: previous } : s);
+                    }
+                  } catch (e) {
+                    setHubUpdatesState((s) => s ? { ...s, enabled: previous } : s);
+                    toaster.toast({ title: "Hubcap updates", body: `Error: ${e}` });
+                  }
+                }}
+              />
+              {!!hubUpdates?.lastCheck && (
+                <div style={{ fontSize: 10, opacity: 0.6, padding: "2px 2px 5px" }}>
+                  Last check: {new Date(hubUpdates.lastCheck * 1000).toLocaleString()} · checked {hubUpdates.checked || 0} · updated {hubUpdates.updated || 0}{hubUpdates.failed ? ` · failed ${hubUpdates.failed}` : ""}
+                </div>
+              )}
+            </PanelSectionRow>
+          )}
           {/* Live Hubcap quota under the Hubcap/Morrenus key field. */}
           {f.placeholder === "<moapikey>" && f.hasKey && (
             <PanelSectionRow>
