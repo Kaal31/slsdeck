@@ -14,6 +14,7 @@ browser-session credential for manifest downloads.
 from __future__ import annotations
 
 import threading
+import socket
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -29,6 +30,11 @@ _CLIENT_LOCK = threading.Lock()
 # host/CDN stops sending bytes: keep connect/pool bounded and allow at most two
 # minutes of read inactivity between chunks.
 _STREAM_TIMEOUT = httpx.Timeout(connect=20.0, read=120.0, write=120.0, pool=20.0)
+_HUBCAP_HOST = "hubcapmanifest.com"
+_HUBCAP_DOH_ENDPOINTS = (
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/resolve",
+)
 
 
 def _auth_request(url, headers):
@@ -82,6 +88,47 @@ def _auth_request(url, headers):
 class _SLSDeckClient(httpx.Client):
     """httpx client that applies service auth immediately before transport."""
 
+    @staticmethod
+    def _hubcap_blocked(response) -> bool:
+        content_type = str(response.headers.get("content-type") or "").lower()
+        return response.status_code == 451 or (
+            response.status_code == 200 and "text/html" in content_type
+        )
+
+    @staticmethod
+    def _resolve_hubcap_doh() -> list[str]:
+        """Resolve Hubcap outside the system DNS path; never sends credentials."""
+        for endpoint in _HUBCAP_DOH_ENDPOINTS:
+            try:
+                with httpx.Client(timeout=6.0, follow_redirects=True) as resolver:
+                    response = resolver.get(
+                        endpoint,
+                        params={"name": _HUBCAP_HOST, "type": "A"},
+                        headers={"Accept": "application/dns-json", "User-Agent": "SLSDeck/isp-bypass"},
+                    )
+                    response.raise_for_status()
+                    answers = response.json().get("Answer") or []
+                    values = [str(item.get("data") or "") for item in answers
+                              if int(item.get("type") or 0) == 1]
+                    ips = [value for value in values
+                           if value and all(part.isdigit() for part in value.split("."))]
+                    if ips:
+                        return ips
+            except Exception as exc:
+                logger.warn(f"SLSDeck Hubcap bypass: DoH resolver failed: {exc}")
+        return []
+
+    @staticmethod
+    def _local_tor_proxy() -> str:
+        """Use an existing local Tor listener; never install or launch Tor."""
+        for port, scheme in ((9080, "http"), (9050, "socks5")):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                    return f"{scheme}://127.0.0.1:{port}"
+            except OSError:
+                continue
+        return ""
+
     def request(self, method, url, *, content=None, data=None, files=None,
                 json=None, params=None, headers=None, cookies=None, auth=None,
                 follow_redirects=None, timeout=httpx.USE_CLIENT_DEFAULT,
@@ -94,11 +141,64 @@ class _SLSDeckClient(httpx.Client):
         # still failing a connection that has stopped delivering data.
         if timeout is None:
             timeout = _STREAM_TIMEOUT
-        return super().request(
-            method, clean_url, content=content, data=data, files=files, json=json,
-            params=params, headers=clean_headers, cookies=cookies, auth=auth,
+        request_kwargs = dict(
+            content=content, data=data, files=files, json=json, params=params,
+            headers=clean_headers, cookies=cookies, auth=auth,
             follow_redirects=follow_redirects, timeout=timeout,
             extensions=extensions,
+        )
+        is_hubcap = (urlsplit(clean_url).hostname or "").lower() == _HUBCAP_HOST
+        direct_error = None
+        try:
+            response = super().request(method, clean_url, **request_kwargs)
+            if not is_hubcap or not self._hubcap_blocked(response):
+                return response
+            direct_error = f"HTTP {response.status_code} {response.headers.get('content-type', '')}"
+        except httpx.TransportError as exc:
+            if not is_hubcap:
+                raise
+            direct_error = str(exc)
+
+        logger.warn(f"SLSDeck Hubcap bypass: direct route failed ({direct_error}); trying DoH")
+        parts = urlsplit(clean_url)
+        for ip in self._resolve_hubcap_doh():
+            try:
+                netloc = ip if parts.port is None else f"{ip}:{parts.port}"
+                ip_url = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+                doh_headers = dict(clean_headers or {})
+                doh_headers["Host"] = _HUBCAP_HOST
+                doh_extensions = dict(extensions or {})
+                # httpcore uses this for TLS SNI and certificate hostname checks
+                # while the TCP connection itself goes to the DoH-resolved IP.
+                doh_extensions["sni_hostname"] = _HUBCAP_HOST.encode("ascii")
+                response = super().request(
+                    method, ip_url, **{**request_kwargs, "headers": doh_headers,
+                                      "extensions": doh_extensions},
+                )
+                if not self._hubcap_blocked(response):
+                    logger.log(f"SLSDeck Hubcap bypass: connected through DoH ({ip})")
+                    return response
+            except httpx.TransportError as exc:
+                logger.warn(f"SLSDeck Hubcap bypass: DoH route {ip} failed: {exc}")
+
+        proxy = self._local_tor_proxy()
+        if proxy:
+            try:
+                logger.warn("SLSDeck Hubcap bypass: trying the existing local Tor proxy")
+                with httpx.Client(proxy=proxy, timeout=timeout, follow_redirects=True) as tor_client:
+                    response = tor_client.request(
+                        method, clean_url, content=content, data=data, files=files,
+                        json=json, params=params, headers=clean_headers,
+                        cookies=cookies, auth=auth,
+                    )
+                    if not self._hubcap_blocked(response):
+                        logger.log("SLSDeck Hubcap bypass: connected through local Tor")
+                        return response
+            except Exception as exc:
+                logger.warn(f"SLSDeck Hubcap bypass: local Tor route failed: {exc}")
+
+        raise httpx.ConnectError(
+            f"Hubcap is unreachable through direct, DoH, and available local Tor routes: {direct_error}"
         )
 
 

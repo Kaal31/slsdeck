@@ -3,6 +3,7 @@ name: Release roulette development branches
 on:
   push:
     branches:
+      - vpn-bypass
       - main
       - roulette-dev
       - multi-language
@@ -110,10 +111,15 @@ jobs:
           set -euo pipefail
           if ! python3 .github/scripts/build-ubisoft-packages.py; then
             echo "LuaTools care-package service unavailable; reusing the last validated rolling asset."
-            gh release download "${GITHUB_REF_NAME}-latest" \
+            if ! gh release download "${GITHUB_REF_NAME}-latest" \
               --pattern ubisoft-packages.zip \
               --output ubisoft-packages.zip \
-              --clobber
+              --clobber; then
+              gh release download "main-latest" \
+                --pattern ubisoft-packages.zip \
+                --output ubisoft-packages.zip \
+                --clobber
+            fi
           fi
           unzip -t ubisoft-packages.zip
           unzip -l ubisoft-packages.zip | grep -q 'ubisoft-packages/hostedgames.json'
