@@ -23,6 +23,11 @@ import {
   tokeerEnsureProton,
   tokeerUbisoftPackagesStatus,
   tokeerEnsureUbisoftPackages,
+  ZapretStatus,
+  zapretStatus,
+  zapretEnsureInstalled,
+  zapretEnable,
+  zapretDisable,
   crInstallStatus,
 } from "../api";
 
@@ -78,6 +83,7 @@ export function DependenciesSection() {
   const [tokeerInstalled, setTokeerInstalled] = useState(false);
   const [protonStatus, setProtonStatus] = useState<{ installed: boolean; partial?: boolean } | null>(null);
   const [ubisoftPackages, setUbisoftPackages] = useState<{ installed: boolean; healthy?: boolean; version?: string } | null>(null);
+  const [zapret, setZapret] = useState<ZapretStatus | null>(null);
   const [cloudStatus, setCloudStatus] = useState<{ installed: boolean; partial?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean } | null>(null);
   const [diag, setDiag] = useState("");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -105,6 +111,11 @@ export function DependenciesSection() {
       const packages = await tokeerUbisoftPackagesStatus();
       setUbisoftPackages(packages);
       if (packages.installed) setN("ubisoftPackages", "hosted packages installed");
+    } catch { /* */ }
+    try {
+      const value = await zapretStatus();
+      setZapret(value);
+      if (value.installed) setN("zapret", `${value.version || "installed"} · ${value.hostEntries || 0} SteaMidra hosts${value.enabled ? " · active" : " · disabled"}`);
     } catch { /* */ }
     try {
       const cloud = await crInstallStatus();
@@ -257,6 +268,36 @@ export function DependenciesSection() {
     refresh();
   };
 
+  const installZapret = async () => {
+    setB("zapret", true);
+    setN("zapret", zapret?.installed ? "updating upstream Zapret and hostlist…" : "downloading upstream Zapret…");
+    try {
+      const result = await zapretEnsureInstalled(true);
+      setZapret(result);
+      setN("zapret", result.success
+        ? `${result.version || "installed"} · ${result.hostEntries || 0} SteaMidra hosts${result.enabled ? " · active" : " · disabled"}`
+        : `failed: ${result.error || "unknown error"}`);
+      toaster.toast({ title: "SLSDeck", body: result.success ? "Zapret dependency ready" : "Zapret installation failed" });
+    } catch (e) { setN("zapret", `error: ${e}`); }
+    setB("zapret", false); refresh();
+  };
+
+  const toggleZapret = async () => {
+    setB("zapret", true);
+    setN("zapret", zapret?.enabled ? "removing SLSDeck NFQUEUE rules…" : "activating SteaMidra host bypass…");
+    try {
+      const result = zapret?.enabled ? await zapretDisable() : await zapretEnable();
+      setZapret(result);
+      setN("zapret", result.success
+        ? `${result.version || "installed"} · ${result.hostEntries || 0} SteaMidra hosts${result.enabled ? " · active" : " · disabled"}`
+        : `failed: ${result.error || "unknown error"}`);
+      toaster.toast({ title: "SLSDeck", body: result.success
+        ? (result.enabled ? "ISP bypass enabled" : "ISP bypass disabled")
+        : (result.error || "Could not change ISP bypass") });
+    } catch (e) { setN("zapret", `error: ${e}`); }
+    setB("zapret", false); refresh();
+  };
+
   const installCloud = async () => {
     setB("cr", true); setN("cr", "replacing CloudRedirect…");
     try {
@@ -407,6 +448,24 @@ export function DependenciesSection() {
           actionLabel={ubisoftPackages?.installed ? "Check / reinstall Ubisoft packages" : "Install Ubisoft packages"}
           onAction={installUbisoftPackages}
         />
+        <DepRow
+          label="Zapret ISP bypass"
+          hint="Optional upstream Zapret dependency with the complete 67-entry SteaMidra general hostlist. Intercepts only matching HTTP/HTTPS hostnames; no proxy or Cloudflare Worker."
+          health={zapret?.enabled ? "ok" : zapret?.installed ? "warn" : "off"}
+          statusText={note.zapret || (zapret?.installed
+            ? `${zapret.version || "installed"} · ${zapret.hostEntries || 0} hosts · ${zapret.enabled ? "active" : "disabled"}`
+            : "not installed")}
+          busy={!!busy.zapret}
+          actionLabel={zapret?.installed ? "Check / reinstall Zapret" : "Install Zapret"}
+          onAction={installZapret}
+        />
+        {zapret?.installed && (
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={toggleZapret} disabled={!!busy.zapret}>
+              {zapret.enabled ? "Disable ISP bypass" : "Enable ISP bypass"}
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
         <DepRow
           label="CloudRedirect"
           hint="Cloud saves for added games — installs automatically after setup. Off by default; enable in Advanced ▸ Cloud saves."

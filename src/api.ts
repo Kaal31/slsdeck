@@ -194,6 +194,16 @@ export type UbisoftHostedGame = {
 export const tokeerUbisoftHostedGames = callable<[], { success: boolean; games: UbisoftHostedGame[]; installed?: boolean; error?: string }>("tokeer_ubisoft_hosted_games");
 export const tokeerUbisoftPackagesStatus = callable<[], { success: boolean; installed: boolean; healthy?: boolean; path?: string; version?: string; asset?: string }>("tokeer_ubisoft_packages_status");
 export const tokeerEnsureUbisoftPackages = callable<[force?: boolean], { success: boolean; installed?: boolean; updated?: boolean; skipped?: boolean; path?: string; version?: string; latest?: string; error?: string }>("tokeer_ensure_ubisoft_packages");
+export type ZapretStatus = {
+  success: boolean; installed: boolean; enabled: boolean; version?: string;
+  path?: string; asset?: string; hostEntries?: number; hostlistCurrent?: boolean;
+  hostlistSha256?: string; updated?: boolean; skipped?: boolean; latest?: string; error?: string;
+};
+export const zapretStatus = callable<[], ZapretStatus>("zapret_status");
+export const zapretEnsureInstalled = callable<[force?: boolean], ZapretStatus>("zapret_ensure_installed");
+export const zapretEnable = callable<[], ZapretStatus>("zapret_enable");
+export const zapretDisable = callable<[], ZapretStatus>("zapret_disable");
+export const zapretUninstall = callable<[], ZapretStatus & { removed?: string[]; errors?: string[] }>("zapret_uninstall");
 export const tokeerApplyUbisoftPackage = callable<[appid: number], { success: boolean; appid?: number; name?: string; installPath?: string; tokenDirectory?: string; tokenRequestIds?: number[]; copied?: string[]; appliedAt?: number; error?: string }>("tokeer_apply_ubisoft_package");
 export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number], { success: boolean; found?: boolean; path?: string; filename?: string; directory?: string; size?: number; tokenRequestIds?: number[]; error?: string }>("tokeer_find_ubisoft_token");
 export const tokeerInstallUbisoftDbdata = callable<[appid: number, tokenPath: string, url: string], { success: boolean; path?: string; directory?: string; error?: string }>("tokeer_install_ubisoft_dbdata");

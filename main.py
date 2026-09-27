@@ -30,7 +30,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -118,6 +118,22 @@ class Plugin:
 
     async def tokeer_ensure_ubisoft_packages(self, force: bool = False) -> Dict[str, Any]:
         return await self._run_dependency_install(ubisoft_packages.ensure_packages, bool(force))
+
+    # ── optional ISP/DPI bypass (upstream Zapret + SLSDeck hostlist) ────────
+    async def zapret_status(self) -> Dict[str, Any]:
+        return await self._run(zapret.status)
+
+    async def zapret_ensure_installed(self, force: bool = False) -> Dict[str, Any]:
+        return await self._run_dependency_install(zapret.ensure_installed, bool(force))
+
+    async def zapret_enable(self) -> Dict[str, Any]:
+        return await self._run_dependency_install(zapret.enable)
+
+    async def zapret_disable(self) -> Dict[str, Any]:
+        return await self._run_dependency_install(zapret.disable)
+
+    async def zapret_uninstall(self) -> Dict[str, Any]:
+        return await self._run_dependency_install(zapret.uninstall)
 
     async def tokeer_apply_ubisoft_package(self, appid: int) -> Dict[str, Any]:
         return await self._run_slow(ubisoft_packages.apply_package, appid)
@@ -295,6 +311,12 @@ class Plugin:
         # are only flagged. All network/subprocess, so it lives in the warm-up
         # pool, not the RPC executor.
         def _boot_cloud_and_updates():
+            try:
+                resumed = zapret.resume_if_enabled()
+                if resumed.get("enableOnBoot") and not resumed.get("enabled"):
+                    decky.logger.warning(f"SLSDeck: could not resume Zapret: {resumed.get('error', 'unknown error')}")
+            except Exception as exc:
+                decky.logger.warning(f"SLSDeck: Zapret boot resume failed: {exc}")
             try:
                 res = updates.boot_check()
                 if res.get("available"):
@@ -571,6 +593,15 @@ class Plugin:
                 decky.logger.warning(f"SLSDeck: Ubisoft package uninstall issues: {result.get('errors')}")
         except Exception as exc:
             decky.logger.warning(f"SLSDeck: Ubisoft package uninstall failed: {exc}")
+        # Zapret uses privileged NFQUEUE rules. Always stop it and remove the
+        # SLSDeck-managed dependency on a real Decky uninstall so no network
+        # interception survives after the UI/backend is gone.
+        try:
+            result = await self._run(zapret.uninstall)
+            if not result.get("success"):
+                decky.logger.warning(f"SLSDeck: Zapret uninstall issues: {result.get('errors')}")
+        except Exception as exc:
+            decky.logger.warning(f"SLSDeck: Zapret uninstall failed: {exc}")
         # Tokeer and its exact managed compatibility tool are SLSDeck
         # dependencies, so a true plugin uninstall removes both.
         try:
@@ -637,11 +668,12 @@ class Plugin:
         sls = await self._run(slssteam.full_uninstall_cleanup)
         cloud = await self._run(cloudredirect.uninstall_app, True)
         ubi = await self._run(ubisoft_packages.uninstall_packages)
+        zp = await self._run(zapret.uninstall)
         tk = await self._run(tokeer.uninstall_runtime)
         ge = await self._run(tokeer.uninstall_required_proton)
         return {"success": bool(sls.get("success") and cloud.get("success") and ubi.get("success") and tk.get("success") and ge.get("success")),
                 "slssteam": sls, "cloudredirect": cloud, "tokeer": tk,
-                "ubisoftPackages": ubi, "geProton": ge, "geProtonPreserved": False}
+                "ubisoftPackages": ubi, "zapret": zp, "geProton": ge, "geProtonPreserved": False}
 
     async def get_full_purge_on_uninstall(self) -> Dict[str, Any]:
         return {"success": True, "enabled": settings.get_full_purge_on_uninstall()}
