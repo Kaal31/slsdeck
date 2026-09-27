@@ -60,6 +60,11 @@ def _flag_only(name: str) -> Callable[[bool], Dict[str, Any]]:
     return _do
 
 
+def _refresh_zapret(force: bool = True) -> Dict[str, Any]:
+    from . import zapret
+    return zapret.ensure_installed(force=force)
+
+
 # name -> {repo, heavy, dep_key, refresh}
 _REGISTRY: List[Dict[str, Any]] = [
     {"name": "SmokeAPI", "repo": "acidicoala/SmokeAPI", "heavy": False,
@@ -78,6 +83,10 @@ _REGISTRY: List[Dict[str, Any]] = [
      "dep_key": "proton", "refresh": _flag_only("GE-Proton")},
     {"name": "HV cpuid module", "repo": "PareidoliaDev/glowing-tribble", "heavy": True,
      "dep_key": "hvmodule", "refresh": _flag_only("The HV module")},
+    # Updating preserves the explicit enabled/disabled preference and restores
+    # the SLSDeck-owned NFQUEUE rule only when it was active before replacement.
+    {"name": "Zapret ISP bypass", "repo": "bol-van/zapret", "heavy": False,
+     "dep_key": "zapret", "refresh": _refresh_zapret},
 ]
 
 

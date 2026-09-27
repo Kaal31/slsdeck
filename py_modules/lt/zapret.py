@@ -209,6 +209,11 @@ def ensure_installed(force: bool = False) -> Dict[str, Any]:
             shutil.rmtree(old, ignore_errors=True)
             os.chmod(_nfqws(), 0o755)
         result = {**status(), "updated": True, "latest": release["version"]}
+        try:
+            from . import settings
+            settings.set_dep_version("zapret", release["version"])
+        except Exception:
+            pass
         if was_enabled:
             enabled = enable()
             if not enabled.get("success"):
@@ -319,5 +324,10 @@ def uninstall() -> Dict[str, Any]:
                 removed.append(path)
         except Exception as exc:
             errors.append(f"{path}: {exc}")
+    try:
+        from . import settings
+        settings.set_dep_version("zapret", "")
+    except Exception:
+        pass
     return {"success": not errors, "enabled": False, "installed": False,
             "removed": removed, "errors": errors, "stopped": stopped.get("success", False)}
