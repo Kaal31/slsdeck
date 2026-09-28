@@ -1,7 +1,10 @@
 import sys
 import types
 import unittest
+import tempfile
+import os
 from pathlib import Path
+from unittest import mock
 
 fake_httpx = types.ModuleType("httpx")
 fake_httpx.Client = object
@@ -38,6 +41,20 @@ class NexusModsTests(unittest.TestCase):
         self.assertEqual(nexusmods._domain("SkyrimSpecialEdition"), "skyrimspecialedition")
         with self.assertRaises(ValueError):
             nexusmods._domain("../../etc")
+
+    def test_archive_guard_requires_same_real_file_and_expected_size(self):
+        item = {"domain": "skyrim", "modId": 10, "fileId": 20, "size": 4}
+        with tempfile.TemporaryDirectory() as root:
+            archive = os.path.join(root, "mod.zip")
+            index = os.path.join(root, "archive-index.json")
+            with mock.patch.object(nexusmods, "_cache_index_path", return_value=index):
+                with open(archive, "wb") as handle:
+                    handle.write(b"data")
+                nexusmods._remember_archive(item, archive)
+                self.assertEqual(nexusmods._cached_archive(item), archive)
+                with open(archive, "ab") as handle:
+                    handle.write(b"changed")
+                self.assertEqual(nexusmods._cached_archive(item), "")
 
 
 if __name__ == "__main__":

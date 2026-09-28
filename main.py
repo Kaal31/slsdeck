@@ -2412,6 +2412,12 @@ class Plugin:
     async def nexus_validate(self) -> Dict[str, Any]:
         return await self._run(nexusmods.validate)
 
+    async def nexus_register_nxm_handler(self) -> Dict[str, Any]:
+        return await self._run(nexusmods.register_nxm_handler)
+
+    async def nexus_nxm_handler_status(self) -> Dict[str, Any]:
+        return await self._run(nexusmods.nxm_handler_status)
+
     async def nexus_trending(self, domain: str) -> Dict[str, Any]:
         return await self._run(nexusmods.trending, domain)
 

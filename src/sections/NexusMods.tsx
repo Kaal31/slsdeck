@@ -1,9 +1,9 @@
-import { ButtonItem, Focusable, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
+import { ButtonItem, Focusable, Navigation, PanelSection, PanelSectionRow, Spinner, TextField } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import {
   NexusCollection, NexusJobState, nexusCollection, nexusGetApiKey, nexusJobState,
-  nexusSetApiKey, nexusStartCollection, nexusSubmitNxm, nexusValidate,
+  nexusRegisterNxmHandler, nexusSetApiKey, nexusStartCollection, nexusSubmitNxm, nexusValidate,
 } from "../api";
 
 function size(bytes = 0): string {
@@ -55,7 +55,9 @@ export function NexusModsSection() {
       const r = await nexusJobState(id);
       if (!r.success) return;
       setState(r.state);
-      if (["staged", "failed", "waiting_for_links"].includes(r.state.status || "")) {
+      // Keep polling while a free account waits: job_state consumes links
+      // captured by the system nxm:// handler and advances the collection.
+      if (["staged", "failed"].includes(r.state.status || "")) {
         clearInterval(timer.current); timer.current = null;
       }
     }, 1200);
@@ -83,6 +85,13 @@ export function NexusModsSection() {
     } finally { setBusy(false); }
   };
 
+  const enableHandler = async () => {
+    const r = await nexusRegisterNxmHandler();
+    toaster.toast({ title: "Nexus link handler", body: r.success
+      ? (r.registered ? "Enabled. Nexus Mod Manager links will return to this collection queue." : "Handler files installed, but SteamOS did not confirm the MIME association.")
+      : (r.error || "Could not enable handler") });
+  };
+
   const pending = state?.waiting?.[0];
   return <>
     <PanelSection title="Nexus Mods account">
@@ -108,6 +117,7 @@ export function NexusModsSection() {
         <PanelSectionRow><div style={{ fontSize: 12 }}>
           <b>{plan.name}</b>{plan.author ? ` by ${plan.author}` : ""}<br />
           Revision {plan.revision} · {plan.files.length} archives · {size(plan.totalSize)}
+          <br />{plan.files.filter((file) => file.downloaded).length} already downloaded · {plan.files.filter((file) => !file.downloaded).length} remaining
           {!!plan.external?.length && <><br /><span style={{ color: "#f5a623" }}>{plan.external.length} external/manual resource(s)</span></>}
         </div></PanelSectionRow>
         <PanelSectionRow><ButtonItem layout="below" onClick={download} disabled={busy || !!job}>
@@ -123,10 +133,14 @@ export function NexusModsSection() {
       </div></PanelSectionRow>}
       {state?.status === "waiting_for_links" && pending && <>
         <PanelSectionRow><div style={{ fontSize: 12, color: "#f5a623" }}>
-          Free account: open {pending.modName} file {pending.fileId} on Nexus, choose Slow Download, then paste its nxm:// link below. One authorization is required per pending file.
+          Free account: authorize {pending.modName} on Nexus. Press “Mod Manager Download”, then “Slow Download”; the registered nxm:// handler will capture it and advance this queue. One authorization is required per file.
         </div></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" onClick={enableHandler}>Enable Nexus link handler</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" onClick={() => Navigation.NavigateToExternalWeb(
+          `https://www.nexusmods.com/${pending.domain || plan?.domain}/mods/${pending.modId}?tab=files&file_id=${pending.fileId}`
+        )}>Open pending file on Nexus</ButtonItem></PanelSectionRow>
         <PanelSectionRow><Focusable style={{ display: "flex", flexDirection: "column" }}>
-          <TextField label="Official nxm:// Slow Download link" value={nxm} onChange={(e: any) => setNxm(e.target.value)} />
+          <TextField label="Fallback: paste official nxm:// link" value={nxm} onChange={(e: any) => setNxm(e.target.value)} />
         </Focusable></PanelSectionRow>
         <PanelSectionRow><ButtonItem layout="below" onClick={submit} disabled={busy || !nxm.trim()}>Download authorized file</ButtonItem></PanelSectionRow>
       </>}

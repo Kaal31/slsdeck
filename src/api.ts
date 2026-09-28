@@ -923,16 +923,18 @@ export const wsRemove = callable<[appid: number, modid: string], { success: bool
 export const wsEnsureSteamcmd = callable<[], { success: boolean; present?: boolean; error?: string }>("ws_ensure_steamcmd");
 
 // ── Nexus Mods (archives are staged; deployment remains game-specific) ────
-export interface NexusCollectionFile { fileId: number; modId: number; name: string; modName: string; version?: string; size: number; optional: boolean; domain?: string; path?: string }
+export interface NexusCollectionFile { fileId: number; modId: number; name: string; modName: string; version?: string; size: number; optional: boolean; domain?: string; downloaded?: boolean; path?: string }
 export interface NexusCollection { success: boolean; domain?: string; slug?: string; name?: string; summary?: string; author?: string; revision?: number; totalSize?: number; files: NexusCollectionFile[]; external?: any[]; error?: string }
 export interface NexusJobState { status?: "queued" | "downloading" | "waiting_for_links" | "staged" | "failed"; done?: number; total?: number; name?: string; path?: string; current?: NexusCollectionFile | null; waiting?: NexusCollectionFile[]; failed?: Array<NexusCollectionFile & { error: string }> }
 export const nexusGetApiKey = callable<[], { success: boolean; key: string }>("nexus_get_api_key");
 export const nexusSetApiKey = callable<[key: string], { success: boolean }>("nexus_set_api_key");
 export const nexusValidate = callable<[], { success: boolean; user?: string; premium?: boolean; supporter?: boolean; error?: string }>("nexus_validate");
+export const nexusRegisterNxmHandler = callable<[], { success: boolean; registered?: boolean; tools?: Record<string, boolean>; error?: string }>("nexus_register_nxm_handler");
+export const nexusNxmHandlerStatus = callable<[], { success: boolean; installed?: boolean; pendingLinks?: number; error?: string }>("nexus_nxm_handler_status");
 export const nexusTrending = callable<[domain: string], { success: boolean; mods: Array<{ modId: number; name: string; summary?: string; version?: string; downloads?: number }>; error?: string }>("nexus_trending");
 export const nexusModFiles = callable<[domain: string, modId: number], { success: boolean; files: Array<{ fileId: number; name: string; version?: string; size: number; category?: string }>; error?: string }>("nexus_mod_files");
 export const nexusCollection = callable<[text: string, domain?: string], NexusCollection>("nexus_collection");
-export const nexusStartCollection = callable<[text: string, domain?: string], { success: boolean; job?: string; premium?: boolean; count?: number; error?: string }>("nexus_start_collection");
+export const nexusStartCollection = callable<[text: string, domain?: string], { success: boolean; job?: string; premium?: boolean; count?: number; cached?: number; missing?: number; error?: string }>("nexus_start_collection");
 export const nexusJobState = callable<[job: string], { success: boolean; state: NexusJobState; error?: string }>("nexus_job_state");
 export const nexusSubmitNxm = callable<[job: string, uri: string], { success: boolean; state?: NexusJobState; error?: string }>("nexus_submit_nxm");
 

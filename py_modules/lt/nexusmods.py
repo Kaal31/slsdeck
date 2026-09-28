@@ -11,6 +11,10 @@ from __future__ import annotations
 
 import os
 import re
+import json
+import shlex
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -21,14 +25,128 @@ import httpx  # type: ignore
 
 from . import settings
 from .httpc import get_http_client
-from .paths import runtime_path
-from .utils import chown_to_user
+from .paths import get_user_home, runtime_path
+from .utils import chown_to_user, decky_user
 
 API = "https://api.nexusmods.com"
 GQL = API + "/v2/graphql"
 UA = "SLSDeck/0.9 Nexus integration"
 _JOBS: Dict[str, Dict[str, Any]] = {}
 _LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
+
+
+def _cache_index_path() -> str:
+    return runtime_path("nexus", "archive-index.json")
+
+
+def _cache_key(item: Dict[str, Any]) -> str:
+    return f"{_domain(item.get('domain'))}:{int(item.get('modId') or 0)}:{int(item.get('fileId') or 0)}"
+
+
+def _load_cache_index() -> Dict[str, Any]:
+    try:
+        with open(_cache_index_path(), "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_cache_index(value: Dict[str, Any]) -> None:
+    path = _cache_index_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2)
+    os.replace(temp, path)
+    chown_to_user(path, recursive=False)
+
+
+def _cached_archive(item: Dict[str, Any]) -> str:
+    """Return a verified cached archive, never just a stale index entry."""
+    try:
+        with _CACHE_LOCK:
+            record = _load_cache_index().get(_cache_key(item)) or {}
+        path = str(record.get("path") or "")
+        actual = os.path.getsize(path) if path and os.path.isfile(path) else 0
+        recorded = int(record.get("size") or 0)
+        expected = int(item.get("size") or 0)
+        indexed_expected = int(record.get("expectedSize") or 0)
+        if actual > 0 and actual == recorded and (not expected or expected == indexed_expected):
+            return path
+    except (OSError, TypeError, ValueError):
+        pass
+    return ""
+
+
+def _remember_archive(item: Dict[str, Any], path: str) -> None:
+    actual = os.path.getsize(path)
+    with _CACHE_LOCK:
+        index = _load_cache_index()
+        index[_cache_key(item)] = {"path": path, "size": actual,
+                                   "expectedSize": int(item.get("size") or 0),
+                                   "savedAt": int(time.time())}
+        _save_cache_index(index)
+
+
+def _nxm_paths() -> tuple[str, str, str]:
+    root = runtime_path("nexus")
+    return root, os.path.join(root, "nxm-queue"), os.path.join(root, "nxm-relay.sh")
+
+
+def register_nxm_handler() -> Dict[str, Any]:
+    """Register a user-level protocol relay for Nexus' official nxm:// links."""
+    try:
+        root, queue, script = _nxm_paths()
+        os.makedirs(root, exist_ok=True)
+        open(queue, "a", encoding="utf-8").close()
+        with open(script, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("#!/bin/sh\nprintf '%s %s\\n' \"$(date +%s)\" \"$1\" >> " + shlex.quote(queue) + "\n")
+        os.chmod(script, 0o755)
+        home = get_user_home()
+        apps = os.path.join(home, ".local", "share", "applications")
+        os.makedirs(apps, exist_ok=True)
+        desktop_id = "slsdeck-nexus-nxm.desktop"
+        desktop = os.path.join(apps, desktop_id)
+        with open(desktop, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("[Desktop Entry]\nType=Application\nName=SLSDeck Nexus NXM Relay\n"
+                         f"Exec={script} %u\nMimeType=x-scheme-handler/nxm;\n"
+                         "NoDisplay=true\nTerminal=false\n")
+        chown_to_user(root, recursive=True)
+        chown_to_user(desktop, recursive=False)
+        env = os.environ.copy()
+        env.update({"HOME": home, "USER": decky_user(), "LOGNAME": decky_user()})
+        prefix = ["runuser", "-u", decky_user(), "--"] if os.geteuid() == 0 and shutil.which("runuser") else []
+        results = {}
+        for name, command in (
+            ("desktopDatabase", ["update-desktop-database", apps]),
+            ("mime", ["xdg-mime", "default", desktop_id, "x-scheme-handler/nxm"]),
+        ):
+            if not shutil.which(command[0]):
+                results[name] = False
+                continue
+            results[name] = subprocess.run(prefix + command, env=env, timeout=15,
+                                           stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL).returncode == 0
+        return {"success": True, "registered": bool(results.get("mime")), "tools": results}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def nxm_handler_status() -> Dict[str, Any]:
+    root, queue, script = _nxm_paths()
+    desktop = os.path.join(get_user_home(), ".local", "share", "applications", "slsdeck-nexus-nxm.desktop")
+    return {"success": True, "installed": os.path.isfile(script) and os.path.isfile(desktop),
+            "queue": queue, "pendingLinks": _queue_count(queue)}
+
+
+def _queue_count(path: str) -> int:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
+        return 0
 
 COLLECTION_QUERY = """
 query GetCollection($slug: String!, $domainName: String!) {
@@ -144,11 +262,16 @@ def collection(text: str, domain: str = "") -> Dict[str, Any]:
         for pin in rev.get("modFiles") or []:
             item = pin.get("file") or {}
             mod = item.get("mod") or {}
-            files.append({"fileId": int(item.get("fileId") or pin.get("fileId") or 0),
+            entry = {"fileId": int(item.get("fileId") or pin.get("fileId") or 0),
                           "modId": int(item.get("modId") or 0), "name": item.get("name") or "Archive",
                           "modName": mod.get("name") or "Mod", "version": item.get("version") or "",
                           "size": int(item.get("sizeInBytes") or 0), "optional": bool(pin.get("optional")),
-                          "domain": ((mod.get("game") or {}).get("domainName") or game)})
+                          "domain": ((mod.get("game") or {}).get("domainName") or game)}
+            cached = _cached_archive(entry)
+            entry["downloaded"] = bool(cached)
+            if cached:
+                entry["path"] = cached
+            files.append(entry)
         meta = rev.get("collection") or {}
         return {"success": True, "domain": game, "slug": slug,
                 "name": meta.get("name") or slug, "summary": meta.get("summary") or "",
@@ -200,10 +323,17 @@ def start_collection(text: str, domain: str = "") -> Dict[str, Any]:
     if not account.get("success"):
         return account
     job = uuid.uuid4().hex
-    state = {"status": "queued", "done": 0, "total": len(plan["files"]), "failed": [],
+    cached = [item for item in plan["files"] if _cached_archive(item)]
+    missing = [item for item in plan["files"] if not _cached_archive(item)]
+    state = {"status": "queued", "done": len(cached), "cached": len(cached),
+             "total": len(plan["files"]), "failed": [],
              "waiting": [], "domain": plan["domain"], "slug": plan["slug"], "name": plan["name"]}
     with _LOCK:
         _JOBS[job] = state
+
+    if not account.get("premium"):
+        handler = register_nxm_handler()
+        state["handler"] = handler
 
     def run() -> None:
         root = runtime_path("nexus", "collections", plan["domain"], plan["slug"])
@@ -211,16 +341,18 @@ def start_collection(text: str, domain: str = "") -> Dict[str, Any]:
             # Free accounts require a short-lived key issued by Nexus after the
             # user presses Slow Download. Avoid knowingly generating a burst of
             # unauthorized API calls; queue every pinned file for that handoff.
-            state["waiting"] = list(plan["files"])
-            state["status"] = "waiting_for_links"
+            state["waiting"] = list(missing)
+            state["status"] = "waiting_for_links" if missing else "staged"
             state["path"] = root
             return
         state["status"] = "downloading"
-        for item in plan["files"]:
+        for item in missing:
             state["current"] = item
             try:
                 path = _download(_domain(item.get("domain") or plan["domain"]), item["modId"], item["fileId"], root)
                 item["path"] = path
+                item["downloaded"] = True
+                _remember_archive(item, path)
                 state["done"] += 1
             except Exception as exc:
                 message = str(exc)
@@ -234,14 +366,64 @@ def start_collection(text: str, domain: str = "") -> Dict[str, Any]:
         state["finishedAt"] = int(time.time())
 
     threading.Thread(target=run, name=f"nexus-{job[:8]}", daemon=True).start()
-    return {"success": True, "job": job, "premium": bool(account.get("premium")), "count": len(plan["files"])}
+    return {"success": True, "job": job, "premium": bool(account.get("premium")),
+            "count": len(plan["files"]), "cached": len(cached), "missing": len(missing)}
 
 
 def job_state(job: str) -> Dict[str, Any]:
+    _consume_nxm_queue(str(job))
     with _LOCK:
         state = _JOBS.get(str(job))
         return {"success": bool(state), "state": dict(state) if state else {},
                 **({} if state else {"error": "Nexus job not found"})}
+
+
+def _consume_nxm_queue(job: str) -> None:
+    """Match one captured link to the collection and download off the poll path."""
+    with _LOCK:
+        state = _JOBS.get(job)
+        if not state or state.get("_nxmBusy") or not state.get("waiting"):
+            return
+    _, queue, _ = _nxm_paths()
+    try:
+        with open(queue, "r+", encoding="utf-8", errors="replace") as handle:
+            lines = [line.strip() for line in handle if line.strip()]
+            handle.seek(0); handle.truncate()
+    except OSError:
+        return
+    selected = None
+    leftovers = []
+    for line in lines:
+        uri = line.split(" ", 1)[1] if " " in line else line
+        try:
+            parsed = urlparse(uri)
+            match = re.fullmatch(r"/mods/(\d+)/files/(\d+)", parsed.path)
+            wanted = next((x for x in state.get("waiting", []) if match and
+                           x["modId"] == int(match.group(1)) and x["fileId"] == int(match.group(2)) and
+                           _domain(x.get("domain") or state.get("domain")) == _domain(parsed.netloc)), None)
+            if selected is None and wanted:
+                selected = uri
+            else:
+                leftovers.append(line)
+        except Exception:
+            leftovers.append(line)
+    if leftovers:
+        try:
+            with open(queue, "a", encoding="utf-8") as handle:
+                handle.write("\n".join(leftovers) + "\n")
+            chown_to_user(queue, recursive=False)
+        except OSError:
+            pass
+    if not selected:
+        return
+    state["_nxmBusy"] = True
+
+    def run() -> None:
+        result = submit_nxm(job, selected)
+        state["lastNxm"] = result
+        state["_nxmBusy"] = False
+
+    threading.Thread(target=run, name=f"nexus-nxm-{job[:8]}", daemon=True).start()
 
 
 def submit_nxm(job: str, uri: str) -> Dict[str, Any]:
@@ -264,6 +446,8 @@ def submit_nxm(job: str, uri: str) -> Dict[str, Any]:
             raise ValueError("That link is not for a pending file in this collection")
         root = runtime_path("nexus", "collections", domain, state["slug"])
         wanted["path"] = _download(domain, mod_id, file_id, root, query["key"][0], query["expires"][0])
+        wanted["downloaded"] = True
+        _remember_archive(wanted, wanted["path"])
         state["waiting"].remove(wanted)
         state["done"] += 1
         if not state["waiting"]:
