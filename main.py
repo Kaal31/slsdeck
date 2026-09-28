@@ -30,7 +30,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -2401,6 +2401,34 @@ class Plugin:
     # ── Steam Workshop Mod Engine (SteamCMD) ────────────────────────────
     async def ws_resolve(self, text: str) -> Dict[str, Any]:
         return await self._run(workshop.resolve_mod, text)
+
+    # ── Nexus Mods (API browsing + collection archive staging) ──────────
+    async def nexus_get_api_key(self) -> Dict[str, Any]:
+        return await self._run(nexusmods.get_api_key)
+
+    async def nexus_set_api_key(self, key: str = "") -> Dict[str, Any]:
+        return await self._run(nexusmods.set_api_key, key)
+
+    async def nexus_validate(self) -> Dict[str, Any]:
+        return await self._run(nexusmods.validate)
+
+    async def nexus_trending(self, domain: str) -> Dict[str, Any]:
+        return await self._run(nexusmods.trending, domain)
+
+    async def nexus_mod_files(self, domain: str, mod_id: int) -> Dict[str, Any]:
+        return await self._run(nexusmods.mod_files, domain, mod_id)
+
+    async def nexus_collection(self, text: str, domain: str = "") -> Dict[str, Any]:
+        return await self._run(nexusmods.collection, text, domain)
+
+    async def nexus_start_collection(self, text: str, domain: str = "") -> Dict[str, Any]:
+        return await self._run(nexusmods.start_collection, text, domain)
+
+    async def nexus_job_state(self, job: str) -> Dict[str, Any]:
+        return await self._run(nexusmods.job_state, job)
+
+    async def nexus_submit_nxm(self, job: str, uri: str) -> Dict[str, Any]:
+        return await self._run(nexusmods.submit_nxm, job, uri)
 
     async def ws_download(self, text: str) -> Dict[str, Any]:
         return await self._run(workshop.start_download, text)

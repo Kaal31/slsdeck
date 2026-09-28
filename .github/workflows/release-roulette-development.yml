@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - vpn-bypass
+      - nexus-mods-integration
       - main
       - roulette-dev
       - multi-language

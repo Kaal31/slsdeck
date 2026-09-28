@@ -24,6 +24,7 @@ import {
   hubcapWorkshopManifest,
 } from "../api";
 import { appDisplayName } from "../lib/fixRuntime";
+import { NexusModsSection } from "./NexusMods";
 
 function fmtSize(bytes: number): string {
   if (!bytes) return "0 B";
@@ -426,6 +427,7 @@ export function ModsSection() {
           </div>
         ))}
       </PanelSection>
+      <NexusModsSection />
     </>
   );
 }
