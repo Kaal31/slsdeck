@@ -1,0 +1,97 @@
+name: Release core-install-fix
+
+on:
+  push:
+    branches: [core-install-fix]
+    paths-ignore: ["dist/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-core-install-fix
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout core-install-fix
+        uses: actions/checkout@v4
+        with:
+          ref: core-install-fix
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and validate
+        run: |
+          npm run build
+          python3 -m compileall -q main.py py_modules
+          test -s dist/index.js
+
+      - name: Restore tracked support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-core-install-fix.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          test -f artifact/SLSDeckUniversal/package.json
+          node -e 'const p=require("./artifact/SLSDeckUniversal/package.json"); if(p.type!=="module") process.exit(1)'
+          cd artifact
+          zip -qr ../SLSDeckUniversal-core-install-fix.zip SLSDeckUniversal
+          cd ..
+          unzip -t SLSDeckUniversal-core-install-fix.zip
+
+      - name: Build release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="core-install-fix-latest"
+          git fetch origin --tags --force
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            git log --pretty='format:- %s' "$TAG"..HEAD > release-notes.md
+          else
+            printf '%s\n' '- Initial core installer reliability build' > release-notes.md
+          fi
+          test -s release-notes.md || printf '%s\n' '- Maintenance build' > release-notes.md
+
+      - name: Update rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="core-install-fix-latest"
+          TITLE="SLSDeck core-install-fix $(node -p 'require("./plugin.json").version')"
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file release-notes.md --prerelease
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file release-notes.md --prerelease --target core-install-fix
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-core-install-fix.zip --clobber
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-core-install-fix
+          path: SLSDeckUniversal-core-install-fix.zip
+          if-no-files-found: error
+          retention-days: 14

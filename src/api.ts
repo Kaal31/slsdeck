@@ -103,6 +103,12 @@ export interface SlsStatus {
   missingDeps: string[];
   clientFixRan?: boolean;
   injectionActive?: boolean;
+  moonState?: "not-installed" | "awaiting-restart" | "active" | "inactive" | "incompatible";
+  moonLive?: boolean;
+  postRestartVerified?: boolean;
+  steamclientChanged?: boolean;
+  steamclientIdentity?: { fingerprint?: string; files?: Array<{ path: string; sha256: string; buildId?: string; size?: number }> };
+  installedSteamclientIdentity?: { fingerprint?: string; files?: Array<{ path: string; sha256: string; buildId?: string; size?: number }> };
   install: SlsInstallState;
 }
 
@@ -817,19 +823,10 @@ export const IN_PROGRESS = new Set([
 ]);
 
 /**
- * Restart the Steam client. Prefers the in-process SteamClient API (reliable in
- * gamemode); falls back to the backend best-effort restart.
+ * Fully restart Steam through the backend so steam.sh is re-executed. The
+ * in-process StartRestart path can relaunch the bare client and skip LD_AUDIT.
  */
 export async function reloadSteam(): Promise<void> {
-  try {
-    const sc: any = (window as any).SteamClient;
-    if (sc?.User?.StartRestart) {
-      sc.User.StartRestart(false);
-      return;
-    }
-  } catch {
-    /* fall through to backend */
-  }
   try {
     await reloadSteamBackend();
   } catch {

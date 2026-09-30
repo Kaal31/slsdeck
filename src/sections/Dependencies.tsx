@@ -367,9 +367,30 @@ export function DependenciesSection() {
     } catch (e) { setDiag(`error: ${e}`); }
   };
 
-  const setupDone = !!sls?.installed && !!sls?.injected;
-  const slsHealth: Health = sls?.installed ? (sls.injected ? "ok" : "warn") : "off";
-  const slsBusy = !!busy.sls;
+  const slsHealth: Health = sls?.moonState === "active" ? "ok" : sls?.installed ? "warn" : "off";
+  const installInProgress = sls?.install?.status === "queued" || sls?.install?.status === "running";
+  const slsBusy = !!busy.sls || installInProgress;
+  const slsStatusText = !sls?.installed
+    ? "not installed"
+    : sls.moonState === "active"
+      ? "installed · active · verified after restart"
+      : sls.moonState === "awaiting-restart"
+        ? "installed · restart required · not verified yet"
+        : sls.moonState === "incompatible"
+          ? `installed but incompatible / not active${sls.steamclientChanged ? " · steamclient.so changed" : ""}`
+          : "installed but not active";
+  const slsActionLabel = !sls?.installed
+    ? "Install SLSsteam"
+    : sls.moonState === "incompatible"
+      ? "Run Steam client compatibility repair"
+      : sls.moonState === "active"
+        ? "Reinstall SLSsteam"
+        : "Restart Steam and verify";
+  const slsAction = !sls?.installed || sls.moonState === "active"
+    ? installSls
+    : sls.moonState === "incompatible"
+      ? runFix
+      : () => { setN("sls", "restarting Steam for Moon verification…"); reloadSteam().catch(() => {}); };
 
   return (
     <PanelSection title="Setup">
@@ -388,7 +409,7 @@ export function DependenciesSection() {
           </div>
         </PanelSectionRow>
       )}
-      {!setupDone && !slsBusy && (
+      {!sls?.installed && !slsBusy && (
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={installSls}>Install SLSsteam</ButtonItem>
         </PanelSectionRow>
@@ -407,10 +428,10 @@ export function DependenciesSection() {
           label="SLSsteam"
           hint="Core steamclient hook that adds games to your library."
           health={slsHealth}
-          statusText={sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed"}
+          statusText={slsStatusText}
           busy={slsBusy}
-          actionLabel={sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam"}
-          onAction={installSls}
+          actionLabel={slsActionLabel}
+          onAction={slsAction}
         />
         <DepRow
           label="Steam client fix"

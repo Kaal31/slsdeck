@@ -783,8 +783,8 @@ class Plugin:
         return slssteam.get_install_status()
 
     async def reload_steam(self) -> Dict[str, Any]:
-        """Best-effort backend Steam restart (frontend prefers SteamClient)."""
-        return await self._run(steam.restart_steam)
+        """Fully restart Steam through steam.sh so LD_AUDIT is re-applied."""
+        return await self._run(slssteam.restart_steam_apply)
 
     async def activate_injection(self) -> Dict[str, Any]:
         """Patch steam.sh with the scoped LD_AUDIT wrapper (rootless)."""

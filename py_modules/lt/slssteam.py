@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import hashlib
 import shutil
 import subprocess
 import threading
@@ -582,6 +583,7 @@ def boot_injection_watchdog() -> None:
 def get_status() -> Dict[str, Any]:
     lib = find_installed_lib()
     cfg = config_path()
+    runtime = moon_runtime_state()
     with _INSTALL_LOCK:
         install = dict(_INSTALL_STATE)
     return {
@@ -603,6 +605,14 @@ def get_status() -> Dict[str, Any]:
         # 'configured' = hook/steam.sh present (will inject on next proper launch).
         # Used to distinguish "set up, needs restart" from "genuinely off".
         "injectionConfigured": _injection_active(),
+        # Explicit lifecycle state for the UI. An installed library is not the
+        # same thing as a compatible, live hook.
+        "moonState": runtime.get("state"),
+        "moonLive": runtime.get("live", False),
+        "postRestartVerified": runtime.get("postRestartVerified", False),
+        "steamclientChanged": runtime.get("clientChanged", False),
+        "steamclientIdentity": runtime.get("clientIdentity", {}),
+        "installedSteamclientIdentity": runtime.get("installedIdentity", {}),
         "install": install,
     }
 
@@ -1540,6 +1550,120 @@ def steam_client_version() -> Optional[str]:
     return best
 
 
+def _steamclient_candidates() -> List[str]:
+    """Return the real on-disk clients Moon may load, 32-bit first."""
+    try:
+        from .steam import detect_steam_install_path
+        root = detect_steam_install_path() or os.path.join(_home(), ".steam", "steam")
+    except Exception:
+        root = os.path.join(_home(), ".steam", "steam")
+    out: List[str] = []
+    for arch in ("ubuntu12_32", "ubuntu12_64"):
+        path = os.path.realpath(os.path.join(root, arch, "steamclient.so"))
+        if os.path.isfile(path) and path not in out:
+            out.append(path)
+    return out
+
+
+def steamclient_identity() -> Dict[str, Any]:
+    """Identify the actual client ELF(s), rather than trusting Steam's manifest.
+
+    SHA-256 is authoritative and always available. GNU build-id is included when
+    readelf exists because it is the value Moon prints in its diagnostics.
+    """
+    files = []
+    for path in _steamclient_candidates():
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(block)
+            st = os.stat(path)
+            build_id = ""
+            try:
+                proc = subprocess.run(
+                    ["readelf", "-n", path], capture_output=True, text=True,
+                    timeout=15, check=False,
+                )
+                match = re.search(r"Build ID:\s*([0-9a-fA-F]+)", proc.stdout or "")
+                if match:
+                    build_id = match.group(1).lower()
+            except Exception:
+                pass
+            files.append({
+                "path": path,
+                "size": int(st.st_size),
+                "mtimeNs": int(st.st_mtime_ns),
+                "sha256": digest.hexdigest(),
+                "buildId": build_id,
+            })
+        except Exception as exc:
+            logger.warn(f"SLSsteam: could not identify {path}: {exc}")
+    fingerprint = hashlib.sha256(
+        "\n".join(f"{x['path']}:{x['sha256']}" for x in files).encode("utf-8")
+    ).hexdigest() if files else ""
+    return {"files": files, "fingerprint": fingerprint}
+
+
+def _install_identity_path() -> str:
+    return os.path.join(config_dir(), "tools", "steamclient-install.json")
+
+
+def _save_install_identity(identity: Dict[str, Any]) -> None:
+    import json
+    path = _install_identity_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = dict(identity)
+    payload.update({"installedAt": time.time(), "bootEpoch": _system_boot_epoch()})
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+    _chown_file_to_user(path)
+
+
+def _load_install_identity() -> Dict[str, Any]:
+    import json
+    try:
+        with open(_install_identity_path(), "r", encoding="utf-8") as fh:
+            value = json.load(fh)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def moon_runtime_state() -> Dict[str, Any]:
+    installed = bool(find_installed_lib())
+    configured = _injection_active() if installed else False
+    live = _injection_functional() if installed else False
+    current = steamclient_identity()
+    recorded = _load_install_identity()
+    changed = bool(recorded.get("fingerprint") and current.get("fingerprint") and
+                   recorded["fingerprint"] != current["fingerprint"])
+    last_load = _log_last_load_ok() if installed else None
+    awaiting = False
+    if installed and configured and not live and last_load is not False:
+        old_boot = recorded.get("bootEpoch")
+        boot = _system_boot_epoch()
+        awaiting = bool(old_boot and boot and abs(float(old_boot) - float(boot)) < 10)
+    if not installed:
+        state = "not-installed"
+    elif live:
+        state = "active"
+    elif last_load is False or changed:
+        state = "incompatible"
+    elif awaiting:
+        state = "awaiting-restart"
+    else:
+        state = "inactive"
+    return {
+        "state": state, "live": live, "configured": configured,
+        "clientChanged": changed, "clientIdentity": current,
+        "installedIdentity": recorded,
+        "postRestartVerified": bool(live),
+    }
+
+
 def refresh_patterns_now() -> Dict[str, Any]:
     """Manual, user-triggered pattern refresh that CAPTURES output so the UI can
     show what happened — unlike the silent boot pass. Reports whether the helper
@@ -2115,6 +2239,18 @@ def _run_install() -> None:
 
         installed = bool(find_installed_lib())
         injected = is_injected()
+        identity = steamclient_identity()
+        if installed and not identity.get("fingerprint"):
+            _set_install({"status": "failed", "success": False,
+                          "error": "Installed, but steamclient.so could not be identified"})
+            _log("Install rejected: no on-disk steamclient.so fingerprint was available")
+            return
+        if installed:
+            _save_install_identity(identity)
+            for item in identity.get("files", []):
+                _log("Recorded steamclient.so: " +
+                     (item.get("buildId") or item.get("sha256", "unknown")) +
+                     " (" + item.get("path", "unknown") + ")")
         _set_install({
             "status": "done",
             "success": installed,
@@ -2138,8 +2274,13 @@ def _run_install() -> None:
 
 def start_install() -> Dict[str, Any]:
     with _INSTALL_LOCK:
-        if _INSTALL_STATE.get("status") == "running":
+        if _INSTALL_STATE.get("status") in ("queued", "running"):
             return {"success": False, "error": "Install already running"}
+        # Reserve the job while holding the lock. Previously the state was set
+        # after preflight, allowing rapid clicks/RPC retries to launch several
+        # installers before the first worker changed it to running.
+        _INSTALL_STATE.update({"status": "queued", "stage": "preflight",
+                               "error": "", "log": "", "percent": 0})
     missing = _missing_dependencies()
     if missing:
         _set_install({"status": "failed",
@@ -2150,8 +2291,7 @@ def start_install() -> Dict[str, Any]:
         error = str(preflight.get("error") or "Host preflight failed")
         _set_install({"status": "failed", "stage": "preflight", "error": error, "log": error})
         return {"success": False, "error": error, "preflight": preflight}
-    _set_install({"status": "queued", "stage": "preflight", "error": "", "log": "", "percent": 0,
-                  "preflight": preflight})
+    _set_install({"preflight": preflight})
     threading.Thread(target=_run_install, daemon=True).start()
     return {"success": True}
 
