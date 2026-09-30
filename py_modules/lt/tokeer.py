@@ -789,6 +789,149 @@ def verify(appid: int, ubisoft: bool = False,
         return {"success": False, "error": str(exc)}
 
 
+def verify_ea(appid: int) -> Dict[str, Any]:
+    """Run Tokeer's EA verifier and return the same structured shape as verify."""
+    if not str(appid).isdigit() or int(appid) <= 0:
+        return {"success": False, "error": "Invalid Steam AppID."}
+    cmd = os.path.join(_tdir(), "tokeer")
+    if not os.path.isfile(cmd):
+        return {"success": False, "needsPrepare": True, "error": "Tokeer is not prepared yet."}
+    try:
+        p = _run_as_user([cmd, "ea-verify", str(int(appid))], timeout=120)
+        out = p.stdout or ""
+        match = re.search(r"TLX1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", out)
+        code = match.group(0) if match else ""
+        report = _decode_tlx(code) if code else {}
+        if not code:
+            clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", out).strip()
+            return {"success": False, "code": "", "report": {}, "checks": None,
+                    "output": out[-24000:], "returnCode": p.returncode,
+                    "error": "Tokeer EA verifier did not generate a TLX1 report."
+                             + (("\n\nVerifier output:\n" + clean[-12000:]) if clean else "")}
+        mode = str(report.get("mode") or "ea").lower()
+        if mode not in {"ea", "electronic-arts", "electronic_arts"}:
+            return {"success": False, "code": "", "report": report, "checks": None,
+                    "output": out[-24000:], "returnCode": p.returncode,
+                    "error": f"Tokeer generated a {mode} setup code while EA verification was requested."}
+        checks = {
+            "installed": bool(report.get("installed")),
+            "prefix": bool(report.get("prefix")),
+            "hook": bool(report.get("hook")),
+            "launchOpt": bool(report.get("launch_opt")),
+            "proton": report.get("proton"),
+        }
+        passed = bool(code and checks["installed"] and checks["prefix"])
+        failed = [name for name, value in (("game installation", checks["installed"]),
+                                             ("Proton prefix", checks["prefix"])) if not value]
+        return {"success": passed, "code": code, "report": report,
+                "checks": checks, "output": out[-24000:], "returnCode": p.returncode,
+                "failedChecks": failed,
+                "error": "" if passed else "Tokeer EA setup checks failed: " + ", ".join(failed) + "."}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def prepare_and_verify_ea(appid: int) -> Dict[str, Any]:
+    prepared = prepare(appid)
+    if not prepared.get("success"):
+        return {"success": False, "phase": "prepare", "prepare": prepared,
+                "output": prepared.get("output", ""),
+                "error": prepared.get("error") or "Tokeer setup failed."}
+    checked = verify_ea(appid)
+    return {**checked, "phase": "verified" if checked.get("success") else "verify",
+            "prepare": prepared, "steamMayRestart": bool(prepared.get("steamMayRestart"))}
+
+
+def ea_request(appid: int) -> Dict[str, Any]:
+    """Generate the EA activation request and locate the exact upstream file."""
+    appid = int(appid)
+    cmd = os.path.join(_tdir(), "tokeer")
+    if appid <= 0 or not os.path.isfile(cmd):
+        return {"success": False, "error": "Tokeer is not prepared for this game."}
+    started = time.time()
+    try:
+        p = _run_as_user([cmd, "ea-request", str(appid)], timeout=180)
+        out = p.stdout or ""
+        candidates = []
+        for value in re.findall(r"(?:^|[\s'\"])(/[^\n\r'\"]+)", out):
+            path = os.path.realpath(value.strip())
+            try:
+                name = os.path.basename(path).lower()
+                if (os.path.isfile(path) and os.path.getmtime(path) >= started - 2
+                        and 0 < os.path.getsize(path) <= 16 * 1024 * 1024
+                        and "request" in name and "dbdata" not in name):
+                    candidates.append((os.path.getmtime(path), path))
+            except OSError:
+                pass
+        for root, _dirs, files in os.walk(_tdir()):
+            for name in files:
+                path = os.path.realpath(os.path.join(root, name))
+                low = name.lower()
+                try:
+                    modified = os.path.getmtime(path)
+                    size = os.path.getsize(path)
+                except OSError:
+                    continue
+                if (modified >= started - 2 and 0 < size <= 16 * 1024 * 1024
+                        and "request" in low and "dbdata" not in low):
+                    candidates.append((modified, path))
+        candidates.sort(reverse=True)
+        if p.returncode != 0:
+            return {"success": False, "output": out[-24000:],
+                    "error": "Tokeer ea-request failed."}
+        if not candidates:
+            return {"success": False, "output": out[-24000:],
+                    "error": "Tokeer completed ea-request but no fresh request file was found."}
+        path = candidates[0][1]
+        return {"success": True, "path": path, "filename": os.path.basename(path),
+                "size": os.path.getsize(path), "output": out[-24000:]}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def ea_apply(appid: int, dbdata_path: str) -> Dict[str, Any]:
+    appid = int(appid)
+    cmd = os.path.join(_tdir(), "tokeer")
+    path = os.path.realpath(str(dbdata_path or ""))
+    if appid <= 0 or not os.path.isfile(cmd):
+        return {"success": False, "error": "Tokeer is not prepared for this game."}
+    if not os.path.isfile(path) or os.path.basename(path).lower() not in {"dbdata.json", "dbata.json"}:
+        return {"success": False, "error": "A downloaded EA dbdata.json file is required."}
+    try:
+        p = _run_as_user([cmd, "ea-apply", str(appid), path], timeout=180)
+        out = p.stdout or ""
+        return {"success": p.returncode == 0, "path": path, "output": out[-24000:],
+                "error": "" if p.returncode == 0 else "Tokeer ea-apply failed."}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def ea_download_and_apply(appid: int, url: str) -> Dict[str, Any]:
+    try:
+        if not (str(url).startswith("https://cdn.discordapp.com/attachments/") or
+                str(url).startswith("https://media.discordapp.net/attachments/")):
+            return {"success": False, "error": "Discord returned an untrusted EA dbdata URL."}
+        response = ensure_http_client("tokeer: EA dbdata.json").get(
+            str(url), follow_redirects=True, timeout=120)
+        response.raise_for_status()
+        if not response.content or len(response.content) > 10 * 1024 * 1024:
+            return {"success": False, "error": "EA dbdata response has an invalid size."}
+        payload = json.loads(response.content.decode("utf-8-sig"))
+        if not isinstance(payload, dict):
+            return {"success": False, "error": "EA dbdata response is not a JSON object."}
+        directory = os.path.join(_tdir(), "ea", str(int(appid)))
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "dbdata.json")
+        staged = path + ".slsdeck-new"
+        with open(staged, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(staged, path)
+        result = ea_apply(int(appid), path)
+        return {**result, "directory": directory}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def redeem(code: str) -> Dict[str, Any]:
     code = (code or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,32}", code):

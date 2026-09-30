@@ -1,4 +1,4 @@
-import { tokeerEnsureProton, tokeerEnsureRuntime, tokeerPreflight, tokeerVerify, TokeerVerifyResult } from "../api";
+import { tokeerEaVerify, tokeerEnsureProton, tokeerEnsureRuntime, tokeerPreflight, tokeerVerify, TokeerVerifyResult } from "../api";
 import { configureTokeerLaunch, getCurrentLaunchOptions } from "./fixRuntime";
 import { launchGame } from "./launchGame";
 
@@ -53,8 +53,10 @@ export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupRe
 export async function setupAndVerifyTokeer(
   appid: number,
   onStatus?: (message: string) => void,
-  ubisoft = false
+  mode: boolean | "ea" = false
 ): Promise<TokeerSetupResult> {
+  const ubisoft = mode === true;
+  const ea = mode === "ea";
   onStatus?.("Confirming that the game is installed…");
   const preflight = await tokeerPreflight(appid, "");
   if (!preflight.success || !preflight.installed) {
@@ -109,14 +111,18 @@ export async function setupAndVerifyTokeer(
   // visible in Settings). For this first verification, use the exact value we
   // just submitted. Subsequent/manual verification still reads Steam live.
   const justWrittenLaunchOptions = configured.options || getCurrentLaunchOptions(appid);
-  let verified = await tokeerVerify(appid, ubisoft, justWrittenLaunchOptions);
+  let verified = ea
+    ? await tokeerEaVerify(appid)
+    : await tokeerVerify(appid, ubisoft, justWrittenLaunchOptions);
   if (!verified.success && !verified.checks?.prefix) {
     onStatus?.("Creating the Proton prefix with one game launch—Steam will stay open…");
     launchGame(appid);
     for (let attempt = 0; attempt < 30; attempt++) {
       await sleep(2000);
       const liveLaunchOptions = getCurrentLaunchOptions(appid);
-      verified = await tokeerVerify(appid, ubisoft, liveLaunchOptions || justWrittenLaunchOptions);
+      verified = ea
+        ? await tokeerEaVerify(appid)
+        : await tokeerVerify(appid, ubisoft, liveLaunchOptions || justWrittenLaunchOptions);
       if (verified.success || verified.checks?.prefix) break;
     }
   }

@@ -17,7 +17,12 @@ import {
   cancelAdd,
   formatBytes,
   getAddStatus,
+  getEverAdded,
+  getLuaToolsCollection,
+  getLuaToolsCollections,
   getNotifyGameAdd,
+  LuaToolsCollection,
+  LuaToolsCollectionGame,
   searchGames,
   startAdd,
   customListAllManifests,
@@ -27,6 +32,7 @@ import {
 import { importCustomFlow } from "../components/CustomImport";
 import { InstalledSection } from "./Installed";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
+import { listLibraryAppIds } from "../lib/ownership";
 
 // Imported custom manifests / lua files, grouped by game — mirrors the
 // "Applied fixes" list style in the Fixes tab.
@@ -104,8 +110,30 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
   const [activeAppId, setActiveAppId] = useState<number | null>(null);
   const [activeName, setActiveName] = useState<string>("");
   const [state, setState] = useState<AddState | null>(null);
+  const [collections, setCollections] = useState<LuaToolsCollection[]>([]);
+  const [collectionsError, setCollectionsError] = useState("");
+  const [collectionsLoading, setCollectionsLoading] = useState(true);
+  const [collectionRunning, setCollectionRunning] = useState(false);
+  const [collectionProgress, setCollectionProgress] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelCollectionRef = useRef(false);
+
+  const loadCollections = async () => {
+    setCollectionsLoading(true);
+    setCollectionsError("");
+    try {
+      const result = await getLuaToolsCollections("popular", 16);
+      if (result.success) setCollections(result.collections || []);
+      else setCollectionsError(result.error || "Could not load collections");
+    } catch (e) {
+      setCollectionsError(String(e));
+    } finally {
+      setCollectionsLoading(false);
+    }
+  };
+
+  useEffect(() => { void loadCollections(); }, []);
 
   useEffect(() => {
     return () => {
@@ -199,13 +227,88 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
     }, 800);
   };
 
+  const waitForCollectionGame = async (game: LuaToolsCollectionGame): Promise<boolean> => {
+    setActiveAppId(game.appid);
+    setActiveName(game.name || `AppID ${game.appid}`);
+    setState({ status: "queued" });
+    markSlsAddPending(game.appid);
+    try {
+      const started = await startAdd(game.appid);
+      if (!started.success) throw new Error(started.error || "Failed to start");
+      while (!cancelCollectionRef.current) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const result = await getAddStatus(game.appid);
+        if (!result.success) continue;
+        setState(result.state);
+        if (result.state.status === "done") return true;
+        if (result.state.status === "failed" || result.state.status === "cancelled") {
+          markSlsAddPending(game.appid, false);
+          return false;
+        }
+      }
+      await cancelAdd(game.appid);
+    } catch {
+      markSlsAddPending(game.appid, false);
+    }
+    return false;
+  };
+
+  const beginCollection = async (collection: LuaToolsCollection) => {
+    if (collectionRunning) return;
+    stopPolling();
+    cancelCollectionRef.current = false;
+    setCollectionRunning(true);
+    setCollectionProgress(`Loading ${collection.name}…`);
+    try {
+      const detail = await getLuaToolsCollection(collection.slug);
+      if (!detail.success) throw new Error(detail.error || "Could not load collection");
+      const games = detail.games || [];
+      const ever = await getEverAdded().catch(() => ({ success: false, appids: [] as number[] }));
+      const existing = new Set<number>([
+        ...listLibraryAppIds(),
+        ...(ever.success ? ever.appids : []),
+      ]);
+      const queue = games.filter((game) => !existing.has(game.appid));
+      const skipped = games.length - queue.length;
+      let added = 0;
+      let failed = 0;
+      for (let index = 0; index < queue.length && !cancelCollectionRef.current; index += 1) {
+        const game = queue[index];
+        setCollectionProgress(`${collection.name} · ${index + 1}/${queue.length} · ${game.name}`);
+        if (await waitForCollectionGame(game)) {
+          added += 1;
+          existing.add(game.appid);
+        } else if (!cancelCollectionRef.current) {
+          failed += 1;
+        }
+      }
+      if (cancelCollectionRef.current) {
+        setCollectionProgress(`${collection.name} · cancelled`);
+      } else {
+        setCollectionProgress(`${collection.name} · added ${added}, skipped ${skipped}, failed ${failed}`);
+        toaster.toast({
+          title: "lua.tools collection complete",
+          body: `Added ${added} · skipped ${skipped} · failed ${failed}`,
+        });
+        void refreshBadges();
+        onChanged();
+      }
+    } catch (e) {
+      setCollectionProgress(`Failed: ${String(e)}`);
+      toaster.toast({ title: "lua.tools collection", body: String(e) });
+    } finally {
+      setCollectionRunning(false);
+    }
+  };
+
   const onCancel = async () => {
+    cancelCollectionRef.current = true;
     if (activeAppId != null) await cancelAdd(activeAppId);
     stopPolling();
     setState((s) => ({ ...(s || {}), status: "cancelled" }));
   };
 
-  const busy = !!state && (IN_PROGRESS.has(state.status || "") || state.status === "reconciling");
+  const busy = collectionRunning || (!!state && (IN_PROGRESS.has(state.status || "") || state.status === "reconciling"));
 
   const statusLabel = () => {
     if (!state) return "";
@@ -246,6 +349,32 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
           value={query}
           onChange={(e) => runSearch((e.target as HTMLInputElement).value)}
         />
+      </PanelSectionRow>
+
+      <PanelSectionRow>
+        <div style={{ width: "100%" }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>lua.tools collections</div>
+          <div style={{ fontSize: 11, opacity: 0.68, marginBottom: 8 }}>
+            Select a collection to add its games one at a time. Games already in your library or previously added by SLSDeck are skipped.
+          </div>
+          {collectionsLoading && <div style={{ display: "flex", gap: 8, alignItems: "center" }}><Spinner style={{ width: 16, height: 16 }} /> Loading collections…</div>}
+          {!collectionsLoading && collectionsError && (
+            <ButtonItem layout="below" onClick={loadCollections}>Retry collections · {collectionsError}</ButtonItem>
+          )}
+          {!collectionsLoading && !collectionsError && (
+            <Focusable style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, maxHeight: "48vh", overflowY: "auto" }}>
+              {collections.map((collection) => (
+                <ButtonItem key={collection.slug} layout="below" disabled={busy} onClick={() => beginCollection(collection)}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5, textAlign: "left" }}>
+                    {collection.image && <img src={collection.image} alt="" style={{ width: "100%", aspectRatio: "460 / 215", objectFit: "cover", borderRadius: 4 }} />}
+                    <span style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>{collection.name}</span>
+                  </div>
+                </ButtonItem>
+              ))}
+            </Focusable>
+          )}
+          {collectionProgress && <div style={{ fontSize: 12, marginTop: 8, opacity: 0.85 }}>{collectionProgress}</div>}
+        </div>
       </PanelSectionRow>
 
       {searching && (

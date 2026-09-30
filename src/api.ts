@@ -50,6 +50,19 @@ export interface SearchResult {
   name: string;
 }
 
+export interface LuaToolsCollection {
+  slug: string;
+  url: string;
+  name: string;
+  image?: string;
+}
+
+export interface LuaToolsCollectionGame {
+  appid: number;
+  name: string;
+  image?: string;
+}
+
 export interface ApiListItem {
   name: string;
   index: number;
@@ -185,6 +198,10 @@ export const tokeerEnsureProton = callable<[force?: boolean], { success: boolean
 export const tokeerPrepare = callable<[appid: number], { success: boolean; output?: string; steamMayRestart?: boolean; error?: string }>("tokeer_prepare");
 export const tokeerPrepareVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult & { phase?: string; prepare?: any; steamMayRestart?: boolean }>("tokeer_prepare_verify");
 export const tokeerVerify = callable<[appid: number, ubisoft?: boolean, liveLaunchOptions?: string], TokeerVerifyResult>("tokeer_verify");
+export const tokeerEaPrepareVerify = callable<[appid: number], TokeerVerifyResult & { phase?: string; prepare?: any; steamMayRestart?: boolean }>("tokeer_ea_prepare_verify");
+export const tokeerEaVerify = callable<[appid: number], TokeerVerifyResult>("tokeer_ea_verify");
+export const tokeerEaRequest = callable<[appid: number], { success: boolean; path?: string; filename?: string; size?: number; output?: string; error?: string }>("tokeer_ea_request");
+export const tokeerEaApply = callable<[appid: number, dbdataUrl: string], { success: boolean; path?: string; directory?: string; output?: string; error?: string }>("tokeer_ea_apply");
 export const tokeerRedeem = callable<[code: string], { success: boolean; output?: string; needsPrepare?: boolean; error?: string }>("tokeer_redeem");
 export type UbisoftHostedGame = {
   name: string; aliases: string[]; steamAppId: number; carePackageId: number;
@@ -209,7 +226,7 @@ export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number]
 export const tokeerInstallUbisoftDbdata = callable<[appid: number, tokenPath: string, url: string], { success: boolean; path?: string; directory?: string; error?: string }>("tokeer_install_ubisoft_dbdata");
 export const tokeerUbisoftDbdataStatus = callable<[appid: number, tokenPath: string], { success: boolean; installed: boolean; path?: string; directory?: string; error?: string }>("tokeer_ubisoft_dbdata_status");
 export type TokeerAppliedRecord = {
-  appid: number; gameName: string; kind: "steam" | "ubisoft"; appliedAt: number;
+  appid: number; gameName: string; kind: "steam" | "ubisoft" | "ea"; appliedAt: number;
   applied: boolean; pinned: boolean; health: "valid" | "check" | "changed";
   healthReason?: string; ageDays?: number; pinMatchesActivation?: boolean;
   activationBuildId?: string; activationDepots?: Record<string, string>;
@@ -233,6 +250,8 @@ export const getEverAdded = callable<[], { success: boolean; appids: number[] }>
 export const getInstalledApps = callable<[], { success: boolean; apps: InstalledApp[]; error?: string }>("get_installed_apps");
 
 export const searchGames = callable<[query: string, limit: number], { success: boolean; results: SearchResult[] }>("search_games");
+export const getLuaToolsCollections = callable<[sort?: string, limit?: number], { success: boolean; collections: LuaToolsCollection[]; error?: string }>("luatools_collections");
+export const getLuaToolsCollection = callable<[value: string], { success: boolean; games?: LuaToolsCollectionGame[]; error?: string }>("luatools_collection");
 
 export const getApiList = callable<[], { success: boolean; apis: ApiListItem[] }>("get_api_list");
 export const fetchFreeApis = callable<[], { success: boolean; count?: number; error?: string }>("fetch_free_apis");

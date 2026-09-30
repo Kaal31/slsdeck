@@ -5,6 +5,7 @@ on:
     branches:
       - vpn-bypass
       - nexus-mods-integration
+      - lua-collections-implement
       - main
       - roulette-dev
       - multi-language

@@ -52,6 +52,7 @@ export type TokeerTicketContext = {
   opened?: boolean;
   appid?: number;
   ubisoft?: boolean;
+  ea?: boolean;
   gameName?: string;
   incompatiblePlatform?: boolean;
   url?: string;
@@ -679,7 +680,7 @@ const SNAPSHOT_EXPR = `(function(){try{
   var text=panels.map(function(a){return a.innerText||'';}).join('\\n').replace(/\u00a0/g,' ');
   var n=function(re){var m=text.match(re);return m?Number(m[1]):undefined};
   var sv=function(re){var m=text.match(re);return m?m[1].trim():undefined};
-  return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
+  return {found:true,steamStatus:sv(/Steam\\s*:\\s*([^\\n]+)/i),gamesListed:n(/Games listed:\\s*(\\d+)/i),steamGames:n(/Games listed:[\\s\\S]*?Steam[^\\d]*(\\d+)/i),eaGames:n(/(?:EA|Electronic Arts)[^\\d]*(\\d+)/i),ubisoftGames:n(/Ubisoft[^\\d]*(\\d+)/i),keysRemaining:n(/Keys remaining:\\s*(\\d+)/i),highDemand:n(/High demand:\\s*(\\d+)/i),selectors:selects,rawText:text.slice(0,12000)};
 }catch(e){return {found:false,selectors:[],error:String(e)};}})()`;
 
 // Several surfaces (the Tokeer page, the availability cache, Fixes) can each
@@ -951,6 +952,7 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   var text=(recent||body.slice(-50000)).replace(/\\u00a0/g,' ');
   var hay=(code+'\\n'+text).slice(-70000);
   var ubisoft=/(?:tokeer\\s+verify-ubi\\b|(?:^|\\s)--ubi\\b|\\bUbiTokeer\\b)/i.test(hay);
+  var ea=/(?:tokeer\\s+ea-verify\\b|\\bEATokeer\\b)/i.test(hay);
   var gameMatch=opening.match(/(?:Ubi|Steam|EA)?Tokeer\\s*[-–—:]\\s*([^\\n\\r]+)/i)||opening.match(/(?:Game|Title)\\s*:\\s*([^\\n\\r]+)/i);
   var gameName=gameMatch?String(gameMatch[1]||'').replace(/\\s+(?:Ticket|User|Payment|Status)\\s*:.*$/i,'').trim():'';
   var incompatiblePlatform=/(?:\\bPowerShell\\b|LuaTools\\s+Validator)/i.test(body);
@@ -969,7 +971,7 @@ const TICKET_CONTEXT_EXPR = `(function(){try{
   }
   var opened=/ticket|activation|tokeer|tlx1|setup command/i.test(text)||/\\/channels\\//i.test(location.href);
   var identity={guildId:route[1]||'',ticketChannelId:(newest&&newest.channelId)||route[2]||'',lastMessageId:(newest&&newest.messageId)||route[3]||''};
-  var common={opened:true,gameName:gameName,ubisoft:ubisoft,incompatiblePlatform:incompatiblePlatform,rawText:hay.slice(-20000)};
+  var common={opened:true,gameName:gameName,ubisoft:ubisoft,ea:ea,incompatiblePlatform:incompatiblePlatform,rawText:hay.slice(-20000)};
   if(incompatiblePlatform)return JSON.stringify(Object.assign({found:false,error:'This is a Windows activation ticket (PowerShell/LuaTools Validator instructions); Linux automation ignored it.'},common,identity));
   return JSON.stringify(ids.length?Object.assign({found:true,appid:ids[0],appids:ids},common,identity):Object.assign({found:false,error:'Ticket opened, waiting for the setup commands…'},common,identity));
 }catch(e){return JSON.stringify({found:false,error:String(e)});}})()`;
@@ -1547,10 +1549,13 @@ export async function waitForUbisoftVerificationConfirmation(ticketUrl: string, 
   return { success: false, error: "Timed out waiting for Ubisoft verification confirmation; no game files were changed." };
 }
 
-export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string, expectedFilename: string): Promise<{ success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string }> {
+export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string, expectedFilename: string, kind: "ubisoft" | "ea" = "ubisoft"): Promise<{ success: boolean; lastMessageId?: string; cancelled?: boolean; error?: string }> {
   const filename = String(expectedFilename || "").trim();
-  if (!/^token_req_\d+\.txt$/i.test(filename) || !String(filePath || "").endsWith(`/${filename}`)) {
-    return { success: false, error: "The selected file is not a recognized Ubisoft token request." };
+  const validName = kind === "ea"
+    ? /request/i.test(filename) && /\.(?:json|txt|bin|dat)$/i.test(filename)
+    : /^token_req_\d+\.txt$/i.test(filename);
+  if (!validName || !String(filePath || "").endsWith(`/${filename}`)) {
+    return { success: false, error: `The selected file is not a recognized ${kind === "ea" ? "EA" : "Ubisoft"} activation request.` };
   }
   const deadline = Date.now() + 20000;
   let tab: CdpTab | null = null;
@@ -1583,7 +1588,7 @@ export async function uploadTokeerTicketFile(ticketUrl: string, filePath: string
     }
   }
   if (!tab?.webSocketDebuggerUrl || !fileInputFound) return { success: false, error: "Discord did not expose its attachment input in the saved ticket." };
-  if (!fileAccepted) return { success: false, error: "Chromium did not accept the Ubisoft token request attachment." };
+  if (!fileAccepted) return { success: false, error: `Chromium did not accept the ${kind === "ea" ? "EA" : "Ubisoft"} request attachment.` };
 
   const attachedDeadline = Date.now() + 10000;
   let attached = false;

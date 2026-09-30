@@ -30,7 +30,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods, luatools_collections,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -107,6 +107,18 @@ class Plugin:
         return await self._run_slow(tokeer.verify, appid, bool(ubisoft),
                                     str(live_launch_options or ""))
 
+    async def tokeer_ea_prepare_verify(self, appid: int) -> Dict[str, Any]:
+        return await self._run_slow(tokeer.prepare_and_verify_ea, appid)
+
+    async def tokeer_ea_verify(self, appid: int) -> Dict[str, Any]:
+        return await self._run_slow(tokeer.verify_ea, appid)
+
+    async def tokeer_ea_request(self, appid: int) -> Dict[str, Any]:
+        return await self._run_slow(tokeer.ea_request, appid)
+
+    async def tokeer_ea_apply(self, appid: int, dbdata_url: str) -> Dict[str, Any]:
+        return await self._run_slow(tokeer.ea_download_and_apply, appid, str(dbdata_url or ""))
+
     async def tokeer_redeem(self, code: str) -> Dict[str, Any]:
         return await self._run_slow(tokeer.redeem, code)
 
@@ -178,7 +190,7 @@ class Plugin:
         record = {
             "appid": appid,
             "gameName": str(game_name or f"AppID {appid}"),
-            "kind": "ubisoft" if str(kind).lower() == "ubisoft" else "steam",
+            "kind": str(kind).lower() if str(kind).lower() in {"ubisoft", "ea"} else "steam",
             "appliedAt": int(time.time() * 1000),
         }
         record.update(await self._run(tokeer_health.capture, appid, record["kind"], evidence_path))
@@ -865,6 +877,12 @@ class Plugin:
 
     async def get_ever_added(self) -> Dict[str, Any]:
         return {"success": True, "appids": settings.get_ever_added()}
+
+    async def luatools_collections(self, sort: str = "popular", limit: int = 20) -> Dict[str, Any]:
+        return await self._run(luatools_collections.list_collections, sort, int(limit))
+
+    async def luatools_collection(self, value: str) -> Dict[str, Any]:
+        return await self._run(luatools_collections.get_collection, value)
 
     async def get_installed_apps(self) -> Dict[str, Any]:
         return await self._run(downloads.get_installed_apps)
