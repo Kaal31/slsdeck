@@ -157,8 +157,16 @@ jobs:
           TAG="${BRANCH}-latest"
           ZIP="SLSDeckUniversal-${BRANCH}.zip"
           TITLE="SLSDeck ${ROLLING_VERSION}"
-          NOTES="Rolling prerelease ${ROLLING_VERSION}, built automatically from the ${BRANCH} branch at ${GITHUB_SHA}."
           git fetch origin --tags --force
+          PREVIOUS_SHA="$(git rev-list -n 1 "$TAG" 2>/dev/null || true)"
+          if [ -n "$PREVIOUS_SHA" ] && git merge-base --is-ancestor "$PREVIOUS_SHA" HEAD; then
+            CHANGES="$(git log --reverse --no-merges --pretty='- %s%n%b' "$PREVIOUS_SHA..HEAD")"
+          else
+            CHANGES="$(git log --reverse --no-merges -n 20 --pretty='- %s%n%b')"
+          fi
+          if [ -z "$CHANGES" ]; then CHANGES="- Maintenance release"; fi
+          NOTES="$(printf '## Changes in %s\n\n%s\n\nBuilt automatically from `%s` at `%s`.' \
+            "$ROLLING_VERSION" "$CHANGES" "$BRANCH" "$GITHUB_SHA")"
           git tag -f "$TAG" HEAD
           git push origin "refs/tags/$TAG" --force
           if [ "$BRANCH" = "main" ]; then

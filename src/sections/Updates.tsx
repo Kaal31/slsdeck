@@ -200,6 +200,14 @@ export function UpdatesSection() {
           disabled={pluginBusy}
         />
       </PanelSectionRow>}
+      {!!selectedRelease?.notes && <PanelSectionRow>
+        <div style={{ width: "100%", fontSize: 12, lineHeight: 1.45 }}>
+          <div style={{ fontWeight: 700, marginBottom: 5 }}>Patch notes</div>
+          <div style={{ whiteSpace: "pre-wrap", maxHeight: 150, overflowY: "auto", opacity: 0.82 }}>
+            {selectedRelease.notes}
+          </div>
+        </div>
+      </PanelSectionRow>}
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={installSelected} disabled={pluginBusy || !selectedRelease}>
           {selectedRelease

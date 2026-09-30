@@ -9,6 +9,7 @@ callback to stop live workers but preserve managed dependencies and user data.
 from __future__ import annotations
 
 import json
+import html
 import os
 import posixpath
 import re
@@ -199,6 +200,7 @@ def _normalise_releases(raw: List[Dict[str, Any]]) -> Dict[str, Any]:
             "releaseUrl": str(release.get("html_url") or ""),
             "publishedAt": str(release.get("published_at") or ""),
             "size": int(zip_asset.get("size") or 0),
+            "notes": str(release.get("body") or ""),
         })
     releases.sort(key=lambda item: (
         item["channel"] != CHANNEL,
@@ -249,6 +251,7 @@ def _atom_releases(payload: str) -> List[Dict[str, Any]]:
             "name": value(entry, "title"),
             "html_url": release_url,
             "published_at": value(entry, "updated"),
+            "body": re.sub(r"<[^>]+>", "", html.unescape(value(entry, "content"))).strip(),
             "assets": [{"name": asset_name, "browser_download_url": asset_url, "size": 0}],
         })
     return releases

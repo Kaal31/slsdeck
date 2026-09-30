@@ -435,6 +435,12 @@ function Content() {
   const [updateBanners, setUpdateBanners] = useState(true);
   const [pluginUpdateBusy, setPluginUpdateBusy] = useState(false);
   const installed = slsStatus?.installed === true;
+  const bannerNotes = String(pluginUpdate?.latest?.notes || "")
+    .split("\n")
+    .map((line) => line.trim().replace(/^#+\s*/, "").replace(/^-\s*/, "• "))
+    .filter((line) => line && !line.startsWith("Built automatically from"))
+    .slice(0, 4)
+    .join("\n");
 
   const refreshSlsStatus = useCallback(async () => {
     try {
@@ -571,6 +577,9 @@ function Content() {
             <div style={{ fontSize: 11, opacity: .9, marginBottom: 8 }}>
               {pluginUpdate.currentVersion} → {pluginUpdate.latest.version} · {pluginUpdate.currentChannel}
             </div>
+            {!!bannerNotes && <div style={{ fontSize: 11, lineHeight: 1.35, whiteSpace: "pre-line", marginBottom: 8, opacity: .92 }}>
+              {bannerNotes}
+            </div>}
             <DialogButton
               onClick={installBannerUpdate}
               disabled={pluginUpdateBusy}
