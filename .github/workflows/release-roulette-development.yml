@@ -6,6 +6,7 @@ on:
       - vpn-bypass
       - nexus-mods-integration
       - lua-collections-implement
+      - beta-branch
       - main
       - roulette-dev
       - multi-language
