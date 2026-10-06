@@ -1,0 +1,66 @@
+name: Release decky-update
+
+on:
+  push:
+    branches: [decky-update]
+    paths-ignore: ["dist/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-decky-update
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: decky-update, fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: npm}
+      - run: npm ci
+      - run: npm run build
+      - name: Validate Decky compatibility
+        run: |
+          python3 -m compileall -q main.py py_modules
+          python3 - <<'PY'
+          from pathlib import Path
+          requirements = Path('requirements.txt').read_text()
+          source = Path('src/sections/CloudRedirect.tsx').read_text()
+          assert 'httpx==' in requirements and 'py7zr==' in requirements
+          assert 'FileSelectionType.FOLDER' in source and 'Browse folders' in source
+          PY
+      - run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Package plugin
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-decky-update.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do [ ! -e "$p" ] || cp -a "$p" artifact/SLSDeckUniversal/; done
+          cd artifact && zip -qr ../SLSDeckUniversal-decky-update.zip SLSDeckUniversal && cd ..
+      - name: Update rolling prerelease
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          set -euo pipefail
+          TAG=decky-update-latest
+          VERSION=$(node -p 'require("./plugin.json").version')
+          PREVIOUS=$(git rev-list -n 1 "$TAG" 2>/dev/null || true)
+          RANGE=${PREVIOUS:+$PREVIOUS..HEAD}
+          NOTES=$(git log ${RANGE:-HEAD^..HEAD} --pretty='format:- %s' --no-merges)
+          [ -n "$NOTES" ] || NOTES='- Decky compatibility rolling build'
+          git tag -f "$TAG" HEAD && git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "SLSDeck decky-update $VERSION" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" --title "SLSDeck decky-update $VERSION" --notes "$NOTES" --prerelease --target decky-update
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-decky-update.zip --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-decky-update
+          path: SLSDeckUniversal-decky-update.zip
+          retention-days: 14

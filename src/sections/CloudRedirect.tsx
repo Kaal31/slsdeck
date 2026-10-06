@@ -257,6 +257,24 @@ export function CloudRedirectSection() {
     if (alive.current) setBusy(false);
   };
 
+  const browseFolder = async () => {
+    try {
+      const picked: any = await openFilePicker(
+        FileSelectionType.FOLDER,
+        folderPath.trim() || "/home/deck",
+        false,
+        true,
+      );
+      const selectedPath = picked?.realpath || picked?.path || "";
+      if (selectedPath) {
+        setFolderPath(selectedPath);
+        setMsg("Folder selected. Press Use this folder to validate and activate it.");
+      }
+    } catch (error) {
+      setMsg(`Folder picker unavailable: ${error}. You can still enter the path manually.`);
+    }
+  };
+
   const connect = async () => {
     const provider = state.provider;
     if (!provider || provider === "local") return;
@@ -349,6 +367,9 @@ export function CloudRedirectSection() {
         value={folderPath}
         onChange={(event: any) => setFolderPath(event?.target?.value ?? String(event || ""))}
       /></PanelSectionRow>
+      <PanelSectionRow><ButtonItem layout="below" onClick={browseFolder} disabled={busy}>
+        Browse folders
+      </ButtonItem></PanelSectionRow>
       <PanelSectionRow><ButtonItem layout="below" onClick={saveFolder} disabled={busy || !folderPath.trim()}>
         Use this folder
       </ButtonItem></PanelSectionRow>
