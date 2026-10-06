@@ -69,7 +69,7 @@ jobs:
           version = os.environ["VERSION"]
           changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
           match = re.search(
-              rf"^##\s+(?:\[)?{re.escape(version)}(?:\])?[^\n]*\n(.*?)(?=^##\s|\Z)",
+              rf"^##\s+(?:\[)?{re.escape(version)}(?:\])?[^\n]*\n(.*?)(?=^##\s|^---\s*$|\Z)",
               changelog,
               flags=re.MULTILINE | re.DOTALL,
           )
