@@ -1,5 +1,18 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.63 — Decky 3.2.10 and install safety
+
+- Added a native **Browse folders** action for CloudRedirect custom storage, using Decky's corrected folder picker.
+- Updated the Decky UI build dependency to `@decky/ui` 4.12.1.
+- Verified that all non-standard Python imports are explicitly declared in `requirements.txt`; SLSDeck does not rely on Decky's private bundled modules.
+- Added pre-install disclosures showing whether a component is optional, its source, risk level, and the files or system behavior it may change.
+- Added append-only installation receipts for managed dependencies.
+- Added **Emergency: restore Steam startup**, which disables injection and restores the original Steam launch script without deleting user data.
+- Documented runtime downloads, host tools, privileged changes, and the policy against invoking `apt`, `pacman`, or `dnf`.
+- Merged the Decky compatibility and install-safety work into the single `decky-update` release channel.
+
+---
+
 Merged from the creator's `sls_deck_source` (v0.01, full TypeScript source) and
 `slsdeckAIO` (v0.0.2), on top of the previously merged build, plus a correctness
 pass over both.

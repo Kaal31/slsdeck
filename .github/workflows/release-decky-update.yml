@@ -21,6 +21,17 @@ jobs:
         with: {ref: decky-update, fetch-depth: 0}
       - uses: actions/setup-node@v4
         with: {node-version: 20, cache: npm}
+      - name: Require a newer semantic plugin version
+        env: {GH_TOKEN: "${{ github.token }}"}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p 'require("./plugin.json").version')
+          CURRENT=$(gh release view decky-update-latest --json name --jq '.name' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -n "$CURRENT" ] && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)" = "$CURRENT" ]; then
+            echo "plugin.json version $VERSION must be newer than published $CURRENT"
+            exit 1
+          fi
       - run: npm ci
       - run: npm run build
       - name: Validate Decky compatibility
@@ -48,15 +59,45 @@ jobs:
           set -euo pipefail
           TAG=decky-update-latest
           VERSION=$(node -p 'require("./plugin.json").version')
+          git fetch origin --tags --force
           PREVIOUS=$(git rev-list -n 1 "$TAG" 2>/dev/null || true)
-          RANGE=${PREVIOUS:+$PREVIOUS..HEAD}
-          NOTES=$(git log ${RANGE:-HEAD^..HEAD} --pretty='format:- %s' --no-merges)
-          [ -n "$NOTES" ] || NOTES='- Decky compatibility rolling build'
+          export VERSION PREVIOUS
+          python3 - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"^##\s+(?:\[)?{re.escape(version)}(?:\])?[^\n]*\n(.*?)(?=^##\s|\Z)",
+              changelog,
+              flags=re.MULTILINE | re.DOTALL,
+          )
+          section = match.group(1).strip() if match else ""
+          if section:
+              notes = f"## What's changed in {version}\n\n{section}"
+          else:
+              previous = os.environ.get("PREVIOUS", "")
+              revision = f"{previous}..HEAD" if previous else "HEAD^..HEAD"
+              output = subprocess.check_output(
+                  ["git", "log", revision, "--no-merges", "--pretty=format:%s%x1f%b%x1e"],
+                  text=True,
+              )
+              items = []
+              for record in output.split("\x1e"):
+                  if not record.strip():
+                      continue
+                  subject, _, body = record.strip().partition("\x1f")
+                  detail = " ".join(line.strip() for line in body.splitlines() if line.strip())
+                  items.append(f"- {subject}" + (f" — {detail}" if detail else ""))
+              notes = f"## What's changed in {version}\n\n" + ("\n".join(items) or "- Maintenance release")
+          Path("RELEASE_NOTES.md").write_text(notes.rstrip() + "\n", encoding="utf-8")
+          PY
           git tag -f "$TAG" HEAD && git push origin "refs/tags/$TAG" --force
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "SLSDeck decky-update $VERSION" --notes "$NOTES" --prerelease
+            gh release edit "$TAG" --title "SLSDeck decky-update $VERSION" --notes-file RELEASE_NOTES.md --prerelease
           else
-            gh release create "$TAG" --title "SLSDeck decky-update $VERSION" --notes "$NOTES" --prerelease --target decky-update
+            gh release create "$TAG" --title "SLSDeck decky-update $VERSION" --notes-file RELEASE_NOTES.md --prerelease --target decky-update
           fi
           gh release upload "$TAG" SLSDeckUniversal-decky-update.zip --clobber
       - uses: actions/upload-artifact@v4
