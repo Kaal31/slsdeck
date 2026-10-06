@@ -1,4 +1,4 @@
-import { PanelSection, PanelSectionRow, ButtonItem, Spinner } from "@decky/ui";
+import { PanelSection, PanelSectionRow, ButtonItem, Spinner, ConfirmModal, showModal } from "@decky/ui";
 import { useEffect, useRef, useState } from "react";
 import { toaster } from "@decky/api";
 import { ScrollableResult } from "../components/ScrollableResult";
@@ -29,6 +29,12 @@ import {
   zapretEnable,
   zapretDisable,
   crInstallStatus,
+  getInstallSafetyManifest,
+  getInstallReceipts,
+  recordInstallReceipt,
+  restoreSteamStartup,
+  InstallDependencyInfo,
+  InstallReceipt,
 } from "../api";
 
 type Health = "ok" | "warn" | "off" | "unknown";
@@ -86,6 +92,8 @@ export function DependenciesSection() {
   const [zapret, setZapret] = useState<ZapretStatus | null>(null);
   const [cloudStatus, setCloudStatus] = useState<{ installed: boolean; partial?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean } | null>(null);
   const [diag, setDiag] = useState("");
+  const [manifest, setManifest] = useState<InstallDependencyInfo[]>([]);
+  const [receipts, setReceipts] = useState<InstallReceipt[]>([]);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [note, setNote] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -124,6 +132,23 @@ export function DependenciesSection() {
       else if (cloud.partial) setN("cr", "partial installation detected — repair required");
     } catch { /* */ }
     try { const s = await systemStatus(); if (s.success) setSysSt(s); } catch { /* */ }
+    try { const value = await getInstallSafetyManifest(); if (value.success) setManifest(value.dependencies || []); } catch { /* */ }
+    try { const value = await getInstallReceipts(20); if (value.success) setReceipts(value.receipts || []); } catch { /* */ }
+  };
+
+  const confirmInstall = (component: string, action: () => void) => {
+    const item = manifest.find((entry) => entry.id === component);
+    if (!item) { action(); return; }
+    showModal(<ConfirmModal
+      strTitle={`${item.name}: review changes`}
+      strDescription={`${item.optional ? "Optional component. " : "Core component. "}Source: ${item.source}. Risk: ${item.risk}. This action may: ${item.changes.join("; ")}. SLSDeck will not install system packages through apt, pacman or dnf.`}
+      strOKButtonText="Continue"
+      onOK={action}
+    />);
+  };
+
+  const saveReceipt = async (component: string, action: string, result: Record<string, any>) => {
+    try { await recordInstallReceipt(component, action, result); } catch { /* installation result remains authoritative */ }
   };
 
   const disableForeign = async () => {
@@ -178,7 +203,8 @@ export function DependenciesSection() {
               // CloudRedirect are intentionally deferred until Steam returns.
               setN("tokeer", "installing/updating Tokeer runtime before restart…");
               try {
-                const runtime = await tokeerEnsureRuntime();
+      const runtime = await tokeerEnsureRuntime();
+      await saveReceipt("tokeer", "install-or-update", runtime);
                 setTokeerInstalled(!!runtime.success);
                 setN("tokeer", runtime.success ? `runtime ready (${runtime.version || "latest"})` : `runtime failed: ${runtime.error || "unknown error"}`);
               } catch (e) {
@@ -220,6 +246,7 @@ export function DependenciesSection() {
       // "already fine?" skip gate (which can wrongly skip and make the button
       // look like it does nothing). The cheap auto-skip stays on the boot path.
       const r = await runClientFix(true);
+      await saveReceipt("client-fix", "apply", r);
       if (!r.success) { setN("fix", r.error || "failed"); setB("fix", false); return; }
       watch("fix", "Client fix done — reboot the Deck", false);
     } catch (e) { setN("fix", `error: ${e}`); setB("fix", false); }
@@ -230,6 +257,7 @@ export function DependenciesSection() {
     setN("tokeer", tokeerInstalled ? "checking/updating Tokeer runtime…" : "installing Tokeer runtime…");
     try {
       const r = await tokeerEnsureRuntime();
+      await saveReceipt("tokeer", "install-or-update", r);
       setTokeerInstalled(!!r.success);
       setN("tokeer", r.success ? `runtime ready (${r.version || "latest"})` : `failed: ${r.error || "unknown error"}`);
       toaster.toast({ title: "SLSDeck", body: r.success ? "Tokeer runtime ready" : "Tokeer runtime installation failed" });
@@ -245,6 +273,7 @@ export function DependenciesSection() {
     setN("tokeerProton", protonStatus?.installed ? "reinstalling GE-Proton10-34…" : "installing GE-Proton10-34…");
     try {
       const r = await tokeerEnsureProton(true);
+      await saveReceipt("proton", "install-or-repair", r);
       setN("tokeerProton", r.success ? "GE-Proton10-34 installed" : `failed: ${r.error || "unknown error"}`);
       toaster.toast({ title: "SLSDeck", body: r.success ? "GE-Proton10-34 ready" : "GE-Proton installation failed" });
     } catch (e) {
@@ -259,6 +288,7 @@ export function DependenciesSection() {
     setN("ubisoftPackages", ubisoftPackages?.installed ? "updating hosted packages…" : "installing hosted packages…");
     try {
       const r = await tokeerEnsureUbisoftPackages(true);
+      await saveReceipt("ubisoft", "install-or-update", r);
       setN("ubisoftPackages", r.success ? "hosted packages installed" : `failed: ${r.error || "unknown error"}`);
       toaster.toast({ title: "SLSDeck", body: r.success ? "Ubisoft packages ready" : "Ubisoft package installation failed" });
     } catch (e) {
@@ -273,6 +303,7 @@ export function DependenciesSection() {
     setN("zapret", zapret?.installed ? "updating upstream Zapret and hostlist…" : "downloading upstream Zapret…");
     try {
       const result = await zapretEnsureInstalled(true);
+      await saveReceipt("zapret", "install-or-update", result);
       setZapret(result);
       setN("zapret", result.success
         ? `${result.version || "installed"} · ${result.hostEntries || 0} SteaMidra hosts${result.enabled ? " · active" : " · disabled"}`
@@ -302,6 +333,7 @@ export function DependenciesSection() {
     setB("cr", true); setN("cr", "replacing CloudRedirect…");
     try {
       const r = await crEnsureInstalled();
+      await saveReceipt("cloudredirect", "install-or-repair", r);
       if (r.installed) {
         setN("cr", "installed · Moon hook verified");
       } else {
@@ -390,7 +422,7 @@ export function DependenciesSection() {
       )}
       {!setupDone && !slsBusy && (
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={installSls}>Install SLSsteam</ButtonItem>
+          <ButtonItem layout="below" onClick={() => confirmInstall("slssteam", installSls)}>Install SLSsteam</ButtonItem>
         </PanelSectionRow>
       )}
       {slsBusy && (
@@ -410,7 +442,7 @@ export function DependenciesSection() {
           statusText={sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed"}
           busy={slsBusy}
           actionLabel={sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam"}
-          onAction={installSls}
+          onAction={() => confirmInstall("slssteam", installSls)}
         />
         <DepRow
           label="Steam client fix"
@@ -419,7 +451,7 @@ export function DependenciesSection() {
           statusText={note.fix || (sls?.clientFixRan ? "applied" : "not run yet — run if games don't appear")}
           busy={!!busy.fix}
           actionLabel="Run client fix"
-          onAction={runFix}
+          onAction={() => confirmInstall("client-fix", runFix)}
         />
         <DepRow
           label="Tokeer runtime"
@@ -428,7 +460,7 @@ export function DependenciesSection() {
           statusText={note.tokeer || (tokeerInstalled ? "runtime installed" : "not installed yet")}
           busy={!!busy.tokeer}
           actionLabel={tokeerInstalled ? "Check / reinstall Tokeer runtime" : "Install Tokeer runtime"}
-          onAction={installTokeerRuntime}
+          onAction={() => confirmInstall("tokeer", installTokeerRuntime)}
         />
         <DepRow
           label="GE-Proton10-34"
@@ -437,7 +469,7 @@ export function DependenciesSection() {
           statusText={note.tokeerProton || (protonStatus?.installed ? "installed · verified" : protonStatus?.partial ? "partial installation · repair required" : "not installed")}
           busy={!!busy.tokeerProton}
           actionLabel={protonStatus?.installed ? "Reinstall GE-Proton10-34" : protonStatus?.partial ? "Repair GE-Proton10-34" : "Install GE-Proton10-34"}
-          onAction={installProton}
+          onAction={() => confirmInstall("proton", installProton)}
         />
         <DepRow
           label="Ubisoft packages"
@@ -446,7 +478,7 @@ export function DependenciesSection() {
           statusText={note.ubisoftPackages || (ubisoftPackages?.installed ? "hosted packages installed" : "not installed")}
           busy={!!busy.ubisoftPackages}
           actionLabel={ubisoftPackages?.installed ? "Check / reinstall Ubisoft packages" : "Install Ubisoft packages"}
-          onAction={installUbisoftPackages}
+          onAction={() => confirmInstall("ubisoft", installUbisoftPackages)}
         />
         <DepRow
           label="Zapret ISP bypass"
@@ -457,7 +489,7 @@ export function DependenciesSection() {
             : "not installed")}
           busy={!!busy.zapret}
           actionLabel={zapret?.installed ? "Check / reinstall Zapret" : "Install Zapret"}
-          onAction={installZapret}
+          onAction={() => confirmInstall("zapret", installZapret)}
         />
         {zapret?.installed && (
           <PanelSectionRow>
@@ -473,7 +505,7 @@ export function DependenciesSection() {
           statusText={note.cr || (cloudStatus?.installed ? "installed · Moon hook verified" : cloudStatus?.partial ? "partial installation · repair required" : "not installed")}
           busy={!!busy.cr}
           actionLabel={cloudStatus?.installed ? "Reinstall CloudRedirect" : cloudStatus?.partial ? "Repair CloudRedirect" : "Install CloudRedirect"}
-          onAction={installCloud}
+          onAction={() => confirmInstall("cloudredirect", installCloud)}
         />
 
         <div style={{ padding: "6px 0", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
@@ -493,6 +525,24 @@ export function DependenciesSection() {
             </>
           )}
           <PanelSectionRow><ButtonItem layout="below" onClick={runDiag}>Run diagnostics</ButtonItem></PanelSectionRow>
+          <PanelSectionRow><ButtonItem layout="below" onClick={() => showModal(
+            <ConfirmModal
+              strTitle="Restore vanilla Steam startup?"
+              strDescription="Restores the original Steam launch script and disables SLSsteam injection. Added-game data and downloaded dependencies are preserved. Steam must be restarted afterwards."
+              strOKButtonText="Restore Steam startup"
+              onOK={async () => {
+                const result = await restoreSteamStartup();
+                toaster.toast({ title: "SLSDeck", body: result.success ? "Steam startup restored — restart Steam" : result.error || "Restore failed" });
+                refresh();
+              }}
+            />
+          )}>Emergency: restore Steam startup</ButtonItem></PanelSectionRow>
+          <PanelSectionRow>
+            <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.45 }}>
+              <b>Dependency policy:</b> optional tools are installed only after confirmation. SLSDeck never invokes apt, pacman or dnf.
+              {receipts.length ? <><br /><b>Recent receipt:</b> {new Date(receipts[0].timestamp * 1000).toLocaleString()} · {receipts[0].name} · {receipts[0].action} · {receipts[0].success ? "success" : "failed"}</> : null}
+            </div>
+          </PanelSectionRow>
           <PanelSectionRow><ButtonItem layout="below" onClick={runRefreshPatterns}>Refresh engine patterns (fix “can’t match patterns”)</ButtonItem></PanelSectionRow>
           {diag && (
             <PanelSectionRow>

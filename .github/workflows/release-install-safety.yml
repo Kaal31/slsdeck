@@ -1,0 +1,67 @@
+name: Release install-safety
+
+on:
+  push:
+    branches: [install-safety]
+    paths-ignore: ["dist/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-install-safety
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: install-safety
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Validate backend and safety tests
+        run: |
+          python3 -m compileall -q main.py py_modules
+          PYTHONPATH=py_modules python3 -m unittest -q tests.test_install_safety
+      - name: Restore tracked support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Package plugin
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-install-safety.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do [ ! -e "$p" ] || cp -a "$p" artifact/SLSDeckUniversal/; done
+          cd artifact && zip -qr ../SLSDeckUniversal-install-safety.zip SLSDeckUniversal && cd ..
+      - name: Update rolling prerelease with commit-title patch notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=install-safety-latest
+          VERSION=$(node -p 'require("./plugin.json").version')
+          PREVIOUS=$(git rev-list -n 1 "$TAG" 2>/dev/null || true)
+          RANGE=${PREVIOUS:+$PREVIOUS..HEAD}
+          NOTES=$(git log ${RANGE:-HEAD^..HEAD} --pretty='format:- %s' --no-merges)
+          [ -n "$NOTES" ] || NOTES='- Install-safety rolling build'
+          git tag -f "$TAG" HEAD
+          git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "SLSDeck install-safety $VERSION" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" --title "SLSDeck install-safety $VERSION" --notes "$NOTES" --prerelease --target install-safety
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-install-safety.zip --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-install-safety
+          path: SLSDeckUniversal-install-safety.zip
+          retention-days: 14

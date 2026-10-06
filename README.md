@@ -38,7 +38,22 @@ Current functionality includes:
 | **@decky/ui** | Decky UI components used when building the frontend |
 | **Rollup + TypeScript** | Frontend build toolchain |
 
-Older SLSDeck documentation may refer to **SLSsteam**, **h3adcr-b/headcrab**, or **steamnetsock-patch** as the primary dependency stack. Those names describe earlier iterations of the SteamOS port and should not be treated as the best summary of the current SLSDeckUniversal build.
+### Runtime downloads and system changes
+
+SLSDeck runs as a root-enabled Decky plugin. Before an installer starts, the plugin shows the component's source, risk level, and declared changes. Completed actions are written to an append-only receipt log in the plugin settings directory.
+
+| Component | Default | Download/source | Changes it may make |
+|---|---:|---|---|
+| **slsteam-moon / SLSsteam** | Core, confirmed by user | GitHub release | Installs `steamclient.so`, wraps Steam startup, writes SLSsteam configuration and a Gamescope hook, then restarts Steam |
+| **h3adcr-b / Headcrab** | Optional | GitHub release | Pins or replaces Steam client files and creates recovery backups; a Deck restart may be required |
+| **Tokeer runtime** | Optional | Tokeer upstream | Installs a user-scoped activation runtime |
+| **GE-Proton10-34** | Optional | GitHub/release asset | Downloads and extracts a large compatibility-tool archive |
+| **Ubisoft packages** | Optional | SLSDeck rolling release | Installs hosted AppID-keyed activation data |
+| **Zapret** | Optional, disabled after install | `bol-van/zapret` | Installs native binaries; when enabled, adds SLSDeck-managed NFQUEUE rules for the bundled SteaMidra host list |
+| **CloudRedirect** | Optional | Moon/CloudRedirect upstream | Installs a Steam hook and creates provider cache/credential files |
+| **Hypervisor tools** | Optional, per game | Per-game fix sources | May reload KVM modules or modify UMIP/boot configuration; the UI must ask first |
+
+Host tools used when available are `bash`, `curl` or Python HTTPX, `tar`/`bsdtar`, and bundled `7zz` or Python `py7zr`. SLSDeck does **not** invoke `apt`, `pacman`, `dnf`, or another distribution package manager. The emergency **Restore Steam startup** action disables injection and restores the original Steam launch script without deleting user data.
 
 ## Credits and upstream projects
 

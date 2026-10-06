@@ -30,7 +30,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods, luatools_collections,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods, luatools_collections, install_safety,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -777,7 +777,25 @@ class Plugin:
         return await self._run(slssteam.disable_foreign_engines)
 
     async def install_slssteam(self) -> Dict[str, Any]:
-        return slssteam.start_install()
+        result = slssteam.start_install()
+        if result.get("success"):
+            install_safety.record("slssteam", "install-started", result)
+        return result
+
+    async def get_install_safety_manifest(self) -> Dict[str, Any]:
+        return install_safety.manifest()
+
+    async def get_install_receipts(self, limit: int = 50) -> Dict[str, Any]:
+        return await self._run(install_safety.receipts, limit)
+
+    async def record_install_receipt(self, component: str, action: str, result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return await self._run(install_safety.record, component, action, result or {})
+
+    async def restore_steam_startup(self) -> Dict[str, Any]:
+        """Emergency rollback: restore vanilla Steam startup without deleting data."""
+        result = await self._run(slssteam.deactivate_injection)
+        install_safety.record("slssteam", "restore-steam-startup", result)
+        return result
 
     async def get_slssteam_install_status(self) -> Dict[str, Any]:
         return slssteam.get_install_status()

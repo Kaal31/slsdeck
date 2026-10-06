@@ -106,6 +106,21 @@ export interface SlsStatus {
   install: SlsInstallState;
 }
 
+export interface InstallDependencyInfo {
+  id: string; name: string; kind: string; source: string; changes: string[];
+  risk: "low" | "medium" | "high"; optional: boolean;
+}
+
+export interface InstallSafetyManifest {
+  success: boolean; policy: string; hostTools: string[]; python: string[];
+  never: string[]; dependencies: InstallDependencyInfo[];
+}
+
+export interface InstallReceipt {
+  timestamp: number; component: string; name: string; action: string;
+  success: boolean; version?: string; path?: string; declaredChanges: string[];
+}
+
 export interface FixInfo {
   status: number;
   available: boolean;
@@ -705,6 +720,10 @@ export const getSlssteamStatus = callable<[], SlsStatus>("get_slssteam_status");
 export const systemStatus = callable<[], { success: boolean; engine: string; engineInstalled: boolean; foreignEngine: boolean; foreignName: string; cloudredirect: boolean; injected: boolean }>("system_status");
 export const disableForeignEngines = callable<[], { success: boolean; foreign?: boolean; foreignName?: string; disabled?: string[]; notes?: string[] }>("disable_foreign_engines");
 export const installSlssteam = callable<[], { success: boolean; error?: string; missingDeps?: string[] }>("install_slssteam");
+export const getInstallSafetyManifest = callable<[], InstallSafetyManifest>("get_install_safety_manifest");
+export const getInstallReceipts = callable<[limit?: number], { success: boolean; path: string; receipts: InstallReceipt[] }>("get_install_receipts");
+export const recordInstallReceipt = callable<[component: string, action: string, result?: Record<string, any>], { success: boolean }>("record_install_receipt");
+export const restoreSteamStartup = callable<[], { success: boolean; error?: string }>("restore_steam_startup");
 export const getSlssteamInstallStatus = callable<[], { success: boolean; state: SlsInstallState }>("get_slssteam_install_status");
 export const reloadSteamBackend = callable<[], { success: boolean; error?: string }>("reload_steam");
 export const activateInjection = callable<[], { success: boolean; error?: string; steamSh?: string; backup?: string }>("activate_injection");
