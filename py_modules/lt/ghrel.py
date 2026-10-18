@@ -15,6 +15,7 @@ from .logger import logger
 from .httpc import ensure_http_client
 
 _API = "https://api.github.com/repos/{repo}/releases/latest"
+_COMMIT_API = "https://api.github.com/repos/{repo}/commits/{ref}"
 _UA = "SLSDeck/ghrel"
 _TTL = 900.0
 _cache: Dict[str, Any] = {}   # repo -> {ts, data}
@@ -61,6 +62,32 @@ def latest(repo: str, force: bool = False) -> Dict[str, Any]:
 
 def latest_tag(repo: str, force: bool = False) -> str:
     return latest(repo, force).get("tag", "") or ""
+
+
+def latest_commit(repo: str, ref: str = "HEAD", force: bool = False) -> Dict[str, Any]:
+    """Return the tip commit for a rolling branch/default branch."""
+    key = f"commit:{repo}:{ref}"
+    now = time.time()
+    c = _cache.get(key)
+    if not force and c and (now - c["ts"]) < _TTL:
+        return c["data"]
+    client = ensure_http_client(f"ghrel commit: {repo}@{ref}")
+    try:
+        r = client.get(_COMMIT_API.format(repo=repo, ref=ref), headers=_headers(),
+                       timeout=20, follow_redirects=True)
+        if r.status_code != 200:
+            return {"success": False, "error": f"HTTP {r.status_code}", "sha": ""}
+        raw = r.json()
+        commit = raw.get("commit") or {}
+        author = commit.get("author") or {}
+        data = {"success": True, "sha": str(raw.get("sha") or ""),
+                "date": str(author.get("date") or ""),
+                "message": str(commit.get("message") or "").splitlines()[0]}
+        _cache[key] = {"ts": now, "data": data}
+        return data
+    except Exception as exc:
+        logger.warn(f"ghrel: {repo}@{ref} commit lookup failed: {exc}")
+        return {"success": False, "error": str(exc), "sha": ""}
 
 
 def pick_asset(assets: List[Dict[str, Any]], patterns: List[str]) -> Optional[str]:

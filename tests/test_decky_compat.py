@@ -14,3 +14,8 @@ def test_custom_cloud_folder_uses_decky_folder_picker():
     source = (ROOT / "src/sections/CloudRedirect.tsx").read_text(encoding="utf-8")
     assert "FileSelectionType.FOLDER" in source
     assert "Browse folders" in source
+
+
+def test_decky_ui_matches_loader_prerelease():
+    package = (ROOT / "package.json").read_text(encoding="utf-8")
+    assert '"@decky/ui": "^4.15.1"' in package

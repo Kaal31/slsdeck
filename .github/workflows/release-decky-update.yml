@@ -21,6 +21,33 @@ jobs:
         with: {ref: decky-update, fetch-depth: 0}
       - uses: actions/setup-node@v4
         with: {node-version: 20, cache: npm}
+      - name: Check out current slsteam-moon source
+        uses: actions/checkout@v4
+        with:
+          repository: swwayps/slsteam-moon
+          ref: slsteam-moon
+          path: moon-source
+          fetch-depth: 1
+      - name: Build and pin slsteam-moon branch head
+        run: |
+          set -euo pipefail
+          COMMIT=$(git -C moon-source rev-parse HEAD)
+          SHORT=${COMMIT:0:12}
+          moon-source/scripts/build.sh --portable
+          moon-source/scripts/package.sh --version "git-$SHORT"
+          mkdir -p assets/moon
+          cp "moon-source/dist/slsteam-moon-linux-git-$SHORT.zip" assets/moon/slsteam-moon-head.zip
+          python3 - "$COMMIT" <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          Path("assets/moon/source.json").write_text(json.dumps({
+              "repository": "swwayps/slsteam-moon",
+              "branch": "slsteam-moon",
+              "commit": sys.argv[1],
+              "builtAt": datetime.now(timezone.utc).isoformat(),
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
       - name: Require a newer semantic plugin version
         env: {GH_TOKEN: "${{ github.token }}"}
         shell: bash
@@ -50,9 +77,24 @@ jobs:
           set -euo pipefail
           rm -rf artifact SLSDeckUniversal-decky-update.zip
           mkdir -p artifact/SLSDeckUniversal
-          cp -a dist main.py plugin.json package.json py_modules artifact/SLSDeckUniversal/
+          cp -a dist main.py plugin.json package.json requirements.txt py_modules artifact/SLSDeckUniversal/
           for p in defaults assets LICENSE README.md; do [ ! -e "$p" ] || cp -a "$p" artifact/SLSDeckUniversal/; done
           cd artifact && zip -qr ../SLSDeckUniversal-decky-update.zip SLSDeckUniversal && cd ..
+      - name: Validate release archive
+        run: |
+          set -euo pipefail
+          unzip -t SLSDeckUniversal-decky-update.zip
+          for p in \
+            SLSDeckUniversal/main.py \
+            SLSDeckUniversal/plugin.json \
+            SLSDeckUniversal/requirements.txt \
+            SLSDeckUniversal/assets/moon/source.json \
+            SLSDeckUniversal/assets/moon/slsteam-moon-head.zip; do
+            unzip -Z1 SLSDeckUniversal-decky-update.zip | grep -Fx "$p"
+          done
+          unzip -p SLSDeckUniversal-decky-update.zip \
+            SLSDeckUniversal/assets/moon/slsteam-moon-head.zip > /tmp/moon.zip
+          unzip -t /tmp/moon.zip
       - name: Update rolling prerelease
         env: {GH_TOKEN: "${{ github.token }}"}
         run: |

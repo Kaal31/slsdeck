@@ -1997,8 +1997,9 @@ def _run_install() -> None:
         except Exception as exc:
             _log(f"conflict repair skipped ({exc})")
         _stage("resolving", "Resolving slsteam-moon (SLSsteam fork with depot-key support)…")
-        url = _resolve_moon_zip_url()
-        if not url:
+        bundled = _bundled_moon_archive()
+        url = "" if bundled else _resolve_moon_zip_url()
+        if not bundled and not url:
             # Fall back to stock AceSLS SLSsteam (ownership only) if the fork
             # can't be resolved, so at least install/injection still work.
             _log("slsteam-moon unavailable; falling back to AceSLS SLSsteam")
@@ -2008,7 +2009,10 @@ def _run_install() -> None:
             archive = os.path.join(tmp, "slsteam-moon.zip")
 
         _stage("downloading", "Downloading engine…")
-        if not _download(url, archive):
+        if bundled:
+            shutil.copy2(bundled, archive)
+            _log(f"Using bundled slsteam-moon build {_bundled_moon_metadata().get('commit', '')[:12]}")
+        elif not _download(url, archive):
             detail = _INSTALL_LOG[-1] if _INSTALL_LOG else "unknown download error"
             _set_install({"status": "failed", "error": f"Engine download failed: {detail}"})
             return
@@ -2033,7 +2037,7 @@ def _run_install() -> None:
         # We place every binary and install both launch paths ourselves below.
         _log("Placing SLSsteam libraries (SLSsteam.so, library-inject.so, pattern-refresh)…")
         _place_libraries(extract_root)
-        _record_engine_version()
+        _record_engine_version(str(_bundled_moon_metadata().get("commit") or ""))
         # setup.sh only makes the path/steam wrapper for fish; ensure the bash
         # one exists too, so any .desktop patched to it can't dangle.
         try:
@@ -4475,12 +4479,33 @@ def installed_lib_is_moon() -> Dict[str, Any]:
     return {"installed": True, "moon": bool(hits), "lib": lib, "markers": hits}
 
 
-def _record_engine_version() -> None:
+def _bundled_moon_metadata() -> Dict[str, Any]:
+    try:
+        import json
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                            "assets", "moon", "source.json")
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _bundled_moon_archive() -> str:
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        "assets", "moon", "slsteam-moon-head.zip")
+    return path if os.path.isfile(path) and os.path.getsize(path) > 0 else ""
+
+
+def _record_engine_version(commit: str = "") -> None:
     """Record the currently-installed slsteam-moon release tag so the Updates tab
     can later tell when a newer engine ships. The install always pulls
     releases/latest, so the just-installed version IS the latest right now."""
     try:
         from . import settings as _s, ghrel as _g
+        sha = commit or str(_bundled_moon_metadata().get("commit") or "")
+        if sha:
+            _s.set_dep_version("engine", f"git:{sha}")
+            return
         tag = _g.latest_tag("swwayps/slsteam-moon")
         if tag:
             _s.set_dep_version("engine", tag)
@@ -4494,14 +4519,17 @@ def refresh_moon_engine() -> Dict[str, Any]:
     always pulls the current release and re‑places the binaries, then records the
     version. Deleting/overwriting the mapped .so is safe while Steam runs — the old
     mapping stays live until the next launch, which then uses the new engine."""
-    url = _resolve_moon_zip_url()
-    if not url:
-        return {"success": False, "error": "could not resolve a slsteam-moon release"}
+    bundled = _bundled_moon_archive()
+    url = "" if bundled else _resolve_moon_zip_url()
+    if not bundled and not url:
+        return {"success": False, "error": "could not resolve a slsteam-moon build"}
     import tempfile
     tmp = tempfile.mkdtemp(prefix="slsmoon_upd_")
     try:
         archive = os.path.join(tmp, "slsteam-moon.zip")
-        if not _download(url, archive):
+        if bundled:
+            shutil.copy2(bundled, archive)
+        elif not _download(url, archive):
             return {"success": False, "error": "moon download failed"}
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
@@ -4510,9 +4538,11 @@ def refresh_moon_engine() -> Dict[str, Any]:
         # Decky owns launcher installation; upstream setup.sh is interactive and
         # must not be run from the plugin repair path.
         _place_libraries(root)
-        _record_engine_version()
+        commit = str(_bundled_moon_metadata().get("commit") or "")
+        _record_engine_version(commit)
         ok = installed_lib_is_moon()
         return {"success": bool(ok.get("moon")), "lib": ok.get("lib"),
+                "version": f"git:{commit}" if commit else "latest-release",
                 "note": "Engine updated — fully restart Steam to load it."}
     finally:
         try:
@@ -4581,8 +4611,9 @@ def ensure_moon_engine() -> Dict[str, Any]:
     state = installed_lib_is_moon()
     if state.get("moon"):
         return {"success": True, "changed": False, "reason": "slsteam-moon already installed"}
-    url = _resolve_moon_zip_url()
-    if not url:
+    bundled = _bundled_moon_archive()
+    url = "" if bundled else _resolve_moon_zip_url()
+    if not bundled and not url:
         return {"success": False, "changed": False,
                 "error": "could not resolve a slsteam-moon release; leaving stock "
                          "SLSsteam in place (added games will not download)"}
@@ -4590,7 +4621,9 @@ def ensure_moon_engine() -> Dict[str, Any]:
     tmp = tempfile.mkdtemp(prefix="slsmoon_")
     try:
         archive = os.path.join(tmp, "slsteam-moon.zip")
-        if not _download(url, archive):
+        if bundled:
+            shutil.copy2(bundled, archive)
+        elif not _download(url, archive):
             return {"success": False, "changed": False, "error": "moon download failed"}
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
@@ -4604,8 +4637,10 @@ def ensure_moon_engine() -> Dict[str, Any]:
         ok = installed_lib_is_moon()
         if ok.get("moon"):
             logger.log("SLSsteam: re-asserted slsteam-moon over stock SLSsteam")
-            _record_engine_version()
-            return {"success": True, "changed": True, "lib": ok.get("lib")}
+            commit = str(_bundled_moon_metadata().get("commit") or "")
+            _record_engine_version(commit)
+            return {"success": True, "changed": True, "lib": ok.get("lib"),
+                    "version": f"git:{commit}" if commit else "latest-release"}
         return {"success": False, "changed": False,
                 "error": "moon install did not produce a fork library"}
     finally:

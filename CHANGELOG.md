@@ -1,5 +1,15 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.65 — Current Moon engine and dependency diagnostics
+
+- Builds a portable slsteam-moon archive from the current upstream `slsteam-moon` branch during every SLSDeck rolling release and bundles that exact build for reproducible installation.
+- Records the exact installed Moon commit and compares it with the upstream branch tip, so unreleased engine fixes are detected instead of checking release tags only.
+- Updated the frontend build to `@decky/ui` 4.15.1 for Decky Loader 3.3 prerelease compatibility.
+- Includes `requirements.txt` in the release ZIP and validates the final archive, including the nested Moon build, before publishing.
+- Shows dependency status-check failures as unavailable/error states instead of silently presenting dependencies as missing.
+
+---
+
 ## 0.9.64 — Decky compatibility and safer installation
 
 - Added a native **Browse folders** action for CloudRedirect custom storage, using Decky's corrected folder picker.

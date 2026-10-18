@@ -101,37 +101,43 @@ export function DependenciesSection() {
 
   const setB = (id: string, v: boolean) => setBusy((b) => ({ ...b, [id]: v }));
   const setN = (id: string, v: string) => setNote((n) => ({ ...n, [id]: v }));
+  const clearStatusError = (id: string) => setNote((n) => ({
+    ...n,
+    [id]: n[id]?.startsWith("Status unavailable:") ? "" : n[id],
+  }));
 
   const refresh = async () => {
-    try { setSls(await getSlssteamStatus()); } catch { /* */ }
+    try { setSls(await getSlssteamStatus()); clearStatusError("sls"); }
+    catch (error) { setSls(null); setN("sls", `Status unavailable: ${String(error)}`); }
     try {
       const runtime = await tokeerRuntimeStatus();
       setTokeerInstalled(!!runtime.installed);
-      if (runtime.installed) setN("tokeer", "runtime installed");
-    } catch { /* */ }
+      setN("tokeer", runtime.installed ? "runtime installed" : "not installed yet");
+    } catch (error) { setN("tokeer", `Status unavailable: ${String(error)}`); }
     try {
       const proton = await tokeerProtonStatus();
       setProtonStatus(proton);
       if (proton.installed) setN("tokeerProton", "GE-Proton10-34 installed");
       else if (proton.partial) setN("tokeerProton", "partial installation detected — repair required");
-    } catch { /* */ }
+    } catch (error) { setProtonStatus(null); setN("tokeerProton", `Status unavailable: ${String(error)}`); }
     try {
       const packages = await tokeerUbisoftPackagesStatus();
       setUbisoftPackages(packages);
       if (packages.installed) setN("ubisoftPackages", "hosted packages installed");
-    } catch { /* */ }
+    } catch (error) { setUbisoftPackages(null); setN("ubisoftPackages", `Status unavailable: ${String(error)}`); }
     try {
       const value = await zapretStatus();
       setZapret(value);
       if (value.installed) setN("zapret", `${value.version || "installed"} · ${value.hostEntries || 0} SteaMidra hosts${value.enabled ? " · active" : " · disabled"}`);
-    } catch { /* */ }
+    } catch (error) { setZapret(null); setN("zapret", `Status unavailable: ${String(error)}`); }
     try {
       const cloud = await crInstallStatus();
       setCloudStatus(cloud);
       if (cloud.installed) setN("cr", "installed · Moon hook verified");
       else if (cloud.partial) setN("cr", "partial installation detected — repair required");
-    } catch { /* */ }
-    try { const s = await systemStatus(); if (s.success) setSysSt(s); } catch { /* */ }
+    } catch (error) { setCloudStatus(null); setN("cr", `Status unavailable: ${String(error)}`); }
+    try { const s = await systemStatus(); if (s.success) setSysSt(s); }
+    catch (error) { setSysSt(null); setN("system", `Status unavailable: ${String(error)}`); }
     try { const value = await getInstallSafetyManifest(); if (value.success) setManifest(value.dependencies || []); } catch { /* */ }
     try { const value = await getInstallReceipts(20); if (value.success) setReceipts(value.receipts || []); } catch { /* */ }
   };
@@ -400,7 +406,8 @@ export function DependenciesSection() {
   };
 
   const setupDone = !!sls?.installed && !!sls?.injected;
-  const slsHealth: Health = sls?.installed ? (sls.injected ? "ok" : "warn") : "off";
+  const slsHealth: Health = note.sls?.startsWith("Status unavailable:")
+    ? "unknown" : sls?.installed ? (sls.injected ? "ok" : "warn") : "off";
   const slsBusy = !!busy.sls;
 
   return (
@@ -439,7 +446,7 @@ export function DependenciesSection() {
           label="SLSsteam"
           hint="Core steamclient hook that adds games to your library."
           health={slsHealth}
-          statusText={sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed"}
+          statusText={note.sls || (sls?.installed ? (sls.injected ? "installed · injected" : "installed · not injected") : "not installed")}
           busy={slsBusy}
           actionLabel={sls?.installed ? "Reinstall SLSsteam" : "Install SLSsteam"}
           onAction={() => confirmInstall("slssteam", installSls)}

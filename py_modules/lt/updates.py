@@ -112,7 +112,8 @@ def _refresh_headcrab(force: bool = True) -> Dict[str, Any]:
 
 _OPTIONAL: List[Dict[str, Any]] = [
     {"name": "SLSsteam engine (moon)", "repo": "swwayps/slsteam-moon", "heavy": True,
-     "dep_key": "engine", "toggle": "checkEngineUpdates", "refresh": _refresh_engine},
+     "dep_key": "engine", "toggle": "checkEngineUpdates", "commit_ref": "slsteam-moon",
+     "refresh": _refresh_engine},
     {"name": "headcrab (client fix)", "repo": "Deadboy666/h3adcr-b", "heavy": True,
      "dep_key": "headcrab", "toggle": "checkHeadcrabUpdates", "rolling": True,
      "refresh": _refresh_headcrab},
@@ -131,7 +132,11 @@ def _all_entries() -> List[Dict[str, Any]]:
 
 def _entry_status(e: Dict[str, Any]) -> Dict[str, Any]:
     current = settings.get_dep_version(e["dep_key"])
-    latest = ghrel.latest_tag(e["repo"])
+    if e.get("commit_ref"):
+        tip = ghrel.latest_commit(e["repo"], e["commit_ref"])
+        latest = f"git:{tip.get('sha', '')}" if tip.get("sha") else ""
+    else:
+        latest = ghrel.latest_tag(e["repo"])
     update = bool(current and latest and current != latest)
     # Rolling sources (headcrab raw script) have no release tag to compare; surface
     # them as "check via Dependencies" rather than claiming a version diff.
