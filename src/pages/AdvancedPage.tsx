@@ -40,8 +40,6 @@ import {
   getAutoFix, setAutoFix,
   getGamesInQam, setGamesInQam,
   getShowReinstallQam, setShowReinstallQam,
-  getAutoReinject, setAutoReinject,
-  getAutoClientRepin, setAutoClientRepin,
   getCheckDependenciesOnBoot, setCheckDependenciesOnBoot,
   getAutoDownload, setAutoDownload,
   getReloadOnPurge, setReloadOnPurge,
@@ -186,12 +184,8 @@ function DlcCloudToggles() {
 }
 
 function InjectionRecovery() {
-  const [reinject, setReinject] = useState(true);
-  const [repin, setRepin] = useState(true);
   const [deps, setDeps] = useState(true);
   useEffect(() => {
-    getAutoReinject().then((r) => setReinject(!!r.enabled)).catch(() => {});
-    getAutoClientRepin().then((r) => setRepin(!!r.enabled)).catch(() => {});
     getCheckDependenciesOnBoot().then((r) => setDeps(!!r.enabled)).catch(() => {});
   }, []);
   return (
@@ -205,20 +199,11 @@ function InjectionRecovery() {
         />
       </PanelSectionRow>
       <PanelSectionRow>
-        <ToggleField
-          label="Auto re-activate injection on boot"
-          description="If a Steam update leaves injection off, re-patch steam.sh on startup and fully restart Steam (steam -shutdown + relaunch through steam.sh) to apply it. Capped so it can't loop."
-          checked={reinject}
-          onChange={async (v) => { setReinject(v); await setAutoReinject(v); }}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ToggleField
-          label="Auto re-pin Steam client on boot"
-          description="If injection broke after a client update, automatically run the client fix (h3adcr-b) — this pins/downgrades the client and REBOOTS. Heavy, failure-capped, and on by default."
-          checked={repin}
-          onChange={async (v) => { setRepin(v); await setAutoClientRepin(v); }}
-        />
+        <div style={{ fontSize: 11, lineHeight: 1.45, opacity: 0.76 }}>
+          Boot recovery is observation-only. SLSDeck will warn when injection or
+          client compatibility fails, but it will not rewrite Steam launchers,
+          downgrade the client, reboot, or restart Steam without an explicit action.
+        </div>
       </PanelSectionRow>
     </PanelSection>
   );

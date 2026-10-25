@@ -57,7 +57,7 @@ const TOPICS: HelpTopic[] = [
       { name: "Auto restart after adding", desc: "Legacy/fallback behaviour for add paths that still require a Steam restart. Verified moon live-adds avoid the restart when runtime refresh succeeds." },
 
       { name: "Auto re-activate injection on boot", desc: "If a Steam update disables the launch hook, re-apply it automatically. Retry limiting prevents loops." },
-      { name: "Auto re-pin Steam client on boot", desc: "Automatically run the heavier client pin/downgrade recovery when the installed Steam client is no longer supported." },
+      { name: "Injection recovery", desc: "Reports broken injection at boot without changing launchers or restarting Steam. Repairs are explicit to prevent an incompatible engine from causing a boot loop." },
 
       { name: "Emoji Badges", desc: "Replace enabled text badges with emoji equivalents, including SLS 🏴‍☠️, Legit 💵, Fix 🔧, Online Fix 🌐, Denuvo 👺 and Non-Steam ❓." },
       { name: "Individual badge toggles", desc: "Enable or disable SLS, Legit, Denuvo, Online-fix, Fixed, Non-Steam and Non-Steam-name badges independently." },

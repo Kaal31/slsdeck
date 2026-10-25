@@ -12,7 +12,7 @@ import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
 import { initStorePatch } from "./patches/StorePatch";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
-import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, installSlssteam, getCheckDependenciesOnBoot, tokeerEnsureRuntime, tokeerProtonStatus, tokeerEnsureProton, tokeerEnsureUbisoftPackages, crInstallStatus, crEnsureInstalled, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, pluginPrepareReplacement, PluginUpdateStatus, SlsStatus } from "./api";
+import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, getCheckDependenciesOnBoot, tokeerRuntimeStatus, tokeerProtonStatus, tokeerUbisoftPackagesStatus, crInstallStatus, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, pluginPrepareReplacement, PluginUpdateStatus, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
 import { runAutoFixSweep } from "./lib/autoFix";
 import { syncSlsCollection } from "./lib/collection";
@@ -44,11 +44,9 @@ function writeCachedSlsStatus(status: SlsStatus) {
 
 // Remembers where the panel was scrolled so reopening the QAM returns there.
 let savedScroll = 0;
-const PLUGIN_SESSION_STARTED = Date.now();
 // Decky counts three rapid Steam webhelper disconnects as a crash loop.
 const DEPENDENCY_INITIAL_DELAY_MS = 2 * 60 * 1000;
 const DEPENDENCY_STABLE_WINDOW_MS = 45 * 1000;
-const DEPENDENCY_STEP_GAP_MS = 20 * 1000;
 const DEPENDENCY_RETRY_MS = 30 * 60 * 1000;
 const DEPENDENCY_LOCK_KEY = "__slsdeckDependencyRepairPromise";
 const PENDING_ADD_VERIFY_KEY = "slsdeck.pendingAddVerification.v1";
@@ -176,13 +174,6 @@ async function verifyAddsPendingFromPreviousSteamSession(): Promise<void> {
 
 type DependencyLifecycleToken = { active: boolean; stableSince: number };
 
-function lifecyclePause(ms: number, token: DependencyLifecycleToken): Promise<void> {
-  return new Promise((resolve) => {
-    if (!token.active) return resolve();
-    window.setTimeout(resolve, ms);
-  });
-}
-
 function cefLooksStable(token: DependencyLifecycleToken): boolean {
   if (!token.active) return false;
   if (document.visibilityState !== "visible") return false;
@@ -217,7 +208,7 @@ async function applyArchiveTemplatesOnBoot(): Promise<void> {
   }
 }
 
-async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLifecycleToken): Promise<void> {
+async function checkDependenciesFromPluginLifecycle(token: DependencyLifecycleToken): Promise<void> {
   if (!cefLooksStable(token)) {
     console.info("SLSDeck: dependency repair deferred until Steam CEF is stable");
     return;
@@ -234,81 +225,20 @@ async function repairMissingDependenciesFromPluginLifecycle(token: DependencyLif
     const enabled = await getCheckDependenciesOnBoot().catch(() => ({ enabled: true }));
     if (!enabled.enabled || !token.active || !cefLooksStable(token)) return;
 
-    const sls = await getSlssteamStatus().catch(() => null);
-    if (!token.active || !cefLooksStable(token)) return;
-    if (!sls?.installed) {
-      await installSlssteam().catch((e) => {
-        console.warn("SLSDeck: lifecycle SLSsteam install failed", e);
-      });
-      // Installation is asynchronous and may lead into the normal Steam/client
-      // recovery flow. Re-check the remaining chain on the next lifecycle pass.
-      return;
-    }
-
-    try {
-      const fix = await clientFixNeeded();
-      if (token.active && fix.success && fix.needed) {
-        await runClientFix(false);
-        // The client fix can restart Steam. Do not begin another heavy install
-        // in the same CEF session; the next boot resumes the chain.
-        return;
-      }
-    } catch (e) {
-      console.warn("SLSDeck: lifecycle client-fix check failed", e);
-    }
-
-    try {
-      // Always ask the version-aware installer to reconcile the runtime. It
-      // skips an already-current bundle, updates an older one and repairs an
-      // incomplete one, so an existing dependency is not mistaken for current.
-      if (token.active) {
-        await tokeerEnsureRuntime();
-        await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
-      }
-    } catch (e) {
-      console.warn("SLSDeck: lifecycle Tokeer runtime repair failed", e);
-    }
-    if (!token.active || !cefLooksStable(token)) return;
-
-    try {
-      if (token.active) {
-        await tokeerEnsureUbisoftPackages();
-        await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
-      }
-    } catch (e) {
-      console.warn("SLSDeck: lifecycle Ubisoft package dependency repair failed", e);
-    }
-    if (!token.active || !cefLooksStable(token)) return;
-
-    let deferredAt = 0;
-    try { deferredAt = Number(window.localStorage.getItem("slsdeck.heavyDepsAfterRestart") || "0"); } catch { /* */ }
-    if (deferredAt >= PLUGIN_SESSION_STARTED) {
-      window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
-      return;
-    }
-    try { window.localStorage.removeItem("slsdeck.heavyDepsAfterRestart"); } catch { /* */ }
-
-    try {
-      const status = await tokeerProtonStatus();
-      const healthy = !!status.installed && status.healthy !== false && !status.partial;
-      if (token.active && !healthy) {
-        await tokeerEnsureProton();
-        await lifecyclePause(DEPENDENCY_STEP_GAP_MS, token);
-      }
-    } catch (e) {
-      console.warn("SLSDeck: lifecycle GE-Proton repair failed", e);
-    }
-    if (!token.active || !cefLooksStable(token)) return;
-
-    try {
-      const status: any = await crInstallStatus();
-      // Never reinstall a healthy CloudRedirect. Accept both the aggregate flag
-      // and the detailed Moon/UI flags returned by newer backends.
-      const healthy = !!status.installed ||
-        (!!status.uiInstalled && !!(status.nativeMoon || status.hasLib));
-      if (token.active && !healthy) await crEnsureInstalled();
-    } catch (e) {
-      console.warn("SLSDeck: lifecycle CloudRedirect repair failed", e);
+    // Status checks are deliberately read-only. Older builds called installers,
+    // Headcrab and Steam restart paths from here; a failed backend status could
+    // therefore be misread as "missing" and mutate startup during recovery.
+    const checks = await Promise.allSettled([
+      getSlssteamStatus(),
+      clientFixNeeded(),
+      tokeerRuntimeStatus(),
+      tokeerProtonStatus(),
+      tokeerUbisoftPackagesStatus(),
+      crInstallStatus(),
+    ]);
+    const failures = checks.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      console.warn(`SLSDeck: ${failures.length} dependency status check(s) unavailable; no repair was attempted`);
     }
     if (token.active) window.dispatchEvent(new Event("slsdeck-dependencies-changed"));
   })();
@@ -671,10 +601,10 @@ export default definePlugin(() => {
   window.addEventListener(PURGE_ADDED_GAMES_EVENT, invalidatePurgedVerifications);
 
   const dependencyRepairFirst = setTimeout(() => {
-    repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
+    checkDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
   }, DEPENDENCY_INITIAL_DELAY_MS);
   const dependencyRepairRetry = setInterval(() => {
-    repairMissingDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
+    checkDependenciesFromPluginLifecycle(dependencyLifecycleToken).catch(() => {});
   }, DEPENDENCY_RETRY_MS);
 
   // Persistent background notifier: adds run in the backend even if the UI that

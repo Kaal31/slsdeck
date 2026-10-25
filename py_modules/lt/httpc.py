@@ -14,6 +14,7 @@ browser-session credential for manifest downloads.
 from __future__ import annotations
 
 import threading
+import os
 import socket
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -129,7 +130,31 @@ class _SLSDeckClient(httpx.Client):
                 continue
         return ""
 
-    def request(self, method, url, *, content=None, data=None, files=None,
+    def request(self, method, url, **kwargs):
+        # Never log URL queries, headers, bodies or exception strings: they can
+        # contain provider credentials. Stack filenames identify the consumer.
+        from urllib.parse import urlsplit
+        import traceback
+        import time
+        import uuid
+        parsed = urlsplit(str(url))
+        if parsed.hostname != _HUBCAP_HOST:
+            return self._request_impl(method, url, **kwargs)
+        request_id = uuid.uuid4().hex[:10]
+        caller = ">".join(f"{os.path.basename(f.filename)}:{f.name}:{f.lineno}"
+                          for f in traceback.extract_stack(limit=7)[:-1])
+        endpoint = parsed.path
+        started = time.monotonic()
+        logger.log(f"Hubcap usage [{request_id}] start {method} endpoint={endpoint} caller={caller}")
+        try:
+            response = self._request_impl(method, url, **kwargs)
+            logger.log(f"Hubcap usage [{request_id}] end status={response.status_code} elapsedMs={int((time.monotonic()-started)*1000)}")
+            return response
+        except Exception as exc:
+            logger.warn(f"Hubcap usage [{request_id}] failed type={type(exc).__name__} elapsedMs={int((time.monotonic()-started)*1000)}")
+            raise
+
+    def _request_impl(self, method, url, *, content=None, data=None, files=None,
                 json=None, params=None, headers=None, cookies=None, auth=None,
                 follow_redirects=None, timeout=httpx.USE_CLIENT_DEFAULT,
                 extensions=None):

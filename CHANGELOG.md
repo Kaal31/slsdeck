@@ -1,5 +1,18 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.66 — Boot-loop containment and current Moon fixes
+
+- Added credential-free Hubcap request tracing with correlation IDs, endpoint paths, caller stacks, response status and elapsed time in the plugin log.
+
+- Removed the dual Steam startup injection path on SteamOS. Game Mode now uses the crash-protected Gamescope wrapper while `steam.sh` is restored to a pristine launcher, so the clean fallback cannot inject Moon again.
+- Added a blocking Moon pattern/compatibility preflight before enabling injection. A failed preflight restores Steam startup instead of leaving an unverified hook armed for the next boot.
+- Made the boot injection watchdog observation-only. It no longer rewrites launchers, runs Headcrab, downgrades the Steam client, restarts Steam, or reboots automatically.
+- Changed the boot dependency pass from automatic installation/repair to read-only health checks, so a temporarily unavailable backend cannot be mistaken for missing dependencies and trigger a destructive recovery chain.
+- Disabled the legacy automatic reinject and client-repin defaults and replaced their controls with an explanation of the explicit recovery policy.
+- Builds current slsteam-moon head, including the resolved-app appinfo skip-byte correction and native-Linux handling for untagged content depots.
+
+---
+
 ## 0.9.65 — Current Moon engine and dependency diagnostics
 
 - Builds a portable slsteam-moon archive from the current upstream `slsteam-moon` branch during every SLSDeck rolling release and bundles that exact build for reproducible installation.

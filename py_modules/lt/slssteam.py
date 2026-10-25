@@ -495,11 +495,13 @@ def _running_injected() -> bool:
 
 
 def boot_injection_watchdog() -> None:
-    """On startup, keep injection healthy without nagging:
-      * live (process hooked) + steam.sh patched  -> nothing to do
-      * live but steam.sh reverted                -> silently re-patch (no nag)
-      * not live but steam.sh patched             -> "restart to apply" notice
-      * genuinely off                             -> warn + opt-in auto-recover (capped)
+    """Observe injection health at boot without mutating Steam startup.
+
+    Older builds could re-patch launchers, run Headcrab, and restart Steam from
+    this watchdog. If Moon was incompatible, Decky was killed before it could
+    record success and the same recovery ran again on the next session. Boot
+    must remain a read-only recovery boundary: report the state and require an
+    explicit user action from Dependencies.
     """
     try:
         from . import settings as _s
@@ -525,53 +527,25 @@ def boot_injection_watchdog() -> None:
                 _reset_inject_failsafe()
             except Exception:
                 pass
-            if not patched:
-                # steam.sh got reverted; re-patch quietly so the next launch stays hooked.
-                try:
-                    activate_injection()
-                except Exception:
-                    pass
             _s.reset_dep_fail("reinject")
             _s.reset_dep_fail("clientpin")
+            if not patched:
+                _push_injection_event(
+                    "warn",
+                    "SLSsteam is live, but its next-launch hook is missing. "
+                    "Use Dependencies > Activate injection when convenient.")
             return
         if patched:
-            # Set up, just not applied to the running session yet.
-            if _s.get_auto_reinject() and not _s.dep_fail_capped("reinject"):
-                _s.inc_dep_fail("reinject")
-                _push_injection_event("info", "Restarting Steam to apply SLSsteam injection…")
-                try:
-                    restart_steam_apply()
-                except Exception:
-                    pass
-            else:
-                _push_injection_event(
-                    "info",
-                    "SLSsteam injection is set up but not active in this session - "
-                    "fully restart Steam (Power > Restart Steam) or reboot to apply.")
+            _push_injection_event(
+                "warn",
+                "SLSsteam injection is configured but did not become live. "
+                "Automatic restart was blocked to prevent a boot loop; use "
+                "Dependencies > Restore Steam startup or retry manually.")
             return
         # Genuinely off: not live and steam.sh not patched.
         _push_injection_event(
             "warn",
             "SLSsteam injection is off - Steam may have updated. Re-pin in Dependencies.")
-        if _s.get_auto_client_repin() and not _s.dep_fail_capped("clientpin"):
-            _s.inc_dep_fail("clientpin")
-            _push_injection_event("info", "Auto re-pinning the Steam client...")
-            try:
-                start_client_fix()
-            except Exception as exc:
-                logger.warn(f"watchdog client re-pin failed: {exc}")
-            return
-        if _s.get_auto_reinject() and not _s.dep_fail_capped("reinject"):
-            _s.inc_dep_fail("reinject")
-            _push_injection_event(
-                "info",
-                "Re-activating SLSsteam injection and restarting Steam to apply it…")
-            try:
-                activate_injection()
-                restart_steam_apply()  # full steam -shutdown + relaunch through steam.sh
-            except Exception as exc:
-                logger.warn(f"watchdog reinject failed: {exc}")
-            return
     except Exception as exc:
         try:
             logger.warn(f"boot_injection_watchdog error: {exc}")
@@ -2978,19 +2952,35 @@ def gamescope_hook_active() -> bool:
 def activate_injection() -> Dict[str, Any]:
     """Activate SLSsteam so Steam loads it.
 
-    Preferred (Deck/handheld Game Mode): a rootless, persistent gamescope
-    sessions.d override that re-points STEAMCMD at the SLSsteam path/steam
-    LD_AUDIT wrapper — the method the maintained Linux port uses; Steam cannot
-    overwrite it. Fallback (plain desktop, no gamescope session): wrap steam.sh.
+    Exactly ONE boot-time injection path is installed. On SteamOS/Game Mode the
+    rootless gamescope sessions.d hook points at path/steam, whose two-attempt
+    crash counter falls back to pristine Steam. Wrapping steam.sh at the same
+    time defeats that failsafe, because the supposedly clean fallback injects
+    again through steam.sh. Only non-gamescope desktops use the steam.sh fallback.
     """
+    preflight = refresh_patterns_now()
+    if not preflight.get("success"):
+        # Headcrab may have patched steam.sh immediately before this call. Never
+        # leave a known-unverified hook in the next boot path.
+        remove_gamescope_hook()
+        restored = _restore_steam_sh()
+        return {
+            "success": False,
+            "preflight": preflight,
+            "steamShRestored": restored,
+            "error": preflight.get("message") or
+                     "Moon compatibility preflight failed; injection was not enabled",
+        }
     hook_res = install_gamescope_hook()
     hook_ok = bool(hook_res.get("success"))
-    # Do NOT restore steam.sh here. Desktop mode launches through steam.sh (which
-    # headcrab patches earlier in the install flow) while Game Mode launches
-    # through the gamescope hook — the two paths are independent and both point
-    # at the same path/steam LD_AUDIT injection. Restoring steam.sh would undo
-    # headcrab's working Desktop patch and leave Desktop uninjected. Keep both.
-    sh_res = _activate_steam_sh_wrapper()
+    if hook_ok:
+        # Headcrab and older SLSDeck versions may already have patched steam.sh.
+        # Restore it so path/steam's clean fallback is genuinely clean.
+        restored = _restore_steam_sh()
+        sh_res = {"success": False, "restored": restored,
+                  "reason": "gamescope hook is the sole injection path"}
+    else:
+        sh_res = _activate_steam_sh_wrapper()
     sh_ok = bool(sh_res.get("success"))
     # Deliberate (re)activation — give injection a fresh run at the failsafe.
     try:
@@ -3006,6 +2996,7 @@ def activate_injection() -> Dict[str, Any]:
             "hook": hook_res.get("hook"),
             "wrapper": _path_wrapper(),
             "steamSh": sh_res.get("steamSh"),
+            "steamShRestored": bool(sh_res.get("restored")),
         }
     return {"success": False,
             "error": hook_res.get("error") or sh_res.get("error") or "activation failed"}
