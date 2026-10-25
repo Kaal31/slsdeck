@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.67 — Preserve CloudRedirect Moon during client repair
+
+- Overrides Headcrab's `crinstall` action before its main entry point, preventing replacement of CloudRedirect Moon and installation of upstream companion Flatpaks during client repair.
+- Retains the existing stock-SLSsteam replacement block. CloudRedirect remains managed by SLSDeck.
+
+---
+
 ## 0.9.66 — Boot-loop containment and current Moon fixes
 
 - Added credential-free Hubcap request tracing with correlation IDs, endpoint paths, caller stacks, response status and elapsed time in the plugin log.

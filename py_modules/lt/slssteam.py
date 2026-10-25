@@ -3827,6 +3827,9 @@ def _run_headcrab_shimmed() -> bool:
             "copySLSsteam(){\n"
             "    echo 'SLSDeck: preserving installed slsteam-moon engine'\n"
             "}\n"
+            "crinstall(){\n"
+            "    echo 'SLSDeck: preserving CloudRedirect Moon; upstream CloudRedirect installation blocked'\n"
+            "}\n"
         )
         script_text = script_text[:pos] + preserve + script_text[pos:]
         with open(script, "w", encoding="utf-8") as fh:
