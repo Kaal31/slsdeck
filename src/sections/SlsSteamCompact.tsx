@@ -56,6 +56,11 @@ export function SlsSteamCompact({
   const [showReinstall, setShowReinstall] = useState(false);
   const [sys, setSys] = useState<{ engineInstalled: boolean; foreignEngine: boolean; foreignName: string; cloudredirect: boolean } | null>(null);
   const [qmsg, setQmsg] = useState("");
+  const [statusTimedOut, setStatusTimedOut] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setStatusTimedOut(true), 20000);
+    return () => clearTimeout(timer);
+  }, []);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = async () => {
@@ -188,8 +193,8 @@ export function SlsSteamCompact({
       <PanelSection title="SLSsteam">
         <PanelSectionRow>
           <div style={{ minHeight: 34, display: "flex", alignItems: "center", fontSize: 12, opacity: 0.8 }}>
-            <Spinner style={{ width: 14, height: 14, marginRight: 8 }} />
-            Checking SLSDeck…
+            {!statusTimedOut && <Spinner style={{ width: 14, height: 14, marginRight: 8 }} />}
+            {statusTimedOut ? "SLSDeck backend unavailable or status check timed out. Check the Decky plugin log, then reload the plugin." : "Checking SLSDeck…"}
           </div>
         </PanelSectionRow>
       </PanelSection>

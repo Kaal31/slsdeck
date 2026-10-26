@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.68 — Restore backend startup on minimal Decky Python
+
+- Bundles CPython HTML parsing modules and their markup dependency so lua.tools collections no longer depend on Decky's frozen runtime supplying html.parser.
+- Replaces the indefinite checking spinner with a backend/status timeout explanation after 20 seconds.
+
+---
+
 ## 0.9.67 — Preserve CloudRedirect Moon during client repair
 
 - Overrides Headcrab's `crinstall` action before its main entry point, preventing replacement of CloudRedirect Moon and installation of upstream companion Flatpaks during client repair.
