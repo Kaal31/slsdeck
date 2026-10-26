@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.69 — Isolate parser from Decky's frozen HTML package
+
+- Uses private lt._vendor parser imports, independent of Decky's frozen html package.
+- Removes superseded top-level html and _markupbase copies; retains status timeout feedback.
+
+---
+
 ## 0.9.68 — Restore backend startup on minimal Decky Python
 
 - Bundles CPython HTML parsing modules and their markup dependency so lua.tools collections no longer depend on Decky's frozen runtime supplying html.parser.

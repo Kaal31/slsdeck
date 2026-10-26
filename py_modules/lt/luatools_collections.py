@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from html.parser import HTMLParser
+from ._vendor.html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 

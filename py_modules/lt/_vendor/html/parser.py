@@ -9,9 +9,9 @@
 
 
 import re
-import _markupbase
+from .. import _markupbase
 
-from html import unescape
+from . import unescape
 
 
 __all__ = ['HTMLParser']
