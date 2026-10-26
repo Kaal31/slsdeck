@@ -2889,7 +2889,22 @@ def _gamescope_hook_content() -> str:
     return chr(10).join(lines) + chr(10)
 
 
+def _log_injection_action(action: str) -> None:
+    """Log code locations only, never locals/config values or credentials."""
+    import traceback
+    caller = ">".join(
+        f"{os.path.basename(frame.filename)}:{frame.name}:{frame.lineno}"
+        for frame in traceback.extract_stack(limit=8)[:-1])
+    root, sh = _steam_root_and_sh()
+    logger.log(
+        f"SLSDeck injection action={action} caller={caller} "
+        f"steamRoot={root!r} steamSh={sh!r} "
+        f"steamShExists={bool(sh and os.path.isfile(sh))} "
+        f"clientShExists={bool(root and os.path.isfile(os.path.join(root, 'client.sh')))}")
+
+
 def install_gamescope_hook() -> Dict[str, Any]:
+    _log_injection_action("install-gamescope-hooks")
     hooks = _gamescope_hook_files()
     if not hooks:
         return {"success": False, "error": "No gamescope session (not Game Mode)"}
@@ -2925,6 +2940,7 @@ def install_gamescope_hook() -> Dict[str, Any]:
 
 
 def remove_gamescope_hook() -> None:
+    _log_injection_action("remove-gamescope-hooks")
     for hook in _gamescope_hook_files():
         if not hook or not os.path.isfile(hook):
             continue
@@ -2958,7 +2974,13 @@ def activate_injection() -> Dict[str, Any]:
     time defeats that failsafe, because the supposedly clean fallback injects
     again through steam.sh. Only non-gamescope desktops use the steam.sh fallback.
     """
+    _log_injection_action("activate-requested")
     preflight = refresh_patterns_now()
+    logger.log(
+        f"SLSDeck injection preflight success={preflight.get('success')} "
+        f"present={preflight.get('present')} returncode={preflight.get('returncode')} "
+        f"clientVersion={preflight.get('clientVersion')} "
+        f"supportedClient={preflight.get('supportedClient')}")
     if not preflight.get("success"):
         # Headcrab may have patched steam.sh immediately before this call. Never
         # leave a known-unverified hook in the next boot path.
@@ -3091,6 +3113,7 @@ def _restore_steam_sh() -> bool:
     """Restore a pristine steam.sh, undoing EITHER our wrapper or headcrab's
     launcher. Tries the saved backup, then client.sh, then the bootstrap archive,
     then (last resort) removes steam.sh so Steam regenerates it."""
+    _log_injection_action("restore-steam-launcher")
     root, sh = _steam_root_and_sh()
     if not sh:
         return False
@@ -3347,6 +3370,7 @@ def full_uninstall_cleanup() -> Dict[str, Any]:
 def deactivate_injection() -> Dict[str, Any]:
     """Full off-switch: remove the gamescope hook, restore a pristine steam.sh
     (ours OR headcrab's), and drop the update-blocking steam.cfg."""
+    _log_injection_action("deactivate-requested")
     try:
         remove_gamescope_hook()
         restored = _restore_steam_sh()
@@ -3939,6 +3963,7 @@ def _run_headcrab_shimmed() -> bool:
         lf = None
 
     _log("Running h3adcr-b (client compatibility fix)… this can take a few minutes")
+    _log_injection_action("headcrab-before-run")
     rc = None
     try:
         proc = subprocess.Popen(
@@ -3999,6 +4024,7 @@ def _run_headcrab_shimmed() -> bool:
         if timed_out["v"]:
             _log("h3adcr-b timed out (10 min) — continuing without the client pin")
         _log(f"h3adcr-b exit code: {rc}")
+        _log_injection_action("headcrab-after-run")
         if lf:
             lf.write(f"[exit code: {rc}]\n")
     except Exception as exc:

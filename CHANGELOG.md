@@ -1,5 +1,13 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.70 — Injection diagnostics in the normal plugin log
+
+- Logs callers for hook creation/removal, activation/deactivation and launcher restoration.
+- Logs launcher paths and file existence before/after Headcrab, plus activation preflight results.
+- Uses the normal plugin logger, without secrets or a separate debug file. No injection behavior changes.
+
+---
+
 ## 0.9.69 — Isolate parser from Decky's frozen HTML package
 
 - Uses private lt._vendor parser imports, independent of Decky's frozen html package.
