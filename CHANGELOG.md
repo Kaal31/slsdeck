@@ -1,5 +1,14 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.71 — Preserve Steam launcher during Headcrab repair
+
+- Disables Headcrab's launcher replacement: SLSDeck owns injection setup.
+- Requires a pristine launcher before repair and restores the preserved copy if Headcrab leaves it missing or modified.
+- Accepts pattern-refresh code 3 as unverified cached/embedded fallback, not proof of incompatibility.
+- Refuses activation without a launcher and reports failed activation instead of installation success.
+
+---
+
 ## 0.9.70 — Injection diagnostics in the normal plugin log
 
 - Logs callers for hook creation/removal, activation/deactivation and launcher restoration.

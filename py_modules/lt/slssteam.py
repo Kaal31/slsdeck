@@ -2064,6 +2064,9 @@ def _run_install() -> None:
                 _log(f"Injection activated via {act.get('steamSh')}")
             else:
                 _log(f"Auto-activation not applied: {act.get('error')}")
+                _set_install({"status": "failed", "success": False,
+                              "installed": True, "error": act.get("error") or "Injection setup failed"})
+                return
 
         # Keep path/steam present after headcrab (Game Mode's gamescope hook
         # points STEAMCMD here). Desktop mode injects via steam.sh instead, so
@@ -2124,7 +2127,7 @@ def start_install() -> Dict[str, Any]:
                       "error": f"No way to unpack the release: {', '.join(missing)}"})
         return {"success": False, "error": "Missing extractor", "missingDeps": missing}
     preflight = _install_preflight()
-    if not preflight.get("success"):
+    if not preflight.get("success") and preflight.get("returncode") != 3:
         error = str(preflight.get("error") or "Host preflight failed")
         _set_install({"status": "failed", "stage": "preflight", "error": error, "log": error})
         return {"success": False, "error": error, "preflight": preflight}
@@ -2993,6 +2996,11 @@ def activate_injection() -> Dict[str, Any]:
             "error": preflight.get("message") or
                      "Moon compatibility preflight failed; injection was not enabled",
         }
+    if preflight.get("returncode") == 3:
+        _log("Injection preflight: cached/embedded fallback; compatibility unverified until runtime")
+    launcher_root, launcher = _steam_root_and_sh()
+    if not launcher or not os.path.isfile(launcher):
+        return {"success": False, "error": "Steam launcher missing; injection not enabled"}
     hook_res = install_gamescope_hook()
     hook_ok = bool(hook_res.get("success"))
     if hook_ok:
@@ -3803,6 +3811,21 @@ def _run_headcrab_shimmed() -> bool:
     """Download + run the latest h3adcr-b with wget/7z shims, as the desktop
     user. Returns True if SLSsteam ends up installed. Streams to the install log."""
     import tempfile
+    # Headcrab's patchsteam deletes steam.sh before downloading its replacement.
+    # SLSDeck owns injection, so that unrelated launcher replacement is disabled.
+    root_before, launcher_before = _steam_root_and_sh()
+    if not launcher_before:
+        _log("Refusing Headcrab: Steam launcher missing before repair")
+        return False
+    with open(launcher_before, encoding="utf-8", errors="ignore") as fh:
+        clean_launcher = fh.read()
+    if not _looks_pristine(clean_launcher):
+        _restore_steam_sh()
+        with open(launcher_before, encoding="utf-8", errors="ignore") as fh:
+            clean_launcher = fh.read()
+    if not _looks_pristine(clean_launcher):
+        _log("Refusing Headcrab: no verified pristine Steam launcher")
+        return False
     tmp = tempfile.mkdtemp(prefix="headcrab_")
     script = os.path.join(tmp, "headcrab.sh")
 
@@ -3853,6 +3876,9 @@ def _run_headcrab_shimmed() -> bool:
             "}\n"
             "crinstall(){\n"
             "    echo 'SLSDeck: preserving CloudRedirect Moon; upstream CloudRedirect installation blocked'\n"
+            "}\n"
+            "patchsteam(){\n"
+            "    echo 'SLSDeck: preserving pristine Steam launcher; plugin manages injection'\n"
             "}\n"
         )
         script_text = script_text[:pos] + preserve + script_text[pos:]
@@ -4032,6 +4058,19 @@ def _run_headcrab_shimmed() -> bool:
         if lf:
             lf.write(f"[run error: {exc}]\n")
     finally:
+        try:
+            with open(launcher_before, encoding="utf-8", errors="ignore") as fh:
+                launcher_ok = _looks_pristine(fh.read())
+        except OSError:
+            launcher_ok = False
+        if not launcher_ok:
+            tmp_launcher = launcher_before + ".slsrestore"
+            with open(tmp_launcher, "w", encoding="utf-8") as fh:
+                fh.write(clean_launcher)
+            os.chmod(tmp_launcher, 0o755)
+            os.replace(tmp_launcher, launcher_before)
+            _chown_file_to_user(launcher_before)
+            _log("Restored preserved pristine Steam launcher after Headcrab")
         # Always re-arm the update block, whatever happened above. Leaving it off
         # lets Steam self-update within minutes and breaks injection for good.
         _restore_update_block()
