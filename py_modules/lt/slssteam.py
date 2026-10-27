@@ -2746,6 +2746,11 @@ def _ensure_path_wrapper() -> str:
         'FAIL="%s"' % fail,
         'n=$(cat "$FAIL" 2>/dev/null || echo 0)',
         'case "$n" in ""|*[!0-9]*) n=0 ;; esac',
+        'BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)',
+        'TRACE="$(dirname "$FAIL")/.launch_trace"',
+        'MODE=clean; [ -f "$SO" ] && [ "$n" -lt 2 ] && MODE=inject',
+        'printf "time=%s boot=%s pid=%s mode=%s attempts=%s\\n" "$(date -u +%FT%TZ)" "$BOOT" "$$" "$MODE" "$n" > "$TRACE"',
+        'logger -t slsdeck-launch "boot=$BOOT pid=$$ mode=$MODE attempts=$n" 2>/dev/null || true',
         'if [ -f "$SO" ] && [ "$n" -lt 2 ]; then',
         '  echo $((n+1)) > "$FAIL" 2>/dev/null',
         '  AUD="$SO"; [ -f "$LI" ] && AUD="$LI:$SO"',
@@ -2906,8 +2911,47 @@ def _log_injection_action(action: str) -> None:
         f"clientShExists={bool(root and os.path.isfile(os.path.join(root, 'client.sh')))}")
 
 
+def _steamos_unit_present() -> bool:
+    return os.path.isfile("/usr/lib/steamos/steam-launcher") and any(
+        os.path.isfile(os.path.join(root, "steam-launcher.service"))
+        for root in ("/usr/lib/systemd/user", "/etc/systemd/user", "/run/systemd/user"))
+
+
+def _steamos_dropin() -> str:
+    return os.path.join(_home(), ".config/systemd/user/steam-launcher.service.d/50-slsdeck.conf")
+
+
+def _reload_user_units() -> None:
+    try:
+        result = subprocess.run(_wrap_as_user(["systemctl", "--user", "daemon-reload"]),
+                                env=_rich_env(), capture_output=True, timeout=15)
+        logger.log(f"SLSDeck injection user daemon-reload exit={result.returncode} "
+                   f"stderr={result.stderr.decode(errors='replace')[-1000:]}")
+    except Exception as exc:
+        logger.warn(f"SLSDeck injection daemon-reload failed; reboot required: {exc}")
+
+
 def install_gamescope_hook() -> Dict[str, Any]:
     _log_injection_action("install-gamescope-hooks")
+    if _steamos_unit_present():
+        _ensure_path_wrapper()
+        path = _steamos_dropin()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                if _GAMEMODE_SENTINEL not in fh.read():
+                    raise RuntimeError(f"Refusing to overwrite unmanaged service drop-in: {path}")
+        content = ("[Service]\n" + _GAMEMODE_SENTINEL + "\nExecStart=\n"
+                   "ExecStart=/bin/sh -c 'PATH=\"%h/.local/share/SLSsteam/path:$$PATH\" exec /usr/lib/steamos/steam-launcher'\n")
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(path + ".tmp", path)
+        _chown_file_to_user(path)
+        for directory in (os.path.dirname(path), os.path.dirname(os.path.dirname(path))):
+            _chown_file_to_user(directory)
+        _reload_user_units()
+        logger.log(f"SLSDeck injection SteamOS service drop-in installed: {path}")
+        return {"success": True, "hook": path, "method": "steamos-service"}
     hooks = _gamescope_hook_files()
     if not hooks:
         return {"success": False, "error": "No gamescope session (not Game Mode)"}
@@ -2944,6 +2988,14 @@ def install_gamescope_hook() -> Dict[str, Any]:
 
 def remove_gamescope_hook() -> None:
     _log_injection_action("remove-gamescope-hooks")
+    dropin = _steamos_dropin()
+    if os.path.isfile(dropin):
+        with open(dropin, encoding="utf-8") as fh:
+            owned = _GAMEMODE_SENTINEL in fh.read()
+        if owned:
+            os.remove(dropin)
+            _reload_user_units()
+            logger.log("SLSDeck injection SteamOS service drop-in removed")
     for hook in _gamescope_hook_files():
         if not hook or not os.path.isfile(hook):
             continue
@@ -2957,6 +3009,12 @@ def remove_gamescope_hook() -> None:
 
 
 def gamescope_hook_active() -> bool:
+    if _steamos_unit_present():
+        try:
+            with open(_steamos_dropin(), encoding="utf-8") as fh:
+                return _GAMEMODE_SENTINEL in fh.read()
+        except OSError:
+            return False
     for hook in _gamescope_hook_files():
         if hook and os.path.isfile(hook):
             try:
@@ -2972,7 +3030,7 @@ def activate_injection() -> Dict[str, Any]:
     """Activate SLSsteam so Steam loads it.
 
     Exactly ONE boot-time injection path is installed. On SteamOS/Game Mode the
-    rootless gamescope sessions.d hook points at path/steam, whose two-attempt
+    user service drop-in (or other distros' sessions.d hook) uses path/steam, whose two-attempt
     crash counter falls back to pristine Steam. Wrapping steam.sh at the same
     time defeats that failsafe, because the supposedly clean fallback injects
     again through steam.sh. Only non-gamescope desktops use the steam.sh fallback.
@@ -3018,7 +3076,7 @@ def activate_injection() -> Dict[str, Any]:
     except Exception:
         pass
     if hook_ok or sh_ok:
-        methods = ([] + (["gamescope"] if hook_ok else []) +
+        methods = ([] + ([hook_res.get("method", "gamescope")] if hook_ok else []) +
                    (["steam.sh"] if sh_ok else []))
         return {
             "success": True,
@@ -3568,6 +3626,12 @@ def set_achievements(enabled: bool) -> Dict[str, Any]:
 
 def get_diagnostics() -> Dict[str, Any]:
     home = _home()
+    try:
+        with open(os.path.join(lib_dir(), ".launch_trace"), encoding="utf-8") as fh:
+            launch_trace = fh.read(2048).strip()
+    except OSError:
+        launch_trace = "No wrapper execution record"
+    logger.log(f"SLSDeck injection diagnostics wrapper={launch_trace} mapped={_running_injected()}")
     os_info = {}
     try:
         for p in ("/etc/os-release", "/usr/lib/os-release"):
@@ -3718,6 +3782,28 @@ def get_diagnostics() -> Dict[str, Any]:
     gh = _gamescope_hook_file()
     out["gamescopeHook"] = gh or "(no gamescope session)"
     out["gamescopeHookActive"] = gamescope_hook_active()
+    out["launchHookMethod"] = "steamos-service" if _steamos_unit_present() else "gamescope-session"
+    if _steamos_unit_present():
+        out["gamescopeHook"] = _steamos_dropin()
+    out["wrapperLaunchTrace"] = launch_trace
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="utf-8") as fh:
+            boot_id = fh.read().strip()
+        out["wrapperRanThisBoot"] = bool(boot_id and f"boot={boot_id} " in launch_trace)
+    except OSError:
+        out["wrapperRanThisBoot"] = None
+    out["injectionMapped"] = _running_injected()
+    out["launcherJournalTail"] = []
+    if _steamos_unit_present():
+        try:
+            journal = subprocess.run(_wrap_as_user([
+                "journalctl", "--user", "-b", "-u", "steam-launcher.service",
+                "-n", "60", "--no-pager", "-o", "short-iso"]),
+                env=_rich_env(), capture_output=True, timeout=5)
+            out["launcherJournalTail"] = journal.stdout.decode(errors="replace")[-12000:].splitlines()
+            logger.log("SLSDeck launcher journal: " + "\n".join(out["launcherJournalTail"]))
+        except Exception as exc:
+            logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
     pw = _path_wrapper()
     out["pathWrapper"] = pw
     out["pathWrapperExists"] = os.path.isfile(pw)

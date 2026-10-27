@@ -6,7 +6,10 @@ from py_modules.lt import slssteam
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_gamescope_activation_restores_steam_sh_and_does_not_double_wrap(monkeypatch):
+def test_gamescope_activation_restores_steam_sh_and_does_not_double_wrap(monkeypatch, tmp_path):
+    launcher = tmp_path / "steam.sh"
+    launcher.touch()
+    monkeypatch.setattr(slssteam, "_steam_root_and_sh", lambda: (str(tmp_path), str(launcher)))
     monkeypatch.setattr(slssteam, "refresh_patterns_now", lambda: {"success": True})
     monkeypatch.setattr(slssteam, "install_gamescope_hook", lambda: {"success": True, "hook": "/hook"})
     monkeypatch.setattr(slssteam, "_restore_steam_sh", lambda: True)

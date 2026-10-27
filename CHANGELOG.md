@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.72 — SteamOS launcher hook and execution evidence
+
+- Uses the SteamOS user steam-launcher.service drop-in instead of relying on a sessions.d hook SteamOS does not consume.
+- Records wrapper execution, boot ID, injection/clean mode and failsafe count; preserves the two-attempt clean-launch fallback.
+- Diagnostics distinguish configured hooks, wrapper execution, mapped Moon and functional injection, and include the current boot's launcher journal in the regular plugin log.
+- Removes only the managed service drop-in on deactivation and reloads user units without restarting Steam.
+
 ## 0.9.71 — Preserve Steam launcher during Headcrab repair
 
 - Disables Headcrab's launcher replacement: SLSDeck owns injection setup.

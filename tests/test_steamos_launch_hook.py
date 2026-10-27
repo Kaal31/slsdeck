@@ -1,0 +1,60 @@
+import subprocess
+import pytest
+
+from py_modules.lt import slssteam
+
+
+def test_steamos_dropin_install_remove(monkeypatch, tmp_path):
+    dropin = tmp_path / "steam-launcher.service.d/50-slsdeck.conf"
+    calls = []
+    monkeypatch.setattr(slssteam, "_steamos_unit_present", lambda: True)
+    monkeypatch.setattr(slssteam, "_steamos_dropin", lambda: str(dropin))
+    monkeypatch.setattr(slssteam, "_ensure_path_wrapper", lambda: calls.append("wrapper"))
+    monkeypatch.setattr(slssteam, "_reload_user_units", lambda: calls.append("reload"))
+    monkeypatch.setattr(slssteam, "_chown_file_to_user", lambda _: None)
+    monkeypatch.setattr(slssteam, "_gamescope_hook_files", lambda: [])
+    monkeypatch.setattr(slssteam, "_log_injection_action", lambda _: None)
+
+    result = slssteam.install_gamescope_hook()
+    assert result["method"] == "steamos-service"
+    content = dropin.read_text()
+    assert "ExecStart=\nExecStart=/bin/sh" in content
+    assert '$$PATH' in content
+    assert "/usr/lib/steamos/steam-launcher" in content
+    assert slssteam.gamescope_hook_active()
+    slssteam.remove_gamescope_hook()
+    assert not dropin.exists()
+    assert calls == ["wrapper", "reload", "reload"]
+
+    dropin.write_text("# someone else's configuration\n")
+    with pytest.raises(RuntimeError, match="unmanaged"):
+        slssteam.install_gamescope_hook()
+    slssteam.remove_gamescope_hook()
+    assert dropin.exists()
+
+
+@pytest.mark.parametrize("attempts,library,mode", [(0, True, "inject"), (2, True, "clean"), (0, False, "clean")])
+def test_wrapper_execution_record_and_failsafe(monkeypatch, tmp_path, attempts, library, mode):
+    real = tmp_path / "real-steam"
+    real.write_text('#!/bin/sh\nprintf "audit=%s arg=%s\\n" "$LD_AUDIT" "$1"\n')
+    real.chmod(0o755)
+    monkeypatch.setattr(slssteam, "lib_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(slssteam, "_path_wrapper", lambda: str(tmp_path / "path/steam"))
+    monkeypatch.setattr(slssteam, "_real_steam_binary", lambda: str(real))
+    monkeypatch.setattr(slssteam, "_chown_file_to_user", lambda _: None)
+    (tmp_path / ".inject_fails").write_text(str(attempts))
+    if library:
+        (tmp_path / "SLSsteam.so").touch()
+    wrapper = slssteam._ensure_path_wrapper()
+    subprocess.run(["sh", "-n", wrapper], check=True)
+    result = subprocess.run([wrapper, "test-argument"], capture_output=True, text=True, check=True)
+    assert "arg=test-argument" in result.stdout
+    trace = (tmp_path / ".launch_trace").read_text()
+    assert f"mode={mode}" in trace
+    assert "boot=" in trace and "pid=" in trace and "time=" in trace
+    if mode == "clean":
+        assert "audit= arg=" in result.stdout
+        assert (tmp_path / ".inject_fails").read_text() == str(attempts)
+    else:
+        assert str(tmp_path / "SLSsteam.so") in result.stdout
+        assert (tmp_path / ".inject_fails").read_text().strip() == "1"

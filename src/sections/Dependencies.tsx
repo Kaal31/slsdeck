@@ -380,7 +380,7 @@ export function DependenciesSection() {
     try {
       const d: any = await getDiagnostics();
       const live = d.injectionLive === true ? "yes (live this session)"
-        : d.injectionLive === false ? "no (not loaded this boot)" : "unknown";
+        : d.injectionLive === false ? "no (not confirmed functional)" : "unknown";
       const osName = d.osRelease?.PRETTY_NAME || d.steamOSChannel || "unknown";
       setDiag([
         `Engine:         ${d.engine || "?"}${d.engineMoon ? "" : "  (no version-pin / depot-key support)"}`,
@@ -390,17 +390,22 @@ export function DependenciesSection() {
         ``,
         `SLSsteam.so:    ${d.hasSLSsteamSo ? "installed" : "MISSING"}`,
         `steam.sh wrap:  ${d.steamShWrapped ? "yes" : "no"}`,
-        `gamescope hook: ${d.gamescopeHookActive ? "active" : "inactive"}`,
+        `Launch hook:    ${d.gamescopeHookActive ? "configured" : "not configured"} (${d.launchHookMethod || "unknown"})`,
+        `Wrapper ran:    ${d.wrapperRanThisBoot === true ? "yes, this boot" : d.wrapperRanThisBoot === false ? "no record this boot" : "unknown"}`,
+        `Wrapper record: ${d.wrapperLaunchTrace || "none"}`,
+        `Moon mapped:    ${d.injectionMapped ? "yes" : "no"}`,
         `flatpak Steam:  ${d.flatpak ? "yes" : "no"}`,
         `Steam root:     ${d.steamRoot || "?"}`,
         `OS:             ${osName}`,
         `user / root:    ${d.user || "?"}${d.runningAsRoot ? " (running as root)" : ""}`,
         `AdditionalApps: ${(d.additionalApps || []).length} added${(d.additionalApps || []).length ? ` — ${(d.additionalApps || []).join(", ")}` : ""}`,
-        `SLSsteam.log:   ${d.slssteamLogExists ? `yes (${d.slssteamLogAgeSec}s ago, ${d.slssteamLogModified || "?"})` : "MISSING — not loaded"}`,
+        `SLSsteam.log:   ${d.slssteamLogExists ? `yes (${d.slssteamLogAgeSec}s ago, ${d.slssteamLogModified || "?"})` : "MISSING — initialization not confirmed"}`,
         `h3adcr-b log:   ${d.headcrabRunLogExists ? "present" : "none"}`,
         ``,
         `— recent SLSsteam.log —`,
         ...((d.slssteamLogTail || []).map((l: string) => `  | ${l}`)),
+        `— launcher journal (current boot) —`,
+        ...((d.launcherJournalTail || []).map((l: string) => `  | ${l}`)),
       ].join("\n"));
     } catch (e) { setDiag(`error: ${e}`); }
   };
