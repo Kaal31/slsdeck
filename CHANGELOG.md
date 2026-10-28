@@ -1,5 +1,14 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.74 — Native SteamStub helper and isolation diagnostics
+
+- Deploy Moon's bundled SteamStub helper, Steamless kit, and licenses.
+- Prefer the bundled helper for explicit per-game SteamStub processing; retain legacy AIO fallback.
+- Journal executable replacements before processing and serialize them with Un-fix/archive cleanup.
+- Show native kit readiness in game tools and dependency diagnostics.
+- Adapt Pop!_OS isolation status checks for Moon/Millennium mappings, passive mode, and Steam process cgroups without changing launchers.
+- Normalize boot IDs for SteamOS journalctl.
+
 ## 0.9.73 — Read-only watchdog and launch diagnostics
 
 - Stop background health monitoring from automatically changing injection, launchers, or permissions.

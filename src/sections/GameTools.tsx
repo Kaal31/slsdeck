@@ -150,7 +150,7 @@ export function GameToolsSection() {
   // CreamySteamy: compile a version-matched proxy for native-Linux games.
   const [creamy, setCreamy] = useState<{ supported: boolean; installed: boolean; haveToolchain: boolean } | null>(null);
   // ASSella-inspired: SteamStub removal, version freeze, build rollback, manifest age.
-  const [steamless, setSteamless] = useState<{ supported: boolean; hasStub: boolean; installed: boolean } | null>(null);
+  const [steamless, setSteamless] = useState<{ supported: boolean; hasStub: boolean; installed: boolean; nativeReady: boolean } | null>(null);
   const [pinned, setPinned] = useState<boolean | null>(null);
   const [pinnedBuild, setPinnedBuild] = useState("");
   const [pinnedDepotCount, setPinnedDepotCount] = useState(0);
@@ -270,7 +270,7 @@ export function GameToolsSection() {
         .catch(() => setCreamy(null));
       steamlessStatus(appid)
         .then((r) => setSteamless(r.success && r.supported
-          ? { supported: true, hasStub: !!r.hasStub, installed: !!r.installed }
+          ? { supported: true, hasStub: !!r.hasStub, installed: !!r.installed, nativeReady: !!r.nativeReady }
           : null))
         .catch(() => setSteamless(null));
       refreshPinStatus();
@@ -386,7 +386,7 @@ export function GameToolsSection() {
 
   const doSteamless = async () => {
     setBusy("steamless");
-    setNote("Removing SteamStub DRM… (first run fetches Steamless + a small toolchain)");
+    setNote("Applying SteamStub fix… native helper preferred; legacy fallback may download dependencies");
     try {
       const r = await steamlessUnstub(appid);
       if (r.success) {
@@ -1034,13 +1034,14 @@ export function GameToolsSection() {
                 ? "Working…"
                 : steamless.installed && !steamless.hasStub
                 ? "SteamStub already removed"
-                : "Remove SteamStub DRM (Steamless)"}
+                : "Apply SteamStub fix (native preferred)"}
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
             <div style={{ fontSize: 11, opacity: 0.6, padding: "0 2px 4px" }}>
-              Strips Steam's DRM wrapper from the game exe (fixes some SteamStub launch failures / achievement tools).
-              Windows/Proton exes only. Reverted by Un-fix.
+              {steamless.nativeReady ? "Moon native helper installed." : "Moon native helper unavailable; legacy fallback will be attempted."}
+              {" "}Processes the selected Windows executable now. No automatic launch option is enabled.
+              Original saved for Un-fix and snapshot cleanup. Legacy fallback requires its external script and dependencies.
             </div>
           </PanelSectionRow>
         </>

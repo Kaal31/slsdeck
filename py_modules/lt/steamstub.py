@@ -1,4 +1,4 @@
-"""SteamStub DRM removal (Steamless AIO integration).
+"""SteamStub processing: bundled Moon helper, with legacy AIO fallback.
 
 Steam wraps many game .exes in SteamStub DRM — a ``.bind`` PE section that
 decrypts the real code at launch and does an ownership check. SLSsteam doesn't
@@ -14,6 +14,8 @@ Steamless backs the original up to ``<exe>.original``; we also stash a
 from __future__ import annotations
 
 import os
+import struct
+import threading
 import subprocess
 from typing import Any, Dict
 
@@ -64,9 +66,52 @@ def has_steamstub(exe_path: str) -> bool:
     try:
         with open(exe_path, "rb") as fh:
             head = fh.read(65536)
-        return head[:2] == b"MZ" and b".bind" in head
-    except Exception:
+        if head[:2] != b"MZ":
+            return False
+        if head[0x40:0x44] == b"VLV\0":
+            return True
+        offset = struct.unpack_from("<I", head, 0x3c)[0]
+        if head[offset:offset + 4] != b"PE\0\0":
+            return False
+        count = struct.unpack_from("<H", head, offset + 6)[0]
+        start = offset + 24 + struct.unpack_from("<H", head, offset + 20)[0]
+        return any(head[start + i * 40:start + i * 40 + 8].rstrip(b"\0") == b".bind"
+                   for i in range(min(count, 96)))
+    except (OSError, struct.error):
         return False
+
+
+def native_paths():
+    root = os.path.join(slssteam.lib_dir(), "tools")
+    return (os.path.join(root, "steamstub-bypass", "run-steamless.sh"),
+            os.path.join(root, "steamless-bin"))
+
+
+def native_ready():
+    script, kit = native_paths()
+    return all(os.path.isfile(p) for p in (script, os.path.join(kit, "Steamless.CLI.exe"),
+               os.path.join(kit, "Plugins", "Steamless.API.dll")))
+
+
+def ensure_native() -> bool:
+    """Install only helper tools from our bundled archive; preserve the live engine/hooks."""
+    if native_ready():
+        return True
+    import tempfile
+    archive = slssteam._bundled_moon_archive()
+    if not archive:
+        return False
+    try:
+        with tempfile.TemporaryDirectory(prefix="slsdeck-steamstub-") as work:
+            if not slssteam._extract_archive(archive, work):
+                return False
+            return slssteam._place_steamstub_tools(work) and native_ready()
+    except Exception as exc:
+        logger.warn(f"SteamStub native kit deployment failed: {type(exc).__name__}")
+        return False
+
+
+_LOCK = threading.Lock()
 
 
 def status(install_path: str) -> Dict[str, Any]:
@@ -77,13 +122,20 @@ def status(install_path: str) -> Dict[str, Any]:
             return {"success": True, "supported": False}
         stub = has_steamstub(exe)
         done = os.path.isfile(exe + ".original")
-        return {"success": True, "supported": bool(stub or done),
-                "hasStub": bool(stub), "installed": bool(done), "exe": exe}
+        managed = False
+        import glob
+        for log in glob.glob(os.path.join(install_path, "luatools-fix-log-*.log")):
+            with open(log, encoding="utf-8") as fh:
+                if "steamstub-managed" in fh.read():
+                    managed = True
+        return {"success": True, "supported": bool(stub or done or managed),
+                "hasStub": bool(stub), "installed": bool(done or (managed and os.path.isfile(exe + _fixes.ORIG_SUFFIX))),
+                "nativeReady": native_ready(), "exe": exe}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
 
-def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
+def _legacy_unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
     if not install_path or not os.path.isdir(install_path):
         return {"success": False, "error": "game is not installed on disk"}
     r = _fixes.find_main_exe(install_path)
@@ -114,9 +166,6 @@ def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
     if proc.returncode == 0 and not has_steamstub(exe):
         try:
             chown_to_user(exe, recursive=False)
-            _fixes._write_fix_log(install_path, int(appid), game_name,
-                                  "SteamStub removed", "steamless", [], [rel])
-            chown_to_user(_fixes._fix_log_path(install_path, int(appid)), recursive=False)
         except Exception:
             pass
         return {"success": True, "exe": exe,
@@ -125,3 +174,61 @@ def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
     return {"success": False,
             "error": "Steamless didn't remove the stub — it may be an unsupported variant (see log).",
             "log": out}
+
+
+def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
+    """Prefer Moon's helper; record originals before either engine can modify files."""
+    if not _LOCK.acquire(blocking=False):
+        return {"success": False, "error": "SteamStub processing is already running"}
+    try:
+        from .fixes import _get_unfix_state
+        if _get_unfix_state(int(appid)).get("status") in {"queued", "removing"}:
+            return {"success": False, "error": "Wait for restore to finish"}
+        result = _fixes.find_main_exe(install_path)
+        exe = result.get("exe") if result.get("success") else ""
+        if not exe or not _fixes._is_safe_path(install_path, os.path.relpath(exe, install_path)):
+            return {"success": False, "error": "No safe game executable found"}
+        if not has_steamstub(exe):
+            return {"success": False, "notStub": True, "error": "No SteamStub detected"}
+        for suffix in (".original.exe", ".unpacked.exe", ".steamless_done"):
+            if os.path.lexists(exe + suffix):
+                return {"success": False, "error": "Existing native Steamless artifacts found; restore or verify the game before applying this fix"}
+        rel = os.path.relpath(exe, install_path).replace("\\", "/")
+        if not _fixes._stash_original(install_path, rel):
+            return {"success": False, "error": "Cannot preserve executable; no changes made"}
+        # Journal BEFORE processing so an interrupted or failed run remains restorable.
+        _fixes._write_fix_log(install_path, int(appid), game_name, "SteamStub removal",
+                              "steamstub-managed", [rel], [rel])
+        record = _fixes._fix_log_path(install_path, int(appid))
+        with open(record, encoding="utf-8") as fh:
+            if "steamstub-managed" not in fh.read():
+                return {"success": False, "error": "Cannot record recoverable fix; no processing started"}
+        chown_to_user(record, recursive=False)
+        if not ensure_native():
+            return _legacy_unstub(appid, install_path, game_name)
+        script, kit = native_paths()
+        env = slssteam._rich_env()
+        env["STEAMLESS_HOME"] = kit
+        proc = subprocess.run(slssteam._wrap_as_user(["bash", script, exe]),
+                              env=env, capture_output=True, text=True, timeout=900)
+        output = ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
+        if proc.returncode not in (0, 2) or has_steamstub(exe):
+            # Fall back only if native processing left the input byte-for-byte intact.
+            import filecmp
+            if filecmp.cmp(exe, exe + _fixes.ORIG_SUFFIX, shallow=False):
+                legacy = _legacy_unstub(appid, install_path, game_name)
+                legacy["nativeLog"] = output
+                return legacy
+            return {"success": False, "error": "Native helper failed; restore before retrying", "log": output}
+        # The explicit fix is owned by SLSDeck. Avoid Moon's default-mode restore
+        # consuming its duplicate backup on the next launch; our journal owns recovery.
+        for suffix in (".original.exe", ".steamless_done"):
+            artifact = exe + suffix
+            if os.path.isfile(artifact) and not os.path.islink(artifact):
+                os.remove(artifact)
+        return {"success": True, "method": "native", "exe": exe,
+                "note": "Applied Moon SteamStub helper. Restorable through Un-fix.", "log": output}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    finally:
+        _LOCK.release()

@@ -394,6 +394,11 @@ export function DependenciesSection() {
         `Wrapper ran:    ${d.wrapperRanThisBoot === true ? "yes, this boot" : d.wrapperRanThisBoot === false ? "no record this boot" : "unknown"}`,
         `Wrapper record: ${d.wrapperLaunchTrace || "none"}`,
         `Moon mapped:    ${d.injectionMapped ? "yes" : "no"}`,
+        `SteamStub kit:  ${d.steamstubNativeReady ? "native helper installed" : "missing"}`,
+        `Isolation:      read-only (Moon / Millennium / passive mode)`,
+        ...((d.isolation?.processes || []).map((p: any) =>
+          `  PID ${p.pid}, parent ${p.ppid}: Moon=${p.moonMapped}, Millennium=${p.millenniumMapped}, passive=${p.passive ?? "unknown"}; ${p.cgroup}`)),
+        `  ${d.isolation?.interpretation || "No isolation evidence"}`,
         `flatpak Steam:  ${d.flatpak ? "yes" : "no"}`,
         `Steam root:     ${d.steamRoot || "?"}`,
         `OS:             ${osName}`,

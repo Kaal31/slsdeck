@@ -1876,6 +1876,29 @@ def _extract_archive(archive: str, dest: str) -> bool:
     return _find_file(dest, "SLSsteam.so") is not None
 
 
+def _place_steamstub_tools(extract_root: str) -> bool:
+    """Deploy the bundled helper without invoking upstream launcher setup."""
+    script = _find_file(extract_root, "run-steamless.sh")
+    if not script:
+        return False
+    tools = os.path.dirname(os.path.dirname(script))
+    if not os.path.isfile(os.path.join(tools, "steamless-bin", "Steamless.CLI.exe")):
+        return False
+    target = os.path.join(lib_dir(), "tools")
+    for name in ("steamstub-bypass", "steamless-bin"):
+        shutil.copytree(os.path.join(tools, name), os.path.join(target, name), dirs_exist_ok=True)
+    for root, dirs, files in os.walk(target):
+        os.chmod(root, 0o755)
+        for name in files:
+            os.chmod(os.path.join(root, name), 0o755 if name.endswith(".sh") else 0o644)
+    licenses = os.path.join(os.path.dirname(tools), "docs", "LICENSE")
+    if os.path.isdir(licenses):
+        shutil.copytree(licenses, os.path.join(lib_dir(), "docs", "LICENSE"), dirs_exist_ok=True)
+    _chown_to_user(lib_dir())
+    _log("Installed bundled Moon SteamStub scripts and Steamless kit")
+    return True
+
+
 def _place_libraries(extract_root: str) -> bool:
     """Copy the extracted bin/* into the SLSsteam dir (native or Flatpak)."""
     so = _find_file(extract_root, "SLSsteam.so")
@@ -2011,6 +2034,8 @@ def _run_install() -> None:
         # We place every binary and install both launch paths ourselves below.
         _log("Placing SLSsteam libraries (SLSsteam.so, library-inject.so, pattern-refresh)…")
         _place_libraries(extract_root)
+        if not _place_steamstub_tools(extract_root):
+            raise RuntimeError("Moon archive is missing the SteamStub helper kit")
         _record_engine_version(str(_bundled_moon_metadata().get("commit") or ""))
         # setup.sh only makes the path/steam wrapper for fish; ensure the bash
         # one exists too, so any .desktop patched to it can't dangle.
@@ -3624,6 +3649,52 @@ def set_achievements(enabled: bool) -> Dict[str, Any]:
     return {"success": ok, "enabled": enabled}
 
 
+def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
+    """Adapt upstream isolation status without launching Steam or changing symlinks."""
+    result: Dict[str, Any] = {"mode": "read-only", "processes": []}
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return result
+    for pid in entries:
+        if not pid.isdigit():
+            continue
+        root = os.path.join(proc_root, pid)
+        try:
+            with open(os.path.join(root, "comm"), encoding="utf-8") as fh:
+                if fh.read().strip() != "steam":
+                    continue
+            with open(os.path.join(root, "maps"), encoding="utf-8", errors="replace") as fh:
+                maps = fh.read(4 * 1024 * 1024)
+            with open(os.path.join(root, "status"), encoding="utf-8") as fh:
+                status = fh.read(8192)
+            match = re.search(r"^PPid:\s*(\d+)", status, re.MULTILINE)
+            with open(os.path.join(root, "cgroup"), encoding="utf-8") as fh:
+                cgroup = fh.read(4096).strip()
+            passive = None
+            try:
+                with open(os.path.join(root, "environ"), "rb") as fh:
+                    passive = b"SLS_PASSIVE=1" in fh.read(1024 * 1024).split(b"\0")
+            except OSError:
+                pass
+            result["processes"].append({"pid": int(pid), "ppid": int(match[1]) if match else None,
+                "cgroup": cgroup, "moonMapped": "SLSsteam.so" in maps,
+                "millenniumMapped": "libmillennium" in maps.lower(), "passive": passive})
+        except OSError:
+            continue
+    result["millenniumBootstrapLinks"] = []
+    for path in (os.path.join(_home(), ".steam/steam/ubuntu12_64/libXtst.so.6"),
+                 os.path.join(_home(), ".local/share/Steam/ubuntu12_64/libXtst.so.6")):
+        if os.path.islink(path):
+            result["millenniumBootstrapLinks"].append({"path": path, "target": os.readlink(path)})
+    result["interpretation"] = (
+        "Moon + Millennium mapped is coexistence evidence, not proof of a conflict. "
+        "Passive loading cannot be tested in the existing Steam process. "
+        "No launchers, symlinks, or injection settings were changed.")
+    logger.log(f"SLSDeck isolation diagnostics={result}")
+    return result
+
+
 def _launch_environment_diagnostics() -> Dict[str, Any]:
     """Bounded, read-only evidence; exclude environment values and running-process arguments."""
     evidence: Dict[str, Any] = {"files": []}
@@ -3839,7 +3910,7 @@ def get_diagnostics() -> Dict[str, Any]:
     if _steamos_unit_present() and boot_id:
         try:
             journal = subprocess.run(_wrap_as_user([
-                "journalctl", "--user", "--boot=" + boot_id, "-u", "steam-launcher.service",
+                "journalctl", "--user", "--boot=" + boot_id.replace("-", ""), "-u", "steam-launcher.service",
                 "-n", "60", "--no-pager", "-o", "short-iso"]),
                 env=_rich_env(), capture_output=True, timeout=5)
             out["launcherJournalTail"] = journal.stdout.decode(errors="replace")[-12000:].splitlines()
@@ -3849,6 +3920,9 @@ def get_diagnostics() -> Dict[str, Any]:
         except Exception as exc:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
     out["launchEnvironment"] = _launch_environment_diagnostics()
+    out["isolation"] = _isolation_diagnostics()
+    from . import steamstub
+    out["steamstubNativeReady"] = steamstub.native_ready()
     pw = _path_wrapper()
     out["pathWrapper"] = pw
     out["pathWrapperExists"] = os.path.isfile(pw)

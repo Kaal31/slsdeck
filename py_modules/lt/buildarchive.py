@@ -578,6 +578,12 @@ def _fix_reapply_worker(appid: int, install_path: str, name: str,
             url = str(fix.get("downloadUrl") or "")
             if not url:
                 continue
+            if url in ("steamstub-managed", "steamless"):
+                from . import steamstub
+                outcome = steamstub.unstub(appid, install_path, name)
+                if not outcome.get("success"):
+                    logger.warn(f"buildarchive: SteamStub reapply failed for {appid}: {outcome.get('error')}")
+                continue
             result = _fixes.apply_game_fix(appid, url, install_path,
                                            fix.get("fixType") or "", name, no_pin=True) or {}
             if not result.get("success"):

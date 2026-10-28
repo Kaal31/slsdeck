@@ -1488,6 +1488,15 @@ def _parse_fix_log(log_content: str, appid: int, game_name: str, install_path: s
 
 def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
                   preserve_unlockers: bool = False):
+    # Serialize native/fallback executable processing with every un-fix caller,
+    # including archive cleanup and library/QAM removal.
+    from . import steamstub
+    with steamstub._LOCK:
+        return _unfix_worker_impl(appid, install_path, fix_date, preserve_unlockers)
+
+
+def _unfix_worker_impl(appid: int, install_path: str, fix_date: Optional[str],
+                       preserve_unlockers: bool = False):
     try:
         log_path = os.path.join(install_path, f"luatools-fix-log-{appid}.log")
         if not os.path.exists(log_path):
@@ -1500,6 +1509,7 @@ def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
         files_to_delete = set()
         files_to_restore = set()
         remaining_fixes = []
+        steamstub_paths = set()
         blocks = content.split("[FIX]") if "[FIX]" in content else [content]
         multi = "[FIX]" in content
         for block in blocks:
@@ -1531,6 +1541,8 @@ def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
                 # the fix actually created are deleted. Deleting a replaced file
                 # is what used to leave games unlaunchable.
                 replaced_here = set(block_replaced)
+                if "Download URL: steamstub-managed" in block:
+                    steamstub_paths.update(replaced_here)
                 files_to_restore |= replaced_here
                 files_to_delete |= (set(block_files) - replaced_here)
             if multi and fix_date is not None and block_date and block_date != fix_date:
@@ -1543,6 +1555,11 @@ def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
         # cleans up the stash. Removing only fix B still restores fix A's copy,
         # because then no processed block lists x.dll as created.
         files_to_restore -= files_to_delete
+        for rel in steamstub_paths:
+            if not _is_safe_path(install_path, rel):
+                raise RuntimeError("Unsafe SteamStub restore path")
+            if rel in files_to_restore and not os.path.isfile(os.path.join(install_path, rel) + ORIG_SUFFIX):
+                raise RuntimeError(f"SteamStub backup missing; keeping fix record for recovery: {rel}")
 
         _set_unfix_state(appid, {"status": "removing",
                                  "progress": f"Removing {len(files_to_delete)} files, "
@@ -1589,6 +1606,17 @@ def _unfix_worker(appid: int, install_path: str, fix_date: Optional[str],
                     pass
             except Exception as exc:
                 logger.warn(f"SLSDeck: Failed to delete {rel}: {exc}")
+
+        for rel in steamstub_paths:
+            if not _is_safe_path(install_path, rel):
+                continue
+            full = os.path.join(install_path, rel.replace("/", os.sep))
+            if os.path.exists(full + ORIG_SUFFIX):
+                raise RuntimeError(f"SteamStub original was not restored: {rel}")
+            for suffix in (".original.exe", ".unpacked.exe", ".steamless_done"):
+                artifact = full + suffix
+                if os.path.isfile(artifact) and not os.path.islink(artifact):
+                    os.remove(artifact)
 
         if remaining_fixes:
             staged_log = log_path + ".slsdeck-new"
