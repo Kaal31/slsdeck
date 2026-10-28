@@ -315,6 +315,10 @@ export function FixesSection() {
         </PanelSectionRow>
       )}
 
+      {check?.warning && <PanelSectionRow>
+        <div role="status">{check.warning}</div>
+        <ButtonItem layout="below" onClick={() => { void checkAppid(check.appid); }}>Retry fixes check</ButtonItem>
+      </PanelSectionRow>}
       {check && check.success && (
         <>
           <PanelSectionRow>

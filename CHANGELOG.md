@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.75 — Bounded fixes lookup
+
+- Stop retrying failed mirror responses and cache failures for one minute.
+- Share one mirror catalogue per check and coalesce concurrent menu lookups.
+- Return available results after an 18-second backend deadline; stop UI loading after 22 seconds even if RPC is unavailable.
+- Show partial-results warnings with retry controls in QAM/library fixes menus.
+
 ## 0.9.74 — Native SteamStub helper and isolation diagnostics
 
 - Deploy Moon's bundled SteamStub helper, Steamless kit, and licenses.

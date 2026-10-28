@@ -156,6 +156,8 @@ export interface LuatoolsCatalogFix {
 }
 
 export interface FixCheck {
+  partialResults?: boolean;
+  warning?: string;
   success: boolean;
   appid: number;
   gameName: string;

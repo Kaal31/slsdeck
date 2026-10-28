@@ -1391,6 +1391,9 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }}>
+      {check.warning && <div role="status" style={{ fontSize: 12, color: "#e8bf72" }}>{check.warning}
+        <DialogButton onClick={() => { void refresh(); }}>Retry fixes check</DialogButton>
+      </div>}
       {pinned && (
         <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
           <div>

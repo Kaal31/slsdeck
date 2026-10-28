@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.parse
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -56,6 +57,8 @@ _PERO_MARKER = "\u043f\u043e \u0441\u0435\u0442\u0438"  # Cyrillic "\u043f\u043e
 _pero_lock = threading.Lock()
 _pero_cache: Optional[List[Dict[str, str]]] = None
 _pero_ts = 0.0
+_pero_ok = False
+_pero_fetch_lock = threading.Lock()
 
 
 def _pero_normalize(name: str) -> str:
@@ -85,32 +88,45 @@ def _pero_parse(html: str) -> List[Dict[str, str]]:
 
 
 def _pero_fetch() -> List[Dict[str, str]]:
-    global _pero_cache, _pero_ts
+    global _pero_cache, _pero_ts, _pero_ok
     with _pero_lock:
-        if _pero_cache is not None and (time.time() - _pero_ts) < 600:
-            return _pero_cache
-    client = ensure_http_client("SLSDeck: online-fix mirror")
-    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0"}
-    for _ in range(3):
+        if _pero_ts and time.monotonic() - _pero_ts < (600 if _pero_ok else 60):
+            return _pero_cache or []
+    # Only one refresh may run. Other menu checks use the last available data.
+    if not _pero_fetch_lock.acquire(blocking=False):
+        return _pero_cache or []
+    try:
+        with _pero_lock:
+            if _pero_ts and time.monotonic() - _pero_ts < (600 if _pero_ok else 60):
+                return _pero_cache or []
+        ok = False
         try:
-            r = client.get(PERONDEPOT_INDEX_URL, headers=headers, follow_redirects=True, timeout=15)
-            if r.status_code == 200 and r.text:
-                entries = _pero_parse(r.text)
+            client = ensure_http_client("SLSDeck: online-fix mirror")
+            response = client.get(PERONDEPOT_INDEX_URL, headers={"User-Agent": USER_AGENT},
+                                  follow_redirects=True, timeout=5)
+            if response.status_code == 200 and response.text:
+                entries = _pero_parse(response.text)
                 with _pero_lock:
                     _pero_cache = entries
-                    _pero_ts = time.time()
+                ok = True
                 logger.log(f"SLSDeck: online-fix mirror loaded ({len(entries)} entries)")
-                return entries
+            else:
+                logger.warn(f"SLSDeck fixes: mirror HTTP {response.status_code}; retry suppressed for 60s")
         except Exception as exc:
-            logger.warn(f"SLSDeck: online-fix mirror fetch failed: {exc}")
-    return _pero_cache or []
+            logger.warn(f"SLSDeck fixes: mirror unavailable ({type(exc).__name__}); retry suppressed for 60s")
+        finally:
+            with _pero_lock:
+                _pero_ts, _pero_ok = time.monotonic(), ok
+        return _pero_cache or []
+    finally:
+        _pero_fetch_lock.release()
 
 
-def resolve_online_fix(game_name: str) -> Optional[Dict[str, str]]:
+def resolve_online_fix(game_name: str, entries=None) -> Optional[Dict[str, str]]:
     target = _pero_normalize(game_name)
     if not target:
         return None
-    entries = _pero_fetch()
+    entries = _pero_fetch() if entries is None else entries
     # 1) exact normalized match.
     for e in entries:
         if _pero_normalize(e["name"]) == target:
@@ -137,7 +153,7 @@ def resolve_online_fix(game_name: str) -> Optional[Dict[str, str]]:
 _FF_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0"
 
 
-def _pero_near_matches(game_name: str, limit: int = 6) -> List[str]:
+def _pero_near_matches(game_name: str, limit: int = 6, entries=None) -> List[str]:
     """Diagnostics: mirror entries whose name overlaps the target (substring
     either way), so we can see how a game is actually spelled on the mirror."""
     t = _pero_normalize(game_name)
@@ -146,7 +162,7 @@ def _pero_near_matches(game_name: str, limit: int = 6) -> List[str]:
     out: List[str] = []
     # use a shorter probe so partial-word overlaps show up too
     probe = t[:6]
-    for e in _pero_fetch():
+    for e in (_pero_fetch() if entries is None else entries):
         en = _pero_normalize(e["name"])
         if t and (t in en or en in t or (probe and probe in en)):
             out.append(e["name"])
@@ -212,24 +228,77 @@ def _reserve_unfix(appid: int) -> bool:
         return True
 
 
+_CHECK_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="slsdeck-fixes")
+_CHECK_SLOTS = threading.BoundedSemaphore(4)
+_CHECK_JOBS_LOCK = threading.Lock()
+_CHECK_JOBS = {}
+_CHECK_WAIT = 18
+
+
+def _empty_check(appid, name):
+    return {"success": True, "appid": appid, "gameName": name or f"AppID {appid}",
+            "genericFix": {"status": 0, "available": False},
+            "onlineFix": {"status": 0, "available": False}}
+
+
 def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
+    try:
+        appid = int(appid)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "Invalid appid"}
+    key = (appid, game_name)
+    with _CHECK_JOBS_LOCK:
+        now = time.monotonic()
+        for old_key, job in list(_CHECK_JOBS.items()):
+            if job[0].done() and now - job[2] > 30:
+                del _CHECK_JOBS[old_key]
+        job = _CHECK_JOBS.get(key)
+        if job is None:
+            result = _empty_check(appid, game_name)
+            if not _CHECK_SLOTS.acquire(blocking=False):
+                result.update(partialResults=True, warning="Fix providers are busy. Retry shortly.")
+                return result
+            def run():
+                try:
+                    return _check_for_fixes_impl(appid, game_name, result)
+                finally:
+                    _CHECK_SLOTS.release()
+            future = _CHECK_POOL.submit(run)
+            job = (future, result, now)
+            _CHECK_JOBS[key] = job
+    try:
+        return dict(job[0].result(timeout=_CHECK_WAIT))
+    except FutureTimeout:
+        partial = dict(job[1])
+        partial.update(partialResults=True, warning="Some fix providers did not finish in time. Showing available results; retry shortly.")
+        logger.warn(f"SLSDeck fixes: appid={appid} check deadline reached; returning partial results")
+        return partial
+    except Exception as exc:
+        partial = dict(job[1])
+        partial.update(partialResults=True, warning="Fix lookup failed. Retry shortly.")
+        logger.warn(f"SLSDeck fixes: appid={appid} check failed ({type(exc).__name__})")
+        return partial
+
+
+def _check_for_fixes_impl(appid: int, game_name: str = "", partial=None) -> Dict[str, Any]:
     try:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "Invalid appid"}
 
-    result = {
+    result = partial if partial is not None else {}
+    result.update({
         "success": True,
         "appid": appid,
         "gameName": "",
         "genericFix": {"status": 0, "available": False},
         "onlineFix": {"status": 0, "available": False},
-    }
+    })
     # The frontend passes the exact Steam display name when it can (most
     # reliable for the perondepot name match); otherwise resolve it ourselves.
     backend_name = ""
     try:
-        backend_name = fetch_app_name(appid) or ""
+        backend_name = "" if game_name else (fetch_app_name(appid) or "")
     except Exception:
         backend_name = ""
     result["gameName"] = (game_name or backend_name or f"Unknown Game ({appid})")
@@ -267,6 +336,7 @@ def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
         ry = ryuu.resolve(appid)
     except Exception:
         ry = {"generic": None, "online": None, "hypervisor": None, "count": 0}
+    result["ryuuFixes"] = ry.get("all", [])
     rg = ry.get("generic")
     result["genericFix"] = {
         "status": 200 if rg else 404,
@@ -283,16 +353,20 @@ def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
     for nm in (game_name, backend_name, result["gameName"]):
         if nm and nm not in name_candidates and not nm.startswith("Unknown Game"):
             name_candidates.append(nm)
+    entries = _pero_fetch()
+    if not _pero_ok:
+        result["partialResults"] = True
+        result["warning"] = "Online-fix mirror unavailable; other provider results are shown. Retry shortly."
     pero = None
     for nm in name_candidates:
         try:
-            pero = resolve_online_fix(nm)
+            pero = resolve_online_fix(nm, entries)
         except Exception:
             pero = None
         if pero:
             break
     try:
-        pero_count = len(_pero_fetch())
+        pero_count = len(entries)
     except Exception:
         pero_count = 0
     ro = ry.get("online")
@@ -307,7 +381,7 @@ def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
         # diagnostics: perondepot mirror state only.
         "mirrorEntries": pero_count,
         "namesTried": name_candidates,
-        "nearMatches": ([] if pero else _pero_near_matches(result["gameName"])),
+        "nearMatches": ([] if pero else _pero_near_matches(result["gameName"], entries=entries)),
     }
 
     # luatools.work fix FILES as a fallback — probe the per-appid zip directly,
