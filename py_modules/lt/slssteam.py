@@ -3624,6 +3624,47 @@ def set_achievements(enabled: bool) -> Dict[str, Any]:
     return {"success": ok, "enabled": enabled}
 
 
+def _launch_environment_diagnostics() -> Dict[str, Any]:
+    """Bounded, read-only evidence; exclude environment values and running-process arguments."""
+    evidence: Dict[str, Any] = {"files": []}
+    for path in (_path_wrapper(), lib_dir(), os.path.join(lib_dir(), ".launch_trace"),
+                 os.path.join(lib_dir(), ".inject_fails"), _steamos_dropin()):
+        item: Dict[str, Any] = {"path": path}
+        try:
+            st = os.stat(path)
+            item.update(uid=st.st_uid, gid=st.st_gid, mode=oct(st.st_mode & 0o7777),
+                        realpath=os.path.realpath(path))
+            if path.endswith(".inject_fails"):
+                with open(path, encoding="utf-8") as fh:
+                    item["attempts"] = fh.read(64).strip()
+        except OSError as exc:
+            item["error"] = type(exc).__name__
+        evidence["files"].append(item)
+        logger.log(f"SLSDeck injection file evidence={item}")
+    if _steamos_unit_present():
+        for label, args in (
+            ("effective", ["systemctl", "--user", "show", "steam-launcher.service",
+                           "--property=LoadState,ActiveState,SubState,FragmentPath,DropInPaths,ExecStart,MainPID"]),
+            ("unit", ["systemctl", "--user", "cat", "steam-launcher.service"]),
+        ):
+            try:
+                result = subprocess.run(_wrap_as_user(args), env=_rich_env(),
+                                        capture_output=True, timeout=5)
+                stdout = result.stdout.decode(errors="replace")
+                if label == "unit":
+                    stdout = "\n".join(line for line in stdout.splitlines()
+                                       if line.startswith(("# /", "[", "ExecStart=", "ExecStartPre=", "ExecStartPost=")))
+                detail = {"returncode": result.returncode,
+                          "stdout": stdout[-12000:],
+                          "stderr": result.stderr.decode(errors="replace")[-2000:]}
+                evidence[label] = detail
+                logger.log(f"SLSDeck injection service {label}={detail}")
+            except Exception as exc:
+                evidence[label] = {"error": type(exc).__name__}
+                logger.warn(f"SLSDeck injection service {label} unavailable: {type(exc).__name__}")
+    return evidence
+
+
 def get_diagnostics() -> Dict[str, Any]:
     home = _home()
     try:
@@ -3786,6 +3827,7 @@ def get_diagnostics() -> Dict[str, Any]:
     if _steamos_unit_present():
         out["gamescopeHook"] = _steamos_dropin()
     out["wrapperLaunchTrace"] = launch_trace
+    boot_id = ""
     try:
         with open("/proc/sys/kernel/random/boot_id", encoding="utf-8") as fh:
             boot_id = fh.read().strip()
@@ -3794,16 +3836,19 @@ def get_diagnostics() -> Dict[str, Any]:
         out["wrapperRanThisBoot"] = None
     out["injectionMapped"] = _running_injected()
     out["launcherJournalTail"] = []
-    if _steamos_unit_present():
+    if _steamos_unit_present() and boot_id:
         try:
             journal = subprocess.run(_wrap_as_user([
-                "journalctl", "--user", "-b", "-u", "steam-launcher.service",
+                "journalctl", "--user", "--boot=" + boot_id, "-u", "steam-launcher.service",
                 "-n", "60", "--no-pager", "-o", "short-iso"]),
                 env=_rich_env(), capture_output=True, timeout=5)
             out["launcherJournalTail"] = journal.stdout.decode(errors="replace")[-12000:].splitlines()
-            logger.log("SLSDeck launcher journal: " + "\n".join(out["launcherJournalTail"]))
+            logger.log(f"SLSDeck launcher journal boot={boot_id} exit={journal.returncode} "
+                       f"stderr={journal.stderr.decode(errors='replace')[-2000:]!r}: "
+                       + "\n".join(out["launcherJournalTail"]))
         except Exception as exc:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
+    out["launchEnvironment"] = _launch_environment_diagnostics()
     pw = _path_wrapper()
     out["pathWrapper"] = pw
     out["pathWrapperExists"] = os.path.isfile(pw)

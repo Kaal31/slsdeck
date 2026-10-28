@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.73 — Read-only watchdog and launch diagnostics
+
+- Stop background health monitoring from automatically changing injection, launchers, or permissions.
+- Log effective Steam launcher unit and wrapper ownership/permissions in normal diagnostics.
+- Select launcher journal by explicit current boot ID.
+
 ## 0.9.72 — SteamOS launcher hook and execution evidence
 
 - Uses the SteamOS user steam-launcher.service drop-in instead of relying on a sessions.d hook SteamOS does not consume.
