@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.76 — Pause unavailable Perondepot mirror
+
+- Disable Perondepot by default, including cached entries and outage warnings.
+- Add a Fix sources switch to re-enable it explicitly; other providers stay available.
+- Invalidate lookup caches when the source switch changes.
+
 ## 0.9.75 — Bounded fixes lookup
 
 - Stop retrying failed mirror responses and cache failures for one minute.

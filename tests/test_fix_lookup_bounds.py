@@ -5,6 +5,7 @@ from py_modules.lt import fixes
 
 
 def reset_mirror(monkeypatch):
+    monkeypatch.setattr(fixes, "_perondepot_enabled", lambda: True)
     monkeypatch.setattr(fixes, '_pero_cache', None)
     monkeypatch.setattr(fixes, '_pero_ts', 0)
     monkeypatch.setattr(fixes, '_pero_ok', False)
@@ -65,3 +66,24 @@ def test_supplied_catalogue_does_not_refetch(monkeypatch):
     entries = [{'name': 'Example Game', 'href': 'game.rar'}]
     assert fixes.resolve_online_fix('Example Game', entries)['name'] == 'Example Game'
     assert fixes._pero_near_matches('Example', entries=entries) == ['Example Game']
+
+
+def test_disabled_mirror_never_fetches_or_returns_stale_entries(monkeypatch):
+    monkeypatch.setattr(fixes, '_perondepot_enabled', lambda: False)
+    monkeypatch.setattr(fixes, '_pero_cache', [{'name': 'Stale', 'href': 'stale.rar'}])
+    monkeypatch.setattr(fixes, 'ensure_http_client', lambda _: (_ for _ in ()).throw(AssertionError('disabled source contacted')))
+    assert fixes._pero_fetch() == []
+    assert fixes.resolve_online_fix('Stale') is None
+
+
+def test_perondepot_setting_defaults_off_and_can_be_reenabled(monkeypatch, tmp_path):
+    from py_modules.lt import settings
+    monkeypatch.setattr(settings, '_CACHE', {})
+    monkeypatch.setattr(settings, '_LOADED', True)
+    monkeypatch.setattr(settings, '_LOAD_FAILED', False)
+    monkeypatch.setattr(settings, '_file', lambda: str(tmp_path / 'settings.json'))
+    assert not fixes._perondepot_enabled()
+    assert settings.set_ui_setting('perondepotEnabled', True)['success']
+    assert fixes._perondepot_enabled()
+    assert settings.set_ui_setting('perondepotEnabled', False)['success']
+    assert not fixes._perondepot_enabled()

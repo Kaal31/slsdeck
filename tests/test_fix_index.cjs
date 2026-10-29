@@ -6,7 +6,7 @@ const source = fs.readFileSync('src/lib/fixIndex.ts', 'utf8');
 const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS}}).outputText;
 let calls = 0, mode = 'pending', now = 0;
 const timers = new Map(); let timerId = 0;
-const sandbox = {exports: {}, Map, Promise, Date: {now: () => now},
+const sandbox = {window: {addEventListener: () => {}}, exports: {}, Map, Promise, Date: {now: () => now},
   setTimeout: fn => {timers.set(++timerId, fn); return timerId;},
   clearTimeout: id => timers.delete(id),
   require: path => path.includes('fixRuntime') ? {appDisplayName: () => 'Game'} : {checkFixes: () => {

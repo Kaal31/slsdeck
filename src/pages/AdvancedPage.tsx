@@ -369,6 +369,8 @@ function OptionsPane({
   const [autoUpdateApps, setAutoUpdateAppsState] = useState(true);
   const [manifestDonation, setManifestDonationState] = useState(true);
   const [notifyGameAdds, setNotifyGameAdds] = useState(true);
+  const [perondepotEnabled, setPerondepotEnabled] = useState(false);
+  const [perondepotBusy, setPerondepotBusy] = useState(false);
   const [surfaceFailedSources, setSurfaceFailedSources] = useState(false);
   const [rouletteQam, setRouletteQam] = useState(() => readRouletteBool(ROULETTE_QAM_KEY));
   const [rouletteTabDisabled, setRouletteTabDisabled] = useState(() => readRouletteBool(ROULETTE_TAB_DISABLED_KEY));
@@ -389,7 +391,10 @@ function OptionsPane({
     getGamesInQam().then((r) => setGamesQam(!!r.enabled)).catch(() => {});
     getShowReinstallQam().then((r) => setReinstallQam(!!r.enabled)).catch(() => {});
     getNotifyGameAdd().then((r) => setNotifyGameAdds(r.enabled !== false)).catch(() => {});
-    getUiSettings().then((r) => setSurfaceFailedSources(r.settings?.toastOnSourceFailure === true)).catch(() => {});
+    getUiSettings().then((r) => {
+      setSurfaceFailedSources(r.settings?.toastOnSourceFailure === true);
+      setPerondepotEnabled(r.settings?.perondepotEnabled === true);
+    }).catch(() => {});
     try {
       const raw = window.localStorage.getItem(ACTIONS_FIXES_QAM_KEY);
       setActionsFixesQam(raw == null ? true : raw === "1");
@@ -554,6 +559,22 @@ function OptionsPane({
       </PanelSection>
 
       <PanelSection title="Games & library">
+        <PanelSectionRow>
+          <ToggleField label="Perondepot online-fix mirror"
+            description="Disabled by default while the domain is unavailable. Ryuu, NERAI and LuaTools fixes remain available. Enable only to retry this source."
+            checked={perondepotEnabled} disabled={perondepotBusy}
+            onChange={async value => {
+              setPerondepotBusy(true);
+              try {
+                const result = await setUiSetting("perondepotEnabled", value);
+                if (result.success) {
+                  setPerondepotEnabled(value);
+                  window.dispatchEvent(new Event("slsdeck-fix-sources-changed"));
+                } else toaster.toast({ title: "Fix sources", body: "Could not save setting" });
+              } catch { toaster.toast({ title: "Fix sources", body: "Could not save setting" }); }
+              finally { setPerondepotBusy(false); }
+            }} />
+        </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
             label="Notify when games are added"

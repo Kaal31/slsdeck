@@ -87,8 +87,14 @@ def _pero_parse(html: str) -> List[Dict[str, str]]:
     return out
 
 
+def _perondepot_enabled() -> bool:
+    return _settings.get_ui_settings().get("perondepotEnabled") is True
+
+
 def _pero_fetch() -> List[Dict[str, str]]:
     global _pero_cache, _pero_ts, _pero_ok
+    if not _perondepot_enabled():
+        return []
     with _pero_lock:
         if _pero_ts and time.monotonic() - _pero_ts < (600 if _pero_ok else 60):
             return _pero_cache or []
@@ -246,7 +252,7 @@ def check_for_fixes(appid: int, game_name: str = "") -> Dict[str, Any]:
         appid = int(appid)
     except (ValueError, TypeError):
         return {"success": False, "error": "Invalid appid"}
-    key = (appid, game_name)
+    key = (appid, game_name, _perondepot_enabled())
     with _CHECK_JOBS_LOCK:
         now = time.monotonic()
         for old_key, job in list(_CHECK_JOBS.items()):
@@ -354,7 +360,8 @@ def _check_for_fixes_impl(appid: int, game_name: str = "", partial=None) -> Dict
         if nm and nm not in name_candidates and not nm.startswith("Unknown Game"):
             name_candidates.append(nm)
     entries = _pero_fetch()
-    if not _pero_ok:
+    result["perondepotEnabled"] = _perondepot_enabled()
+    if result["perondepotEnabled"] and not _pero_ok:
         result["partialResults"] = True
         result["warning"] = "Online-fix mirror unavailable; other provider results are shown. Retry shortly."
     pero = None
