@@ -1,6 +1,8 @@
 import { fetchNoCors, toaster } from "@decky/api";
 import { findModuleExport } from "@decky/ui";
 import {
+  steamlessStatus,
+  steamlessUnstub,
   applyFix,
   deleteLua,
   getAddStatus,
@@ -88,7 +90,7 @@ function setStatus(text: string): void {
   evaluate(`window.__ltStatus&&window.__ltStatus(${JSON.stringify(text)})`);
 }
 
-function updateFixModal(appid: number, generation: number, kind: "fixes" | "tokeer" | "error", data: unknown): void {
+function updateFixModal(appid: number, generation: number, kind: "fixes" | "tokeer" | "steamstub" | "error", data: unknown): void {
   evaluate(
     `window.__ltFixUpdate&&window.__ltFixUpdate(${appid},${generation},${JSON.stringify(kind)},${JSON.stringify(data)})`
   );
@@ -179,6 +181,7 @@ function buildFixModal(appid: number, name: string, generation: number): string 
     var h=document.createElement('div');h.textContent='Fixes — '+${JSON.stringify(name || `AppID ${appid}`)};
     h.style.cssText='font-size:18px;font-weight:600;margin-bottom:12px;text-align:center;';card.appendChild(h);
     var body=document.createElement('div');body.style.cssText='max-height:60vh;overflow-y:auto;';card.appendChild(body);
+    var stubSlot=document.createElement('div');card.appendChild(stubSlot);
     var tokeerSlot=document.createElement('div');card.appendChild(tokeerSlot);
     function inv(o){try{window.ltInvoke(JSON.stringify(o));}catch(e){}}
     function row(label,avail,fixKey){
@@ -237,6 +240,18 @@ function buildFixModal(appid: number, name: string, generation: number): string 
     window.__ltFixUpdate=function(appid,generation,kind,data){
       if(appid!==APPID||generation!==GENERATION||!ov.isConnected)return;
       if(kind==='fixes'){renderFixes(data);window.__ltStatus('');}
+      else if(kind==='steamstub'){
+        stubSlot.replaceChildren();
+        if(data&&data.success&&data.supported){
+          var button=document.createElement('button');
+          var applied=data.installed&&!data.hasStub;
+          button.textContent=applied?'SteamStub fix applied':'Apply SteamStub fix (native preferred)';
+          button.disabled=applied;
+          button.style.cssText='width:100%;padding:10px;margin-bottom:8px;border:1px solid #4b657a;border-radius:6px;background:#253b50;color:white;';
+          button.onclick=function(){button.disabled=true;inv({action:'steamstub',appid:APPID});};
+          stubSlot.appendChild(button);
+        }
+      }
       else if(kind==='tokeer')renderTokeer(data);
       else if(kind==='error')window.__ltStatus('Could not check fixes');
     };
@@ -461,6 +476,7 @@ async function onAction(payloadStr: string): Promise<void> {
 
     // Fix providers and Discord availability are independent. Open the menu
     // immediately, then populate each part whenever its own lookup completes.
+    void steamlessStatus(appid).then(status => updateFixModal(appid, generation, "steamstub", status)).catch(() => {});
     const fixesPromise = checkFixesFull(appid);
     void fixesPromise
       .then((fixes) => updateFixModal(appid, generation, "fixes", fixes))
@@ -557,6 +573,16 @@ async function onAction(payloadStr: string): Promise<void> {
     } catch {
       setStatus("Fix failed");
     }
+    return;
+  }
+  if (action === "steamstub") {
+    const generation = fixModalGeneration;
+    setStatus("Applying SteamStub fix…");
+    try {
+      const result = await steamlessUnstub(appid);
+      setStatus(result.success ? result.note || "SteamStub fix applied" : result.error || "SteamStub fix failed");
+    } catch (error) { setStatus(String(error)); }
+    try { updateFixModal(appid, generation, "steamstub", await steamlessStatus(appid)); } catch { /* reopen to retry */ }
     return;
   }
   if (action === "fixApply") {

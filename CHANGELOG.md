@@ -1,5 +1,10 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.77 — SteamStub in Fixes
+
+- Move the manual SteamStub action from Game Tools into game Fixes menus.
+- Preserve native-helper preference, legacy fallback, and existing Un-fix/snapshot records.
+
 ## 0.9.76 — Pause unavailable Perondepot mirror
 
 - Disable Perondepot by default, including cached entries and outage warnings.

@@ -67,6 +67,7 @@ import {
 } from "../api";
 import { isInLibrary } from "../lib/ownership";
 import { applyFixRuntime, resetFixRuntime, setNetsockLaunchOption, autoRepointFromState, clearFixLaunchOptions, appDisplayName } from "../lib/fixRuntime";
+import { SteamStubFix } from "./SteamStubFix";
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, installedDepotsMatchPin, isDownloadComplete, isPinnedBuildReady } from "../lib/buildApply";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
@@ -1391,6 +1392,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }}>
+      <SteamStubFix key={appid} appid={appid} disabled={!!busy} onChanged={() => { void refresh(); }} />
       {check.warning && <div role="status" style={{ fontSize: 12, color: "#e8bf72" }}>{check.warning}
         <DialogButton onClick={() => { void refresh(); }}>Retry fixes check</DialogButton>
       </div>}

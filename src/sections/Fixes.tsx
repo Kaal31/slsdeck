@@ -37,6 +37,7 @@ import {
 } from "../api";
 import { importCustomFlow } from "../components/CustomImport";
 import { applyFixRuntime, resetFixRuntime, autoRepointFromState, clearFixLaunchOptions } from "../lib/fixRuntime";
+import { SteamStubFix } from "../components/SteamStubFix";
 import { checkFixesFull } from "../lib/fixIndex";
 import { runBuildAccurateApply, isPinnedBuildReady } from "../lib/buildApply";
 import { refreshBadges } from "../lib/badges";
@@ -315,6 +316,7 @@ export function FixesSection() {
         </PanelSectionRow>
       )}
 
+      {check?.success && <PanelSectionRow><SteamStubFix key={check.appid} appid={check.appid} disabled={applyBusy} /></PanelSectionRow>}
       {check?.warning && <PanelSectionRow>
         <div role="status">{check.warning}</div>
         <ButtonItem layout="below" onClick={() => { void checkAppid(check.appid); }}>Retry fixes check</ButtonItem>
