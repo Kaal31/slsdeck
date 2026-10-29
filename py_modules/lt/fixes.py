@@ -1580,8 +1580,16 @@ def _unfix_worker_impl(appid: int, install_path: str, fix_date: Optional[str],
                        preserve_unlockers: bool = False):
     try:
         log_path = os.path.join(install_path, f"luatools-fix-log-{appid}.log")
+        native_restored = 0
+        if fix_date is None:
+            from . import steamstub
+            native_restored = steamstub.restore_native_files(install_path)
         if not os.path.exists(log_path):
-            _set_unfix_state(appid, {"status": "failed", "error": "No fix log found"})
+            if native_restored:
+                _set_unfix_state(appid, {"status": "done", "success": True,
+                    "filesRemoved": 0, "filesRestored": native_restored})
+            else:
+                _set_unfix_state(appid, {"status": "failed", "error": "No fix log or native SteamStub backup found"})
             return
         _set_unfix_state(appid, {"status": "removing", "progress": "Reading log..."})
         with open(log_path, "r", encoding="utf-8") as fh:
@@ -1646,7 +1654,7 @@ def _unfix_worker_impl(appid: int, install_path: str, fix_date: Optional[str],
                                  "progress": f"Removing {len(files_to_delete)} files, "
                                              f"restoring {len(files_to_restore)}..."})
         deleted = 0
-        restored = 0
+        restored = native_restored
         for rel in sorted(files_to_restore):
             try:
                 # The log is plain text and could be hand-edited; only ever touch

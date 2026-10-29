@@ -116,10 +116,11 @@ _LOCK = threading.Lock()
 
 def status(install_path: str) -> Dict[str, Any]:
     try:
+        native_count = len(native_backups(install_path))
         r = _fixes.find_main_exe(install_path)
         exe = r.get("exe") if r.get("success") else ""
         if not exe or not os.path.isfile(exe):
-            return {"success": True, "supported": False}
+            return {"success": True, "supported": native_count > 0, "nativeBackupCount": native_count}
         stub = has_steamstub(exe)
         done = os.path.isfile(exe + ".original")
         managed = False
@@ -128,9 +129,9 @@ def status(install_path: str) -> Dict[str, Any]:
             with open(log, encoding="utf-8") as fh:
                 if "steamstub-managed" in fh.read():
                     managed = True
-        return {"success": True, "supported": bool(stub or done or managed),
+        return {"success": True, "supported": bool(stub or done or managed or native_count),
                 "hasStub": bool(stub), "installed": bool(done or (managed and os.path.isfile(exe + _fixes.ORIG_SUFFIX))),
-                "nativeReady": native_ready(), "exe": exe}
+                "nativeReady": native_ready(), "nativeBackupCount": native_count, "exe": exe}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
@@ -230,5 +231,55 @@ def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
                 "note": "Applied Moon SteamStub helper. Restorable through Un-fix.", "log": output}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+    finally:
+        _LOCK.release()
+
+
+def native_backups(install_path: str):
+    """Match Moon's bounded native backup layout; never follow directory symlinks."""
+    found = []
+    for root, dirs, files in os.walk(install_path, followlinks=False):
+        depth = len(os.path.relpath(root, install_path).split(os.sep)) if root != install_path else 0
+        dirs[:] = [] if depth >= 4 else [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+        for name in files:
+            if name.endswith('.original.exe'):
+                backup = os.path.join(root, name)
+                live = backup[:-len('.original.exe')]
+                if os.path.islink(backup) or not _fixes._is_safe_path(install_path, os.path.relpath(live, install_path)):
+                    raise RuntimeError('Unsafe native SteamStub backup path')
+                found.append((live, backup))
+    return found
+
+
+def restore_native_files(install_path: str):
+    """Caller holds _LOCK. Validate every backup before replacing any executable."""
+    pairs = native_backups(install_path)
+    for live, backup in pairs:
+        with open(backup, 'rb') as fh:
+            if fh.read(2) != b'MZ':
+                raise RuntimeError('Invalid native SteamStub backup; original and recovery files retained')
+    restored = 0
+    for live, backup in pairs:
+        os.replace(backup, live)
+        chown_to_user(live, recursive=False)
+        for suffix in ('.steamless_done', '.unpacked.exe'):
+            path = live + suffix
+            if os.path.isfile(path) and not os.path.islink(path):
+                os.remove(path)
+        restored += 1
+    return restored
+
+
+def restore_native(appid, install_path: str):
+    if not _LOCK.acquire(blocking=False):
+        return {'success': False, 'error': 'SteamStub processing or restore is already running'}
+    try:
+        if _fixes._get_unfix_state(int(appid)).get('status') in {'queued', 'removing'}:
+            return {'success': False, 'error': 'Wait for Un-fix to finish'}
+        count = restore_native_files(install_path)
+        return {'success': True, 'restored': count,
+                'note': f'Native SteamStub disabled; restored {count} executable(s).'}
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
     finally:
         _LOCK.release()

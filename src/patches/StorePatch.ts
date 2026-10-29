@@ -1,6 +1,7 @@
 import { fetchNoCors, toaster } from "@decky/api";
 import { findModuleExport } from "@decky/ui";
 import {
+  steamlessRestoreNative,
   steamlessStatus,
   steamlessUnstub,
   applyFix,
@@ -24,7 +25,7 @@ import {
   tokeerPreflight,
   tokeerAppliedStatus,
 } from "../api";
-import { applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
+import { clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption, applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { BADGE_LABELS, BADGE_COLORS, BADGE_STATE_EVENT, ONLINE_RE, markSlsAddPending, refreshBadges } from "../lib/badges";
 import { isInLibrary } from "../lib/ownership";
@@ -242,7 +243,7 @@ function buildFixModal(appid: number, name: string, generation: number): string 
       if(kind==='fixes'){renderFixes(data);window.__ltStatus('');}
       else if(kind==='steamstub'){
         stubSlot.replaceChildren();
-        if(data&&data.success&&data.supported){
+        if(data&&data.success&&(data.supported||data.nativeEnabled)){
           var button=document.createElement('button');
           var applied=data.installed&&!data.hasStub;
           button.textContent=applied?'SteamStub fix applied':'Apply SteamStub fix (native preferred)';
@@ -250,6 +251,11 @@ function buildFixModal(appid: number, name: string, generation: number): string 
           button.style.cssText='width:100%;padding:10px;margin-bottom:8px;border:1px solid #4b657a;border-radius:6px;background:#253b50;color:white;';
           button.onclick=function(){button.disabled=true;inv({action:'steamstub',appid:APPID});};
           stubSlot.appendChild(button);
+          if(data.nativeEnabled||data.nativeBackupCount){
+            var restore=document.createElement('button');restore.textContent='Un-fix native SteamStub';
+            restore.style.cssText=button.style.cssText;
+            restore.onclick=function(){restore.disabled=true;inv({action:'steamstubRestore',appid:APPID});};stubSlot.appendChild(restore);
+          }
         }
       }
       else if(kind==='tokeer')renderTokeer(data);
@@ -476,7 +482,7 @@ async function onAction(payloadStr: string): Promise<void> {
 
     // Fix providers and Discord availability are independent. Open the menu
     // immediately, then populate each part whenever its own lookup completes.
-    void steamlessStatus(appid).then(status => updateFixModal(appid, generation, "steamstub", status)).catch(() => {});
+    void steamlessStatus(appid).then(status => updateFixModal(appid, generation, "steamstub", { ...status, nativeEnabled: stripSteamlessLaunchOption(getCurrentLaunchOptions(appid)) !== getCurrentLaunchOptions(appid) })).catch(() => {});
     const fixesPromise = checkFixesFull(appid);
     void fixesPromise
       .then((fixes) => updateFixModal(appid, generation, "fixes", fixes))
@@ -575,6 +581,17 @@ async function onAction(payloadStr: string): Promise<void> {
     }
     return;
   }
+  if (action === "steamstubRestore") {
+    const generation = fixModalGeneration;
+    setStatus("Reverting native SteamStub…");
+    try {
+      clearSteamlessLaunchOption(appid);
+      const result = await steamlessRestoreNative(appid);
+      setStatus(result.success ? result.note || "Native SteamStub reverted" : result.error || "Restore failed; backups retained");
+      updateFixModal(appid, generation, "steamstub", { ...await steamlessStatus(appid), nativeEnabled: false });
+    } catch (error) { setStatus(String(error)); }
+    return;
+  }
   if (action === "steamstub") {
     const generation = fixModalGeneration;
     setStatus("Applying SteamStub fix…");
@@ -649,7 +666,7 @@ async function onAction(payloadStr: string): Promise<void> {
           setStatus("Un-fix: " + (st.status || ""));
           if (["done", "failed", "cancelled"].includes(st.status || "")) {
             clearPoll();
-            if (st.status === "done") await refreshBadges();
+            if (st.status === "done") { clearSteamlessLaunchOption(appid); await refreshBadges(); }
             setStatus(st.status === "done" ? "Fix reverted — restart Steam" : st.error || "Un-fix failed");
           }
         } catch {

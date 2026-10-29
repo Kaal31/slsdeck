@@ -1,6 +1,7 @@
 import { DialogButton } from "@decky/ui";
 import { useEffect, useState } from "react";
-import { steamlessStatus, steamlessUnstub } from "../api";
+import { steamlessStatus, steamlessUnstub, steamlessRestoreNative } from "../api";
+import { clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption } from "../lib/fixRuntime";
 import { refreshBadges } from "../lib/badges";
 
 export function SteamStubFix({ appid, disabled = false, onChanged }: {
@@ -15,7 +16,9 @@ export function SteamStubFix({ appid, disabled = false, onChanged }: {
     steamlessStatus(appid).then(r => { if (active) setStatus(r); }).catch(() => {});
     return () => { active = false; };
   }, [appid]);
-  if (!status?.success || !status.supported) return null;
+  const launchOptions = getCurrentLaunchOptions(appid);
+  const nativeEnabled = stripSteamlessLaunchOption(launchOptions) !== launchOptions;
+  if (!status?.success || (!status.supported && !nativeEnabled)) return null;
   const applied = status.installed && !status.hasStub;
   return <div style={{ border: "1px solid rgba(255,255,255,.12)", borderRadius: 8, padding: 10 }}>
     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>SteamStub fix</div>
@@ -35,6 +38,17 @@ export function SteamStubFix({ appid, disabled = false, onChanged }: {
       } catch (error) { setMessage(String(error)); }
       finally { setBusy(false); }
     }}>{busy ? "Working…" : applied ? "SteamStub fix applied" : "Apply SteamStub fix (native preferred)"}</DialogButton>
+    {(nativeEnabled || !!status.nativeBackupCount) && <DialogButton disabled={disabled || busy} onClick={async () => {
+      setBusy(true); setMessage("Reverting native SteamStub…");
+      try {
+        clearSteamlessLaunchOption(appid);
+        const result = await steamlessRestoreNative(appid);
+        setMessage(result.success ? result.note || "Native SteamStub reverted." : result.error || "Native restore failed; backups retained.");
+        setStatus(await steamlessStatus(appid));
+        void refreshBadges(); onChanged?.();
+      } catch (error) { setMessage(String(error)); }
+      finally { setBusy(false); }
+    }}>Un-fix native SteamStub</DialogButton>}
     {message && <div role="status" style={{ fontSize: 12, marginTop: 6 }}>{message}</div>}
   </div>;
 }

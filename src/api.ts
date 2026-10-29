@@ -619,7 +619,8 @@ export const creamyEnsureToolchain = callable<[], { success: boolean; zig?: stri
 export const creamyDeploy = callable<[appid: number], { success: boolean; installed?: number; dlcCount?: number; note?: string; notSupported?: boolean; error?: string }>("creamy_deploy");
 
 // SteamStub DRM removal (Steamless AIO).
-export const steamlessStatus = callable<[appid: number], { success: boolean; supported?: boolean; nativeReady?: boolean; hasStub?: boolean; installed?: boolean; exe?: string; notInstalled?: boolean; error?: string }>("steamless_status");
+export const steamlessStatus = callable<[appid: number], { success: boolean; supported?: boolean; nativeBackupCount?: number; nativeReady?: boolean; hasStub?: boolean; installed?: boolean; exe?: string; notInstalled?: boolean; error?: string }>("steamless_status");
+export const steamlessRestoreNative = callable<[appid: number], { success: boolean; restored?: number; note?: string; error?: string }>("steamless_restore_native");
 export const steamlessUnstub = callable<[appid: number], { success: boolean; exe?: string; note?: string; notStub?: boolean; log?: string; error?: string }>("steamless_unstub");
 
 // Build history / rollback.

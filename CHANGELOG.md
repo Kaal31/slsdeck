@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.78 — Revert native SteamStub
+
+- Add native SteamStub Un-fix to game fixes menus, including Store.
+- Remove the per-game Steamless launch token while preserving unrelated launch arguments.
+- Restore validated native backups and remove their markers; full Un-fix also handles native backups without a SLSDeck fix log.
+
 ## 0.9.77 — SteamStub in Fixes
 
 - Move the manual SteamStub action from Game Tools into game Fixes menus.

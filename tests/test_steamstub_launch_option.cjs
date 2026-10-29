@@ -1,0 +1,16 @@
+const fs = require('fs'), vm = require('vm'), assert = require('assert'), ts = require('typescript');
+let options = 'WINEDLLOVERRIDES="dinput8=n,b" %command% --steamless -windowed';
+let written;
+const sandbox = {exports:{}, require:()=>({}), window:{SteamClient:{Apps:{GetLaunchOptionsForApp:()=>options, SetAppLaunchOptions:(_, text)=>{written=text;}}}}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/lib/fixRuntime.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,sandbox);
+const strip=sandbox.exports.stripSteamlessLaunchOption;
+assert.equal(strip('foo --steamless bar'), 'foo  bar');
+assert.equal(strip('foo "--steamless"'), 'foo');
+assert.equal(strip("foo '-steamless'"), 'foo');
+assert.equal(strip('bash -c "foo --steamless bar" %command%'), 'bash -c "foo --steamless bar" %command%');
+assert.equal(strip('--steamless-other --other=steamless'), '--steamless-other --other=steamless');
+sandbox.exports.clearSteamlessLaunchOption(1);
+assert(written.includes('WINEDLLOVERRIDES="dinput8=n,b"'));
+assert(written.includes('-windowed'));
+assert(!written.includes('--steamless'));
+console.log('SteamStub launch option cleanup preserves other arguments');

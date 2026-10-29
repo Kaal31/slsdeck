@@ -303,11 +303,34 @@ export function resetFixRuntime(appid: number): void {
 /** Un-fix cleanup: strip the fix's launch-option additions — the repoint wrapper
  *  AND the WINEDLLOVERRIDES the fix added — in a single write, preserving
  *  everything else (netsock LD_AUDIT, user flags, %command%). */
+export function stripSteamlessLaunchOption(options: string): string {
+  // Match complete shell words so quoted commands containing the text survive.
+  const words = /(?:[^\s"'\\]|\\.|"(?:\\.|[^"\\])*"|'[^']*')+/g;
+  let removed = false;
+  const result = options.replace(words, word => {
+    if (/^(?:--?steamless|"--?steamless"|'--?steamless')$/.test(word)) {
+      removed = true;
+      return "";
+    }
+    return word;
+  });
+  return removed ? result.trim() : options;
+}
+
+export function clearSteamlessLaunchOption(appid: number): void {
+  const before = getCurrentLaunchOptions(appid);
+  const after = stripSteamlessLaunchOption(before);
+  if (before === after) return;
+  const apps = (window as any).SteamClient?.Apps;
+  if (!apps?.SetAppLaunchOptions) throw new Error("Cannot disable SteamStub launch option; Steam API unavailable");
+  apps.SetAppLaunchOptions(appid, after);
+}
+
 export function clearFixLaunchOptions(appid: number): void {
   const SC: any = (window as any).SteamClient;
   if (!SC?.Apps?.SetAppLaunchOptions) return;
   try {
-    const before = currentLaunchOptions(appid) || "";
+    const before = stripSteamlessLaunchOption(getCurrentLaunchOptions(appid));
     const keepTokeer = /\/\.tokeer\/ost-run\.sh/.test(before);
     let opts = before
       .replace(REPOINT_RE, " %command%")

@@ -1723,6 +1723,15 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+    async def steamless_restore_native(self, appid: int) -> Dict[str, Any]:
+        try:
+            res = steam.get_game_install_path_response(int(appid))
+            if not res.get("success") or not res.get("installPath"):
+                return {"success": False, "error": "game not installed"}
+            return await self._run(steamstub.restore_native, int(appid), res["installPath"])
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     async def steamless_unstub(self, appid: int) -> Dict[str, Any]:
         try:
             res = steam.get_game_install_path_response(int(appid))

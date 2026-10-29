@@ -123,3 +123,38 @@ def test_archive_reapply_uses_helper_not_downloader(monkeypatch, tmp_path):
     monkeypatch.setattr(fixes, 'apply_game_fix', lambda *a, **k: (_ for _ in ()).throw(AssertionError('not a URL')))
     buildarchive._fix_reapply_worker(78, str(tmp_path), 'Game', [{'downloadUrl': 'steamstub-managed'}])
     assert calls == [(78, str(tmp_path), 'Game')]
+
+
+def test_native_restore_without_plugin_fix_log(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    original = wrapped()
+    exe.write_bytes(b'MZ-unpacked')
+    Path(str(exe) + '.original.exe').write_bytes(original)
+    Path(str(exe) + '.steamless_done').touch()
+    fixes._unfix_worker(81, str(tmp_path), None, preserve_unlockers=True)
+    assert fixes._get_unfix_state(81)['status'] == 'done'
+    assert exe.read_bytes() == original
+    assert not Path(str(exe) + '.steamless_done').exists()
+
+
+def test_native_restore_invalid_backup_keeps_recovery_files(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    before = exe.read_bytes()
+    backup = Path(str(exe) + '.original.exe')
+    backup.write_bytes(b'bad')
+    result = steamstub.restore_native(82, str(tmp_path))
+    assert not result['success']
+    assert exe.read_bytes() == before
+    assert backup.read_bytes() == b'bad'
+
+
+def test_native_restore_rejects_external_symlink(monkeypatch, tmp_path):
+    game = tmp_path / 'game'
+    game.mkdir()
+    backup = game / 'game.exe.original.exe'
+    outside = tmp_path / 'outside'
+    outside.write_bytes(b'MZ-original')
+    backup.symlink_to(outside)
+    result = steamstub.restore_native(83, str(game))
+    assert not result['success']
+    assert outside.read_bytes() == b'MZ-original'
