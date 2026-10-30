@@ -3937,6 +3937,29 @@ def get_diagnostics() -> Dict[str, Any]:
     except OSError:
         out["wrapperRanThisBoot"] = None
     out["injectionMapped"] = _running_injected()
+    # Initialization is reported independently from /proc mappings: the Moon
+    # engine may log a successful load in a process not present during sampling.
+    moon_log = _slssteam_log_path()
+    moon_load = _log_last_load_ok()
+    moon_mtime = None
+    if moon_log:
+        try:
+            moon_mtime = os.path.getmtime(moon_log)
+        except OSError:
+            pass
+    boot_time = _system_boot_time()
+    recent_moon_log = bool(moon_mtime is not None and
+                           boot_time is not None and moon_mtime >= boot_time)
+    out["moonInitialization"] = {
+        "logPath": moon_log,
+        "lastLoadSucceeded": moon_load if recent_moon_log else None,
+        "logWrittenThisBoot": recent_moon_log,
+        "mapped": out["injectionMapped"],
+        "status": ("loaded-this-boot" if recent_moon_log and moon_load is True
+                   else "failed-this-boot" if recent_moon_log and moon_load is False
+                   else "not-confirmed-this-boot"),
+    }
+    logger.log(f"SLSDeck Moon initialization evidence={out['moonInitialization']}")
     out["launcherJournalTail"] = []
     if _steamos_unit_present() and boot_id:
         try:
