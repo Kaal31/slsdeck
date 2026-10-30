@@ -3947,7 +3947,7 @@ def get_diagnostics() -> Dict[str, Any]:
             moon_mtime = os.path.getmtime(moon_log)
         except OSError:
             pass
-    boot_time = _system_boot_time()
+    boot_time = _system_boot_epoch()
     recent_moon_log = bool(moon_mtime is not None and
                            boot_time is not None and moon_mtime >= boot_time)
     out["moonInitialization"] = {
