@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.80 — SteamStub Proton runtime
+
+- Resolve the selected Proton runtime across Steam libraries and custom compatibility tools.
+- Pass paired Wine/wineserver and bundled Steamless paths after switching to the desktop user.
+- Log runtime selection and report missing selected runtimes clearly; retain isolated helper prefix and Un-fix support.
+
 ## 0.9.79 — SteamStub diagnostics
 
 - Record native helper availability, deployment, executable detection, exit codes and bounded output in the normal plugin log.

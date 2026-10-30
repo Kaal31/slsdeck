@@ -5,11 +5,9 @@ decrypts the real code at launch and does an ownership check. SLSsteam doesn't
 strip it, so some SteamStub titles fail to launch under an added game or fight
 achievement / mod tools.
 
-We run niwia/ASSella's ``steamless-aio.sh`` — a self-contained wrapper around a
-pure-Python Steamless (pycryptodome + capstone, NO .NET). The script manages its
-own venv + pip deps; we just fetch it once, find the game's main exe, and run it.
-Steamless backs the original up to ``<exe>.original``; we also stash a
-``.slsdeck-orig`` so Un-fix restores it like any other fix.
+The manual action runs Moon's bundled Steamless CLI and DLL plugins using the
+selected Proton's Wine, with the legacy AIO method retained as a fallback.
+Original executables are journaled so Un-fix can restore them.
 """
 from __future__ import annotations
 
@@ -115,6 +113,67 @@ def ensure_native() -> bool:
     except Exception as exc:
         logger.warn(f"SteamStub native kit deployment failed: {type(exc).__name__}: {exc}")
         return False
+
+
+def _selected_runtime_env(appid: int) -> Dict[str, str]:
+    """Resolve installed Proton across Steam libraries; never use a game's prefix."""
+    from . import compat, steam
+    mapping = compat.get_proton_mapping(int(appid))
+    selected = str(mapping.get("toolName") or "")
+    if not selected:
+        selected = str(compat.get_proton_mapping(0).get("toolName") or "")
+    libraries = steam._all_library_paths()
+    home = get_user_home()
+    custom_dirs = [os.path.join(root, "compatibilitytools.d") for root in libraries]
+    custom_dirs += [os.path.join(home, ".steam", "root", "compatibilitytools.d"),
+                    os.path.join(home, ".local", "share", "Steam", "compatibilitytools.d"),
+                    "/usr/share/steam/compatibilitytools.d"]
+    candidates = []
+    for parent in custom_dirs + [os.path.join(root, "steamapps", "common") for root in libraries]:
+        try:
+            for entry in sorted(os.scandir(parent), key=lambda e: e.name):
+                if not entry.is_dir():
+                    continue
+                names = {entry.name}
+                metadata = os.path.join(entry.path, "compatibilitytool.vdf")
+                try:
+                    with open(metadata, encoding="utf-8") as fh:
+                        data = steam._parse_vdf_simple(fh.read())
+                    names.update(data.get("compatibilitytools", {}).get("compat_tools", {}).keys())
+                except (OSError, ValueError, AttributeError, TypeError):
+                    pass
+                # Valve's built-in tool IDs differ from their installation directories.
+                import re
+                if entry.name == "Proton - Experimental":
+                    names.add("proton_experimental")
+                elif entry.name == "Proton Hotfix":
+                    names.add("proton_hotfix")
+                else:
+                    version = re.fullmatch(r"Proton (\d+)\.0", entry.name)
+                    if version:
+                        major = int(version.group(1))
+                        names.add(f"proton_{major}" if major >= 9 else f"proton_{major}0")
+                if selected and selected not in names:
+                    continue
+                for layout in ("files", "dist"):
+                    wine = os.path.join(entry.path, layout, "bin", "wine")
+                    server = os.path.join(entry.path, layout, "bin", "wineserver")
+                    if all(os.path.isfile(p) and os.access(p, os.X_OK) for p in (wine, server)):
+                        candidates.append((wine, server, os.path.join(entry.path, layout)))
+                        break
+        except OSError:
+            continue
+    if not candidates:
+        logger.warn(f"SteamStub runtime: appid={appid} selected={selected!r} no matching installed Wine/wineserver pair; libraries={libraries!r}")
+        if selected:
+            raise RuntimeError(f"Selected Proton {selected} has no usable installed Wine/wineserver pair. Install or repair it in Steam.")
+        return {}  # Keep upstream's system-Wine discovery when no mapping exists.
+    wine, server, files = candidates[0]
+    logger.log(f"SteamStub runtime: appid={appid} selected={selected!r} wine={wine!r} wineserver={server!r}")
+    return {"WINE_BIN": wine, "WINESERVER": server,
+            "WINE_PREFIX": os.path.join(home, ".local", "share", "SLSsteam", "steamless-prefix"),
+            "LD_LIBRARY_PATH": os.path.join(files, "lib64") + ":" + os.path.join(files, "lib"),
+            "WINEDLLPATH": os.path.join(files, "lib64", "wine") + ":" + os.path.join(files, "lib", "wine")}
 
 
 _LOCK = threading.Lock()
@@ -229,9 +288,12 @@ def _unstub_impl(appid, install_path: str, game_name: str = "") -> Dict[str, Any
             return _legacy_unstub(appid, install_path, game_name)
         script, kit = native_paths()
         env = slssteam._rich_env()
-        env["STEAMLESS_HOME"] = kit
+        helper_env = {"STEAMLESS_HOME": kit, **_selected_runtime_env(int(appid))}
+        # sudo resets the caller environment. Set overrides AFTER changing user.
+        command = slssteam._wrap_as_user(["env"] + [f"{key}={value}" for key, value in helper_env.items()]
+                                         + ["bash", script, exe])
         logger.log(f"SteamStub native run: appid={appid} script={script!r} exe={exe!r} timeout=900s")
-        proc = subprocess.run(slssteam._wrap_as_user(["bash", script, exe]),
+        proc = subprocess.run(command,
                               env=env, capture_output=True, text=True, timeout=900)
         output = ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
         logger.log(f"SteamStub native result: appid={appid} exit={proc.returncode} stubRemaining={has_steamstub(exe)} outputTail={output!r}")

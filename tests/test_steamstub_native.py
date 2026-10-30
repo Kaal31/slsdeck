@@ -189,3 +189,82 @@ def test_missing_native_archive_is_logged(monkeypatch):
     assert not steamstub.ensure_native()
     assert any('native availability:' in m for m in messages)
     assert any('bundled archive unavailable' in m for m in messages)
+
+
+def make_runtime(root, folder, layout='files'):
+    install = root / 'steamapps' / 'common' / folder
+    for name in ('wine', 'wineserver'):
+        p = install / layout / 'bin' / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('#!/bin/sh\nexit 0\n')
+        p.chmod(0o755)
+    return install
+
+
+def test_selected_experimental_in_secondary_library(monkeypatch, tmp_path):
+    from py_modules.lt import compat, steam
+    main, sd = tmp_path / 'Steam', tmp_path / 'SD card'
+    make_runtime(main, 'Proton 9.0')
+    install = make_runtime(sd, 'Proton - Experimental')
+    monkeypatch.setattr(steam, '_all_library_paths', lambda: [str(main), str(sd)])
+    monkeypatch.setattr(compat, 'get_proton_mapping', lambda _: {'toolName': 'proton_experimental'})
+    monkeypatch.setattr(steamstub, 'get_user_home', lambda: str(tmp_path / 'home'))
+    env = steamstub._selected_runtime_env(74)
+    assert env['WINE_BIN'] == str(install / 'files/bin/wine')
+    assert env['WINESERVER'] == str(install / 'files/bin/wineserver')
+    assert env['WINE_PREFIX'].endswith('/SLSsteam/steamless-prefix')
+    assert 'compatdata' not in env['WINE_PREFIX']
+
+
+def test_custom_tool_metadata_and_old_layout(monkeypatch, tmp_path):
+    from py_modules.lt import compat, steam
+    root = tmp_path / 'Steam'
+    install = root / 'compatibilitytools.d' / 'different-directory-name'
+    for name in ('wine', 'wineserver'):
+        p = install / 'dist/bin' / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('runtime'); p.chmod(0o755)
+    (install / 'compatibilitytool.vdf').write_text('"compatibilitytools" { "compat_tools" { "GE-Proton-selected" { "install_path" "." } } }')
+    monkeypatch.setattr(steam, '_all_library_paths', lambda: [str(root)])
+    monkeypatch.setattr(compat, 'get_proton_mapping', lambda _: {'toolName': 'GE-Proton-selected'})
+    assert steamstub._selected_runtime_env(74)['WINE_BIN'] == str(install / 'dist/bin/wine')
+
+
+def test_selected_runtime_missing_does_not_choose_another(monkeypatch, tmp_path):
+    import pytest
+    from py_modules.lt import compat, steam
+    root = tmp_path / 'Steam'
+    make_runtime(root, 'Proton 9.0')
+    incomplete = make_runtime(root, 'Proton - Experimental')
+    (incomplete / 'files/bin/wineserver').unlink()
+    monkeypatch.setattr(steam, '_all_library_paths', lambda: [str(root)])
+    monkeypatch.setattr(compat, 'get_proton_mapping', lambda _: {'toolName': 'proton_experimental'})
+    with pytest.raises(RuntimeError, match='Selected Proton proton_experimental'):
+        steamstub._selected_runtime_env(74)
+
+
+def test_runtime_overrides_are_after_user_switch(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    monkeypatch.setattr(steamstub, 'native_ready', lambda: True)
+    monkeypatch.setattr(steamstub, '_selected_runtime_env', lambda _: {
+        'WINE_BIN': '/SD card/Proton/files/bin/wine',
+        'WINESERVER': '/SD card/Proton/files/bin/wineserver'})
+    monkeypatch.setattr(slssteam, '_wrap_as_user', lambda args: ['sudo', '-u', 'deck'] + args)
+    def run(cmd, **kwargs):
+        assert cmd[:4] == ['sudo', '-u', 'deck', 'env']
+        assert 'WINE_BIN=/SD card/Proton/files/bin/wine' in cmd
+        assert any(arg.startswith('STEAMLESS_HOME=') for arg in cmd)
+        assert cmd[-1] == str(exe)
+        exe.write_bytes(b'MZ' + b'\0' * 510)
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(steamstub.subprocess, 'run', run)
+    assert steamstub.unstub(74, str(tmp_path))['success']
+
+
+def test_default_mapping_used_when_no_game_override(monkeypatch, tmp_path):
+    from py_modules.lt import compat, steam
+    root = tmp_path / 'Steam'
+    install = make_runtime(root, 'Proton - Experimental')
+    monkeypatch.setattr(steam, '_all_library_paths', lambda: [str(root)])
+    monkeypatch.setattr(compat, 'get_proton_mapping', lambda appid: {'toolName': '' if appid else 'proton_experimental'})
+    assert steamstub._selected_runtime_env(74)['WINE_BIN'] == str(install / 'files/bin/wine')
