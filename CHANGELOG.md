@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.84 — Keep Steamless marker out of game arguments
+
+- Use a launch wrapper that exposes Moon’s opt-in marker without forwarding it to the game.
+- Repair the old bare marker when opening a game’s Fixes menu.
+- Un-fix removes the wrapper and marker while preserving other launch options.
+
 ## 0.9.83 — Native SteamStub launch option
 
 - Add --steamless after successful native SteamStub processing from Library, QAM, Advanced and Store fixes.

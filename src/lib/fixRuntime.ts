@@ -303,7 +303,11 @@ export function resetFixRuntime(appid: number): void {
 /** Un-fix cleanup: strip the fix's launch-option additions — the repoint wrapper
  *  AND the WINEDLLOVERRIDES the fix added — in a single write, preserving
  *  everything else (netsock LD_AUDIT, user flags, %command%). */
+// --steamless is bash's $0, so Moon sees it but exec never forwards it.
+const STEAMLESS_WRAPPER = `/bin/bash -c 'exec "$@"' --steamless `;
+
 export function stripSteamlessLaunchOption(options: string): string {
+  options = options.split(STEAMLESS_WRAPPER).join("");
   // Match complete shell words so quoted commands containing the text survive.
   const words = /(?:[^\s"'\\]|\\.|"(?:\\.|[^"\\])*"|'[^']*')+/g;
   let removed = false;
@@ -320,10 +324,22 @@ export function stripSteamlessLaunchOption(options: string): string {
 /** Enable Moon's per-game processing while preserving existing launch options. */
 export function enableSteamlessLaunchOption(appid: number): void {
   const before = getCurrentLaunchOptions(appid);
-  if (stripSteamlessLaunchOption(before) !== before) return;
+  const clean = stripSteamlessLaunchOption(before);
+  if (before.includes(STEAMLESS_WRAPPER) && clean === before.replace(STEAMLESS_WRAPPER, "")) return;
+  // Steam treats options without %command% as game arguments. Make that explicit.
+  const command = clean.includes("%command%") ? clean : `%command%${clean ? " " + clean : ""}`;
+  const after = command.replace("%command%", STEAMLESS_WRAPPER + "%command%");
   const apps = (window as any).SteamClient?.Apps;
-  if (!apps?.SetAppLaunchOptions) throw new Error("SteamStub applied, but cannot enable processing on launch; Steam API unavailable");
-  apps.SetAppLaunchOptions(appid, `${before}${before && !/\s$/.test(before) ? " " : ""}--steamless`);
+  if (!apps?.SetAppLaunchOptions) throw new Error("Cannot enable SteamStub launch processing; Steam API unavailable");
+  apps.SetAppLaunchOptions(appid, after);
+}
+
+/** Upgrade the old bare marker when opening an affected game's Fixes menu. */
+export function repairSteamlessLaunchOption(appid: number): void {
+  const before = getCurrentLaunchOptions(appid);
+  if (stripSteamlessLaunchOption(before) !== before && !before.includes(STEAMLESS_WRAPPER)) {
+    enableSteamlessLaunchOption(appid);
+  }
 }
 
 export function clearSteamlessLaunchOption(appid: number): void {

@@ -25,7 +25,7 @@ import {
   tokeerPreflight,
   tokeerAppliedStatus,
 } from "../api";
-import { enableSteamlessLaunchOption, clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption, applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
+import { repairSteamlessLaunchOption, enableSteamlessLaunchOption, clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption, applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { BADGE_LABELS, BADGE_COLORS, BADGE_STATE_EVENT, ONLINE_RE, markSlsAddPending, refreshBadges } from "../lib/badges";
 import { isInLibrary } from "../lib/ownership";
@@ -482,6 +482,7 @@ async function onAction(payloadStr: string): Promise<void> {
 
     // Fix providers and Discord availability are independent. Open the menu
     // immediately, then populate each part whenever its own lookup completes.
+    try { repairSteamlessLaunchOption(appid); } catch (error) { setStatus(String(error)); }
     void steamlessStatus(appid).then(status => updateFixModal(appid, generation, "steamstub", { ...status, nativeEnabled: stripSteamlessLaunchOption(getCurrentLaunchOptions(appid)) !== getCurrentLaunchOptions(appid) })).catch(() => {});
     const fixesPromise = checkFixesFull(appid);
     void fixesPromise

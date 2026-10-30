@@ -1,7 +1,7 @@
 import { DialogButton } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { steamlessStatus, steamlessUnstub, steamlessRestoreNative } from "../api";
-import { enableSteamlessLaunchOption, clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption } from "../lib/fixRuntime";
+import { repairSteamlessLaunchOption, enableSteamlessLaunchOption, clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption } from "../lib/fixRuntime";
 import { refreshBadges } from "../lib/badges";
 
 export function SteamStubFix({ appid, disabled = false, onChanged }: {
@@ -13,6 +13,7 @@ export function SteamStubFix({ appid, disabled = false, onChanged }: {
   useEffect(() => {
     let active = true;
     setStatus(null); setMessage("");
+    try { repairSteamlessLaunchOption(appid); } catch (error) { setMessage(String(error)); }
     steamlessStatus(appid).then(r => { if (active) setStatus(r); }).catch(() => {});
     return () => { active = false; };
   }, [appid]);
