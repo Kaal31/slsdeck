@@ -3654,7 +3654,7 @@ def _process_elf_class(pid: str, proc_root: str = "/proc") -> str:
     try:
         with open(os.path.join(proc_root, pid, "exe"), "rb") as fh:
             hdr = fh.read(5)
-        if hdr[:4] == b"\\x7fELF":
+        if hdr[:4] == b"\x7fELF":
             return {1: "ELF32", 2: "ELF64"}.get(hdr[4], "unknown")
     except (OSError, ValueError):
         pass
