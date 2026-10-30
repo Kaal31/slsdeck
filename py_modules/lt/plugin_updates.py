@@ -336,7 +336,7 @@ def status() -> Dict[str, Any]:
         "latest": latest,
         "updateAvailable": bool(latest and (
             _version_key(str(latest.get("version") or "")) > _version_key(_current_version())
-            if _version_key(str(latest.get("version") or "")) != (0, 0, 0)
-            else int(latest["runNumber"]) > current_build
+            or (_version_key(str(latest.get("version") or "")) == _version_key(_current_version())
+                and int(latest.get("runNumber") or 0) > current_build)
         )),
     }
