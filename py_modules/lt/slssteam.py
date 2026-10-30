@@ -2086,7 +2086,7 @@ def _run_install() -> None:
             _stage("activating-injection", "Activating injection (patching steam.sh)…")
             act = activate_injection()
             if act.get("success"):
-                _log(f"Injection activated via {act.get('steamSh')}")
+                _log(f"Injection activated via {act.get('method')} (hook={act.get('hook')}, wrapper={act.get('wrapper')})")
             else:
                 _log(f"Auto-activation not applied: {act.get('error')}")
                 _set_install({"status": "failed", "success": False,
@@ -2773,8 +2773,11 @@ def _ensure_path_wrapper() -> str:
         'case "$n" in ""|*[!0-9]*) n=0 ;; esac',
         'BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)',
         'TRACE="$(dirname "$FAIL")/.launch_trace"',
+        'REAL_CLASS=$(LC_ALL=C od -An -tu1 -j4 -N1 "$REAL" 2>/dev/null | tr -d " ")',
+        'SO_CLASS=$(LC_ALL=C od -An -tu1 -j4 -N1 "$SO" 2>/dev/null | tr -d " ")',
+        'LI_CLASS=$(LC_ALL=C od -An -tu1 -j4 -N1 "$LI" 2>/dev/null | tr -d " ")',
         'MODE=clean; [ -f "$SO" ] && [ "$n" -lt 2 ] && MODE=inject',
-        'printf "time=%s boot=%s pid=%s mode=%s attempts=%s\\n" "$(date -u +%FT%TZ)" "$BOOT" "$$" "$MODE" "$n" > "$TRACE"',
+        'printf "time=%s boot=%s pid=%s mode=%s attempts=%s realClass=%s moonClass=%s auditClass=%s\\n" "$(date -u +%FT%TZ)" "$BOOT" "$" "$MODE" "$n" "${REAL_CLASS:-unknown}" "${SO_CLASS:-unknown}" "${LI_CLASS:-unknown}" > "$TRACE"',
         'logger -t slsdeck-launch "boot=$BOOT pid=$$ mode=$MODE attempts=$n" 2>/dev/null || true',
         'if [ -f "$SO" ] && [ "$n" -lt 2 ]; then',
         '  echo $((n+1)) > "$FAIL" 2>/dev/null',
@@ -3697,6 +3700,8 @@ def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
         except OSError:
             continue
     result["moonMappedAnySteam"] = any(p["moonMapped"] for p in result["processes"])
+    result["steam32Count"] = sum(p["elfClass"] == "ELF32" for p in result["processes"])
+    result["steam64Count"] = sum(p["elfClass"] == "ELF64" for p in result["processes"])
     result["steamProcessCount"] = len(result["processes"])
     # A negative mapping result is not conclusive: access to /proc may be
     # restricted, the injected process may have exited, or the engine may have
