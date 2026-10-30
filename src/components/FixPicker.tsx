@@ -1392,7 +1392,6 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "4px 0" }}>
-      <SteamStubFix key={appid} appid={appid} disabled={!!busy} onChanged={() => { void refresh(); }} />
       {check.warning && <div role="status" style={{ fontSize: 12, color: "#e8bf72" }}>{check.warning}
         <DialogButton onClick={() => { void refresh(); }}>Retry fixes check</DialogButton>
       </div>}
@@ -1410,6 +1409,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           )}
         </div>
       )}
+      <SteamStubFix key={appid} appid={appid} disabled={!!busy} onChanged={() => { void refresh(); }} />
       <DialogButton
         style={{ fontSize: 12, padding: "5px 8px" }}
         disabled={working || pinned || !!awaiting}

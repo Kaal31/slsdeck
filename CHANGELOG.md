@@ -1,5 +1,9 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.85 — Fixes menu ordering
+
+- Place SteamStub directly below the pinned status in Library and QAM Fixes menus.
+
 ## 0.9.84 — Keep Steamless marker out of game arguments
 
 - Use a launch wrapper that exposes Moon’s opt-in marker without forwarding it to the game.
