@@ -1,5 +1,9 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.86 — SteamStub below pin controls
+
+- Place SteamStub after the complete pin section, including the Already pinned / Pin this version button.
+
 ## 0.9.85 — Fixes menu ordering
 
 - Place SteamStub directly below the pinned status in Library and QAM Fixes menus.

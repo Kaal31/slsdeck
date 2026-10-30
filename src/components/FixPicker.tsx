@@ -1409,7 +1409,6 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           )}
         </div>
       )}
-      <SteamStubFix key={appid} appid={appid} disabled={!!busy} onChanged={() => { void refresh(); }} />
       <DialogButton
         style={{ fontSize: 12, padding: "5px 8px" }}
         disabled={working || pinned || !!awaiting}
@@ -1423,6 +1422,7 @@ export function FixPicker({ appid, onReload, onClose }: { appid: number; onReloa
           ? "Pinning…"
           : "Pin this version"}
       </DialogButton>
+      <SteamStubFix key={appid} appid={appid} disabled={!!busy} onChanged={() => { void refresh(); }} />
       {tokeerApplied && !pinned && <div style={{ border: "1px solid rgba(215,165,43,0.42)", borderRadius: 8, padding: 8, background: "rgba(215,165,43,0.09)" }}>
         <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>
           {tokeerApplied.health === "valid" ? "🔑 Tokeer key applied" : "⚠️ Tokeer verification needed"}
