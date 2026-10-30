@@ -3649,6 +3649,18 @@ def set_achievements(enabled: bool) -> Dict[str, Any]:
     return {"success": ok, "enabled": enabled}
 
 
+def _process_elf_class(pid: str, proc_root: str = "/proc") -> str:
+    """Read the process executable's ELF class without executing or changing it."""
+    try:
+        with open(os.path.join(proc_root, pid, "exe"), "rb") as fh:
+            hdr = fh.read(5)
+        if hdr[:4] == b"\\x7fELF":
+            return {1: "ELF32", 2: "ELF64"}.get(hdr[4], "unknown")
+    except (OSError, ValueError):
+        pass
+    return "unknown"
+
+
 def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
     """Adapt upstream isolation status without launching Steam or changing symlinks."""
     result: Dict[str, Any] = {"mode": "read-only", "processes": []}
@@ -3678,10 +3690,21 @@ def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
             except OSError:
                 pass
             result["processes"].append({"pid": int(pid), "ppid": int(match[1]) if match else None,
+                "elfClass": _process_elf_class(pid, proc_root),
                 "cgroup": cgroup, "moonMapped": "SLSsteam.so" in maps,
+                "moonAuditMapped": "library-inject.so" in maps,
                 "millenniumMapped": "libmillennium" in maps.lower(), "passive": passive})
         except OSError:
             continue
+    result["moonMappedAnySteam"] = any(p["moonMapped"] for p in result["processes"])
+    result["steamProcessCount"] = len(result["processes"])
+    # A negative mapping result is not conclusive: access to /proc may be
+    # restricted, the injected process may have exited, or the engine may have
+    # logged success in a different Steam process.
+    result["mappingConclusion"] = (
+        "mapped-in-inspected-steam-process" if result["moonMappedAnySteam"]
+        else "not-observed-in-inspected-steam-processes"
+    )
     result["millenniumBootstrapLinks"] = []
     for path in (os.path.join(_home(), ".steam/steam/ubuntu12_64/libXtst.so.6"),
                  os.path.join(_home(), ".local/share/Steam/ubuntu12_64/libXtst.so.6")):
@@ -3743,7 +3766,10 @@ def get_diagnostics() -> Dict[str, Any]:
             launch_trace = fh.read(2048).strip()
     except OSError:
         launch_trace = "No wrapper execution record"
-    logger.log(f"SLSDeck injection diagnostics wrapper={launch_trace} mapped={_running_injected()}")
+    live_mapping = _running_injected()
+    logger.log(
+        f"SLSDeck injection diagnostics wrapper={launch_trace} "
+        f"mappedAnyProcess={live_mapping} (not proof of functional app provisioning)")
     os_info = {}
     try:
         for p in ("/etc/os-release", "/usr/lib/os-release"):
