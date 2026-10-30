@@ -7,6 +7,8 @@ import { updatesCheck, updatesUpdateAll, getAutoUpdate, setAutoUpdate, UpdateIte
   pluginUpdateStatus, pluginUpdateReleases, pluginPrepareReplacement, PluginRelease, PluginUpdateStatus,
   getUiSettings, setUiSetting } from "../api";
 
+const SWITCHABLE_CHANNELS = new Set(["main", "experimental"]);
+
 const UPDATE_BANNERS_EVENT = "slsdeck-update-banners";
 
 enum PluginInstallType { REINSTALL = 1, UPDATE = 2, DOWNGRADE = 3 }
@@ -30,7 +32,7 @@ export function UpdatesSection() {
   const [ups, setUps] = useState<UpdateItem[]>([]);
   const [plugin, setPlugin] = useState<PluginUpdateStatus | null>(null);
   const [releases, setReleases] = useState<PluginRelease[]>([]);
-  const [selectedChannel, setSelectedChannel] = useState("update-system");
+  const [selectedChannel, setSelectedChannel] = useState("experimental");
   const [selectedTag, setSelectedTag] = useState("");
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginProgress, setPluginProgress] = useState(0);
@@ -48,11 +50,12 @@ export function UpdatesSection() {
     try {
       const status = await pluginUpdateStatus();
       setPlugin(status);
-      const list = status.releases || (await pluginUpdateReleases()).releases || [];
+      const list = (status.releases || (await pluginUpdateReleases()).releases || [])
+        .filter((release) => SWITCHABLE_CHANNELS.has(release.channel));
       setReleases(list);
       const availableChannels = Array.from(new Set(list.map((item) => item.channel)));
       const defaultChannel = availableChannels.includes(status.currentChannel)
-        ? status.currentChannel : availableChannels.includes("update-system") ? "update-system" : (availableChannels[0] || "");
+        ? status.currentChannel : availableChannels.includes("experimental") ? "experimental" : (availableChannels[0] || "");
       setSelectedChannel((previous) => availableChannels.includes(previous) ? previous : defaultChannel);
     } catch (error) { setPluginMsg(`Plugin update check failed: ${error}`); }
     try { setAutoUp(!!(await getAutoUpdate()).enabled); } catch { /* */ }
@@ -179,7 +182,7 @@ export function UpdatesSection() {
       {channels.length > 0 && <PanelSectionRow>
         <DropdownItem
           label="Release channel"
-          description="Switch to a prebuilt rolling release from another branch. Branches without this updater may require manually reinstalling update-system to return."
+          description="Switch to a prebuilt rolling release from another branch. Only main and experimental are offered as switch targets."
           rgOptions={channels.map((channel) => ({ data: channel, label: channel }))}
           selectedOption={selectedChannel}
           strDefaultLabel={selectedChannel || "Choose a channel"}

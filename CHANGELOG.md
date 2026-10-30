@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.82 — Update branch selection
+
+- Show only main and experimental in the plugin branch switcher.
+- Publish the renamed experimental branch with matching rolling release assets.
+- Hide archived and development channels even when their old releases remain on GitHub.
+
 ## 0.9.81 — Bundled Python Steamless fallback
 
 - Replace the retired Steamless AIO script download with a pinned, bundled ASSella Python implementation.

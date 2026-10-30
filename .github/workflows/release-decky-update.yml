@@ -1,8 +1,8 @@
-name: Release decky-update
+name: Release experimental
 
 on:
   push:
-    branches: [decky-update]
+    branches: [experimental]
     paths-ignore: ["dist/**"]
   workflow_dispatch:
 
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-decky-update
+  group: release-experimental
   cancel-in-progress: false
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: {ref: decky-update, fetch-depth: 0}
+        with: {ref: experimental, fetch-depth: 0}
       - uses: actions/setup-node@v4
         with: {node-version: 20, cache: npm}
       - name: Check out current slsteam-moon source
@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p 'require("./plugin.json").version')
-          CURRENT=$(gh release view decky-update-latest --json name --jq '.name' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          CURRENT=$(gh release view experimental-latest --json name --jq '.name' 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
           if [ -n "$CURRENT" ] && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)" = "$CURRENT" ]; then
             echo "plugin.json version $VERSION must be newer than published $CURRENT"
             exit 1
@@ -75,31 +75,32 @@ jobs:
       - name: Package plugin
         run: |
           set -euo pipefail
-          rm -rf artifact SLSDeckUniversal-decky-update.zip
+          rm -rf artifact SLSDeckUniversal-experimental.zip
           mkdir -p artifact/SLSDeckUniversal
           cp -a dist main.py plugin.json package.json requirements.txt py_modules artifact/SLSDeckUniversal/
           for p in defaults assets LICENSE README.md; do [ ! -e "$p" ] || cp -a "$p" artifact/SLSDeckUniversal/; done
-          cd artifact && zip -qr ../SLSDeckUniversal-decky-update.zip SLSDeckUniversal && cd ..
+          node -e 'const fs=require("fs");fs.writeFileSync("artifact/SLSDeckUniversal/build.json",JSON.stringify({channel:"experimental",version:require("./plugin.json").version}))'
+          cd artifact && zip -qr ../SLSDeckUniversal-experimental.zip SLSDeckUniversal && cd ..
       - name: Validate release archive
         run: |
           set -euo pipefail
-          unzip -t SLSDeckUniversal-decky-update.zip
+          unzip -t SLSDeckUniversal-experimental.zip
           for p in \
             SLSDeckUniversal/main.py \
             SLSDeckUniversal/plugin.json \
             SLSDeckUniversal/requirements.txt \
             SLSDeckUniversal/assets/moon/source.json \
             SLSDeckUniversal/assets/moon/slsteam-moon-head.zip; do
-            unzip -Z1 SLSDeckUniversal-decky-update.zip | grep -Fx "$p"
+            unzip -Z1 SLSDeckUniversal-experimental.zip | grep -Fx "$p"
           done
-          unzip -p SLSDeckUniversal-decky-update.zip \
+          unzip -p SLSDeckUniversal-experimental.zip \
             SLSDeckUniversal/assets/moon/slsteam-moon-head.zip > /tmp/moon.zip
           unzip -t /tmp/moon.zip
       - name: Update rolling prerelease
         env: {GH_TOKEN: "${{ github.token }}"}
         run: |
           set -euo pipefail
-          TAG=decky-update-latest
+          TAG=experimental-latest
           VERSION=$(node -p 'require("./plugin.json").version')
           git fetch origin --tags --force
           PREVIOUS=$(git rev-list -n 1 "$TAG" 2>/dev/null || true)
@@ -137,13 +138,13 @@ jobs:
           PY
           git tag -f "$TAG" HEAD && git push origin "refs/tags/$TAG" --force
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "SLSDeck decky-update $VERSION" --notes-file RELEASE_NOTES.md --prerelease
+            gh release edit "$TAG" --title "SLSDeck experimental $VERSION" --notes-file RELEASE_NOTES.md --prerelease
           else
-            gh release create "$TAG" --title "SLSDeck decky-update $VERSION" --notes-file RELEASE_NOTES.md --prerelease --target decky-update
+            gh release create "$TAG" --title "SLSDeck experimental $VERSION" --notes-file RELEASE_NOTES.md --prerelease --target experimental
           fi
-          gh release upload "$TAG" SLSDeckUniversal-decky-update.zip --clobber
+          gh release upload "$TAG" SLSDeckUniversal-experimental.zip --clobber
       - uses: actions/upload-artifact@v4
         with:
-          name: SLSDeckUniversal-decky-update
-          path: SLSDeckUniversal-decky-update.zip
+          name: SLSDeckUniversal-experimental
+          path: SLSDeckUniversal-experimental.zip
           retention-days: 14
