@@ -158,3 +158,34 @@ def test_native_restore_rejects_external_symlink(monkeypatch, tmp_path):
     result = steamstub.restore_native(83, str(game))
     assert not result['success']
     assert outside.read_bytes() == b'MZ-original'
+
+
+def test_apply_logs_native_failure_and_fallback(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    messages = []
+    monkeypatch.setattr(steamstub.logger, 'log', messages.append)
+    monkeypatch.setattr(steamstub.logger, 'warn', messages.append)
+    monkeypatch.setattr(steamstub, 'ensure_native', lambda: True)
+    monkeypatch.setattr(steamstub.subprocess, 'run', lambda *a, **k:
+                        subprocess.CompletedProcess(a, 1, 'wine failed', 'missing runtime'))
+    monkeypatch.setattr(steamstub, '_legacy_unstub', lambda *a:
+                        {'success': False, 'error': 'download HTTP 404'})
+    result = steamstub.unstub(74, str(tmp_path), 'Game')
+    assert not result['success']
+    joined = '\n'.join(messages)
+    assert str(exe) in joined
+    assert 'exit=1 stubRemaining=True' in joined
+    assert 'wine failedmissing runtime' in joined
+    assert 'executable unchanged' in joined
+    assert 'download HTTP 404' in joined
+
+
+def test_missing_native_archive_is_logged(monkeypatch):
+    messages = []
+    monkeypatch.setattr(steamstub.logger, 'log', messages.append)
+    monkeypatch.setattr(steamstub.logger, 'warn', messages.append)
+    monkeypatch.setattr(steamstub, 'native_ready', lambda: False)
+    monkeypatch.setattr(slssteam, '_bundled_moon_archive', lambda: '')
+    assert not steamstub.ensure_native()
+    assert any('native availability:' in m for m in messages)
+    assert any('bundled archive unavailable' in m for m in messages)

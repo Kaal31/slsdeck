@@ -1,5 +1,10 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.79 — SteamStub diagnostics
+
+- Record native helper availability, deployment, executable detection, exit codes and bounded output in the normal plugin log.
+- Log fallback reasons, final apply results and native restore results without enabling a debug toggle.
+
 ## 0.9.78 — Revert native SteamStub
 
 - Add native SteamStub Un-fix to game fixes menus, including Store.
