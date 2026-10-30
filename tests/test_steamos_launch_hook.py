@@ -52,6 +52,8 @@ def test_wrapper_execution_record_and_failsafe(monkeypatch, tmp_path, attempts, 
     trace = (tmp_path / ".launch_trace").read_text()
     assert f"mode={mode}" in trace
     assert "boot=" in trace and "pid=" in trace and "time=" in trace
+    assert "moonClass=" in trace and "auditClass=" in trace
+    assert "realClass=" in trace
     if mode == "clean":
         assert "audit= arg=" in result.stdout
         assert (tmp_path / ".inject_fails").read_text() == str(attempts)
