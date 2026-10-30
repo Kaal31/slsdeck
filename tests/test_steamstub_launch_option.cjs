@@ -14,3 +14,18 @@ assert(written.includes('WINEDLLOVERRIDES="dinput8=n,b"'));
 assert(written.includes('-windowed'));
 assert(!written.includes('--steamless'));
 console.log('SteamStub launch option cleanup preserves other arguments');
+
+options = 'WINEDLLOVERRIDES="dinput8=n,b" %command% -windowed';
+sandbox.exports.enableSteamlessLaunchOption(1);
+assert.equal(written, options + ' --steamless');
+options = written; written = undefined;
+sandbox.exports.enableSteamlessLaunchOption(1);
+assert.equal(written, undefined);
+options = '"--steamless"';
+sandbox.exports.enableSteamlessLaunchOption(1);
+assert.equal(written, undefined);
+options = ''; sandbox.exports.enableSteamlessLaunchOption(1);
+assert.equal(written, '--steamless');
+options = written; sandbox.exports.clearSteamlessLaunchOption(1);
+assert.equal(written, '');
+console.log('Native activation and Un-fix round trip preserves launch options');

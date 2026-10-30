@@ -317,6 +317,15 @@ export function stripSteamlessLaunchOption(options: string): string {
   return removed ? result.trim() : options;
 }
 
+/** Enable Moon's per-game processing while preserving existing launch options. */
+export function enableSteamlessLaunchOption(appid: number): void {
+  const before = getCurrentLaunchOptions(appid);
+  if (stripSteamlessLaunchOption(before) !== before) return;
+  const apps = (window as any).SteamClient?.Apps;
+  if (!apps?.SetAppLaunchOptions) throw new Error("SteamStub applied, but cannot enable processing on launch; Steam API unavailable");
+  apps.SetAppLaunchOptions(appid, `${before}${before && !/\s$/.test(before) ? " " : ""}--steamless`);
+}
+
 export function clearSteamlessLaunchOption(appid: number): void {
   const before = getCurrentLaunchOptions(appid);
   const after = stripSteamlessLaunchOption(before);

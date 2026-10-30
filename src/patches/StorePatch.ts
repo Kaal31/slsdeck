@@ -25,7 +25,7 @@ import {
   tokeerPreflight,
   tokeerAppliedStatus,
 } from "../api";
-import { clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption, applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
+import { enableSteamlessLaunchOption, clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption, applyFixRuntime, appDisplayName } from "../lib/fixRuntime";
 import { checkFixesFull } from "../lib/fixIndex";
 import { BADGE_LABELS, BADGE_COLORS, BADGE_STATE_EVENT, ONLINE_RE, markSlsAddPending, refreshBadges } from "../lib/badges";
 import { isInLibrary } from "../lib/ownership";
@@ -597,9 +597,10 @@ async function onAction(payloadStr: string): Promise<void> {
     setStatus("Applying SteamStub fix…");
     try {
       const result = await steamlessUnstub(appid);
+      if (result.success && result.method === "native") enableSteamlessLaunchOption(appid);
       setStatus(result.success ? result.note || "SteamStub fix applied" : result.error || "SteamStub fix failed");
     } catch (error) { setStatus(String(error)); }
-    try { updateFixModal(appid, generation, "steamstub", await steamlessStatus(appid)); } catch { /* reopen to retry */ }
+    try { updateFixModal(appid, generation, "steamstub", { ...await steamlessStatus(appid), nativeEnabled: stripSteamlessLaunchOption(getCurrentLaunchOptions(appid)) !== getCurrentLaunchOptions(appid) }); } catch { /* reopen to retry */ }
     return;
   }
   if (action === "fixApply") {

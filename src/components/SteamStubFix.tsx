@@ -1,7 +1,7 @@
 import { DialogButton } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { steamlessStatus, steamlessUnstub, steamlessRestoreNative } from "../api";
-import { clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption } from "../lib/fixRuntime";
+import { enableSteamlessLaunchOption, clearSteamlessLaunchOption, getCurrentLaunchOptions, stripSteamlessLaunchOption } from "../lib/fixRuntime";
 import { refreshBadges } from "../lib/badges";
 
 export function SteamStubFix({ appid, disabled = false, onChanged }: {
@@ -23,13 +23,14 @@ export function SteamStubFix({ appid, disabled = false, onChanged }: {
   return <div style={{ border: "1px solid rgba(255,255,255,.12)", borderRadius: 8, padding: 10 }}>
     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>SteamStub fix</div>
     <div style={{ fontSize: 11, opacity: .7, marginBottom: 8 }}>
-      {status.nativeReady ? "Moon native helper ready." : "Native kit installs on demand; legacy method remains the fallback."}
-      {" "}Manual, Windows executable only. Original saved for Un-fix and snapshot cleanup.
+      {status.nativeReady ? "Moon native helper ready." : "Native kit installs on demand; bundled Python method remains the fallback."}
+      {" "}Windows executable only. Native success adds --steamless for future launches; Un-fix removes it.
     </div>
     <DialogButton disabled={disabled || busy || !!applied} onClick={async () => {
       setBusy(true); setMessage("Applying SteamStub fix…");
       try {
         const result = await steamlessUnstub(appid);
+        if (result.success && result.method === "native") enableSteamlessLaunchOption(appid);
         setMessage(result.success ? result.note || "SteamStub fix applied." : result.error || "SteamStub fix failed.");
         const current = await steamlessStatus(appid);
         setStatus(current);

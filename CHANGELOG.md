@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.83 — Native SteamStub launch option
+
+- Add --steamless after successful native SteamStub processing from Library, QAM, Advanced and Store fixes.
+- Preserve other launch arguments and avoid duplicate tokens; existing native and full Un-fix cleanup removes the token.
+- Python fallback remains a one-time fix without enabling native launch processing.
+
 ## 0.9.82 — Update branch selection
 
 - Show only main and experimental in the plugin branch switcher.
