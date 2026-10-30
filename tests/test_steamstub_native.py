@@ -57,7 +57,7 @@ def test_native_failure_falls_back_only_when_unchanged(monkeypatch, tmp_path):
     monkeypatch.setattr(steamstub, 'native_ready', lambda: True)
     monkeypatch.setattr(steamstub.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 3, '', 'No Wine'))
     calls = []
-    monkeypatch.setattr(steamstub, '_legacy_unstub', lambda *a: calls.append(a) or {'success': True})
+    monkeypatch.setattr(steamstub, '_python_unstub', lambda *a: calls.append(a) or {'success': True})
     assert steamstub.unstub(75, str(tmp_path))['success']
     assert len(calls) == 1
     def changed(*a, **k):
@@ -72,7 +72,7 @@ def test_native_failure_falls_back_only_when_unchanged(monkeypatch, tmp_path):
 def test_no_processing_without_backup(monkeypatch, tmp_path):
     setup_game(monkeypatch, tmp_path)
     monkeypatch.setattr(fixes, '_stash_original', lambda *a: False)
-    monkeypatch.setattr(steamstub, '_legacy_unstub', lambda *a: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(steamstub, '_python_unstub', lambda *a: (_ for _ in ()).throw(AssertionError()))
     assert not steamstub.unstub(76, str(tmp_path))['success']
 
 
@@ -168,8 +168,8 @@ def test_apply_logs_native_failure_and_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(steamstub, 'ensure_native', lambda: True)
     monkeypatch.setattr(steamstub.subprocess, 'run', lambda *a, **k:
                         subprocess.CompletedProcess(a, 1, 'wine failed', 'missing runtime'))
-    monkeypatch.setattr(steamstub, '_legacy_unstub', lambda *a:
-                        {'success': False, 'error': 'download HTTP 404'})
+    monkeypatch.setattr(steamstub, '_python_unstub', lambda *a:
+                        {'success': False, 'error': 'Python dependency setup failed'})
     result = steamstub.unstub(74, str(tmp_path), 'Game')
     assert not result['success']
     joined = '\n'.join(messages)
@@ -177,7 +177,7 @@ def test_apply_logs_native_failure_and_fallback(monkeypatch, tmp_path):
     assert 'exit=1 stubRemaining=True' in joined
     assert 'wine failedmissing runtime' in joined
     assert 'executable unchanged' in joined
-    assert 'download HTTP 404' in joined
+    assert 'Python dependency setup failed' in joined
 
 
 def test_missing_native_archive_is_logged(monkeypatch):
@@ -268,3 +268,118 @@ def test_default_mapping_used_when_no_game_override(monkeypatch, tmp_path):
     monkeypatch.setattr(steam, '_all_library_paths', lambda: [str(root)])
     monkeypatch.setattr(compat, 'get_proton_mapping', lambda appid: {'toolName': '' if appid else 'proton_experimental'})
     assert steamstub._selected_runtime_env(74)['WINE_BIN'] == str(install / 'files/bin/wine')
+
+
+def test_bundled_python_fallback_preserves_unfix(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    original = exe.read_bytes()
+    monkeypatch.setattr(steamstub, 'ensure_native', lambda: False)
+    monkeypatch.setattr(steamstub, '_ensure_python_runtime', lambda: '/isolated/bin/python3')
+    clean = bytearray(512)
+    clean[:2] = b'MZ'
+    struct.pack_into('<I', clean, 0x3c, 0x80)
+    clean[0x80:0x84] = b'PE\0\0'
+    clean = bytes(clean)
+    def run(args, timeout):
+        assert args[:2] == ['/isolated/bin/python3', steamstub._python_script()]
+        assert args[2] == str(exe)
+        assert args[3] == '--output'
+        assert exe.read_bytes() == original
+        Path(args[4]).write_bytes(clean)
+        return subprocess.CompletedProcess(args, 0, 'unpacked successfully', '')
+    monkeypatch.setattr(steamstub, '_python_command', run)
+    result = steamstub.unstub(91, str(tmp_path))
+    assert result['success'] and result['method'] == 'python'
+    assert exe.read_bytes() == clean
+    assert not list(tmp_path.glob('.slsdeck-steamless-*'))
+    assert not Path(str(exe) + '.original').exists()
+    monkeypatch.setattr(slssteam, 'purge_pins_for_app', lambda _: None)
+    fixes._unfix_worker(91, str(tmp_path), None, preserve_unlockers=True)
+    assert fixes._get_unfix_state(91)['status'] == 'done'
+    assert exe.read_bytes() == original
+
+
+def test_python_rejects_failed_or_still_wrapped_output(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    original = exe.read_bytes()
+    monkeypatch.setattr(steamstub, 'ensure_native', lambda: False)
+    monkeypatch.setattr(steamstub, '_ensure_python_runtime', lambda: '/isolated/bin/python3')
+    for returncode, output in [(2, b'MZ-clean'), (0, original), (0, b'not-an-executable')]:
+        def run(args, timeout):
+            Path(args[-1]).write_bytes(output)
+            return subprocess.CompletedProcess(args, returncode, 'variant unsupported', '')
+        monkeypatch.setattr(steamstub, '_python_command', run)
+        assert not steamstub.unstub(92, str(tmp_path))['success']
+        assert exe.read_bytes() == original
+        assert Path(str(exe) + fixes.ORIG_SUFFIX).read_bytes() == original
+    assert not list(tmp_path.glob('.slsdeck-steamless-*'))
+
+
+def test_python_dependency_failure_does_not_modify_game(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    original = exe.read_bytes()
+    monkeypatch.setattr(steamstub, 'ensure_native', lambda: False)
+    def failed():
+        raise RuntimeError('dependency installation failed')
+    monkeypatch.setattr(steamstub, '_ensure_python_runtime', failed)
+    result = steamstub.unstub(93, str(tmp_path))
+    assert not result['success'] and 'dependency installation failed' in result['error']
+    assert exe.read_bytes() == original
+
+
+def test_native_runtime_discovery_failure_uses_python(monkeypatch, tmp_path):
+    exe = setup_game(monkeypatch, tmp_path)
+    monkeypatch.setattr(steamstub, 'ensure_native', lambda: True)
+    def no_runtime(_):
+        raise RuntimeError('No selected Wine runtime')
+    monkeypatch.setattr(steamstub, '_selected_runtime_env', no_runtime)
+    calls = []
+    monkeypatch.setattr(steamstub, '_python_unstub', lambda *a: calls.append(a) or {'success': True, 'method': 'python'})
+    result = steamstub.unstub(94, str(tmp_path))
+    assert result['success'] and result['method'] == 'python'
+    assert 'No selected Wine runtime' in result['nativeLog']
+    assert calls == [(94, str(tmp_path), str(exe))]
+
+
+def test_python_runtime_setup_and_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(steamstub, '_dir', lambda: str(tmp_path))
+    calls = []
+    ready = False
+    python = tmp_path / 'python-env/bin/python3'
+    def run(args, timeout=180):
+        nonlocal ready
+        calls.append(args)
+        if args[1:3] == ['-m', 'venv']:
+            python.parent.mkdir(parents=True)
+            python.touch()
+        if 'pip' in args:
+            assert 'pycryptodome==3.23.0' in args and 'capstone==5.0.6' in args
+            ready = True
+        rc = 1 if '-c' in args and not ready else 0
+        return subprocess.CompletedProcess(args, rc, '', '')
+    monkeypatch.setattr(steamstub, '_python_command', run)
+    assert steamstub._ensure_python_runtime() == str(python)
+    assert sum('pip' in args for args in calls) == 1
+    calls.clear()
+    assert steamstub._ensure_python_runtime() == str(python)
+    assert len(calls) == 1 and '-c' in calls[0]
+
+
+def test_python_command_clears_decky_python_environment(monkeypatch):
+    calls = []
+    monkeypatch.setattr(slssteam, '_wrap_as_user', lambda args: ['sudo', '-u', 'deck'] + args)
+    monkeypatch.setattr(steamstub.subprocess, 'run', lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, '', ''))
+    steamstub._python_command(['/usr/bin/python3', '-m', 'venv', '/user/env'])
+    assert calls[0][:8] == ['sudo', '-u', 'deck', 'env', '-u', 'PYTHONHOME', '-u', 'PYTHONPATH']
+
+
+def test_native_timeout_never_starts_fallback(monkeypatch, tmp_path):
+    setup_game(monkeypatch, tmp_path)
+    monkeypatch.setattr(steamstub, 'ensure_native', lambda: True)
+    monkeypatch.setattr(steamstub, '_selected_runtime_env', lambda _: {})
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired('native', 900)
+    monkeypatch.setattr(steamstub.subprocess, 'run', timeout)
+    monkeypatch.setattr(steamstub, '_python_unstub', lambda *a: (_ for _ in ()).throw(AssertionError('fallback must not run')))
+    result = steamstub.unstub(95, str(tmp_path))
+    assert not result['success'] and 'timed out' in result['error']

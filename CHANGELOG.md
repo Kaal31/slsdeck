@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.81 — Bundled Python Steamless fallback
+
+- Replace the retired Steamless AIO script download with a pinned, bundled ASSella Python implementation.
+- Keep Moon’s helper first; fall back only while the original executable is unchanged.
+- Set up Python dependencies in a separate user environment on first fallback use, and validate temporary output before replacing the executable.
+- Preserve normal SteamStub logging and Un-fix recovery.
+
 ## 0.9.80 — SteamStub Proton runtime
 
 - Resolve the selected Proton runtime across Steam libraries and custom compatibility tools.

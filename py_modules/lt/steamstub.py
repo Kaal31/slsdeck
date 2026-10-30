@@ -1,4 +1,4 @@
-"""SteamStub processing: bundled Moon helper, with legacy AIO fallback.
+"""SteamStub processing: bundled Moon helper, with bundled Python fallback.
 
 Steam wraps many game .exes in SteamStub DRM — a ``.bind`` PE section that
 decrypts the real code at launch and does an ownership check. SLSsteam doesn't
@@ -6,7 +6,7 @@ strip it, so some SteamStub titles fail to launch under an added game or fight
 achievement / mod tools.
 
 The manual action runs Moon's bundled Steamless CLI and DLL plugins using the
-selected Proton's Wine, with the legacy AIO method retained as a fallback.
+selected Proton's Wine, with bundled ASSella Python Steamless as a fallback.
 Original executables are journaled so Un-fix can restore them.
 """
 from __future__ import annotations
@@ -15,47 +15,58 @@ import os
 import struct
 import threading
 import subprocess
+import stat
+import tempfile
 from typing import Any, Dict
 
 from .logger import logger
 from .paths import get_user_home
-from .httpc import ensure_http_client
 from .utils import chown_to_user
 from . import slssteam
 from . import fixes as _fixes
 
-_AIO_URL = "https://raw.githubusercontent.com/niwia/ASSella/main/steamless-aio.sh"
-_UA = "SLSDeck/steamstub"
-
-
 def _dir() -> str:
     d = os.path.join(get_user_home(), ".local", "share", "SLSDeck", "steamless")
     os.makedirs(d, exist_ok=True)
+    chown_to_user(d, recursive=False)
     return d
 
 
-def _script() -> str:
-    return os.path.join(_dir(), "steamless-aio.sh")
+def _python_script() -> str:
+    return os.path.join(os.path.dirname(__file__), "_vendor", "steamless.py")
 
 
-def ensure_script(force: bool = False) -> Dict[str, Any]:
-    p = _script()
-    if not force and os.path.isfile(p) and os.path.getsize(p) > 2000:
-        return {"success": True, "path": p, "cached": True}
-    try:
-        client = ensure_http_client("steamstub: aio")
-        r = client.get(_AIO_URL, headers={"User-Agent": _UA}, follow_redirects=True, timeout=60)
-        if r.status_code != 200 or not r.content:
-            return {"success": False, "error": f"download HTTP {r.status_code}"}
-        with open(p, "wb") as fh:
-            fh.write(r.content)
-        try:
-            chown_to_user(_dir(), recursive=True)
-        except Exception:
-            pass
-        return {"success": True, "path": p, "cached": False}
-    except Exception as exc:
-        return {"success": False, "error": str(exc)}
+def _python_command(args, timeout=180):
+    # Use system Python, not Decky's frozen executable or its Python environment.
+    command = slssteam._wrap_as_user(["env", "-u", "PYTHONHOME", "-u", "PYTHONPATH"] + args)
+    return subprocess.run(command, env=slssteam._rich_env(), capture_output=True,
+                          text=True, timeout=timeout)
+
+
+def _ensure_python_runtime() -> str:
+    """Create an isolated desktop-user venv only when fallback is requested."""
+    script = _python_script()
+    if not os.path.isfile(script):
+        raise RuntimeError("Bundled Python Steamless is missing; reinstall SLSDeck")
+    runtime = os.path.join(_dir(), "python-env")
+    python = os.path.join(runtime, "bin", "python3")
+    if not os.path.isfile(python):
+        logger.log(f"SteamStub Python setup: creating isolated environment at {runtime!r}")
+        result = _python_command(["/usr/bin/python3", "-m", "venv", runtime])
+        if result.returncode:
+            raise RuntimeError(f"Python Steamless environment setup failed: {result.stderr[-1500:]}")
+    check = _python_command([python, "-c", "from Crypto.Cipher import AES; from capstone import Cs"])
+    if check.returncode:
+        logger.log("SteamStub Python setup: installing pycryptodome and capstone (first use)")
+        result = _python_command([python, "-m", "pip", "install", "--disable-pip-version-check",
+                                  "--only-binary=:all:", "pycryptodome==3.23.0", "capstone==5.0.6"], timeout=300)
+        logger.log(f"SteamStub Python dependency setup: exit={result.returncode} outputTail={(result.stdout + result.stderr)[-2000:]!r}")
+        if result.returncode:
+            raise RuntimeError("Python Steamless dependency setup failed; see plugin log (first use needs network access)")
+        check = _python_command([python, "-c", "from Crypto.Cipher import AES; from capstone import Cs"])
+        if check.returncode:
+            raise RuntimeError(f"Python Steamless dependencies cannot load: {check.stderr[-1500:]}")
+    return python
 
 
 def has_steamstub(exe_path: str) -> bool:
@@ -201,47 +212,35 @@ def status(install_path: str) -> Dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-def _legacy_unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
-    if not install_path or not os.path.isdir(install_path):
-        return {"success": False, "error": "game is not installed on disk"}
-    r = _fixes.find_main_exe(install_path)
-    if not r.get("success") or not r.get("exe"):
-        return {"success": False, "error": "couldn't find the game's main executable"}
-    exe = r["exe"]
-    if not has_steamstub(exe) and not os.path.isfile(exe + ".original"):
-        return {"success": False, "notStub": True,
-                "error": "this exe has no SteamStub (.bind) — nothing to remove"}
-    ens = ensure_script()
-    if not ens.get("success"):
-        return {"success": False, "error": ens.get("error", "couldn't fetch Steamless")}
-
-    rel = os.path.relpath(exe, install_path).replace("\\", "/")
+def _python_unstub(appid, install_path: str, exe: str) -> Dict[str, Any]:
+    """Caller has journaled the original and holds _LOCK. Replace only verified output."""
     try:
-        _fixes._stash_original(install_path, rel)   # .slsdeck-orig for Un-fix
-    except Exception:
-        pass
-
-    env = slssteam._rich_env()
-    cmd = slssteam._wrap_as_user(["bash", _script(), exe])
-    logger.log(f"SteamStub legacy run: appid={appid} exe={exe!r} timeout=900s")
-    try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=900)
+        python = _ensure_python_runtime()
+        with tempfile.TemporaryDirectory(prefix=".slsdeck-steamless-", dir=install_path) as work:
+            chown_to_user(work, recursive=False)
+            output = os.path.join(work, "unpacked.exe")
+            logger.log(f"SteamStub Python run: appid={appid} exe={exe!r} script={_python_script()!r} timeout=900s")
+            proc = _python_command([python, _python_script(), exe, "--output", output], timeout=900)
+            log = ((proc.stdout or "") + (proc.stderr or ""))[-4000:]
+            clean = False
+            if proc.returncode == 0 and not os.path.islink(output) and os.path.isfile(output):
+                with open(output, "rb") as fh:
+                    head = fh.read(65536)
+                    pe_offset = struct.unpack_from("<I", head, 0x3c)[0] if len(head) >= 64 else 0
+                    clean = (head[:2] == b"MZ" and pe_offset >= 64
+                             and head[pe_offset:pe_offset + 4] == b"PE\0\0"
+                             and not has_steamstub(output))
+            logger.log(f"SteamStub Python result: appid={appid} exit={proc.returncode} cleanOutput={clean} outputTail={log!r}")
+            if not clean:
+                return {"success": False, "method": "python", "error": "Bundled Python Steamless did not produce a clean executable; original retained", "log": log}
+            os.chmod(output, stat.S_IMODE(os.stat(exe).st_mode))
+            chown_to_user(output, recursive=False)
+            os.replace(output, exe)
+            return {"success": True, "method": "python", "exe": exe,
+                    "note": "Applied bundled Python Steamless. Restorable through Un-fix.", "log": log}
     except Exception as exc:
-        return {"success": False, "error": f"Steamless run failed: {exc}"}
-    out = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
-    logger.log(f"SteamStub legacy result: appid={appid} exit={proc.returncode} stubRemaining={has_steamstub(exe)} outputTail={out!r}")
-
-    if proc.returncode == 0 and not has_steamstub(exe):
-        try:
-            chown_to_user(exe, recursive=False)
-        except Exception:
-            pass
-        return {"success": True, "exe": exe,
-                "note": "SteamStub removed. Original kept (restorable via Un-fix). Restart Steam.",
-                "log": out}
-    return {"success": False,
-            "error": "Steamless didn't remove the stub — it may be an unsupported variant (see log).",
-            "log": out}
+        logger.warn(f"SteamStub Python failure: appid={appid} {type(exc).__name__}: {exc}")
+        return {"success": False, "method": "python", "error": str(exc)}
 
 
 def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
@@ -285,26 +284,35 @@ def _unstub_impl(appid, install_path: str, game_name: str = "") -> Dict[str, Any
         chown_to_user(record, recursive=False)
         if not ensure_native():
             logger.warn(f"SteamStub fallback: appid={appid} native helper unavailable")
-            return _legacy_unstub(appid, install_path, game_name)
-        script, kit = native_paths()
-        env = slssteam._rich_env()
-        helper_env = {"STEAMLESS_HOME": kit, **_selected_runtime_env(int(appid))}
-        # sudo resets the caller environment. Set overrides AFTER changing user.
-        command = slssteam._wrap_as_user(["env"] + [f"{key}={value}" for key, value in helper_env.items()]
-                                         + ["bash", script, exe])
-        logger.log(f"SteamStub native run: appid={appid} script={script!r} exe={exe!r} timeout=900s")
-        proc = subprocess.run(command,
-                              env=env, capture_output=True, text=True, timeout=900)
-        output = ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
-        logger.log(f"SteamStub native result: appid={appid} exit={proc.returncode} stubRemaining={has_steamstub(exe)} outputTail={output!r}")
-        if proc.returncode not in (0, 2) or has_steamstub(exe):
+            return _python_unstub(appid, install_path, exe)
+        try:
+            script, kit = native_paths()
+            env = slssteam._rich_env()
+            helper_env = {"STEAMLESS_HOME": kit, **_selected_runtime_env(int(appid))}
+            # sudo resets the caller environment. Set overrides AFTER changing user.
+            command = slssteam._wrap_as_user(["env"] + [f"{key}={value}" for key, value in helper_env.items()]
+                                             + ["bash", script, exe])
+            logger.log(f"SteamStub native run: appid={appid} script={script!r} exe={exe!r} timeout=900s")
+            proc = subprocess.run(command,
+                                  env=env, capture_output=True, text=True, timeout=900)
+            output = ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
+            logger.log(f"SteamStub native result: appid={appid} exit={proc.returncode} stubRemaining={has_steamstub(exe)} outputTail={output!r}")
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            logger.warn(f"SteamStub native timeout: appid={appid}; fallback skipped while helper termination is uncertain")
+            return {"success": False, "error": "Native SteamStub helper timed out; fallback skipped. Restore before retrying."}
+        except Exception as exc:
+            exit_code = -1
+            output = f"Native helper could not run: {type(exc).__name__}: {exc}"
+            logger.warn(f"SteamStub native failure: appid={appid} {output}")
+        if exit_code not in (0, 2) or has_steamstub(exe):
             # Fall back only if native processing left the input byte-for-byte intact.
             import filecmp
             if filecmp.cmp(exe, exe + _fixes.ORIG_SUFFIX, shallow=False):
                 logger.warn(f"SteamStub fallback: appid={appid} native processing unsuccessful; executable unchanged")
-                legacy = _legacy_unstub(appid, install_path, game_name)
-                legacy["nativeLog"] = output
-                return legacy
+                fallback = _python_unstub(appid, install_path, exe)
+                fallback["nativeLog"] = output
+                return fallback
             return {"success": False, "error": "Native helper failed; restore before retrying", "log": output}
         # The explicit fix is owned by SLSDeck. Avoid Moon's default-mode restore
         # consuming its duplicate backup on the next launch; our journal owns recovery.
