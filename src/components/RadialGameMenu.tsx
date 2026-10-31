@@ -1,5 +1,4 @@
-import { DialogButton, Focusable, Navigation } from "@decky/ui";
-import { createRoot } from "react-dom/client";
+import { DialogButton, Focusable, Navigation, showModal, ModalRoot } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { deleteLua, hasLua, startAdd } from "../api";
@@ -73,7 +72,7 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     window.addEventListener("slsdeck-wheel-cancel", onCancel);
     return () => {window.removeEventListener("slsdeck-wheel-select", onSelect); window.removeEventListener("slsdeck-wheel-release", onRelease); window.removeEventListener("slsdeck-wheel-cancel", onCancel);};
   }, [closeModal]);
-  return <div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }}
+  return <ModalRoot closeModal={closeModal}><div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }}
     style={{ position: "fixed", inset: 0, zIndex: 2147483640, display: "flex", alignItems: "center",
       justifyContent: "center", background: "rgba(3,9,17,.73)", backdropFilter: "blur(9px)",
       color: "#eff8ff", fontFamily: "'Motiva Sans', Arial, sans-serif" }}>
@@ -144,13 +143,8 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     <div style={{position:"absolute",bottom:16,right:26,fontSize:12,color:"#c7d7e9",opacity:.85}}>
       ◀ ▶ Navigate　 A Select　 B Cancel
     </div>
-  </div>;
+  </div></ModalRoot>;
 }
 export function openRadialGameMenu(appid: number, gameName?: string) {
-  const container = document.createElement("div");
-  container.dataset.slsdeckRadial = "1";
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const close = () => { queueMicrotask(() => { root.unmount(); container.remove(); }); };
-  root.render(<RadialGameMenu appid={appid} gameName={gameName} closeModal={close} />);
+  showModal(<RadialGameMenu appid={appid} gameName={gameName} />);
 }
