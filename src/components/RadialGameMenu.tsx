@@ -6,19 +6,16 @@ import { deleteLua, hasLua, startAdd } from "../api";
 import { markSlsAddPending } from "../lib/badges";
 import { FixPicker } from "./FixPicker";
 
-type Slice = { key: string; label: string; symbol: string; angle: number };
+type Slice = { key: string; label: string; subtitle: string; symbol: string; angle: number };
 const slices: Slice[] = [
-  { key: "add", label: "Add Game", symbol: "+", angle: -54 },
-  { key: "fixes", label: "Fixes", symbol: "⚒", angle: 18 },
-  { key: "tokeer", label: "Tokeer", symbol: "◈", angle: 90 },
-  { key: "cloud", label: "Cloud Saves", symbol: "☁", angle: 162 },
-  { key: "tools", label: "Tools", symbol: "⚙", angle: 234 },
+  { key: "add", label: "Add / Remove", subtitle: "Manage this game", symbol: "▣", angle: -90 },
+  { key: "cloud", label: "Cloud Saves", subtitle: "Manage saves", symbol: "▤", angle: -30 },
+  { key: "tools", label: "Tools", subtitle: "Extra utilities", symbol: "▣", angle: 30 },
+  { key: "cancel", label: "Cancel", subtitle: "Close menu", symbol: "✕", angle: 90 },
+  { key: "tokeer", label: "Tokeer", subtitle: "DLC & depots", symbol: "▥", angle: 150 },
+  { key: "fixes", label: "Fixes", subtitle: "Patches & tweaks", symbol: "⚒", angle: 210 },
 ];
-const radius = 145;
-const baseButton = { position: "absolute" as const, width: 112, minWidth: 112, height: 76, padding: 4,
-  border: "0", borderRadius: 10, color: "#f0f8ff", background: "transparent",
-  display: "flex", flexDirection: "column" as const, alignItems: "center" as const,
-  justifyContent: "center" as const, boxShadow: "none" };
+const wheelRadius = 204;
 export function RadialGameMenu({ appid, gameName, closeModal }: {
   appid: number; gameName?: string; closeModal?: () => void;
 }) {
@@ -47,7 +44,8 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   useEffect(() => { let live = true; void hasLua(appid).then(v => { if (live) setInstalled(!!v.exists); }).catch(()=>{}); return () => { live = false; }; }, [appid]);
   const run = async (key: string) => {
-    if (key === "fixes") { setView("fixes"); return; }
+    if (key === "cancel") { closeModal?.(); return; }
+    if (key === "fixes") { setView(view === "fixes" ? "" : "fixes"); return; }
     if (key === "tools" || key === "cloud" || key === "tokeer") { setView(key); return; }
     if (busy) return;
     setBusy(true);
@@ -75,46 +73,76 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     window.addEventListener("slsdeck-wheel-cancel", onCancel);
     return () => {window.removeEventListener("slsdeck-wheel-select", onSelect); window.removeEventListener("slsdeck-wheel-release", onRelease); window.removeEventListener("slsdeck-wheel-cancel", onCancel);};
   }, [closeModal]);
-  return <div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }} style={{ position: "fixed", inset: 0, zIndex: 2147483640, display: "grid", placeItems: "center", background: "rgba(3,10,20,.76)", backdropFilter: "blur(7px)" }}>
-    <div style={{ width: 540, maxWidth: "90vw", color: "#eff8ff", background: "transparent" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-        <strong>{gameName || `AppID ${appid}`}</strong>
-        <span style={{ opacity: .65 }}>SLSDeck · radial menu test</span>
-      </div>
-      {view ? <div style={{ minHeight: 335, background: "#142435", borderRadius: 14, padding: 16 }}>
-        <DialogButton onClick={() => setView("")}>← Back to wheel</DialogButton>
-        {view === "fixes" ? <FixPicker appid={appid} onClose={closeModal} /> :
-        <div style={{ marginTop: 24 }}>
-          <h3>{view === "cloud" ? "Cloud Saves" : view === "tokeer" ? "Tokeer" : "Tools"}</h3>
-          <p>Open this game's SLSDeck actions from the existing Quick Access panel.</p>
-          <DialogButton onClick={() => { closeModal?.(); Navigation.CloseSideMenus(); }}>Close</DialogButton>
-        </div>}
-      </div> :
-      <Focusable style={{ position: "relative", height: 405, width: "100%", borderRadius: 18,
-        background: "radial-gradient(circle at 50% 51%,#243e58 0%,#0e1b2c 67%,#08121d 100%)" }} flow-children="grid">
-        <svg viewBox="0 0 400 400" width="400" height="400" style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }}>
-          {slices.map((slice, i) => {
-            const start = (-90 + i*72) * Math.PI / 180, end = (-90 + (i+1)*72) * Math.PI / 180;
-            const at = (r:number,a:number) => [200+r*Math.cos(a),200+r*Math.sin(a)];
-            const a=at(79,start), b=at(190,start), c=at(190,end), d=at(79,end);
-            return <path key={slice.key} d={`M${a} L${b} A190 190 0 0 1 ${c} L${d} A79 79 0 0 0 ${a} Z`}
-              fill={selected === i ? "#3b92c5" : "#142b45"} stroke={selected === i ? "#d6f5ff" : "#7398b3"} strokeWidth={selected === i ? "3" : "1.6"} opacity=".92"/>;
-          })}
-          <circle cx="200" cy="200" r="68" fill="#091725" stroke="#80b8ed" strokeWidth="2"/>
-          <text x="200" y="192" textAnchor="middle" fontSize="22" fill="white">🎮</text>
-          <text x="200" y="220" textAnchor="middle" fontSize="17" fill="white">SLSDeck</text>
-        </svg>
-        {slices.map((slice) => {
-          const a=slice.angle*Math.PI/180;
-          return <DialogButton key={slice.key} disabled={busy} onClick={() => void run(slice.key)}
-            style={{ ...baseButton, background: "transparent", textShadow: selected === slices.indexOf(slice) ? "0 0 12px #b6eaff" : "none", left:`calc(50% + ${Math.cos(a)*radius}px - 56px)`,
-              top:`calc(50% + ${Math.sin(a)*radius}px - 38px)` }}>
-            <span style={{ fontSize: 26 }}>{slice.key==="add"&&installed?"−":slice.symbol}</span>
-            <span>{slice.key==="add"&&installed?"Remove Game":slice.label}</span>
-          </DialogButton>;
+  return <div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }}
+    style={{ position: "fixed", inset: 0, zIndex: 2147483640, display: "flex", alignItems: "center",
+      justifyContent: "center", background: "rgba(3,9,17,.73)", backdropFilter: "blur(9px)",
+      color: "#eff8ff", fontFamily: "'Motiva Sans', Arial, sans-serif" }}>
+    <div style={{ position: "relative", width: "min(590px,92vw)", height: "min(590px,85vh)", maxHeight: 590,
+      display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <svg viewBox="0 0 480 480" width="100%" height="100%" style={{ position: "absolute", inset: 0,
+        filter: "drop-shadow(0 12px 32px rgba(0,0,0,.8))" }}>
+        <defs>
+          <radialGradient id="sls-radial-glass"><stop offset="0" stopColor="#294761" stopOpacity=".88"/><stop offset="1" stopColor="#0b192b" stopOpacity=".97"/></radialGradient>
+          <linearGradient id="sls-radial-active" x1="0%" y1="0%" x2="100%" y2="100%"><stop stopColor="#58b4ef"/><stop offset="1" stopColor="#125b99"/></linearGradient>
+        </defs>
+        <circle cx="240" cy="240" r="230" fill="none" stroke="#3e769b" strokeOpacity=".55" strokeWidth="1.5"/>
+        {slices.map((slice, i) => {
+          const a1 = (slice.angle - 30) * Math.PI / 180;
+          const a2 = (slice.angle + 30) * Math.PI / 180;
+          const polar = (r: number, a: number) => [240+r*Math.cos(a), 240+r*Math.sin(a)];
+          const a=polar(91,a1), b=polar(223,a1), c=polar(223,a2), d=polar(91,a2);
+          const shape = "M"+a.join(" ")+" L"+b.join(" ")+" A223 223 0 0 1 "+c.join(" ")+" L"+d.join(" ")+" A91 91 0 0 0 "+a.join(" ")+" Z";
+          return <path key={slice.key} d={shape} fill={selected===i?"url(#sls-radial-active)":"url(#sls-radial-glass)"}
+            stroke={selected===i?"#d9f4ff":"#6c97b6"} strokeWidth={selected===i?3:1.1}
+            onMouseEnter={() => setSelected(i)} onClick={() => void run(slice.key)}
+            style={{ cursor:"pointer", filter:selected===i?"drop-shadow(0 0 11px #4bc0ff)":"none" }}/>;
         })}
-      </Focusable>}
-      <p style={{ opacity: .65, fontSize: 12 }}>Choose a segment using touch, mouse, or controller focus. B closes the dialog.</p>
+        <circle cx="240" cy="240" r="88" fill="#07121e" stroke="#a1c7e4" strokeWidth="2.5"/>
+        <circle cx="240" cy="240" r="83" fill="#0c2338"/>
+        <foreignObject x="173" y="171" width="134" height="134">
+          <div style={{width:"100%",height:"100%",borderRadius:"50%",overflow:"hidden",background:"#132941",
+            display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <img src={"https://cdn.cloudflare.steamstatic.com/steam/apps/"+appid+"/library_600x900.jpg"}
+              alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+          </div>
+        </foreignObject>
+      </svg>
+      {slices.map((slice, i) => {
+        const a = slice.angle * Math.PI / 180;
+        const x = 50 + Math.cos(a)*35, y = 50 + Math.sin(a)*35;
+        return <button key={slice.key} disabled={busy} onMouseEnter={() => setSelected(i)}
+          onFocus={() => setSelected(i)} onClick={() => void run(slice.key)}
+          style={{ position:"absolute",left:x+"%",top:y+"%",transform:"translate(-50%,-50%)",
+            width:"28%", minHeight:75,padding:2,border:0,background:"transparent",
+            color:"#edf7ff",textAlign:"center",cursor:"pointer",outline:"none",
+            textShadow:selected===i?"0 0 12px #9dddff":"0 1px 5px #000",
+            display:"flex",alignItems:"center",flexDirection:"column",justifyContent:"center",gap:3 }}>
+          <span style={{fontSize:22,lineHeight:1}}>{slice.symbol}</span>
+          <span style={{fontSize:14,fontWeight:700}}>{slice.key==="add"&&installed?"Remove Game":slice.label}</span>
+          <span style={{fontSize:10,color:"#b0c3d3"}}>{slice.subtitle}</span>
+        </button>;
+      })}
+      <div style={{ position:"absolute", top:"62%",left:"50%",transform:"translateX(-50%)",
+        fontWeight:700,fontSize:12,letterSpacing:1,color:"#f7ead7",textShadow:"0 2px 4px #000",pointerEvents:"none" }}>
+        {gameName || "SLSDeck"}
+      </div>
+      {view==="fixes" && <div style={{ position:"absolute",left:"85%",top:"29%",width:270,zIndex:2,
+        background:"rgba(9,24,39,.97)",border:"1px solid #78b9e2",borderRadius:12,
+        padding:14,boxShadow:"0 12px 35px #000b" }}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <strong>Fixes</strong><DialogButton onClick={() => setView("")}>✕</DialogButton>
+        </div>
+        <FixPicker appid={appid} onClose={closeModal}/>
+      </div>}
+      {view && view!=="fixes" && <div style={{ position:"absolute",left:"85%",top:"29%",width:245,zIndex:2,
+        background:"rgba(9,24,39,.97)",border:"1px solid #78b9e2",borderRadius:12,padding:16 }}>
+        <strong>{view==="cloud"?"Cloud Saves":view==="tokeer"?"Tokeer":"Tools"}</strong>
+        <p style={{fontSize:12}}>Open the game's actions from SLSDeck Quick Access.</p>
+        <DialogButton onClick={() => setView("")}>Back to wheel</DialogButton>
+      </div>}
+    </div>
+    <div style={{position:"absolute",bottom:16,right:26,fontSize:12,color:"#c7d7e9",opacity:.85}}>
+      ◀ ▶ Navigate　 A Select　 B Cancel
     </div>
   </div>;
 }
