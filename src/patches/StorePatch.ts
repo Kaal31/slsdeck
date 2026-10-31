@@ -91,7 +91,7 @@ function evaluate(expr: string): void {
 export function storeWheelControl(command: "open" | "select" | "release" | "cancel", index = -1): void {
   if (!getStoreAppId() || !wsReady || storeDisabled) return;
   const script = command === "open" ? "document.querySelector('#lt-store-bar .lt-btn:last-child')?.click()" :
-    command === "select" ? `(function(){var wheel=document.getElementById('lt-store-wheel');if(!wheel)return;wheel.dataset.selected='${index}';wheel.querySelectorAll('[data-lt-wheel-index]').forEach(function(b){b.style.background=b.dataset.ltWheelIndex==='${index}'?'#356c9b':'#172d43';});})()` :
+    command === "select" ? `(function(){var wheel=document.getElementById('lt-store-wheel');if(!wheel)return;wheel.__ltSelect&&wheel.__ltSelect(${index});})()` :
     command === "release" ? `(function(){var w=document.getElementById('lt-store-wheel');if(!w)return;var b=w.querySelector('[data-lt-wheel-index="' + ${index} + '"]');if(b)b.click();else w.remove();})()` :
     "document.getElementById('lt-store-wheel')?.remove()";
   evaluate(script);
@@ -178,23 +178,42 @@ function buildBar(appid: number, installed: boolean, fixAvailable: boolean): str
       var shade=document.createElement('div');shade.id='lt-store-wheel';
       shade.style.cssText='position:fixed;inset:0;z-index:2147483700;background:rgba(3,12,23,.82);display:grid;place-items:center;';
       var ring=document.createElement('div');
-      ring.style.cssText='position:relative;width:min(400px,82vw);height:min(400px,82vw);border:2px solid #8ac8ff;border-radius:50%;background:radial-gradient(circle,#263f55,#0c1928 65%);box-shadow:0 6px 40px #000;';
-      var mid=document.createElement('span');mid.textContent='SLSDeck';mid.style.cssText='position:absolute;top:47%;width:100%;text-align:center;color:white;font:bold 20px Arial;';ring.appendChild(mid);
+      ring.style.cssText='position:relative;width:min(420px,84vw);height:min(420px,84vw);border-radius:50%;background:radial-gradient(circle,#162a41,#081323 72%);box-shadow:0 8px 55px #000a;';
       var entries=[['＋','Add / Remove',${JSON.stringify(primaryAction)}],['⚒','Fixes','fix'],['⟳','Reload','reload']];
+      var svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('viewBox','0 0 400 400');svg.style.cssText='position:absolute;inset:0;width:100%;height:100%;';
+      function polar(radius,deg){var a=deg*Math.PI/180;return [200+radius*Math.cos(a),200+radius*Math.sin(a)];}
+      function wedge(i){var start=-150+i*120,end=start+120,a=polar(76,start),b=polar(195,start),c=polar(195,end),d=polar(76,end);
+        return 'M'+a.join(' ')+' L'+b.join(' ')+' A195 195 0 0 1 '+c.join(' ')+' L'+d.join(' ')+' A76 76 0 0 0 '+a.join(' ')+' Z';}
+      var paths=[];
       entries.forEach(function(entry,i){
-        var a=(-90+i*120)*Math.PI/180,btn=document.createElement('button');
+        var path=document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d',wedge(i));path.setAttribute('fill','#19334d');
+        path.setAttribute('stroke','#7baacf');path.setAttribute('stroke-width','2');
+        svg.appendChild(path);paths.push(path);
+      });
+      var core=document.createElementNS('http://www.w3.org/2000/svg','circle');
+      core.setAttribute('cx','200');core.setAttribute('cy','200');core.setAttribute('r','70');
+      core.setAttribute('fill','#0a1b2e');core.setAttribute('stroke','#9acdf5');core.setAttribute('stroke-width','2');svg.appendChild(core);
+      ring.appendChild(svg);
+      var mid=document.createElement('span');mid.textContent='SLSDeck';mid.style.cssText='position:absolute;top:46%;width:100%;text-align:center;color:white;font:bold 20px Arial;pointer-events:none;';ring.appendChild(mid);
+      function select(i){shade.dataset.selected=String(i);paths.forEach(function(p,n){p.setAttribute('fill',n===i?'#348ac1':'#19334d');p.setAttribute('stroke',n===i?'#e1f5ff':'#7baacf');});}
+      entries.forEach(function(entry,i){
+        var angle=(-90+i*120)*Math.PI/180,btn=document.createElement('button');
         btn.textContent=entry[0]+' '+entry[1];
-        btn.style.cssText='position:absolute;left:calc(50% + '+(Math.cos(a)*34)+'% - 54px);top:calc(50% + '+(Math.sin(a)*34)+'% - 28px);width:108px;min-height:56px;border:1px solid #89bbef;border-radius:14px;background:#172d43;color:white;font:bold 13px Arial;cursor:pointer;';
+        btn.style.cssText='position:absolute;left:calc(50% + '+(Math.cos(angle)*34)+'% - 53px);top:calc(50% + '+(Math.sin(angle)*34)+'% - 27px);width:106px;min-height:54px;border:0;border-radius:8px;background:transparent;color:white;font:bold 13px Arial;cursor:pointer;';
         btn.setAttribute('data-lt-wheel-index',String(i));
+        btn.onfocus=function(){select(i);};btn.onmouseenter=function(){select(i);};
         btn.onclick=function(){shade.remove();window.ltInvoke(JSON.stringify({action:entry[2],appid:${appid}}));};
         ring.appendChild(btn);
       });
+      shade.__ltSelect=select;
       var close=document.createElement('button');close.textContent='✕';close.setAttribute('aria-label','Close radial menu');
       close.style.cssText='position:absolute;right:8%;top:9%;width:36px;height:36px;border-radius:50%;background:#273f56;color:white;border:1px solid #89bbef;';
       close.onclick=function(){shade.remove();};ring.appendChild(close);
       shade.onclick=function(e){if(e.target===shade)shade.remove();};
       shade.appendChild(ring);document.body.appendChild(shade);ring.querySelector('button')?.focus();
-      shade.addEventListener('keydown',function(e){if(e.key==='Escape'){shade.remove();e.preventDefault();}});
+      shade.addEventListener('keydown',function(e){var i=Number(shade.dataset.selected||'0');if(e.key==='Escape'||e.key==='Backspace'){shade.remove();e.preventDefault();}else if(e.key==='ArrowRight'||e.key==='ArrowDown'){i=(i+1)%entries.length;select(i);ring.querySelectorAll('[data-lt-wheel-index]')[i].focus();e.preventDefault();}else if(e.key==='ArrowLeft'||e.key==='ArrowUp'){i=(i+entries.length-1)%entries.length;select(i);ring.querySelectorAll('[data-lt-wheel-index]')[i].focus();e.preventDefault();}else if(e.key==='Enter'){ring.querySelectorAll('[data-lt-wheel-index]')[i].click();e.preventDefault();}});
     };
     var st=document.createElement('div'); st.id='lt-store-status';
     st.textContent='SLSDeck';
