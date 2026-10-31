@@ -426,26 +426,45 @@ def injection_health() -> Dict[str, Any]:
     return {"success": True, "installed": bool(find_installed_lib()), "active": bool(active)}
 
 
+_RESTART_LOCK = threading.Lock()
+_ACTIVATION_LOCK = threading.Lock()
+
+
 def restart_steam_apply() -> Dict[str, Any]:
-    """Fully restart Steam so a steam.sh/injection change takes effect: clean
-    shutdown, wait, then relaunch THROUGH steam.sh as the desktop user. Unlike
-    the frontend's soft SteamClient.User.StartRestart (which relaunches the bare
-    client without re-execing steam.sh), this re-reads LD_AUDIT, so injection
-    actually turns on."""
+    """Fail safely on SteamOS; use a bounded desktop restart elsewhere.
+
+    SteamOS owns Steam through steam-launcher.service. Launching an additional
+    Steam process while its supervisor is shutting down can strand Gaming Mode.
+    We intentionally never force a restart there.
+    """
+    if not _RESTART_LOCK.acquire(blocking=False):
+        logger.warn("SLSsteam: restart request rejected: already in progress")
+        return {"success": False, "error": "Steam restart already in progress"}
     try:
-        cmd = _wrap_as_user([
-            "bash", "-lc",
-            "steam -shutdown >/dev/null 2>&1; sleep 5; nohup steam >/dev/null 2>&1 &",
-        ])
-        subprocess.Popen(
-            cmd, env=_rich_env(), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
+        if _steamos_unit_present():
+            logger.warn("SLSsteam: manual restart blocked on SteamOS; use normal UI restart or reboot")
+            return {"success": False, "requiresManualRestart": True,
+                    "error": "Gaming Mode restart must be performed via SteamOS; no shutdown was initiated"}
+        result = subprocess.run(
+            _wrap_as_user(["steam", "-shutdown"]),
+            env=_rich_env(), stdin=subprocess.DEVNULL, capture_output=True, timeout=12,
         )
-        return {"success": True}
+        logger.log(f"SLSsteam: desktop shutdown exit={result.returncode}")
+        if result.returncode != 0:
+            return {"success": False, "error": "Steam shutdown command failed"}
+        subprocess.Popen(
+            _wrap_as_user(["steam"]), env=_rich_env(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        return {"success": True, "method": "desktop"}
+    except subprocess.TimeoutExpired:
+        logger.warn("SLSsteam: desktop shutdown timed out; relaunch not attempted")
+        return {"success": False, "error": "Steam shutdown timed out; relaunch not attempted"}
     except Exception as exc:
-        logger.warn(f"SLSsteam: restart_steam_apply failed: {exc}")
+        logger.warn(f"SLSsteam: restart_steam_apply failed: {type(exc).__name__}")
         return {"success": False, "error": str(exc)}
+    finally:
+        _RESTART_LOCK.release()
 
 
 def _running_injected() -> bool:
@@ -3055,6 +3074,17 @@ def gamescope_hook_active() -> bool:
 
 
 def activate_injection() -> Dict[str, Any]:
+    """Serialize activation and reject repeated requests during an active change."""
+    if not _ACTIVATION_LOCK.acquire(blocking=False):
+        logger.warn("SLSDeck injection activation rejected: another activation is running")
+        return {"success": False, "error": "Injection activation already in progress"}
+    try:
+        return _activate_injection_locked()
+    finally:
+        _ACTIVATION_LOCK.release()
+
+
+def _activate_injection_locked() -> Dict[str, Any]:
     """Activate SLSsteam so Steam loads it.
 
     Exactly ONE boot-time injection path is installed. On SteamOS/Game Mode the
