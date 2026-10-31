@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 import pytest
 
 from py_modules.lt import slssteam
@@ -42,7 +43,7 @@ def test_wrapper_execution_record_and_failsafe(monkeypatch, tmp_path, attempts, 
     monkeypatch.setattr(slssteam, "_path_wrapper", lambda: str(tmp_path / "path/steam"))
     monkeypatch.setattr(slssteam, "_real_steam_binary", lambda: str(real))
     monkeypatch.setattr(slssteam, "_chown_file_to_user", lambda _: None)
-    boot_id = slssteam.Path("/proc/sys/kernel/random/boot_id").read_text().strip() if hasattr(slssteam, "Path") else __import__("pathlib").Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     (tmp_path / ".inject_fails").write_text(f"{boot_id}:{attempts}")
     if library:
         (tmp_path / "SLSsteam.so").touch()
