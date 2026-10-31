@@ -27,7 +27,7 @@ import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY } from "./lib/
 function startRadialController(): () => void {
   let held = false, opened = false, origin: "library" | "store" | null = null;
   let selected = -1, openedAt = 0;
-  const angles = [-54, 18, 90, 162, 234];
+  const angles = [-90, -30, 30, 90, 150, 210];
   const libraryGame = (): number | null => {
     const path = String((routerHook as any)?.m_history?.location?.pathname || window.location.pathname || "") +
       String(window.location.hash || "");
