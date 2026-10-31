@@ -3752,6 +3752,60 @@ def _moon_process_inventory(proc_root: str = "/proc", limit: int = 2048) -> Dict
     return result
 
 
+def _steam_loader_diagnostics(proc_root: str = "/proc", limit: int = 2048) -> Dict[str, Any]:
+    """Read-only Steam process audit; never return environment values or arguments."""
+    result: Dict[str, Any] = {"processes": [], "scanned": 0, "inaccessible": 0,
+                              "truncated": False}
+    try:
+        pids = sorted((p for p in os.listdir(proc_root) if p.isdigit()), key=int)
+    except OSError as exc:
+        result["error"] = type(exc).__name__
+        return result
+    result["truncated"] = len(pids) > limit
+    for pid in pids[:limit]:
+        base = os.path.join(proc_root, pid)
+        try:
+            with open(os.path.join(base, "comm"), encoding="utf-8", errors="replace") as fh:
+                comm = fh.read(128).strip()
+            if comm not in ("steam", "steamwebhelper"):
+                continue
+            entry: Dict[str, Any] = {"pid": int(pid), "comm": comm,
+                                      "elfClass": _process_elf_class(pid, proc_root)}
+            try:
+                with open(os.path.join(base, "status"), encoding="utf-8") as fh:
+                    status = fh.read(4096)
+                parent = re.search(r"^PPid:\s*(\d+)", status, re.MULTILINE)
+                entry["ppid"] = int(parent[1]) if parent else None
+            except OSError:
+                entry["ppid"] = None
+            try:
+                with open(os.path.join(base, "maps"), encoding="utf-8", errors="replace") as fh:
+                    maps = fh.read(4 * 1024 * 1024).lower()
+                entry["moonMapped"] = "slssteam.so" in maps
+                entry["auditMapped"] = "library-inject.so" in maps
+            except OSError:
+                entry["moonMapped"] = None
+                entry["auditMapped"] = None
+            try:
+                with open(os.path.join(base, "environ"), "rb") as fh:
+                    env = fh.read(2 * 1024 * 1024).split(b"\0")
+                audits = [v[len(b"LD_AUDIT="):] for v in env if v.startswith(b"LD_AUDIT=")]
+                entry["auditEnv"] = ("moon" if any(
+                    b"SLSsteam.so" in v or b"library-inject.so" in v for v in audits
+                ) else "other" if audits else "absent")
+            except OSError:
+                entry["auditEnv"] = "unavailable"
+            result["processes"].append(entry)
+        except OSError:
+            result["inaccessible"] += 1
+        result["scanned"] += 1
+    result["steam32Count"] = sum(p["elfClass"] == "ELF32" for p in result["processes"])
+    result["steam64Count"] = sum(p["elfClass"] == "ELF64" for p in result["processes"])
+    result["moonMappedCount"] = sum(p["moonMapped"] is True for p in result["processes"])
+    result["moonAuditEnvCount"] = sum(p["auditEnv"] == "moon" for p in result["processes"])
+    return result
+
+
 def _moon_log_evidence() -> Dict[str, Any]:
     """Only log metadata and recognized load results; never dump arbitrary log lines."""
     logp = _slssteam_log_path()
@@ -4137,6 +4191,8 @@ def get_diagnostics() -> Dict[str, Any]:
                        + "\n".join(out["launcherJournalTail"]))
         except Exception as exc:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
+    out["steamLoaderDiagnostics"] = _steam_loader_diagnostics()
+    logger.log(f"SLSDeck Steam loader diagnostics={out['steamLoaderDiagnostics']}")
     out["moonProcessInventory"] = _moon_process_inventory()
     out["moonLogEvidence"] = _moon_log_evidence()
     out["injectionFailureAnalysis"] = _injection_failure_analysis(
