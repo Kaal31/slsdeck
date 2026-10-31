@@ -1,0 +1,44 @@
+name: Build radial-menu-test
+
+on:
+  push:
+    branches: [radial-menu-test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile radial menu frontend
+        run: npm run build
+      - name: Check Python syntax
+        run: python3 -m compileall -q main.py py_modules
+      - name: Restore tracked auxiliary distribution files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Package Decky plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          cd artifact
+          zip -qr ../SLSDeckUniversal-radial-menu-test.zip SLSDeckUniversal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-radial-menu-test
+          path: SLSDeckUniversal-radial-menu-test.zip
+          if-no-files-found: error
+          retention-days: 14

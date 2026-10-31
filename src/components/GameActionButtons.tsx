@@ -5,6 +5,7 @@ import { AddState, deleteLua, getAddStatus, getHideOnOwned, getLibraryButtons, h
 import { shouldHideForOwned, isNonSteamShortcut } from "../lib/ownership";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
 import { FixPicker } from "./FixPicker";
+import { openRadialGameMenu } from "./RadialGameMenu";
 
 function FixModal({ appid, closeModal }: { appid: number; closeModal?: () => void }) {
   return (
@@ -154,6 +155,9 @@ export function GameActionButtons() {
             {busy === "adding" ? progress || "Adding…" : "＋ Add with SLSsteam"}
           </DialogButton>
         )}
+        <DialogButton style={big} disabled={working} onClick={() => appid != null && openRadialGameMenu(appid)}>
+          ◉ SLSDeck Wheel
+        </DialogButton>
         <DialogButton
           style={big}
           disabled={working}

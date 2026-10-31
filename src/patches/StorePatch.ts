@@ -87,6 +87,16 @@ function evaluate(expr: string): void {
   cdp("Runtime.evaluate", { expression: expr });
 }
 
+/** Global LT overlay control shares the Store's existing CDP transport. */
+export function storeWheelControl(command: "open" | "select" | "release" | "cancel", index = -1): void {
+  if (!getStoreAppId() || !wsReady || storeDisabled) return;
+  const script = command === "open" ? "document.querySelector('#lt-store-bar .lt-btn:last-child')?.click()" :
+    command === "select" ? `(function(){var wheel=document.getElementById('lt-store-wheel');if(!wheel)return;wheel.dataset.selected='${index}';wheel.querySelectorAll('[data-lt-wheel-index]').forEach(function(b){b.style.background=b.dataset.ltWheelIndex==='${index}'?'#356c9b':'#172d43';});})()` :
+    command === "release" ? `(function(){var w=document.getElementById('lt-store-wheel');if(!w)return;var b=w.querySelector('[data-lt-wheel-index="' + ${index} + '"]');if(b)b.click();else w.remove();})()` :
+    "document.getElementById('lt-store-wheel')?.remove()";
+  evaluate(script);
+}
+
 function setStatus(text: string): void {
   evaluate(`window.__ltStatus&&window.__ltStatus(${JSON.stringify(text)})`);
 }
@@ -103,6 +113,7 @@ function removeBar(): void {
       "try{if(window.__ltObs){window.__ltObs.disconnect();window.__ltObs=null;}}catch(e){}" +
       "var b=document.getElementById('lt-store-bar');if(b)b.remove();" +
       "var m=document.getElementById('lt-fix-modal');if(m)m.remove();" +
+      "var w=document.getElementById('lt-store-wheel');if(w)w.remove();" +
       "var n=document.querySelectorAll('.lt-sls-btn');for(var i=0;i<n.length;i++)n[i].remove();" +
       "var tb=document.querySelectorAll('[data-lt-btn]');for(var k=0;k<tb.length;k++){var el=tb[k];var s=el.querySelector('span')||el;var o=el.getAttribute('data-lt-orig');if(o!=null)s.textContent=o;var hh=el.getAttribute('data-lt-href');if(hh)el.setAttribute('href',hh);el.removeAttribute('data-lt-btn');}" +
       // un-hide Steam's own Add-to-Cart buttons we replaced
@@ -161,6 +172,30 @@ function buildBar(appid: number, installed: boolean, fixAvailable: boolean): str
     row.appendChild(mk(${JSON.stringify(primaryLabel)},${JSON.stringify(primaryAction)},${JSON.stringify(primaryVariant)}));
     var fixBtn=mk('Fix','fix','fix'); ${fixDisable} row.appendChild(fixBtn);
     row.appendChild(mk('\\u27F3 Reload','reload','ghost'));
+    var wheel=mk('◉ Wheel','wheel','ghost'); row.appendChild(wheel);
+    wheel.onclick=function(){
+      var previous=document.getElementById('lt-store-wheel');if(previous){previous.remove();return;}
+      var shade=document.createElement('div');shade.id='lt-store-wheel';
+      shade.style.cssText='position:fixed;inset:0;z-index:2147483700;background:rgba(3,12,23,.82);display:grid;place-items:center;';
+      var ring=document.createElement('div');
+      ring.style.cssText='position:relative;width:min(400px,82vw);height:min(400px,82vw);border:2px solid #8ac8ff;border-radius:50%;background:radial-gradient(circle,#263f55,#0c1928 65%);box-shadow:0 6px 40px #000;';
+      var mid=document.createElement('span');mid.textContent='SLSDeck';mid.style.cssText='position:absolute;top:47%;width:100%;text-align:center;color:white;font:bold 20px Arial;';ring.appendChild(mid);
+      var entries=[['＋','Add / Remove',${JSON.stringify(primaryAction)}],['⚒','Fixes','fix'],['⟳','Reload','reload']];
+      entries.forEach(function(entry,i){
+        var a=(-90+i*120)*Math.PI/180,btn=document.createElement('button');
+        btn.textContent=entry[0]+' '+entry[1];
+        btn.style.cssText='position:absolute;left:calc(50% + '+(Math.cos(a)*34)+'% - 54px);top:calc(50% + '+(Math.sin(a)*34)+'% - 28px);width:108px;min-height:56px;border:1px solid #89bbef;border-radius:14px;background:#172d43;color:white;font:bold 13px Arial;cursor:pointer;';
+        btn.setAttribute('data-lt-wheel-index',String(i));
+        btn.onclick=function(){shade.remove();window.ltInvoke(JSON.stringify({action:entry[2],appid:${appid}}));};
+        ring.appendChild(btn);
+      });
+      var close=document.createElement('button');close.textContent='✕';close.setAttribute('aria-label','Close radial menu');
+      close.style.cssText='position:absolute;right:8%;top:9%;width:36px;height:36px;border-radius:50%;background:#273f56;color:white;border:1px solid #89bbef;';
+      close.onclick=function(){shade.remove();};ring.appendChild(close);
+      shade.onclick=function(e){if(e.target===shade)shade.remove();};
+      shade.appendChild(ring);document.body.appendChild(shade);ring.querySelector('button')?.focus();
+      shade.addEventListener('keydown',function(e){if(e.key==='Escape'){shade.remove();e.preventDefault();}});
+    };
     var st=document.createElement('div'); st.id='lt-store-status';
     st.textContent='SLSDeck';
     window.__ltStatus=function(t){ var e=document.getElementById('lt-store-status'); if(e) e.textContent=t; };
