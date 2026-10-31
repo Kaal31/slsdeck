@@ -1,4 +1,4 @@
-import { DialogButton, Focusable, ModalRoot, showModal, Navigation } from "@decky/ui";
+import { DialogButton, Focusable, showModal, Navigation } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { deleteLua, hasLua, startAdd } from "../api";
@@ -57,8 +57,8 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     window.addEventListener("slsdeck-wheel-cancel", onCancel);
     return () => {window.removeEventListener("slsdeck-wheel-select", onSelect); window.removeEventListener("slsdeck-wheel-release", onRelease); window.removeEventListener("slsdeck-wheel-cancel", onCancel);};
   }, [closeModal]);
-  return <ModalRoot closeModal={closeModal}>
-    <div style={{ width: 540, maxWidth: "90vw", color: "#eff8ff" }}>
+  return <div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }} style={{ position: "fixed", inset: 0, zIndex: 2147483640, display: "grid", placeItems: "center", background: "rgba(3,10,20,.76)", backdropFilter: "blur(7px)" }}>
+    <div style={{ width: 540, maxWidth: "90vw", color: "#eff8ff", background: "transparent" }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
         <strong>{gameName || `AppID ${appid}`}</strong>
         <span style={{ opacity: .65 }}>SLSDeck · radial menu test</span>
@@ -80,7 +80,7 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
             const at = (r:number,a:number) => [200+r*Math.cos(a),200+r*Math.sin(a)];
             const a=at(79,start), b=at(190,start), c=at(190,end), d=at(79,end);
             return <path key={slice.key} d={`M${a} L${b} A190 190 0 0 1 ${c} L${d} A79 79 0 0 0 ${a} Z`}
-              fill={i===1?"#184366":"#142536"} stroke="#7398b3" strokeWidth="1.6" opacity=".85"/>;
+              fill={selected === i ? "#3b92c5" : "#142b45"} stroke={selected === i ? "#d6f5ff" : "#7398b3"} strokeWidth={selected === i ? "3" : "1.6"} opacity=".92"/>;
           })}
           <circle cx="200" cy="200" r="68" fill="#091725" stroke="#80b8ed" strokeWidth="2"/>
           <text x="200" y="192" textAnchor="middle" fontSize="22" fill="white">🎮</text>
@@ -98,7 +98,7 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
       </Focusable>}
       <p style={{ opacity: .65, fontSize: 12 }}>Choose a segment using touch, mouse, or controller focus. B closes the dialog.</p>
     </div>
-  </ModalRoot>;
+  </div>;
 }
 export function openRadialGameMenu(appid: number, gameName?: string) {
   showModal(<RadialGameMenu appid={appid} gameName={gameName} />);
