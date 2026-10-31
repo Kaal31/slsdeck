@@ -3664,6 +3664,70 @@ def _process_elf_class(pid: str, proc_root: str = "/proc") -> str:
     return "unknown"
 
 
+def _moon_process_inventory(proc_root: str = "/proc", limit: int = 320) -> Dict[str, Any]:
+    """Read-only bounded scan of mappings, without exposing argv or environment."""
+    result: Dict[str, Any] = {"scanned": 0, "inaccessible": 0, "hits": [],
+                              "truncated": False, "scanLimit": limit}
+    try:
+        pids = sorted((x for x in os.listdir(proc_root) if x.isdigit()), key=int)
+    except OSError as exc:
+        return {**result, "error": type(exc).__name__}
+    result["truncated"] = len(pids) > limit
+    for pid in pids[:limit]:
+        root = os.path.join(proc_root, pid)
+        try:
+            with open(os.path.join(root, "maps"), encoding="utf-8", errors="replace") as fh:
+                mapped = set()
+                for line in fh:
+                    for lib in ("SLSsteam.so", "library-inject.so", "libmillennium"):
+                        if lib.lower() in line.lower():
+                            mapped.add(lib)
+            result["scanned"] += 1
+            if not mapped:
+                continue
+            with open(os.path.join(root, "comm"), encoding="utf-8", errors="replace") as fh:
+                comm = fh.read(128).strip()
+            with open(os.path.join(root, "status"), encoding="utf-8", errors="replace") as fh:
+                status = fh.read(4096)
+            parent = re.search(r"^PPid:\\s*(\\d+)", status, re.MULTILINE)
+            result["hits"].append({
+                "pid": int(pid), "ppid": int(parent[1]) if parent else None,
+                "comm": comm, "elfClass": _process_elf_class(pid, proc_root),
+                "libraries": sorted(mapped)})
+        except (OSError, PermissionError):
+            result["inaccessible"] += 1
+    result["moonProcessCount"] = sum("SLSsteam.so" in p["libraries"] for p in result["hits"])
+    return result
+
+
+def _moon_log_evidence() -> Dict[str, Any]:
+    """Only log metadata and recognized load results; never dump arbitrary log lines."""
+    logp = _slssteam_log_path()
+    result: Dict[str, Any] = {"present": bool(logp), "path": logp}
+    if not logp:
+        return result
+    try:
+        st = os.stat(logp)
+        boot = _system_boot_epoch()
+        result.update(size=st.st_size, mtime=st.st_mtime,
+                      modifiedSinceBoot=bool(boot is not None and st.st_mtime >= boot - 5),
+                      lastLoadSucceeded=_log_last_load_ok())
+        # Check the last bounded portion only and emit aggregate source counts.
+        with open(logp, "rb") as fh:
+            fh.seek(max(0, st.st_size - 65536))
+            tail = fh.read(65536).decode("utf-8", errors="replace")
+        result["loadedMarkerCountInTail"] = tail.lower().count("loaded successfully")
+        result["failureMarkersInTail"] = {
+            marker: tail.lower().count(marker) for marker in _LOAD_FAIL_MARKERS
+        }
+        source_lines = [line.strip()[:280] for line in tail.splitlines()
+                        if "app sources:" in line.lower()]
+        result["latestAppSources"] = source_lines[-1] if source_lines else None
+    except OSError as exc:
+        result["error"] = type(exc).__name__
+    return result
+
+
 def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
     """Adapt upstream isolation status without launching Steam or changing symlinks."""
     result: Dict[str, Any] = {"mode": "read-only", "processes": []}
@@ -3973,6 +4037,10 @@ def get_diagnostics() -> Dict[str, Any]:
                        + "\n".join(out["launcherJournalTail"]))
         except Exception as exc:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
+    out["moonProcessInventory"] = _moon_process_inventory()
+    out["moonLogEvidence"] = _moon_log_evidence()
+    logger.log(f"SLSDeck moon process inventory={out['moonProcessInventory']}")
+    logger.log(f"SLSDeck moon log evidence={out['moonLogEvidence']}")
     out["launchEnvironment"] = _launch_environment_diagnostics()
     out["isolation"] = _isolation_diagnostics()
     from . import steamstub
