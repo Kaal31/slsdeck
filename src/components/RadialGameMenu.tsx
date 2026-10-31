@@ -1,5 +1,5 @@
-import { DialogButton, Focusable, ModalRoot, showModal } from "@decky/ui";
-import { Navigation, toaster } from "@decky/api";
+import { DialogButton, Focusable, ModalRoot, showModal, Navigation } from "@decky/ui";
+import { toaster } from "@decky/api";
 import { useEffect, useState } from "react";
 import { deleteLua, hasLua, startAdd } from "../api";
 import { markSlsAddPending } from "../lib/badges";
