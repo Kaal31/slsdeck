@@ -3771,6 +3771,22 @@ def _steam_loader_diagnostics(proc_root: str = "/proc", limit: int = 2048) -> Di
                 continue
             entry: Dict[str, Any] = {"pid": int(pid), "comm": comm,
                                       "elfClass": _process_elf_class(pid, proc_root)}
+            # A 64-bit steamwebhelper is normal and does not imply SteamRT3.
+            # Only inspect the primary steam process. Never retain command line
+            # arguments or full executable paths in diagnostics.
+            if comm == "steam":
+                try:
+                    with open(os.path.join(base, "cmdline"), "rb") as fh:
+                        command = fh.read(32768).lower()
+                    entry["steamrt3Marker"] = b"steamrt3" in command or b"steam-runtime-3" in command
+                except OSError:
+                    entry["steamrt3Marker"] = None
+                try:
+                    exe = os.readlink(os.path.join(base, "exe")).lower()
+                    entry["steamrt3Executable"] = "steamrt3" in exe or "steam-runtime-3" in exe
+                except OSError:
+                    entry["steamrt3Executable"] = None
+
             try:
                 with open(os.path.join(base, "status"), encoding="utf-8") as fh:
                     status = fh.read(4096)
@@ -3801,6 +3817,28 @@ def _steam_loader_diagnostics(proc_root: str = "/proc", limit: int = 2048) -> Di
         result["scanned"] += 1
     result["steam32Count"] = sum(p["elfClass"] == "ELF32" for p in result["processes"])
     result["steam64Count"] = sum(p["elfClass"] == "ELF64" for p in result["processes"])
+    primary = [p for p in result["processes"] if p["comm"] == "steam"]
+    explicit_rt3 = any(p.get("steamrt3Marker") is True or p.get("steamrt3Executable") is True
+                       for p in primary)
+    classes = {p.get("elfClass") for p in primary}
+    if explicit_rt3:
+        variant = "steamrt3-detected"
+    elif classes == {"ELF64"}:
+        variant = "64-bit-steam-client-possible-steamrt3"
+    elif classes == {"ELF32"}:
+        variant = "traditional-32-bit-steam-client"
+    elif classes:
+        variant = "mixed-or-unidentified-steam-client"
+    else:
+        variant = "steam-client-not-observed"
+    result["steamClientVariant"] = {
+        "classification": variant,
+        "steam32Processes": sum(p.get("elfClass") == "ELF32" for p in primary),
+        "steam64Processes": sum(p.get("elfClass") == "ELF64" for p in primary),
+        "explicitSteamRT3Marker": explicit_rt3,
+        "note": ("Detection is read-only; SteamRT3 requires a recognizable marker for confirmation. "
+                 "A 64-bit steamwebhelper alone is not evidence of SteamRT3.")
+    }
     result["moonMappedCount"] = sum(p["moonMapped"] is True for p in result["processes"])
     result["moonAuditEnvCount"] = sum(p["auditEnv"] == "moon" for p in result["processes"])
     return result
@@ -4192,6 +4230,7 @@ def get_diagnostics() -> Dict[str, Any]:
         except Exception as exc:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
     out["steamLoaderDiagnostics"] = _steam_loader_diagnostics()
+    out["steamClientVariant"] = out["steamLoaderDiagnostics"].get("steamClientVariant", {})
     logger.log(f"SLSDeck Steam loader diagnostics={out['steamLoaderDiagnostics']}")
     out["moonProcessInventory"] = _moon_process_inventory()
     out["moonLogEvidence"] = _moon_log_evidence()
