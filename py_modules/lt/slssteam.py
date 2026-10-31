@@ -3768,6 +3768,23 @@ def _moon_log_evidence() -> Dict[str, Any]:
         with open(logp, "rb") as fh:
             fh.seek(max(0, st.st_size - 65536))
             tail = fh.read(65536).decode("utf-8", errors="replace")
+        # Native Moon builds include one boot/PID marker at logger construction.
+        # Old logs remain valid, but cannot be associated with a specific boot.
+        markers = re.findall(r"\\[MoonSession boot=([0-9a-fA-F-]+|unknown) pid=(\\d+)\\]", tail)
+        current_boot = None
+        try:
+            with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as boot_file:
+                current_boot = boot_file.read().strip()
+        except OSError:
+            pass
+        last_session = markers[-1] if markers else None
+        result["nativeSession"] = {
+            "bootId": last_session[0], "pid": int(last_session[1]),
+            "currentBoot": bool(current_boot and last_session[0] == current_boot),
+        } if last_session else None
+        # Timestamp is recorded by Moon itself, not inferred from file mtime.
+        stamps = re.findall(r"^\\[(\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z) pid=(\\d+)\\]", tail, re.MULTILINE)
+        result["lastNativeEvent"] = {"utc": stamps[-1][0], "pid": int(stamps[-1][1])} if stamps else None
         result["loadedMarkerCountInTail"] = tail.lower().count("loaded successfully")
         result["failureMarkersInTail"] = {
             marker: tail.lower().count(marker) for marker in _LOAD_FAIL_MARKERS
