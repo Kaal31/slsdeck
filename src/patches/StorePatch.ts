@@ -87,6 +87,16 @@ function evaluate(expr: string): void {
   cdp("Runtime.evaluate", { expression: expr });
 }
 
+/** Global LT overlay control shares the Store's existing CDP transport. */
+export function storeWheelControl(command: "open" | "select" | "release" | "cancel", index = -1): void {
+  if (!getStoreAppId() || !wsReady || storeDisabled) return;
+  const script = command === "open" ? "document.querySelector('#lt-store-bar .lt-btn:last-child')?.click()" :
+    command === "select" ? `(function(){var wheel=document.getElementById('lt-store-wheel');if(!wheel)return;wheel.dataset.selected='${index}';wheel.querySelectorAll('[data-lt-wheel-index]').forEach(function(b){b.style.background=b.dataset.ltWheelIndex==='${index}'?'#356c9b':'#172d43';});})()` :
+    command === "release" ? `(function(){var w=document.getElementById('lt-store-wheel');if(!w)return;var b=w.querySelector('[data-lt-wheel-index="' + ${index} + '"]');if(b)b.click();else w.remove();})()` :
+    "document.getElementById('lt-store-wheel')?.remove()";
+  evaluate(script);
+}
+
 function setStatus(text: string): void {
   evaluate(`window.__ltStatus&&window.__ltStatus(${JSON.stringify(text)})`);
 }
@@ -175,6 +185,7 @@ function buildBar(appid: number, installed: boolean, fixAvailable: boolean): str
         var a=(-90+i*120)*Math.PI/180,btn=document.createElement('button');
         btn.textContent=entry[0]+' '+entry[1];
         btn.style.cssText='position:absolute;left:calc(50% + '+(Math.cos(a)*34)+'% - 54px);top:calc(50% + '+(Math.sin(a)*34)+'% - 28px);width:108px;min-height:56px;border:1px solid #89bbef;border-radius:14px;background:#172d43;color:white;font:bold 13px Arial;cursor:pointer;';
+        btn.setAttribute('data-lt-wheel-index',String(i));
         btn.onclick=function(){shade.remove();window.ltInvoke(JSON.stringify({action:entry[2],appid:${appid}}));};
         ring.appendChild(btn);
       });
