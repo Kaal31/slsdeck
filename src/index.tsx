@@ -76,7 +76,7 @@ function startRadialController(): () => void {
       if (magnitude >= .32) {
         const degrees = (Math.atan2(y,x) * 180 / Math.PI + 360) % 360;
         if (origin === "store") {
-          const candidates = [-90,30,150];
+          const candidates = [-90,-30,30,90,150,210];
           next = candidates.reduce((best,a,i) =>
             Math.abs(((degrees-a+540)%360)-180) <
             Math.abs(((degrees-candidates[best]+540)%360)-180) ? i : best, 0);
