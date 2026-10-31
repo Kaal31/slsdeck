@@ -10,7 +10,8 @@ import { ToolsSection } from "./sections/Tools";
 import { SlsSteamCompact } from "./sections/SlsSteamCompact";
 import { AdvancedPage } from "./pages/AdvancedPage";
 import { patchLibraryApp } from "./lib/patchLibraryApp";
-import { initStorePatch } from "./patches/StorePatch";
+import { initStorePatch, getStoreAppId, storeWheelControl } from "./patches/StorePatch";
+import { openRadialGameMenu } from "./components/RadialGameMenu";
 import { initWorkshopPatch } from "./patches/WorkshopPatch";
 import { popAddEvents, getInstalledApps, getGamesInQam, getHideToolsQam, getAutoFix, addAutoFixPending, popInjectionEvents, reloadSteam, clientFixNeeded, runClientFix, slsConfigHealth, healSlsConfig, getSlssteamStatus, getCheckDependenciesOnBoot, tokeerRuntimeStatus, tokeerProtonStatus, tokeerUbisoftPackagesStatus, crInstallStatus, getNotifyGameAdd, getUiSettings, pluginUpdateStatus, pluginPrepareReplacement, PluginUpdateStatus, SlsStatus } from "./api";
 import { markSlsAddPending, refreshBadges, startBadges, stopBadges, removeAllBadges } from "./lib/badges";
@@ -21,6 +22,79 @@ import { archiveReconcileAll } from "./api";
 import { cleanupLegacyCloudRedirectShortcut } from "./lib/cloudRedirectShortcut";
 import { StoreRouletteModal } from "./sections/Minigame";
 import { readRouletteBool, ROULETTE_PREFS_EVENT, ROULETTE_QAM_KEY } from "./lib/storeRoulettePrefs";
+
+/** Controller hold-to-open overlay. No Steam theme dependencies or global shortcuts. */
+function startRadialController(): () => void {
+  let held = false, opened = false, origin: "library" | "store" | null = null;
+  let selected = -1, openedAt = 0;
+  const angles = [-54, 18, 90, 162, 234];
+  const libraryGame = (): number | null => {
+    const path = String((routerHook as any)?.m_history?.location?.pathname || window.location.pathname || "") +
+      String(window.location.hash || "");
+    const match = path.match(/\/library\/app\/(\d+)/);
+    return match ? Number(match[1]) : null;
+  };
+  function emit(name: string, detail?: number) {
+    window.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+  function cancel() {
+    if (!opened) return;
+    if (origin === "store") storeWheelControl("cancel");
+    else emit("slsdeck-wheel-cancel");
+    opened = false; origin = null; selected = -1;
+  }
+  const timer = window.setInterval(() => {
+    try {
+      if (document.visibilityState !== "visible") { cancel(); held = false; return; }
+      const pads = navigator.getGamepads?.() || [];
+      const pad = Array.from(pads).find(p => p?.connected && p.buttons?.length > 6);
+      if (!pad) { cancel(); held = false; return; }
+      const lt = (pad.buttons[6]?.value || 0) > .70;
+      const b = !!pad.buttons[1]?.pressed;
+      if (!lt && held) {
+        if (opened) {
+          if (origin === "store") storeWheelControl("release", selected);
+          else emit("slsdeck-wheel-release");
+        }
+        opened = false; origin = null; selected = -1; held = false;
+        return;
+      }
+      if (!lt) return;
+      if (b && opened) { cancel(); held = true; return; }
+      if (!held) { held = true; openedAt = performance.now(); }
+      if (!opened && performance.now() - openedAt > 170) {
+        const appid = libraryGame();
+        if (appid) { origin = "library"; openRadialGameMenu(appid); opened = true; }
+        else if (getStoreAppId()) { origin = "store"; storeWheelControl("open"); opened = true; }
+      }
+      if (!opened) return;
+      const axes = pad.axes || [];
+      let x = axes[0] || 0, y = axes[1] || 0;
+      if (Math.hypot(x,y) < .32) { x = axes[2] || 0; y = axes[3] || 0; }
+      const magnitude = Math.hypot(x,y);
+      let next = -1;
+      if (magnitude >= .32) {
+        const degrees = (Math.atan2(y,x) * 180 / Math.PI + 360) % 360;
+        if (origin === "store") {
+          const candidates = [-90,30,150];
+          next = candidates.reduce((best,a,i) =>
+            Math.abs(((degrees-a+540)%360)-180) <
+            Math.abs(((degrees-candidates[best]+540)%360)-180) ? i : best, 0);
+        } else {
+          next = angles.reduce((best,a,i) =>
+            Math.abs(((degrees-a+540)%360)-180) <
+            Math.abs(((degrees-angles[best]+540)%360)-180) ? i : best, 0);
+        }
+      }
+      if (next !== selected) {
+        selected = next;
+        if (origin === "store") storeWheelControl("select", selected);
+        else emit("slsdeck-wheel-select", selected);
+      }
+    } catch (e) { console.warn("SLSDeck radial controller polling error", e); }
+  }, 40);
+  return () => { window.clearInterval(timer); cancel(); };
+}
 
 const LIBRARY_ROUTE = "/library/app/:appid";
 const ADVANCED_ROUTE = "/slsdeck";
@@ -709,6 +783,8 @@ export default definePlugin(() => {
   setTimeout(() => { verifyAddsPendingFromPreviousSteamSession(); }, 15000);
   const collectionSync = setInterval(() => { syncSlsCollection().catch(() => {}); }, 60000);
 
+  const stopRadialController = startRadialController();
+
   return {
     name: "SLSDeck",
     titleView: <QamTitle />,
@@ -716,6 +792,7 @@ export default definePlugin(() => {
     icon: <FaPuzzlePiece />,
     onDismount() {
       console.log("SLSDeck unloading");
+      stopRadialController();
       disposeTokeerDiscordView();
       dependencyLifecycleToken.active = false;
       try { clearTimeout(dependencyRepairFirst); } catch { /* ignore */ }
