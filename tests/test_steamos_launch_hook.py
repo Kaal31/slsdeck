@@ -81,3 +81,26 @@ def test_activation_guard_rejects_parallel_request(monkeypatch):
         assert "already in progress" in result["error"]
     finally:
         slssteam._ACTIVATION_LOCK.release()
+
+
+def test_wrapper_records_actual_pid_and_validated_elf_classes(monkeypatch, tmp_path):
+    """The launcher may be a shell script; ASCII byte 5 is not an ELF class."""
+    real = tmp_path / "real-steam"
+    real.write_text('#!/bin/sh\\nprintf "pid=%s\\n" "$$"\\n')
+    real.chmod(0o755)
+    monkeypatch.setattr(slssteam, "lib_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(slssteam, "_path_wrapper", lambda: str(tmp_path / "path/steam"))
+    monkeypatch.setattr(slssteam, "_real_steam_binary", lambda: str(real))
+    monkeypatch.setattr(slssteam, "_chown_file_to_user", lambda _: None)
+    # Synthetic ELF header, 32-bit.
+    (tmp_path / "SLSsteam.so").write_bytes(b"\\x7fELF\\x01" + bytes(16))
+    (tmp_path / "library-inject.so").write_bytes(b"\\x7fELF\\x01" + bytes(16))
+    wrapper = slssteam._ensure_path_wrapper()
+    subprocess.run(["sh", "-n", wrapper], check=True)
+    result = subprocess.run([wrapper], capture_output=True, text=True, check=True)
+    trace = (tmp_path / ".launch_trace").read_text()
+    assert "realClass=non-ELF" in trace
+    assert "moonClass=ELF32" in trace
+    assert "auditClass=ELF32" in trace
+    assert "pid=$ " not in trace
+    assert "pid=" + result.stdout.strip().split("pid=")[-1] in trace
