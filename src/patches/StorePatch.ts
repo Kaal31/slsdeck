@@ -179,11 +179,11 @@ function buildBar(appid: number, installed: boolean, fixAvailable: boolean): str
       shade.style.cssText='position:fixed;inset:0;z-index:2147483700;background:rgba(3,12,23,.82);display:grid;place-items:center;';
       var ring=document.createElement('div');
       ring.style.cssText='position:relative;width:min(420px,84vw);height:min(420px,84vw);border-radius:50%;background:radial-gradient(circle,#162a41,#081323 72%);box-shadow:0 8px 55px #000a;';
-      var entries=[['＋','Add / Remove',${JSON.stringify(primaryAction)}],['⚒','Fixes','fix'],['⟳','Reload','reload']];
+      var entries=[['▣','Add / Remove',${JSON.stringify(primaryAction)},'Manage this game'],['▤','Cloud Saves','info','Manage saves'],['▣','Tools','info','Extra utilities'],['✕','Cancel','cancel','Close menu'],['▥','Tokeer','info','DLC & depots'],['⚒','Fixes','fix','Patches & tweaks']];
       var svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
       svg.setAttribute('viewBox','0 0 400 400');svg.style.cssText='position:absolute;inset:0;width:100%;height:100%;';
       function polar(radius,deg){var a=deg*Math.PI/180;return [200+radius*Math.cos(a),200+radius*Math.sin(a)];}
-      function wedge(i){var start=-150+i*120,end=start+120,a=polar(76,start),b=polar(195,start),c=polar(195,end),d=polar(76,end);
+      function wedge(i){var start=-120+i*60,end=start+60,a=polar(76,start),b=polar(195,start),c=polar(195,end),d=polar(76,end);
         return 'M'+a.join(' ')+' L'+b.join(' ')+' A195 195 0 0 1 '+c.join(' ')+' L'+d.join(' ')+' A76 76 0 0 0 '+a.join(' ')+' Z';}
       var paths=[];
       entries.forEach(function(entry,i){
@@ -199,12 +199,12 @@ function buildBar(appid: number, installed: boolean, fixAvailable: boolean): str
       var mid=document.createElement('span');mid.textContent='SLSDeck';mid.style.cssText='position:absolute;top:46%;width:100%;text-align:center;color:white;font:bold 20px Arial;pointer-events:none;';ring.appendChild(mid);
       function select(i){shade.dataset.selected=String(i);paths.forEach(function(p,n){p.setAttribute('fill',n===i?'#348ac1':'#19334d');p.setAttribute('stroke',n===i?'#e1f5ff':'#7baacf');});}
       entries.forEach(function(entry,i){
-        var angle=(-90+i*120)*Math.PI/180,btn=document.createElement('button');
-        btn.textContent=entry[0]+' '+entry[1];
-        btn.style.cssText='position:absolute;left:calc(50% + '+(Math.cos(angle)*34)+'% - 53px);top:calc(50% + '+(Math.sin(angle)*34)+'% - 27px);width:106px;min-height:54px;border:0;border-radius:8px;background:transparent;color:white;font:bold 13px Arial;cursor:pointer;';
+        var angle=(-90+i*60)*Math.PI/180,btn=document.createElement('button');
+        btn.innerHTML='<span style="font-size:21px">'+entry[0]+'</span><span style="font-weight:700">'+entry[1]+'</span><small style="font-size:10px;color:#adc8db">'+entry[3]+'</small>';
+        btn.style.cssText='position:absolute;left:calc(50% + '+(Math.cos(angle)*35)+'% - 54px);top:calc(50% + '+(Math.sin(angle)*35)+'% - 34px);width:108px;height:68px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;background:transparent;color:white;font:12px Arial;cursor:pointer;';
         btn.setAttribute('data-lt-wheel-index',String(i));
         btn.onfocus=function(){select(i);};btn.onmouseenter=function(){select(i);};
-        btn.onclick=function(){shade.remove();window.ltInvoke(JSON.stringify({action:entry[2],appid:${appid}}));};
+        btn.onclick=function(){if(entry[2]==='cancel'){shade.remove();return;}if(entry[2]==='info'){var message=document.createElement('div');message.textContent=entry[1]+' — open SLSDeck Quick Access for this action';message.style.cssText='position:absolute;left:18%;right:18%;bottom:5%;text-align:center;color:white;background:#10273d;padding:10px;border:1px solid #6ca5cb;border-radius:8px;font:12px Arial;';ring.appendChild(message);return;}shade.remove();window.ltInvoke(JSON.stringify({action:entry[2],appid:${appid}}));};
         ring.appendChild(btn);
       });
       shade.__ltSelect=select;
