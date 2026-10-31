@@ -3768,6 +3768,37 @@ def _moon_log_evidence() -> Dict[str, Any]:
     return result
 
 
+def _injection_failure_analysis(trace: str, inventory: Dict[str, Any],
+                                native: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize read-only injection evidence without claiming functionality."""
+    fields = dict(re.findall(r"([A-Za-z]+)=([^\\s]+)", trace))
+    hits = inventory.get("hits") or []
+    moon = [p["pid"] for p in hits if "SLSsteam.so" in p.get("libraries", [])]
+    audit = [p["pid"] for p in hits if "library-inject.so" in p.get("libraries", [])]
+    fresh = native.get("modifiedSinceBoot") is True
+    mode = fields.get("mode", "unknown")
+    if mode == "clean":
+        stage = "failsafe-clean-launch"
+    elif mode != "inject":
+        stage = "launcher-unverified"
+    elif not moon and not audit:
+        stage = "libraries-not-observed"
+    elif not moon:
+        stage = "audit-only-observed"
+    elif not fresh:
+        stage = "mapped-native-startup-unverified"
+    elif native.get("lastLoadSucceeded") is not True:
+        stage = "mapped-native-load-unconfirmed"
+    else:
+        stage = "native-loaded-hooks-not-verified"
+    return {"stage": stage, "mode": mode, "wrapperPid": fields.get("pid"),
+            "moonPids": moon, "auditPids": audit,
+            "nativeLogThisBoot": fresh,
+            "nativeLoadSucceeded": native.get("lastLoadSucceeded") if fresh else None,
+            "scanComplete": not inventory.get("truncated") and inventory.get("inaccessible", 0) == 0,
+            "note": "A mapped library does not prove functional hooks or provisioned apps."}
+
+
 def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
     """Adapt upstream isolation status without launching Steam or changing symlinks."""
     result: Dict[str, Any] = {"mode": "read-only", "processes": []}
@@ -4079,8 +4110,11 @@ def get_diagnostics() -> Dict[str, Any]:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
     out["moonProcessInventory"] = _moon_process_inventory()
     out["moonLogEvidence"] = _moon_log_evidence()
+    out["injectionFailureAnalysis"] = _injection_failure_analysis(
+        launch_trace, out["moonProcessInventory"], out["moonLogEvidence"])
     logger.log(f"SLSDeck moon process inventory={out['moonProcessInventory']}")
     logger.log(f"SLSDeck moon log evidence={out['moonLogEvidence']}")
+    logger.log(f"SLSDeck injection failure analysis={out['injectionFailureAnalysis']}")
     out["activationState"] = dict(_LAST_ACTIVATION)
     logger.log(f"SLSDeck activation diagnostic state={out['activationState']}")
     out["launchEnvironment"] = _launch_environment_diagnostics()
