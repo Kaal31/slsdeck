@@ -1,4 +1,5 @@
-import { DialogButton, Focusable, showModal, Navigation } from "@decky/ui";
+import { DialogButton, Focusable, Navigation } from "@decky/ui";
+import { createRoot } from "react-dom/client";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { deleteLua, hasLua, startAdd } from "../api";
@@ -27,6 +28,23 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
   const runRef = useRef<(key: string) => void>(() => {});
   const [busy, setBusy] = useState(false);
   const [installed, setInstalled] = useState(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "b" || event.key === "B") { event.preventDefault(); closeModal?.(); }
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+        event.preventDefault(); setSelected(old => (old + 1) % slices.length);
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+        event.preventDefault(); setSelected(old => (old + slices.length - 1) % slices.length);
+      }
+      if (event.key === "Enter" && selectedRef.current >= 0) {
+        event.preventDefault(); runRef.current(slices[selectedRef.current].key);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [closeModal]);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
   useEffect(() => { let live = true; void hasLua(appid).then(v => { if (live) setInstalled(!!v.exists); }).catch(()=>{}); return () => { live = false; }; }, [appid]);
   const run = async (key: string) => {
     if (key === "fixes") { setView("fixes"); return; }
@@ -101,5 +119,10 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
   </div>;
 }
 export function openRadialGameMenu(appid: number, gameName?: string) {
-  showModal(<RadialGameMenu appid={appid} gameName={gameName} />);
+  const container = document.createElement("div");
+  container.dataset.slsdeckRadial = "1";
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const close = () => { queueMicrotask(() => { root.unmount(); container.remove(); }); };
+  root.render(<RadialGameMenu appid={appid} gameName={gameName} closeModal={close} />);
 }
