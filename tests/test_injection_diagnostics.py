@@ -80,3 +80,19 @@ def test_failure_analysis_detects_clean_failsafe():
     result = slssteam._injection_failure_analysis(
         "pid=12 mode=clean attempts=2", {"hits": []}, {})
     assert result["stage"] == "failsafe-clean-launch"
+
+
+def test_wrapper_uses_boot_scoped_crash_counter():
+    import inspect
+    source = inspect.getsource(slssteam._ensure_path_wrapper)
+    assert 'case "$SAVED" in "$BOOT":*)' in source
+    assert 'n=${SAVED#*:}' in source
+    assert 'printf "%s:%s' in source
+    assert '"$BOOT" "$((n+1))"' in source
+    assert '"$n" -lt 2' in source
+
+
+def test_legacy_counter_reset_keeps_boot_scoped_wrapper_compatible():
+    import inspect
+    source = inspect.getsource(slssteam._reset_inject_failsafe)
+    assert 'fh.write("0\\n")' in source
