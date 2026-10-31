@@ -1,0 +1,139 @@
+name: Release injection-fix
+
+on:
+  push:
+    branches: [injection-fix]
+    paths-ignore: ["dist/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-injection-fix
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: injection-fix, fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: npm}
+      - name: Check out current slsteam-moon source
+        uses: actions/checkout@v4
+        with:
+          repository: swwayps/slsteam-moon
+          ref: slsteam-moon
+          path: moon-source
+          fetch-depth: 1
+      - name: Build and pin slsteam-moon branch head
+        run: |
+          set -euo pipefail
+          COMMIT=$(git -C moon-source rev-parse HEAD)
+          SHORT=${COMMIT:0:12}
+          moon-source/scripts/build.sh --portable
+          moon-source/scripts/package.sh --version "git-$SHORT"
+          mkdir -p assets/moon
+          cp "moon-source/dist/slsteam-moon-linux-git-$SHORT.zip" assets/moon/slsteam-moon-head.zip
+          python3 - "$COMMIT" <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          Path("assets/moon/source.json").write_text(json.dumps({
+              "repository": "swwayps/slsteam-moon",
+              "branch": "slsteam-moon",
+              "commit": sys.argv[1],
+              "builtAt": datetime.now(timezone.utc).isoformat(),
+          }, indent=2) + "\n", encoding="utf-8")
+          PY
+      - run: npm ci
+      - run: npm run build
+      - name: Validate Decky compatibility
+        run: |
+          python3 -m compileall -q main.py py_modules
+          python3 - <<'PY'
+          from pathlib import Path
+          requirements = Path('requirements.txt').read_text()
+          source = Path('src/sections/CloudRedirect.tsx').read_text()
+          assert 'httpx==' in requirements and 'py7zr==' in requirements
+          assert 'FileSelectionType.FOLDER' in source and 'Browse folders' in source
+          PY
+      - run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Package plugin
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-injection-fix.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json requirements.txt py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do [ ! -e "$p" ] || cp -a "$p" artifact/SLSDeckUniversal/; done
+          node -e 'const fs=require("fs");fs.writeFileSync("artifact/SLSDeckUniversal/build.json",JSON.stringify({channel:"injection-fix",version:require("./plugin.json").version,runNumber:Number(process.env.GITHUB_RUN_NUMBER||0)}))'
+          cd artifact && zip -qr ../SLSDeckUniversal-injection-fix.zip SLSDeckUniversal && cd ..
+      - name: Validate release archive
+        run: |
+          set -euo pipefail
+          unzip -t SLSDeckUniversal-injection-fix.zip
+          for p in \
+            SLSDeckUniversal/main.py \
+            SLSDeckUniversal/plugin.json \
+            SLSDeckUniversal/requirements.txt \
+            SLSDeckUniversal/assets/moon/source.json \
+            SLSDeckUniversal/assets/moon/slsteam-moon-head.zip; do
+            unzip -Z1 SLSDeckUniversal-injection-fix.zip | grep -Fx "$p"
+          done
+          unzip -p SLSDeckUniversal-injection-fix.zip \
+            SLSDeckUniversal/assets/moon/slsteam-moon-head.zip > /tmp/moon.zip
+          unzip -t /tmp/moon.zip
+      - name: Update rolling prerelease
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          set -euo pipefail
+          TAG=injection-fix-latest
+          VERSION=$(node -p 'require("./plugin.json").version')
+          git fetch origin --tags --force
+          PREVIOUS=$(git rev-list -n 1 "$TAG" 2>/dev/null || true)
+          export VERSION PREVIOUS
+          python3 - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"^##\s+(?:\[)?{re.escape(version)}(?:\])?[^\n]*\n(.*?)(?=^##\s|^---\s*$|\Z)",
+              changelog,
+              flags=re.MULTILINE | re.DOTALL,
+          )
+          section = match.group(1).strip() if match else ""
+          if section:
+              notes = f"## What's changed in {version}\n\n{section}"
+          else:
+              previous = os.environ.get("PREVIOUS", "")
+              revision = f"{previous}..HEAD" if previous else "HEAD^..HEAD"
+              output = subprocess.check_output(
+                  ["git", "log", revision, "--no-merges", "--pretty=format:%s%x1f%b%x1e"],
+                  text=True,
+              )
+              items = []
+              for record in output.split("\x1e"):
+                  if not record.strip():
+                      continue
+                  subject, _, body = record.strip().partition("\x1f")
+                  detail = " ".join(line.strip() for line in body.splitlines() if line.strip())
+                  items.append(f"- {subject}" + (f" — {detail}" if detail else ""))
+              notes = f"## What's changed in {version}\n\n" + ("\n".join(items) or "- Maintenance release")
+          Path("RELEASE_NOTES.md").write_text(notes.rstrip() + "\n", encoding="utf-8")
+          PY
+          git tag -f "$TAG" HEAD && git push origin "refs/tags/$TAG" --force
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "SLSDeck injection-fix $VERSION-injection-fix.$GITHUB_RUN_NUMBER" --notes-file RELEASE_NOTES.md --prerelease
+          else
+            gh release create "$TAG" --title "SLSDeck injection-fix $VERSION" --notes-file RELEASE_NOTES.md --prerelease --target injection-fix
+          fi
+          gh release upload "$TAG" SLSDeckUniversal-injection-fix.zip --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-injection-fix
+          path: SLSDeckUniversal-injection-fix.zip
+          retention-days: 14

@@ -426,26 +426,46 @@ def injection_health() -> Dict[str, Any]:
     return {"success": True, "installed": bool(find_installed_lib()), "active": bool(active)}
 
 
+_RESTART_LOCK = threading.Lock()
+_ACTIVATION_LOCK = threading.Lock()
+_LAST_ACTIVATION = {"state": "idle", "startedAt": None, "finishedAt": None, "success": None}
+
+
 def restart_steam_apply() -> Dict[str, Any]:
-    """Fully restart Steam so a steam.sh/injection change takes effect: clean
-    shutdown, wait, then relaunch THROUGH steam.sh as the desktop user. Unlike
-    the frontend's soft SteamClient.User.StartRestart (which relaunches the bare
-    client without re-execing steam.sh), this re-reads LD_AUDIT, so injection
-    actually turns on."""
+    """Fail safely on SteamOS; use a bounded desktop restart elsewhere.
+
+    SteamOS owns Steam through steam-launcher.service. Launching an additional
+    Steam process while its supervisor is shutting down can strand Gaming Mode.
+    We intentionally never force a restart there.
+    """
+    if not _RESTART_LOCK.acquire(blocking=False):
+        logger.warn("SLSsteam: restart request rejected: already in progress")
+        return {"success": False, "error": "Steam restart already in progress"}
     try:
-        cmd = _wrap_as_user([
-            "bash", "-lc",
-            "steam -shutdown >/dev/null 2>&1; sleep 5; nohup steam >/dev/null 2>&1 &",
-        ])
-        subprocess.Popen(
-            cmd, env=_rich_env(), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
+        if _steamos_unit_present():
+            logger.warn("SLSsteam: manual restart blocked on SteamOS; use normal UI restart or reboot")
+            return {"success": False, "requiresManualRestart": True,
+                    "error": "Gaming Mode restart must be performed via SteamOS; no shutdown was initiated"}
+        result = subprocess.run(
+            _wrap_as_user(["steam", "-shutdown"]),
+            env=_rich_env(), stdin=subprocess.DEVNULL, capture_output=True, timeout=12,
         )
-        return {"success": True}
+        logger.log(f"SLSsteam: desktop shutdown exit={result.returncode}")
+        if result.returncode != 0:
+            return {"success": False, "error": "Steam shutdown command failed"}
+        subprocess.Popen(
+            _wrap_as_user(["steam"]), env=_rich_env(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        return {"success": True, "method": "desktop"}
+    except subprocess.TimeoutExpired:
+        logger.warn("SLSsteam: desktop shutdown timed out; relaunch not attempted")
+        return {"success": False, "error": "Steam shutdown timed out; relaunch not attempted"}
     except Exception as exc:
-        logger.warn(f"SLSsteam: restart_steam_apply failed: {exc}")
+        logger.warn(f"SLSsteam: restart_steam_apply failed: {type(exc).__name__}")
         return {"success": False, "error": str(exc)}
+    finally:
+        _RESTART_LOCK.release()
 
 
 def _running_injected() -> bool:
@@ -2086,7 +2106,7 @@ def _run_install() -> None:
             _stage("activating-injection", "Activating injection (patching steam.sh)…")
             act = activate_injection()
             if act.get("success"):
-                _log(f"Injection activated via {act.get('steamSh')}")
+                _log(f"Injection activated via {act.get('method')} (hook={act.get('hook')}, wrapper={act.get('wrapper')})")
             else:
                 _log(f"Auto-activation not applied: {act.get('error')}")
                 _set_install({"status": "failed", "success": False,
@@ -2769,15 +2789,21 @@ def _ensure_path_wrapper() -> str:
         'SO="%s"' % so,
         'LI="%s"' % li,
         'FAIL="%s"' % fail,
-        'n=$(cat "$FAIL" 2>/dev/null || echo 0)',
-        'case "$n" in ""|*[!0-9]*) n=0 ;; esac',
         'BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)',
+        '# A previous boot must never exhaust this boot\'s injection attempts.',
+        '# Legacy numeric-only counters are stale; reset them without disabling protection.',
+        'SAVED=$(cat "$FAIL" 2>/dev/null || true)',
+        'case "$SAVED" in "$BOOT":*) n=${SAVED#*:} ;; *) n=0 ;; esac',
+        'case "$n" in ""|*[!0-9]*) n=0 ;; esac',
         'TRACE="$(dirname "$FAIL")/.launch_trace"',
+        'REAL_CLASS=$(LC_ALL=C od -An -tu1 -j4 -N1 "$REAL" 2>/dev/null | tr -d " ")',
+        'SO_CLASS=$(LC_ALL=C od -An -tu1 -j4 -N1 "$SO" 2>/dev/null | tr -d " ")',
+        'LI_CLASS=$(LC_ALL=C od -An -tu1 -j4 -N1 "$LI" 2>/dev/null | tr -d " ")',
         'MODE=clean; [ -f "$SO" ] && [ "$n" -lt 2 ] && MODE=inject',
-        'printf "time=%s boot=%s pid=%s mode=%s attempts=%s\\n" "$(date -u +%FT%TZ)" "$BOOT" "$$" "$MODE" "$n" > "$TRACE"',
+        'printf "time=%s boot=%s pid=%s mode=%s attempts=%s realClass=%s moonClass=%s auditClass=%s\\n" "$(date -u +%FT%TZ)" "$BOOT" "$" "$MODE" "$n" "${REAL_CLASS:-unknown}" "${SO_CLASS:-unknown}" "${LI_CLASS:-unknown}" > "$TRACE"',
         'logger -t slsdeck-launch "boot=$BOOT pid=$$ mode=$MODE attempts=$n" 2>/dev/null || true',
         'if [ -f "$SO" ] && [ "$n" -lt 2 ]; then',
-        '  echo $((n+1)) > "$FAIL" 2>/dev/null',
+        '  printf "%s:%s\\n" "$BOOT" "$((n+1))" > "$FAIL" 2>/dev/null',
         '  AUD="$SO"; [ -f "$LI" ] && AUD="$LI:$SO"',
         '  LD_AUDIT="$AUD" exec "$REAL" "$@"',
         'fi',
@@ -3052,6 +3078,26 @@ def gamescope_hook_active() -> bool:
 
 
 def activate_injection() -> Dict[str, Any]:
+    """Serialize activation and reject repeated requests during an active change."""
+    if not _ACTIVATION_LOCK.acquire(blocking=False):
+        logger.warn("SLSDeck injection activation rejected: another activation is running")
+        return {"success": False, "error": "Injection activation already in progress"}
+    _LAST_ACTIVATION.update(state="running", startedAt=time.time(), finishedAt=None, success=None)
+    logger.log(f"SLSDeck activation state={_LAST_ACTIVATION}")
+    try:
+        result = _activate_injection_locked()
+        _LAST_ACTIVATION.update(state="finished", success=bool(result.get("success")))
+        return result
+    except Exception:
+        _LAST_ACTIVATION.update(state="error", success=False)
+        raise
+    finally:
+        _LAST_ACTIVATION["finishedAt"] = time.time()
+        logger.log(f"SLSDeck activation state={_LAST_ACTIVATION}")
+        _ACTIVATION_LOCK.release()
+
+
+def _activate_injection_locked() -> Dict[str, Any]:
     """Activate SLSsteam so Steam loads it.
 
     Exactly ONE boot-time injection path is installed. On SteamOS/Game Mode the
@@ -3649,6 +3695,113 @@ def set_achievements(enabled: bool) -> Dict[str, Any]:
     return {"success": ok, "enabled": enabled}
 
 
+def _process_elf_class(pid: str, proc_root: str = "/proc") -> str:
+    """Read the process executable's ELF class without executing or changing it."""
+    try:
+        with open(os.path.join(proc_root, pid, "exe"), "rb") as fh:
+            hdr = fh.read(5)
+        if hdr[:4] == b"\x7fELF":
+            return {1: "ELF32", 2: "ELF64"}.get(hdr[4], "unknown")
+    except (OSError, ValueError):
+        pass
+    return "unknown"
+
+
+def _moon_process_inventory(proc_root: str = "/proc", limit: int = 2048) -> Dict[str, Any]:
+    """Read-only bounded scan of mappings, without exposing argv or environment."""
+    result: Dict[str, Any] = {"scanned": 0, "inaccessible": 0, "hits": [],
+                              "truncated": False, "scanLimit": limit}
+    try:
+        pids = sorted((x for x in os.listdir(proc_root) if x.isdigit()), key=int)
+    except OSError as exc:
+        return {**result, "error": type(exc).__name__}
+    result["truncated"] = len(pids) > limit
+    for pid in pids[:limit]:
+        root = os.path.join(proc_root, pid)
+        try:
+            with open(os.path.join(root, "maps"), encoding="utf-8", errors="replace") as fh:
+                mapped = set()
+                for line in fh:
+                    for lib in ("SLSsteam.so", "library-inject.so", "libmillennium"):
+                        if lib.lower() in line.lower():
+                            mapped.add(lib)
+            result["scanned"] += 1
+            if not mapped:
+                continue
+            with open(os.path.join(root, "comm"), encoding="utf-8", errors="replace") as fh:
+                comm = fh.read(128).strip()
+            with open(os.path.join(root, "status"), encoding="utf-8", errors="replace") as fh:
+                status = fh.read(4096)
+            parent = re.search(r"^PPid:\s*(\d+)", status, re.MULTILINE)
+            result["hits"].append({
+                "pid": int(pid), "ppid": int(parent[1]) if parent else None,
+                "comm": comm, "elfClass": _process_elf_class(pid, proc_root),
+                "libraries": sorted(mapped)})
+        except (OSError, PermissionError):
+            result["inaccessible"] += 1
+    result["moonProcessCount"] = sum("SLSsteam.so" in p["libraries"] for p in result["hits"])
+    return result
+
+
+def _moon_log_evidence() -> Dict[str, Any]:
+    """Only log metadata and recognized load results; never dump arbitrary log lines."""
+    logp = _slssteam_log_path()
+    result: Dict[str, Any] = {"present": bool(logp), "path": logp}
+    if not logp:
+        return result
+    try:
+        st = os.stat(logp)
+        boot = _system_boot_epoch()
+        result.update(size=st.st_size, mtime=st.st_mtime,
+                      modifiedSinceBoot=bool(boot is not None and st.st_mtime >= boot - 5),
+                      lastLoadSucceeded=_log_last_load_ok())
+        # Check the last bounded portion only and emit aggregate source counts.
+        with open(logp, "rb") as fh:
+            fh.seek(max(0, st.st_size - 65536))
+            tail = fh.read(65536).decode("utf-8", errors="replace")
+        result["loadedMarkerCountInTail"] = tail.lower().count("loaded successfully")
+        result["failureMarkersInTail"] = {
+            marker: tail.lower().count(marker) for marker in _LOAD_FAIL_MARKERS
+        }
+        source_lines = [line.strip()[:280] for line in tail.splitlines()
+                        if "app sources:" in line.lower()]
+        result["latestAppSources"] = source_lines[-1] if source_lines else None
+    except OSError as exc:
+        result["error"] = type(exc).__name__
+    return result
+
+
+def _injection_failure_analysis(trace: str, inventory: Dict[str, Any],
+                                native: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize read-only injection evidence without claiming functionality."""
+    fields = dict(re.findall(r"([A-Za-z]+)=([^\\s]+)", trace))
+    hits = inventory.get("hits") or []
+    moon = [p["pid"] for p in hits if "SLSsteam.so" in p.get("libraries", [])]
+    audit = [p["pid"] for p in hits if "library-inject.so" in p.get("libraries", [])]
+    fresh = native.get("modifiedSinceBoot") is True
+    mode = fields.get("mode", "unknown")
+    if mode == "clean":
+        stage = "failsafe-clean-launch"
+    elif mode != "inject":
+        stage = "launcher-unverified"
+    elif not moon and not audit:
+        stage = "libraries-not-observed"
+    elif not moon:
+        stage = "audit-only-observed"
+    elif not fresh:
+        stage = "mapped-native-startup-unverified"
+    elif native.get("lastLoadSucceeded") is not True:
+        stage = "mapped-native-load-unconfirmed"
+    else:
+        stage = "native-loaded-hooks-not-verified"
+    return {"stage": stage, "mode": mode, "wrapperPid": fields.get("pid"),
+            "moonPids": moon, "auditPids": audit,
+            "nativeLogThisBoot": fresh,
+            "nativeLoadSucceeded": native.get("lastLoadSucceeded") if fresh else None,
+            "scanComplete": not inventory.get("truncated") and inventory.get("inaccessible", 0) == 0,
+            "note": "A mapped library does not prove functional hooks or provisioned apps."}
+
+
 def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
     """Adapt upstream isolation status without launching Steam or changing symlinks."""
     result: Dict[str, Any] = {"mode": "read-only", "processes": []}
@@ -3678,10 +3831,23 @@ def _isolation_diagnostics(proc_root: str = "/proc") -> Dict[str, Any]:
             except OSError:
                 pass
             result["processes"].append({"pid": int(pid), "ppid": int(match[1]) if match else None,
+                "elfClass": _process_elf_class(pid, proc_root),
                 "cgroup": cgroup, "moonMapped": "SLSsteam.so" in maps,
+                "moonAuditMapped": "library-inject.so" in maps,
                 "millenniumMapped": "libmillennium" in maps.lower(), "passive": passive})
         except OSError:
             continue
+    result["moonMappedAnySteam"] = any(p["moonMapped"] for p in result["processes"])
+    result["steam32Count"] = sum(p["elfClass"] == "ELF32" for p in result["processes"])
+    result["steam64Count"] = sum(p["elfClass"] == "ELF64" for p in result["processes"])
+    result["steamProcessCount"] = len(result["processes"])
+    # A negative mapping result is not conclusive: access to /proc may be
+    # restricted, the injected process may have exited, or the engine may have
+    # logged success in a different Steam process.
+    result["mappingConclusion"] = (
+        "mapped-in-inspected-steam-process" if result["moonMappedAnySteam"]
+        else "not-observed-in-inspected-steam-processes"
+    )
     result["millenniumBootstrapLinks"] = []
     for path in (os.path.join(_home(), ".steam/steam/ubuntu12_64/libXtst.so.6"),
                  os.path.join(_home(), ".local/share/Steam/ubuntu12_64/libXtst.so.6")):
@@ -3743,7 +3909,10 @@ def get_diagnostics() -> Dict[str, Any]:
             launch_trace = fh.read(2048).strip()
     except OSError:
         launch_trace = "No wrapper execution record"
-    logger.log(f"SLSDeck injection diagnostics wrapper={launch_trace} mapped={_running_injected()}")
+    live_mapping = _running_injected()
+    logger.log(
+        f"SLSDeck injection diagnostics wrapper={launch_trace} "
+        f"mappedAnyProcess={live_mapping} (not proof of functional app provisioning)")
     os_info = {}
     try:
         for p in ("/etc/os-release", "/usr/lib/os-release"):
@@ -3906,6 +4075,29 @@ def get_diagnostics() -> Dict[str, Any]:
     except OSError:
         out["wrapperRanThisBoot"] = None
     out["injectionMapped"] = _running_injected()
+    # Initialization is reported independently from /proc mappings: the Moon
+    # engine may log a successful load in a process not present during sampling.
+    moon_log = _slssteam_log_path()
+    moon_load = _log_last_load_ok()
+    moon_mtime = None
+    if moon_log:
+        try:
+            moon_mtime = os.path.getmtime(moon_log)
+        except OSError:
+            pass
+    boot_time = _system_boot_epoch()
+    recent_moon_log = bool(moon_mtime is not None and
+                           boot_time is not None and moon_mtime >= boot_time)
+    out["moonInitialization"] = {
+        "logPath": moon_log,
+        "lastLoadSucceeded": moon_load if recent_moon_log else None,
+        "logWrittenThisBoot": recent_moon_log,
+        "mapped": out["injectionMapped"],
+        "status": ("loaded-this-boot" if recent_moon_log and moon_load is True
+                   else "failed-this-boot" if recent_moon_log and moon_load is False
+                   else "not-confirmed-this-boot"),
+    }
+    logger.log(f"SLSDeck Moon initialization evidence={out['moonInitialization']}")
     out["launcherJournalTail"] = []
     if _steamos_unit_present() and boot_id:
         try:
@@ -3919,6 +4111,15 @@ def get_diagnostics() -> Dict[str, Any]:
                        + "\n".join(out["launcherJournalTail"]))
         except Exception as exc:
             logger.warn(f"SLSDeck launcher journal unavailable: {exc}")
+    out["moonProcessInventory"] = _moon_process_inventory()
+    out["moonLogEvidence"] = _moon_log_evidence()
+    out["injectionFailureAnalysis"] = _injection_failure_analysis(
+        launch_trace, out["moonProcessInventory"], out["moonLogEvidence"])
+    logger.log(f"SLSDeck moon process inventory={out['moonProcessInventory']}")
+    logger.log(f"SLSDeck moon log evidence={out['moonLogEvidence']}")
+    logger.log(f"SLSDeck injection failure analysis={out['injectionFailureAnalysis']}")
+    out["activationState"] = dict(_LAST_ACTIVATION)
+    logger.log(f"SLSDeck activation diagnostic state={out['activationState']}")
     out["launchEnvironment"] = _launch_environment_diagnostics()
     out["isolation"] = _isolation_diagnostics()
     from . import steamstub

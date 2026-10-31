@@ -52,9 +52,32 @@ def test_wrapper_execution_record_and_failsafe(monkeypatch, tmp_path, attempts, 
     trace = (tmp_path / ".launch_trace").read_text()
     assert f"mode={mode}" in trace
     assert "boot=" in trace and "pid=" in trace and "time=" in trace
+    assert "moonClass=" in trace and "auditClass=" in trace
+    assert "realClass=" in trace
     if mode == "clean":
         assert "audit= arg=" in result.stdout
         assert (tmp_path / ".inject_fails").read_text() == str(attempts)
     else:
         assert str(tmp_path / "SLSsteam.so") in result.stdout
         assert (tmp_path / ".inject_fails").read_text().strip() == "1"
+
+
+def test_restart_is_blocked_on_steamos(monkeypatch):
+    monkeypatch.setattr(slssteam, "_steamos_unit_present", lambda: True)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("SteamOS must not spawn shutdown commands")
+    monkeypatch.setattr(slssteam.subprocess, "run", forbidden)
+    monkeypatch.setattr(slssteam.subprocess, "Popen", forbidden)
+    result = slssteam.restart_steam_apply()
+    assert result["success"] is False
+    assert result["requiresManualRestart"] is True
+
+
+def test_activation_guard_rejects_parallel_request(monkeypatch):
+    assert slssteam._ACTIVATION_LOCK.acquire(blocking=False)
+    try:
+        result = slssteam.activate_injection()
+        assert result["success"] is False
+        assert "already in progress" in result["error"]
+    finally:
+        slssteam._ACTIVATION_LOCK.release()
