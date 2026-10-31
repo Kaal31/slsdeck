@@ -428,6 +428,7 @@ def injection_health() -> Dict[str, Any]:
 
 _RESTART_LOCK = threading.Lock()
 _ACTIVATION_LOCK = threading.Lock()
+_LAST_ACTIVATION = {"state": "idle", "startedAt": None, "finishedAt": None, "success": None}
 
 
 def restart_steam_apply() -> Dict[str, Any]:
@@ -3078,9 +3079,18 @@ def activate_injection() -> Dict[str, Any]:
     if not _ACTIVATION_LOCK.acquire(blocking=False):
         logger.warn("SLSDeck injection activation rejected: another activation is running")
         return {"success": False, "error": "Injection activation already in progress"}
+    _LAST_ACTIVATION.update(state="running", startedAt=time.time(), finishedAt=None, success=None)
+    logger.log(f"SLSDeck activation state={_LAST_ACTIVATION}")
     try:
-        return _activate_injection_locked()
+        result = _activate_injection_locked()
+        _LAST_ACTIVATION.update(state="finished", success=bool(result.get("success")))
+        return result
+    except Exception:
+        _LAST_ACTIVATION.update(state="error", success=False)
+        raise
     finally:
+        _LAST_ACTIVATION["finishedAt"] = time.time()
+        logger.log(f"SLSDeck activation state={_LAST_ACTIVATION}")
         _ACTIVATION_LOCK.release()
 
 
@@ -4071,6 +4081,8 @@ def get_diagnostics() -> Dict[str, Any]:
     out["moonLogEvidence"] = _moon_log_evidence()
     logger.log(f"SLSDeck moon process inventory={out['moonProcessInventory']}")
     logger.log(f"SLSDeck moon log evidence={out['moonLogEvidence']}")
+    out["activationState"] = dict(_LAST_ACTIVATION)
+    logger.log(f"SLSDeck activation diagnostic state={out['activationState']}")
     out["launchEnvironment"] = _launch_environment_diagnostics()
     out["isolation"] = _isolation_diagnostics()
     from . import steamstub
