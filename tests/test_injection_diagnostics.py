@@ -44,3 +44,20 @@ def test_isolation_negative_is_only_not_observed(monkeypatch, tmp_path):
 
 def test_elf_class_handles_inaccessible_process(tmp_path):
     assert slssteam._process_elf_class("999", str(tmp_path)) == "unknown"
+
+
+def test_moon_process_inventory_identifies_nonsteam_host(tmp_path):
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    p = proc / "9001"
+    p.mkdir()
+    (p / "comm").write_text("steam-runtime\n")
+    (p / "status").write_text("Name:\tsteam-runtime\nPPid:\t42\n")
+    (p / "maps").write_text("0000-1000 r-xp 0 00:00 0 /opt/moon/SLSsteam.so\n")
+    (p / "exe").write_bytes(b"\x7fELF" + bytes([1]) + b"test")
+    result = slssteam._moon_process_inventory(str(proc))
+    assert result["moonProcessCount"] == 1
+    assert result["hits"][0]["pid"] == 9001
+    assert result["hits"][0]["ppid"] == 42
+    assert result["hits"][0]["elfClass"] == "ELF32"
+    assert result["hits"][0]["libraries"] == ["SLSsteam.so"]
