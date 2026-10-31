@@ -61,3 +61,22 @@ def test_moon_process_inventory_identifies_nonsteam_host(tmp_path):
     assert result["hits"][0]["ppid"] == 42
     assert result["hits"][0]["elfClass"] == "ELF32"
     assert result["hits"][0]["libraries"] == ["SLSsteam.so"]
+
+
+def test_failure_analysis_identifies_mapping_without_fresh_native_log():
+    result = slssteam._injection_failure_analysis(
+        "time=now pid=123 mode=inject",
+        {"hits": [{"pid": 42, "libraries": ["SLSsteam.so"]}],
+         "inaccessible": 0, "truncated": False},
+        {"modifiedSinceBoot": False, "lastLoadSucceeded": True},
+    )
+    assert result["stage"] == "mapped-native-startup-unverified"
+    assert result["moonPids"] == [42]
+    assert result["wrapperPid"] == "123"
+    assert result["nativeLoadSucceeded"] is None
+
+
+def test_failure_analysis_detects_clean_failsafe():
+    result = slssteam._injection_failure_analysis(
+        "pid=12 mode=clean attempts=2", {"hits": []}, {})
+    assert result["stage"] == "failsafe-clean-launch"
