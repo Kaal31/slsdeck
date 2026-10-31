@@ -3664,7 +3664,7 @@ def _process_elf_class(pid: str, proc_root: str = "/proc") -> str:
     return "unknown"
 
 
-def _moon_process_inventory(proc_root: str = "/proc", limit: int = 320) -> Dict[str, Any]:
+def _moon_process_inventory(proc_root: str = "/proc", limit: int = 2048) -> Dict[str, Any]:
     """Read-only bounded scan of mappings, without exposing argv or environment."""
     result: Dict[str, Any] = {"scanned": 0, "inaccessible": 0, "hits": [],
                               "truncated": False, "scanLimit": limit}
@@ -3689,7 +3689,7 @@ def _moon_process_inventory(proc_root: str = "/proc", limit: int = 320) -> Dict[
                 comm = fh.read(128).strip()
             with open(os.path.join(root, "status"), encoding="utf-8", errors="replace") as fh:
                 status = fh.read(4096)
-            parent = re.search(r"^PPid:\\s*(\\d+)", status, re.MULTILINE)
+            parent = re.search(r"^PPid:\s*(\d+)", status, re.MULTILINE)
             result["hits"].append({
                 "pid": int(pid), "ppid": int(parent[1]) if parent else None,
                 "comm": comm, "elfClass": _process_elf_class(pid, proc_root),
