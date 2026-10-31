@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           COMMIT=$(git -C moon-source rev-parse HEAD)
           SHORT=${COMMIT:0:12}
+          python3 tools/patch_moon_log_timestamps.py moon-source
           moon-source/scripts/build.sh --portable
           moon-source/scripts/package.sh --version "git-$SHORT"
           mkdir -p assets/moon
@@ -46,6 +47,7 @@ jobs:
               "branch": "slsteam-moon",
               "commit": sys.argv[1],
               "builtAt": datetime.now(timezone.utc).isoformat(),
+              "diagnosticLogging": "utc-milliseconds-pid-boot-marker-v1",
           }, indent=2) + "\n", encoding="utf-8")
           PY
       - run: npm ci
