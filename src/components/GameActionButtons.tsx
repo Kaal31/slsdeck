@@ -5,7 +5,7 @@ import { AddState, deleteLua, getAddStatus, getHideOnOwned, getLibraryButtons, h
 import { shouldHideForOwned, isNonSteamShortcut } from "../lib/ownership";
 import { markSlsAddPending, refreshBadges } from "../lib/badges";
 import { FixPicker } from "./FixPicker";
-import { openRadialGameMenu } from "./RadialGameMenu";
+import { openRadialGameMenu, RadialOverlayHost } from "./RadialGameMenu";
 
 function FixModal({ appid, closeModal }: { appid: number; closeModal?: () => void }) {
   return (
@@ -145,6 +145,7 @@ export function GameActionButtons() {
 
   return (
     <div style={{ margin: "20px 24px 8px" }}>
+      <RadialOverlayHost />
       <Focusable style={{ display: "flex", gap: 12 }} flow-children="row">
         {barEnabled && !hiddenForOwned && (installed ? (
           <DialogButton style={big} disabled={working} onClick={doRemove}>
