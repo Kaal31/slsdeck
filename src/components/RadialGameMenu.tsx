@@ -1,4 +1,5 @@
-import { DialogButton, Focusable, Navigation, showModal, ModalRoot } from "@decky/ui";
+import { DialogButton } from "@decky/ui";
+import { createPortal } from "react-dom";
 import { toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { deleteLua, hasLua, startAdd } from "../api";
@@ -72,7 +73,7 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     window.addEventListener("slsdeck-wheel-cancel", onCancel);
     return () => {window.removeEventListener("slsdeck-wheel-select", onSelect); window.removeEventListener("slsdeck-wheel-release", onRelease); window.removeEventListener("slsdeck-wheel-cancel", onCancel);};
   }, [closeModal]);
-  return <ModalRoot closeModal={closeModal}><div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }}
+  return <div onClick={(e) => { if (e.target === e.currentTarget) closeModal?.(); }}
     style={{ position: "fixed", inset: 0, zIndex: 2147483640, display: "flex", alignItems: "center",
       justifyContent: "center", background: "rgba(3,9,17,.73)", backdropFilter: "blur(9px)",
       color: "#eff8ff", fontFamily: "'Motiva Sans', Arial, sans-serif" }}>
@@ -143,8 +144,24 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     <div style={{position:"absolute",bottom:16,right:26,fontSize:12,color:"#c7d7e9",opacity:.85}}>
       ◀ ▶ Navigate　 A Select　 B Cancel
     </div>
-  </div></ModalRoot>;
+  </div>;
 }
 export function openRadialGameMenu(appid: number, gameName?: string) {
-  showModal(<RadialGameMenu appid={appid} gameName={gameName} />);
+  window.dispatchEvent(new CustomEvent("slsdeck-open-radial", { detail: { appid, gameName } }));
+}
+
+/** Mounted in the Library React tree; draws above Steam with no modal dialog. */
+export function RadialOverlayHost() {
+  const [game, setGame] = useState<{appid:number;gameName?:string}|null>(null);
+  useEffect(() => {
+    const open = (event: Event) => {
+      const data = (event as CustomEvent<{appid:number;gameName?:string}>).detail;
+      if (Number(data?.appid) > 0) setGame({appid:Number(data.appid),gameName:data.gameName});
+    };
+    window.addEventListener("slsdeck-open-radial", open);
+    return () => window.removeEventListener("slsdeck-open-radial", open);
+  }, []);
+  if (!game) return null;
+  const target = document.querySelector("#GamepadUI_Full_Root") || document.body;
+  return createPortal(<RadialGameMenu appid={game.appid} gameName={game.gameName} closeModal={() => setGame(null)} />, target);
 }
