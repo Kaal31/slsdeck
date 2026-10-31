@@ -16,9 +16,9 @@ const slices: Slice[] = [
 ];
 const radius = 145;
 const baseButton = { position: "absolute" as const, width: 112, minWidth: 112, height: 76, padding: 4,
-  border: "1px solid #557993", borderRadius: 16, color: "#f0f8ff", background: "rgba(24,39,54,.96)",
+  border: "0", borderRadius: 10, color: "#f0f8ff", background: "transparent",
   display: "flex", flexDirection: "column" as const, alignItems: "center" as const,
-  justifyContent: "center" as const, boxShadow: "0 5px 22px #0008" };
+  justifyContent: "center" as const, boxShadow: "none" };
 export function RadialGameMenu({ appid, gameName, closeModal }: {
   appid: number; gameName?: string; closeModal?: () => void;
 }) {
@@ -107,7 +107,7 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
         {slices.map((slice) => {
           const a=slice.angle*Math.PI/180;
           return <DialogButton key={slice.key} disabled={busy} onClick={() => void run(slice.key)}
-            style={{ ...baseButton, borderColor: selected === slices.indexOf(slice) ? "#ffffff" : "#557993", background: selected === slices.indexOf(slice) ? "#356c9b" : "rgba(24,39,54,.96)", left:`calc(50% + ${Math.cos(a)*radius}px - 56px)`,
+            style={{ ...baseButton, background: "transparent", textShadow: selected === slices.indexOf(slice) ? "0 0 12px #b6eaff" : "none", left:`calc(50% + ${Math.cos(a)*radius}px - 56px)`,
               top:`calc(50% + ${Math.sin(a)*radius}px - 38px)` }}>
             <span style={{ fontSize: 26 }}>{slice.key==="add"&&installed?"−":slice.symbol}</span>
             <span>{slice.key==="add"&&installed?"Remove Game":slice.label}</span>
