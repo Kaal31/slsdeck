@@ -42,7 +42,8 @@ def test_wrapper_execution_record_and_failsafe(monkeypatch, tmp_path, attempts, 
     monkeypatch.setattr(slssteam, "_path_wrapper", lambda: str(tmp_path / "path/steam"))
     monkeypatch.setattr(slssteam, "_real_steam_binary", lambda: str(real))
     monkeypatch.setattr(slssteam, "_chown_file_to_user", lambda _: None)
-    (tmp_path / ".inject_fails").write_text(str(attempts))
+    boot_id = slssteam.Path("/proc/sys/kernel/random/boot_id").read_text().strip() if hasattr(slssteam, "Path") else __import__("pathlib").Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    (tmp_path / ".inject_fails").write_text(f"{boot_id}:{attempts}")
     if library:
         (tmp_path / "SLSsteam.so").touch()
     wrapper = slssteam._ensure_path_wrapper()
@@ -56,10 +57,10 @@ def test_wrapper_execution_record_and_failsafe(monkeypatch, tmp_path, attempts, 
     assert "realClass=" in trace
     if mode == "clean":
         assert "audit= arg=" in result.stdout
-        assert (tmp_path / ".inject_fails").read_text() == str(attempts)
+        assert (tmp_path / ".inject_fails").read_text() == f"{boot_id}:{attempts}"
     else:
         assert str(tmp_path / "SLSsteam.so") in result.stdout
-        assert (tmp_path / ".inject_fails").read_text().strip() == "1"
+        assert (tmp_path / ".inject_fails").read_text().strip() == f"{boot_id}:1"
 
 
 def test_restart_is_blocked_on_steamos(monkeypatch):
