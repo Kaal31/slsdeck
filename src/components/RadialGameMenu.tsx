@@ -1,6 +1,6 @@
 import { DialogButton, Focusable, ModalRoot, showModal, Navigation } from "@decky/ui";
 import { toaster } from "@decky/api";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { deleteLua, hasLua, startAdd } from "../api";
 import { markSlsAddPending } from "../lib/badges";
 import { FixPicker } from "./FixPicker";
@@ -22,6 +22,9 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
   appid: number; gameName?: string; closeModal?: () => void;
 }) {
   const [view, setView] = useState("");
+  const [selected, setSelected] = useState(-1);
+  const selectedRef = useRef(-1);
+  const runRef = useRef<(key: string) => void>(() => {});
   const [busy, setBusy] = useState(false);
   const [installed, setInstalled] = useState(false);
   useEffect(() => { let live = true; void hasLua(appid).then(v => { if (live) setInstalled(!!v.exists); }).catch(()=>{}); return () => { live = false; }; }, [appid]);
@@ -44,6 +47,16 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
     } catch (e) { toaster.toast({ title: "SLSDeck", body: String(e) }); }
     finally { setBusy(false); }
   };
+  runRef.current = (key) => { void run(key); };
+  useEffect(() => {
+    const onSelect = (event: Event) => { const i = (event as CustomEvent<number>).detail; selectedRef.current = i; setSelected(i); };
+    const onRelease = () => { const i = selectedRef.current; if (i >= 0 && slices[i]) runRef.current(slices[i].key); else closeModal?.(); };
+    const onCancel = () => closeModal?.();
+    window.addEventListener("slsdeck-wheel-select", onSelect);
+    window.addEventListener("slsdeck-wheel-release", onRelease);
+    window.addEventListener("slsdeck-wheel-cancel", onCancel);
+    return () => {window.removeEventListener("slsdeck-wheel-select", onSelect); window.removeEventListener("slsdeck-wheel-release", onRelease); window.removeEventListener("slsdeck-wheel-cancel", onCancel);};
+  }, [closeModal]);
   return <ModalRoot closeModal={closeModal}>
     <div style={{ width: 540, maxWidth: "90vw", color: "#eff8ff" }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
@@ -76,7 +89,7 @@ export function RadialGameMenu({ appid, gameName, closeModal }: {
         {slices.map((slice) => {
           const a=slice.angle*Math.PI/180;
           return <DialogButton key={slice.key} disabled={busy} onClick={() => void run(slice.key)}
-            style={{ ...baseButton, left:`calc(50% + ${Math.cos(a)*radius}px - 56px)`,
+            style={{ ...baseButton, borderColor: selected === slices.indexOf(slice) ? "#ffffff" : "#557993", background: selected === slices.indexOf(slice) ? "#356c9b" : "rgba(24,39,54,.96)", left:`calc(50% + ${Math.cos(a)*radius}px - 56px)`,
               top:`calc(50% + ${Math.sin(a)*radius}px - 38px)` }}>
             <span style={{ fontSize: 26 }}>{slice.key==="add"&&installed?"−":slice.symbol}</span>
             <span>{slice.key==="add"&&installed?"Remove Game":slice.label}</span>
