@@ -138,7 +138,7 @@ export function GameActionButtons() {
   // The injected Library-page bar obeys "Hide Add/Remove on owned games" as
   // one surface, including its Fixes button. Fixes remain available separately
   // from SLSDeck's Quick Access GameControlsSection.
-  if (appid == null || hiddenForOwned || !barEnabled) return null;
+  if (appid == null) return null;
 
   const working = busy !== "";
   const big: CSSProperties = { flex: 1, minWidth: 0, padding: "10px 16px", fontSize: 15 };
@@ -146,7 +146,7 @@ export function GameActionButtons() {
   return (
     <div style={{ margin: "20px 24px 8px" }}>
       <Focusable style={{ display: "flex", gap: 12 }} flow-children="row">
-        {installed ? (
+        {barEnabled && !hiddenForOwned && (installed ? (
           <DialogButton style={big} disabled={working} onClick={doRemove}>
             {busy === "removing" ? "Removing…" : "🗑 Remove"}
           </DialogButton>
@@ -154,17 +154,17 @@ export function GameActionButtons() {
           <DialogButton style={big} disabled={working} onClick={doAdd}>
             {busy === "adding" ? progress || "Adding…" : "＋ Add with SLSsteam"}
           </DialogButton>
-        )}
+        ))}
         <DialogButton style={big} disabled={working} onClick={() => appid != null && openRadialGameMenu(appid)}>
           ◉ SLSDeck Wheel
         </DialogButton>
-        <DialogButton
+        {barEnabled && !hiddenForOwned && <DialogButton
           style={big}
           disabled={working}
           onClick={() => appid != null && showModal(<FixModal appid={appid} />)}
         >
           Fixes
-        </DialogButton>
+        </DialogButton>}
       </Focusable>
     </div>
   );
