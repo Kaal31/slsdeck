@@ -70,10 +70,10 @@ class _AnchorParser(HTMLParser):
             self.games.append(item)
 
 
-def parse_collections_html(html: str, limit: int = 20) -> List[Dict[str, Any]]:
+def parse_collections_html(html: str, limit: int = 200) -> List[Dict[str, Any]]:
     parser = _AnchorParser()
     parser.feed(html or "")
-    return parser.collections[:max(1, min(int(limit), 50))]
+    return parser.collections[:max(1, min(int(limit), 500))]
 
 
 def parse_collection_html(html: str) -> List[Dict[str, Any]]:
@@ -82,7 +82,7 @@ def parse_collection_html(html: str) -> List[Dict[str, Any]]:
     return parser.games
 
 
-def list_collections(sort: str = "popular", limit: int = 20) -> Dict[str, Any]:
+def list_collections(sort: str = "popular", limit: int = 200) -> Dict[str, Any]:
     from .httpc import ensure_http_client
     sort = sort if sort in {"popular", "top", "new", "updated"} else "popular"
     try:

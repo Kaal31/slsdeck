@@ -123,7 +123,7 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
     setCollectionsLoading(true);
     setCollectionsError("");
     try {
-      const result = await getLuaToolsCollections("popular", 16);
+      const result = await getLuaToolsCollections("popular", 200);
       if (result.success) setCollections(result.collections || []);
       else setCollectionsError(result.error || "Could not load collections");
     } catch (e) {
@@ -362,7 +362,9 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
             <ButtonItem layout="below" onClick={loadCollections}>Retry collections · {collectionsError}</ButtonItem>
           )}
           {!collectionsLoading && !collectionsError && (
-            <Focusable style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, maxHeight: "48vh", overflowY: "auto" }}>
+            <>
+            <div style={{ fontSize: 11, opacity: .8, marginBottom: 6 }}>{collections.length} collections loaded · scroll down to browse</div>
+            <Focusable style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, width: "100%" }}>
               {collections.map((collection) => (
                 <ButtonItem key={collection.slug} layout="below" disabled={busy} onClick={() => beginCollection(collection)}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 5, textAlign: "left" }}>
@@ -372,6 +374,7 @@ export function AddGameSection({ onChanged, refreshToken = 0, showInstalled = tr
                 </ButtonItem>
               ))}
             </Focusable>
+            </>
           )}
           {collectionProgress && <div style={{ fontSize: 12, marginTop: 8, opacity: 0.85 }}>{collectionProgress}</div>}
         </div>

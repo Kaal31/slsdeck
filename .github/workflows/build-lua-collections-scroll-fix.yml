@@ -1,0 +1,41 @@
+name: Build lua-collections-scroll-fix
+on:
+  push:
+    branches: [lua-collections-scroll-fix]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Check Python modules
+        run: python3 -m compileall -q main.py py_modules
+      - name: Test collection parser
+        run: PYTHONPATH=py_modules python3 -m unittest discover -s tests -p test_luatools_collections.py -v
+      - name: Restore support files
+        run: git checkout HEAD -- dist/container dist/dist dist/umipcompatd 2>/dev/null || true
+      - name: Package plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            if [ -e "$p" ]; then cp -a "$p" artifact/SLSDeckUniversal/; fi
+          done
+          cd artifact
+          zip -qr ../SLSDeckUniversal-lua-collections-scroll-fix.zip SLSDeckUniversal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-lua-collections-scroll-fix
+          path: SLSDeckUniversal-lua-collections-scroll-fix.zip
+          retention-days: 14
