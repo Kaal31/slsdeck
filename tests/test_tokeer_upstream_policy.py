@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from typing import Any, Dict
 
 SOURCE = Path(__file__).resolve().parents[1] / "py_modules" / "lt" / "tokeer.py"
 TREE = ast.parse(SOURCE.read_text(encoding="utf-8"))
@@ -22,7 +23,7 @@ def isolated(*names, **globals_):
                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                  and node.name in names]
     assert len(functions) == len(names), "missing Tokeer function"
-    namespace = {"__builtins__": __builtins__, **globals_}
+    namespace = {"__builtins__": __builtins__, "Any": Any, "Dict": Dict, **globals_}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(SOURCE), "exec"),
          namespace)
     return namespace
