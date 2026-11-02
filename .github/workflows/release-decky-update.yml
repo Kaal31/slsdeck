@@ -61,6 +61,8 @@ jobs:
           fi
       - run: npm ci
       - run: npm run build
+      - name: Test Tokeer Proton policy and release asset tracking
+        run: python3 -m unittest discover -s tests -p 'test_tokeer_upstream_policy.py' -v
       - name: Validate Decky compatibility
         run: |
           python3 -m compileall -q main.py py_modules

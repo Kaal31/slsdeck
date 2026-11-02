@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.89 — Track upstream Tokeer Linux updates
+
+- Detect same-version replacements of the Tokeer Linux release asset using its Forgejo asset metadata; migrate older version-only runtime markers.
+- Follow upstream's game-specific Proton selection: Proton Experimental by default; Proton 11 for known exceptions, including FAR: Changing Tides and Crimson Desert.
+- Install GE-Proton10-34 automatically only for older Tokeer configurators that still require it; retain its optional manual install and preserve shared Proton tools on uninstall.
+- Display the selected Proton during activation, add upstream-policy regression tests, and update the pinned Linux archive fallback to v1.0.34.
+
 ## 0.9.88 — Close dependency warning before installing
 
 - Dismiss the shared dependency confirmation dialog immediately when Continue is pressed, before starting an asynchronous installer.

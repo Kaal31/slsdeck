@@ -32,7 +32,7 @@ from . import steam
 # Forgejo has no GitHub-style /releases/latest/download shortcut. Normal
 # installs resolve the newest asset through RELEASE_API below; this known-good
 # Linux bundle is used only if the release metadata request is unavailable.
-RUNTIME_ZIP = "https://git.lua.tools/luatools-dedivision/TokeerDRM-App/releases/download/v1.0.28/tokeer-linux.zip"
+RUNTIME_ZIP = "https://git.lua.tools/luatools-dedivision/TokeerDRM-App/releases/download/v1.0.34/tokeer-linux.zip"
 INSTALL_SCRIPT = "https://git.lua.tools/luatools-dedivision/TokeerDRM-App/raw/branch/main/install_linux.sh"
 DEFAULT_COOLDOWN_HOURS = 48
 RELEASE_API = "https://git.lua.tools/api/v1/repos/luatools-dedivision/TokeerDRM-App/releases/latest"
@@ -298,47 +298,14 @@ def uninstall_runtime() -> Dict[str, Any]:
 
 
 def uninstall_required_proton() -> Dict[str, Any]:
-    """Remove only the exact GE-Proton version managed for Tokeer."""
-    compat_dirs = []
-    for root in _steam_roots():
-        compat_dirs.extend([
-            os.path.join(root, "compatibilitytools.d"),
-            os.path.join(root, "steamapps", "compatibilitytools.d"),
-        ])
-    home = _home()
-    compat_dirs.extend([
-        os.path.join(home, ".steam", "root", "compatibilitytools.d"),
-        os.path.join(home, ".steam", "steam", "compatibilitytools.d"),
-        os.path.join(home, ".local", "share", "Steam", "compatibilitytools.d"),
-    ])
-    removed = []
-    errors = []
-    seen = set()
-    for compat in compat_dirs:
-        try:
-            real = os.path.realpath(compat)
-            if real in seen:
-                continue
-            seen.add(real)
-            target = os.path.join(real, REQUIRED_PROTON)
-            if os.path.isdir(target):
-                shutil.rmtree(target)
-                removed.append(target)
-            elif os.path.lexists(target):
-                os.remove(target)
-                removed.append(target)
-            for archive_name in (
-                f".{REQUIRED_PROTON}.tar.gz",
-                f"{REQUIRED_PROTON}.tar.gz.part",
-                f".{REQUIRED_PROTON}.tmp",
-            ):
-                stale = os.path.join(real, archive_name)
-                if os.path.lexists(stale):
-                    os.remove(stale)
-                    removed.append(stale)
-        except Exception as exc:
-            errors.append(f"{compat}: {exc}")
-    return {"success": not errors, "removed": removed, "errors": errors,
+    """Preserve shared GE-Proton on uninstall.
+
+    GE is now an optional legacy/manual compatibility tool and can be in use
+    by unrelated games. A plugin uninstall cannot safely infer ownership from
+    its folder name; removal is therefore left to Steam's compatibility-tools
+    manager or an explicit user action.
+    """
+    return {"success": True, "preserved": True, "removed": [],
             "name": REQUIRED_PROTON}
 
 
