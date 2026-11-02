@@ -2133,11 +2133,10 @@ def _run_install() -> None:
         except Exception as _cexc:
             _log(f"desktop-coverage neutralise skipped: {_cexc}")
         try:
-            n = _restore_desktop_launchers()
-            if n:
-                _log(f"Restored {n} Steam .desktop launcher(s) to /usr/bin/steam")
+            result = enable_desktop_injection()
+            _log("Desktop injection shortcut: " + str(result))
         except Exception as _rexc:
-            _log(f"desktop launcher restore skipped: {_rexc}")
+            _log(f"desktop launcher injection skipped: {_rexc}")
 
         installed = bool(find_installed_lib())
         injected = is_injected()
@@ -2828,19 +2827,69 @@ def _ensure_path_wrapper() -> str:
     return w
 
 
+def enable_desktop_injection() -> Dict[str, Any]:
+    """Use the guarded path/steam launcher for Steam Desktop Mode too.
+
+    Write only a user-level steam.desktop override; never touch system icons.
+    Keep a backup of an existing user shortcut for reversible deactivation.
+    """
+    wrapper = _ensure_path_wrapper()
+    user_dir = os.path.join(_home(), ".local", "share", "applications")
+    target = os.path.join(user_dir, "steam.desktop")
+    backup = target + ".slsdeck-orig"
+    sources = (target, "/usr/share/applications/steam.desktop",
+               "/usr/local/share/applications/steam.desktop")
+    source = next((p for p in sources if os.path.isfile(p)), None)
+    if not source:
+        return {"success": False, "error": "Steam desktop launcher not found"}
+    try:
+        with open(source, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+        if "[Desktop Entry]" not in content:
+            return {"success": False, "error": "Invalid Steam launcher"}
+        changed = False
+        new = []
+        for line in content.splitlines(keepends=True):
+            if not line.startswith("Exec="):
+                new.append(line)
+                continue
+            # Replace only an ordinary Steam launcher, preserving all flags
+            # and freedesktop %u/%U tokens; ignore unrelated custom commands.
+            m = re.match(r"^(Exec=)(?:/usr/bin/steam|/usr/games/steam|steam)(?=\s|$)", line)
+            if not m:
+                new.append(line)
+                continue
+            new.append(m.group(1) + wrapper + line[m.end():])
+            changed = True
+        if not changed and "SLSsteam/path/steam" not in content:
+            return {"success": False, "error": "Steam shortcut has an unsupported Exec command"}
+        updated = "".join(new)
+        if updated == content:
+            return {"success": True, "changed": False, "path": target}
+        os.makedirs(user_dir, exist_ok=True)
+        if os.path.isfile(target) and not os.path.exists(backup):
+            shutil.copy2(target, backup)
+            _chown_file_to_user(backup)
+        temp = target + ".slsdeck-tmp"
+        with open(temp, "w", encoding="utf-8") as fh:
+            fh.write(updated)
+        os.replace(temp, target)
+        _chown_file_to_user(target)
+        return {"success": True, "changed": True, "path": target}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def boot_desktop_icon_guard() -> bool:
-    """On plugin startup, make sure the Steam desktop icon isn't left pointing at
-    path/steam (which a prior reinstall's desktop-coverage may have set). Restore
-    it to /usr/bin/steam and neutralise the coverage script so it stays put.
-    No-op if SLSsteam isn't installed."""
+    """Self-heal Desktop Mode shortcut injection, preserving Game Mode hooks."""
     try:
         if not find_installed_lib():
             return False
         _neutralize_desktop_coverage()
-        n = _restore_desktop_launchers()
-        if n:
-            _log(f"Boot guard restored {n} Steam .desktop launcher(s) to /usr/bin/steam")
-        return bool(n)
+        result = enable_desktop_injection()
+        if not result.get("success"):
+            _log("Desktop injection guard: " + str(result.get("error")))
+        return bool(result.get("changed"))
     except Exception as exc:
         _log(f"boot_desktop_icon_guard skipped: {exc}")
         return False
@@ -3525,6 +3574,11 @@ def deactivate_injection() -> Dict[str, Any]:
         # points at a removed path/steam wrapper.
         try:
             _restore_desktop_launchers()
+            target = os.path.join(_home(), ".local", "share", "applications", "steam.desktop")
+            backup = target + ".slsdeck-orig"
+            if os.path.isfile(backup):
+                os.replace(backup, target)
+                _chown_file_to_user(target)
         except Exception:
             pass
         return {"success": True, "restored": restored}
