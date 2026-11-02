@@ -1,4 +1,4 @@
-import { tokeerEaVerify, tokeerEnsureProton, tokeerEnsureRuntime, tokeerPreflight, tokeerVerify, TokeerVerifyResult } from "../api";
+import { tokeerEaVerify, tokeerEnsureProton, tokeerEnsureRuntime, tokeerPreflight, tokeerProtonChoice, tokeerVerify, TokeerVerifyResult } from "../api";
 import { configureTokeerLaunch, getCurrentLaunchOptions } from "./fixRuntime";
 import { launchGame } from "./launchGame";
 
@@ -44,8 +44,8 @@ export function describeTokeerFailure(result: TokeerVerifyResult | TokeerSetupRe
 
 /**
  * Restart-free Tokeer setup:
- *  1. update shared runtime only when its GitHub release changed;
- *  2. install upstream's exact GE-Proton requirement without editing VDF;
+ *  1. update Linux runtime when the Forgejo release asset changes;
+ *  2. use upstream per-game Proton selection, installing GE only for legacy;
  *  3. select Proton and merge launch options through SteamClient live;
  *  4. launch only when the per-game prefix is still missing;
  *  5. run the official local verifier.
@@ -75,34 +75,38 @@ export async function setupAndVerifyTokeer(
 
   onStatus?.(
     runtime.updated
-      ? `Tokeer ${runtime.version || "latest"} installed. Checking required Proton…`
-      : `Tokeer ${runtime.version || "runtime"} is current; skipping download. Checking required Proton…`
+      ? `Tokeer ${runtime.version || "latest"} updated. Reading its Proton policy…`
+      : `Tokeer ${runtime.version || "runtime"} current. Reading its Proton policy…`
   );
-  const proton = await tokeerEnsureProton();
-  if (!proton.success) {
-    return {
-      success: false,
-      runtimeUpdated: !!runtime.updated,
+  const choice = await tokeerProtonChoice(appid);
+  if (!choice.success || !choice.name) {
+    return { success: false, runtimeUpdated: !!runtime.updated,
       runtimeVersion: runtime.version,
-      error: proton.error || `Could not install ${runtime.requiredProton || "GE-Proton10-34"}.`,
-    };
+      error: choice.error || "Tokeer could not choose a compatible Proton." };
   }
 
-  const requiredProton = proton.name || runtime.requiredProton || "GE-Proton10-34";
-  onStatus?.(
-    proton.skipped
-      ? `${requiredProton} is already installed and healthy; skipping download. Merging Steam launch options live…`
-      : `${requiredProton} installed/repaired. Selecting it and merging Steam launch options live…`
-  );
-  const configured = await configureTokeerLaunch(appid, runtime.home, requiredProton);
+  // Only legacy bundles need GE-Proton10-34. Current upstream chooses Valve
+  // Proton per game and Steam itself installs those runtimes on first launch.
+  let protonSkipped = !choice.requiresInstall;
+  if (choice.requiresInstall) {
+    onStatus?.(`Legacy Tokeer requires ${choice.name}; checking its installation…`);
+    const proton = await tokeerEnsureProton();
+    if (!proton.success) {
+      return { success: false, runtimeUpdated: !!runtime.updated,
+        runtimeVersion: runtime.version,
+        error: proton.error || `Could not install ${choice.name}.` };
+    }
+    protonSkipped = !!proton.skipped;
+  }
+  onStatus?.(`Tokeer selected ${choice.name} for AppID ${appid}. Merging Steam launch options live…`);
+  const configured = await configureTokeerLaunch(appid, runtime.home, choice.name);
   if (!configured.success) {
-    return {
-      success: false,
-      runtimeUpdated: !!runtime.updated,
-      runtimeVersion: runtime.version,
-      proton: requiredProton,
-      error: configured.error || "Could not configure Tokeer launch options.",
-    };
+    return { success: false, runtimeUpdated: !!runtime.updated,
+      runtimeVersion: runtime.version, proton: choice.name,
+      error: configured.error || "Could not configure Tokeer launch options." };
+  }
+  if (configured.usedFallback) {
+    onStatus?.(`${choice.name} is not registered with Steam yet; using ${configured.proton} instead.`);
   }
 
   onStatus?.("Checking the game setup…");
@@ -131,8 +135,8 @@ export async function setupAndVerifyTokeer(
     ...verified,
     runtimeUpdated: !!runtime.updated,
     runtimeVersion: runtime.version,
-    proton: configured.proton || requiredProton,
-    protonSkipped: !!proton.skipped,
+    proton: configured.proton || choice.name,
+    protonSkipped,
     launchOptions: configured.options,
   };
   if (!result.success && !result.error) result.error = describeTokeerFailure(result);

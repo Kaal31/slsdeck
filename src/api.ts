@@ -211,6 +211,7 @@ export type TokeerPreflightResult = { success: boolean; installed: boolean; appi
 export const tokeerPreflight = callable<[appid?: number, gameName?: string], TokeerPreflightResult>("tokeer_preflight");
 export const tokeerEnsureRuntime = callable<[], { success: boolean; installed?: boolean; updated?: boolean; skipped?: boolean; version?: string; latest?: string; home?: string; requiredProton?: string; error?: string }>("tokeer_ensure_runtime");
 export const tokeerProtonStatus = callable<[], { success: boolean; installed: boolean; healthy?: boolean; partial?: boolean; name?: string; path?: string }>("tokeer_proton_status");
+export const tokeerProtonChoice = callable<[appid: number], { success: boolean; name?: string; legacy?: boolean; requiresInstall?: boolean; source?: "upstream" | "legacy" | "fallback"; error?: string }>("tokeer_proton_choice");
 export const tokeerEnsureProton = callable<[force?: boolean], { success: boolean; installed?: boolean; healthy?: boolean; updated?: boolean; skipped?: boolean; name?: string; path?: string; requiredProton?: string; error?: string }>("tokeer_ensure_proton");
 export const tokeerPrepare = callable<[appid: number], { success: boolean; output?: string; steamMayRestart?: boolean; error?: string }>("tokeer_prepare");
 export const tokeerPrepareVerify = callable<[appid: number, ubisoft?: boolean], TokeerVerifyResult & { phase?: string; prepare?: any; steamMayRestart?: boolean }>("tokeer_prepare_verify");

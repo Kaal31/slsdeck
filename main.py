@@ -93,6 +93,9 @@ class Plugin:
     async def tokeer_proton_status(self) -> Dict[str, Any]:
         return await self._run(tokeer.required_proton_status)
 
+    async def tokeer_proton_choice(self, appid: int) -> Dict[str, Any]:
+        return await self._run(tokeer.recommended_proton, int(appid))
+
     async def tokeer_ensure_proton(self, force: bool = False) -> Dict[str, Any]:
         return await self._run_dependency_install(tokeer.ensure_required_proton, bool(force))
 

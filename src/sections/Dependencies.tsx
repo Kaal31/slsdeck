@@ -503,10 +503,10 @@ export function DependenciesSection() {
           onAction={() => confirmInstall("tokeer", installTokeerRuntime)}
         />
         <DepRow
-          label="GE-Proton10-34"
-          hint="Exact compatibility layer required by Tokeer; installed after restart in the background."
-          health={protonStatus?.installed ? "ok" : protonStatus?.partial ? "warn" : "off"}
-          statusText={note.tokeerProton || (protonStatus?.installed ? "installed · verified" : protonStatus?.partial ? "partial installation · repair required" : "not installed")}
+          label="GE-Proton10-34 (legacy/manual)"
+          hint="Optional for current Tokeer. Its modern Linux configurator defaults to Proton Experimental with per-game overrides; legacy bundles may need GE."
+          health={protonStatus?.installed ? "ok" : protonStatus?.partial ? "warn" : "unknown"}
+          statusText={note.tokeerProton || (protonStatus?.installed ? "installed · verified" : protonStatus?.partial ? "partial installation · repair available" : "optional · not installed")}
           busy={!!busy.tokeerProton}
           actionLabel={protonStatus?.installed ? "Reinstall GE-Proton10-34" : protonStatus?.partial ? "Repair GE-Proton10-34" : "Install GE-Proton10-34"}
           onAction={() => confirmInstall("proton", installProton)}

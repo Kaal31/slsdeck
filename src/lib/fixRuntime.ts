@@ -221,7 +221,7 @@ export async function applyFixRuntime(appid: number, overrides?: string): Promis
 export async function configureTokeerLaunch(
   appid: number,
   tokeerHome: string,
-  requiredProton = "GE-Proton10-34"
+  requiredProton = "proton_experimental"
 ): Promise<{ success: boolean; options?: string; proton?: string; usedFallback?: boolean; error?: string }> {
   const SC: any = (window as any).SteamClient;
   if (!SC?.Apps?.SetAppLaunchOptions || !SC?.Apps?.SpecifyCompatTool) {
@@ -262,11 +262,8 @@ export async function configureTokeerLaunch(
       .replace(/\s+/g, " ")
       .trim();
 
-    // A compatibility tool installed while Steam is running is present on disk
-    // before it appears in Steam's live tool registry.  Passing its undiscovered
-    // name to SpecifyCompatTool is silently ignored on affected client builds.
-    // Prefer Tokeer's exact GE build when Steam exposes it; otherwise select the
-    // built-in Proton Experimental so activation never proceeds with no layer.
+    // Follow Tokeer's per-game choice. Steam can install Valve Proton on demand;
+    // only use a custom tool if the live Steam registry exposes it.
     let tools: any[] = [];
     try {
       const available = SC.Apps.GetAvailableCompatTools?.(appid);
@@ -280,12 +277,14 @@ export async function configureTokeerLaunch(
       id: String(tool.strToolName || tool.strToolIdentifier || ""),
       display: String(tool.strDisplayName || ""),
     }));
-    const required = requiredProton.toLowerCase();
+    const wanted = requiredProton.trim() || "proton_experimental";
+    const required = wanted.toLowerCase();
     const discovered = names.find((tool) =>
       tool.id.toLowerCase() === required || tool.display.toLowerCase() === required
     );
-    const selectedProton = discovered?.id || "proton_experimental";
-    const usedFallback = !discovered;
+    const valve = /^proton_(experimental|hotfix|11|10|9|8|7|63|513)$/i.test(wanted);
+    const selectedProton = discovered?.id || (valve ? wanted : "proton_experimental");
+    const usedFallback = selectedProton.toLowerCase() !== required;
 
     SC.Apps.SpecifyCompatTool(appid, selectedProton);
     SC.Apps.SetAppLaunchOptions(appid, next);
