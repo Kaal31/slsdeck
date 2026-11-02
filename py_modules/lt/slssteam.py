@@ -2883,7 +2883,7 @@ def enable_desktop_injection() -> Dict[str, Any]:
 def boot_desktop_icon_guard() -> bool:
     """Self-heal Desktop Mode shortcut injection, preserving Game Mode hooks."""
     try:
-        if not find_installed_lib():
+        if not find_installed_lib() or not (gamescope_hook_active() or wrapper_active()):
             return False
         _neutralize_desktop_coverage()
         result = enable_desktop_injection()
@@ -3205,6 +3205,11 @@ def _activate_injection_locked() -> Dict[str, Any]:
     except Exception:
         pass
     if hook_ok or sh_ok:
+        try:
+            desktop = enable_desktop_injection()
+            _log("Desktop launcher injection enabled: " + str(desktop))
+        except Exception as exc:
+            _log(f"Desktop launcher injection skipped: {exc}")
         methods = ([] + ([hook_res.get("method", "gamescope")] if hook_ok else []) +
                    (["steam.sh"] if sh_ok else []))
         return {
