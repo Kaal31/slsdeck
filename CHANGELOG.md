@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.87 — Repair Tokeer GE-Proton setup
+
+- Install the exact GE-Proton10-34 release without relying on the removed upstream `ensure_proton_installed` configurator function.
+- Verify the official SHA-512 checksum and validate archive paths before installing.
+- Preserve any existing Proton installation until the replacement has been verified and staged.
+
 ## 0.9.86 — SteamStub below pin controls
 
 - Place SteamStub after the complete pin section, including the Already pinned / Pin this version button.
