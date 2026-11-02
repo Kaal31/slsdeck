@@ -512,106 +512,160 @@ def ensure_runtime_latest() -> Dict[str, Any]:
                 "home": td, "requiredProton": REQUIRED_PROTON}
 
 
+# Install the exact Tokeer-compatible GE-Proton release independently of the
+# upstream Tokeer configurator. That configurator no longer consistently exports
+# ensure_proton_installed(), so treating it as a stable API breaks Decky setup.
+REQUIRED_PROTON_RELEASE = (
+    "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/"
+    "GE-Proton10-34/"
+)
+
+
+def _proton_ready(path: str) -> bool:
+    return (os.path.isfile(os.path.join(path, "compatibilitytool.vdf"))
+            and (os.path.isdir(os.path.join(path, "files"))
+                 or os.path.isdir(os.path.join(path, "dist"))))
+
+
+def _proton_candidates() -> list[str]:
+    roots = _steam_roots()
+    home = _home()
+    roots.extend([os.path.join(home, ".steam", "root"),
+                  os.path.join(home, ".local", "share", "Steam")])
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        for compat in (os.path.join(root, "compatibilitytools.d"),
+                       os.path.join(root, "steamapps", "compatibilitytools.d")):
+            path = os.path.realpath(os.path.join(compat, REQUIRED_PROTON))
+            if path not in seen:
+                seen.add(path)
+                candidates.append(path)
+    return candidates
+
+
 def required_proton_status() -> Dict[str, Any]:
-    """Read-only health check for the exact compatibility tool Tokeer requires."""
-    candidates = []
-    try:
-        cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
-        if os.path.isfile(cfg_path):
-            spec = importlib.util.spec_from_file_location("slsdeck_tokeer_status_config", cfg_path)
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                for root in _steam_roots(module):
-                    candidates.extend([
-                        os.path.join(root, "compatibilitytools.d", REQUIRED_PROTON),
-                        os.path.join(root, "steamapps", "compatibilitytools.d", REQUIRED_PROTON),
-                    ])
-    except Exception:
-        pass
-    candidates.append(os.path.join(_home(), ".steam", "root", "compatibilitytools.d", REQUIRED_PROTON))
-    seen = set()
+    """Read-only check for the *exact* Proton build Tokeer needs."""
+    candidates = _proton_candidates()
     for path in candidates:
-        real = os.path.realpath(path)
-        if real in seen:
-            continue
-        seen.add(real)
-        if os.path.isdir(os.path.join(real, "files")) or os.path.isdir(os.path.join(real, "dist")):
+        if _proton_ready(path):
             return {"success": True, "installed": True, "healthy": True,
-                    "name": REQUIRED_PROTON, "path": real}
-    partial = next((os.path.realpath(p) for p in candidates if os.path.isdir(p)), "")
+                    "name": REQUIRED_PROTON, "path": path}
+    partial = next((path for path in candidates if os.path.isdir(path)), "")
     return {"success": True, "installed": False, "healthy": False,
             "partial": bool(partial), "name": REQUIRED_PROTON, "path": partial}
 
 
+def _verify_proton_archive(archive: str, checksum_text: str) -> None:
+    """Verify the SHA-512 published alongside the pinned GitHub asset."""
+    matches = re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{128}(?![a-fA-F0-9])",
+                         checksum_text)
+    if len(matches) != 1:
+        raise RuntimeError("GE-Proton10-34 release checksum is missing or ambiguous.")
+    digest = hashlib.sha512()
+    with open(archive, "rb") as source:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            digest.update(chunk)
+    if not hmac.compare_digest(digest.hexdigest(), matches[0].lower()):
+        raise RuntimeError("GE-Proton10-34 download failed SHA-512 verification.")
+
+
+def _unpack_verified_proton(archive: str, destination: str) -> str:
+    """Extract a verified archive without allowing path traversal or link escapes."""
+    import posixpath
+    import tarfile
+
+    prefix = REQUIRED_PROTON + "/"
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = bundle.getmembers()
+        if not members:
+            raise RuntimeError("GE-Proton10-34 archive is empty.")
+        for member in members:
+            name = posixpath.normpath(member.name)
+            if (member.name.startswith("/") or ".." in member.name.split("/") or name != REQUIRED_PROTON
+                    and not name.startswith(prefix)):
+                raise RuntimeError("Unexpected path in GE-Proton10-34 archive.")
+            if member.issym():
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(name),
+                                                           member.linkname))
+                if target != REQUIRED_PROTON and not target.startswith(prefix):
+                    raise RuntimeError("Unsafe symbolic link in Proton archive.")
+            elif member.islnk():
+                target = posixpath.normpath(member.linkname)
+                if target != REQUIRED_PROTON and not target.startswith(prefix):
+                    raise RuntimeError("Unsafe hard link in Proton archive.")
+            elif not (member.isfile() or member.isdir()):
+                raise RuntimeError("Unsupported entry in Proton archive.")
+        # Validate the entire archive before extracting any member. The archive
+        # itself is SHA-512 verified against the publisher's separate checksum.
+        if hasattr(tarfile, "data_filter"):
+            bundle.extractall(destination, filter="data")
+        else:
+            bundle.extractall(destination)
+    result = os.path.join(destination, REQUIRED_PROTON)
+    if not _proton_ready(result):
+        raise RuntimeError("GE-Proton10-34 archive did not contain a usable Proton installation.")
+    return result
+
+
 def ensure_required_proton(force: bool = False) -> Dict[str, Any]:
-    """Install upstream's exact GE-Proton requirement, without editing VDF."""
+    """Install the exact pinned GE-Proton release; never remove a working copy first.
+
+    Stage download and extraction inside Steam's compatibilitytools.d so neither
+    large intermediate lives in tmpfs. Swap only the exact matching installation
+    after its checksum and layout have been verified; restore it on failure.
+    """
     before = required_proton_status()
-    if before.get("installed") and before.get("healthy") and not force:
-        return {
-            "success": True, "installed": True, "healthy": True,
-            "updated": False, "skipped": True, "name": REQUIRED_PROTON,
-            "path": before.get("path", ""), "requiredProton": REQUIRED_PROTON,
-        }
-    cfg_path = os.path.join(_tdir(), "tokeer_steam_config.py")
-    if not os.path.isfile(cfg_path):
-        return {"success": False, "error": "Tokeer Steam configurator is missing.",
-                "requiredProton": REQUIRED_PROTON}
+    if before.get("healthy") and not force:
+        return {"success": True, "installed": True, "healthy": True,
+                "updated": False, "skipped": True, "name": REQUIRED_PROTON,
+                "path": before.get("path", ""), "requiredProton": REQUIRED_PROTON}
     try:
-        spec = importlib.util.spec_from_file_location("slsdeck_tokeer_steam_config", cfg_path)
-        if not spec or not spec.loader:
-            raise RuntimeError("Could not load Tokeer's Proton installer.")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        # The upstream configurator's _fetch uses urllib and Decky's embedded
-        # Python CA store. Reuse SLSDeck's proven CloudRedirect HTTPX transport
-        # while preserving upstream URLs, extraction and SHA-512 verification.
-        module._fetch = _shared_fetch
-        roots = _steam_roots(module)
-        if not roots:
-            raise RuntimeError("Steam installation was not found.")
-
-        # The upstream installer skips an exact valid directory. Remove only an
-        # exact-name partial extraction and its interrupted archive first; never
-        # touch any other compatibility tool/version.
-        compat_dirs = []
-        for root in roots:
-            compat_dirs.extend([
-                os.path.join(root, "compatibilitytools.d"),
-                os.path.join(root, "steamapps", "compatibilitytools.d"),
-            ])
-        compat_dirs.append(os.path.join(_home(), ".steam", "root", "compatibilitytools.d"))
-        seen = set()
-        for compat in compat_dirs:
-            compat = os.path.realpath(compat)
-            if compat in seen:
-                continue
-            seen.add(compat)
-            target = os.path.join(compat, REQUIRED_PROTON)
-            valid = os.path.isdir(os.path.join(target, "files")) or os.path.isdir(os.path.join(target, "dist"))
-            if os.path.isdir(target) and (force or not valid):
-                # Exact-version manual reinstall or partial extraction repair.
-                # Other GE-Proton versions and compatibility tools are untouched.
-                shutil.rmtree(target)
-            for archive_name in (
-                f".{REQUIRED_PROTON}.tar.gz", f"{REQUIRED_PROTON}.tar.gz.part",
-                f".{REQUIRED_PROTON}.tmp",
-            ):
-                stale = os.path.join(compat, archive_name)
-                try:
-                    if os.path.lexists(stale):
-                        os.remove(stale)
-                except OSError:
-                    pass
-
-        path = module.ensure_proton_installed(roots[0], REQUIRED_PROTON)
-        if not path:
-            raise RuntimeError(f"Could not install {REQUIRED_PROTON}.")
+        existing = str(before.get("path") or "")
+        if existing:
+            compat = os.path.dirname(existing)
+        else:
+            roots = _steam_roots()
+            if not roots:
+                raise RuntimeError("Steam installation was not found.")
+            compat = os.path.realpath(os.path.join(roots[0], "compatibilitytools.d"))
+        os.makedirs(compat, exist_ok=True)
+        from .utils import chown_to_user
+        chown_to_user(compat, recursive=False)
+        target = os.path.join(compat, REQUIRED_PROTON)
+        with tempfile.TemporaryDirectory(prefix=".slsdeck-ge-proton-", dir=compat) as stage:
+            archive = os.path.join(stage, REQUIRED_PROTON + ".tar.gz")
+            checksum_bytes = _shared_fetch(REQUIRED_PROTON_RELEASE + REQUIRED_PROTON + ".sha512sum")
+            if not isinstance(checksum_bytes, bytes):
+                raise RuntimeError("Could not download the official GE-Proton10-34 checksum.")
+            checksum = checksum_bytes.decode("ascii", "strict")
+            if not _shared_fetch(REQUIRED_PROTON_RELEASE + REQUIRED_PROTON + ".tar.gz", archive):
+                raise RuntimeError("Could not download GE-Proton10-34 from its official release.")
+            _verify_proton_archive(archive, checksum)
+            unpacked = _unpack_verified_proton(archive, stage)
+            chown_to_user(unpacked, recursive=True)
+            # The old exact-version directory stays intact until extraction,
+            # checksum verification and ownership repair have all completed successfully.
+            previous = os.path.join(stage, "previous")
+            had_target = os.path.lexists(target)
+            if had_target:
+                os.replace(target, previous)
+            try:
+                os.replace(unpacked, target)
+            except Exception:
+                if had_target:
+                    os.replace(previous, target)
+                raise
+        result = required_proton_status()
+        if not result.get("healthy"):
+            raise RuntimeError("GE-Proton10-34 was installed but was not detected.")
         return {"success": True, "installed": True, "healthy": True,
                 "updated": True, "skipped": False, "name": REQUIRED_PROTON,
-                "path": path, "requiredProton": REQUIRED_PROTON}
+                "path": result.get("path", target), "requiredProton": REQUIRED_PROTON}
     except Exception as exc:
-        return {"success": False, "error": str(exc), "requiredProton": REQUIRED_PROTON}
+        return {"success": False, "installed": bool(before.get("installed")),
+                "error": str(exc), "name": REQUIRED_PROTON,
+                "requiredProton": REQUIRED_PROTON}
 
 
 def prepare(appid: int) -> Dict[str, Any]:
