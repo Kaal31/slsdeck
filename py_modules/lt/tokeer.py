@@ -375,36 +375,51 @@ def _download(url: str, dest: str) -> None:
         raise RuntimeError(f"Secure Tokeer Linux download failed: {url}")
 
 
-def _latest_bundle() -> tuple[str, str]:
-    """Return (release tag, Linux bundle URL), with the stable asset fallback."""
+def _latest_bundle() -> tuple[str, str, str]:
+    """Return release tag, Linux bundle URL and an exact asset identity.
+
+    Forgejo permits replacing release assets without incrementing the tag. An
+    asset id/updated_at/digest change must invalidate an old runtime even when
+    the visible Tokeer version remains identical.
+    """
     try:
         client = ensure_http_client("tokeer: latest release")
         response = client.get(
             RELEASE_API,
-            headers={
-                "User-Agent": "SLSDeck-Tokeer/1.0",
-                "Accept": "application/vnd.github+json",
-            },
-            follow_redirects=True,
-            timeout=60,
+            headers={"User-Agent": "SLSDeck-Tokeer/1.0",
+                     "Accept": "application/json"},
+            follow_redirects=True, timeout=60,
         )
         response.raise_for_status()
         release = response.json()
         tag = str(release.get("tag_name") or "")
         for asset in release.get("assets") or []:
-            if str(asset.get("name") or "").lower() == "tokeer-linux.zip":
-                return tag, str(asset.get("browser_download_url") or RUNTIME_ZIP)
-        return tag, RUNTIME_ZIP
+            if str(asset.get("name") or "").lower() != "tokeer-linux.zip":
+                continue
+            # Prefer a stable asset id and its revision metadata; file size
+            # alone is not sufficient when a same-sized archive is replaced.
+            parts = [str(asset.get(field) or "") for field in
+                     ("id", "updated_at", "digest", "size")]
+            revision = "|".join(parts) if any(parts) else ""
+            return tag, str(asset.get("browser_download_url") or RUNTIME_ZIP), revision
+        # A release without its Linux asset is not a known update; don't
+        # download an older hardcoded fallback and replace a healthy runtime.
+        return "", RUNTIME_ZIP, ""
     except Exception:
-        return "", RUNTIME_ZIP
+        return "", RUNTIME_ZIP, ""
 
 
-def _installed_runtime_version() -> str:
+def _installed_runtime_version() -> tuple[str, str]:
     try:
         with open(os.path.join(_tdir(), VERSION_FILE), "r", encoding="utf-8") as fh:
-            return fh.read().strip()
-    except OSError:
-        return ""
+            raw = fh.read().strip()
+        if raw.startswith("{"):
+            value = json.loads(raw)
+            return (str(value.get("tag") or ""),
+                    str(value.get("assetRevision") or ""))
+        return raw, ""  # legacy version-only marker, one-time refresh
+    except (OSError, ValueError, TypeError):
+        return "", ""
 
 
 def ensure_runtime_latest() -> Dict[str, Any]:
@@ -412,14 +427,14 @@ def ensure_runtime_latest() -> Dict[str, Any]:
     td = _tdir()
     required = ["tokeer", "tokeer_validate_linux.py", "tokeer_redeem_linux.py",
                 "ost-run.sh", "ost_native_hook.so", "tokeer_steam_config.py"]
-    tag, bundle_url = _latest_bundle()
-    installed_version = _installed_runtime_version()
+    tag, bundle_url, revision = _latest_bundle()
+    installed_version, installed_revision = _installed_runtime_version()
     complete = all(os.path.isfile(os.path.join(td, name)) for name in required)
 
-    # A known matching release is a true latest-version skip. If GitHub is
-    # temporarily unreachable, preserve a complete runtime instead of replacing
-    # it blindly; the next invocation checks the release again.
-    if complete and ((tag and installed_version == tag) or not tag):
+    # A matching *tag and asset revision* is current. Keep a complete runtime
+    # if the release API cannot be reached; never downgrade on a metadata miss.
+    if complete and (not tag or (installed_version == tag and
+                                (not revision or installed_revision == revision))):
         return {
             "success": True, "installed": True, "updated": False,
             "skipped": True, "version": installed_version or "installed",
@@ -501,7 +516,8 @@ def ensure_runtime_latest() -> Dict[str, Any]:
 
         saved_version = tag or installed_version or "latest"
         with open(os.path.join(td, VERSION_FILE), "w", encoding="utf-8") as fh:
-            fh.write(saved_version + "\n")
+            json.dump({"tag": saved_version, "assetRevision": revision}, fh)
+            fh.write("\n")
         return {
             "success": True, "installed": True, "updated": True,
             "skipped": False, "version": saved_version, "latest": tag or None,
@@ -510,6 +526,62 @@ def ensure_runtime_latest() -> Dict[str, Any]:
     except Exception as exc:
         return {"success": False, "installed": complete, "error": str(exc),
                 "home": td, "requiredProton": REQUIRED_PROTON}
+
+
+
+def recommended_proton(appid: int) -> Dict[str, Any]:
+    """Read the installed Linux Tokeer configurator's game-specific policy.
+
+    Modern Tokeer provides choose_proton(appid, roots). Old bundles used
+    TARGET_PROTON and require the matching GE build. Do not download a GE
+    tarball for modern Valve-Proton selections, and never invent a community
+    compatibility-tool mapping that is absent on disk.
+    """
+    try:
+        appid = int(appid)
+        if appid <= 0:
+            raise ValueError("Invalid Steam AppID.")
+        cfg = os.path.join(_tdir(), "tokeer_steam_config.py")
+        if os.path.isfile(cfg):
+            spec = importlib.util.spec_from_file_location("slsdeck_tokeer_proton_policy", cfg)
+            if not spec or not spec.loader:
+                raise RuntimeError("Could not load Tokeer's Steam configurator.")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            picker = getattr(module, "choose_proton", None)
+            if callable(picker):
+                roots = _steam_roots(module)
+                chosen = str(picker(str(appid), roots) or "").strip()
+                valve = {
+                    "proton_experimental", "proton_hotfix", "proton_11",
+                    "proton_10", "proton_9", "proton_8", "proton_7",
+                    "proton_63", "proton_513",
+                }
+                # A custom mapping must correspond to a real installed tool.
+                custom_ready = chosen and chosen not in valve and any(
+                    (os.path.isdir(os.path.join(root, "compatibilitytools.d",
+                                               chosen, "files")) or
+                     os.path.isdir(os.path.join(root, "compatibilitytools.d",
+                                               chosen, "dist")))
+                    for root in roots
+                )
+                if chosen in valve or custom_ready:
+                    return {"success": True, "name": chosen, "legacy": False,
+                            "requiresInstall": False, "source": "upstream"}
+                raise RuntimeError("Tokeer returned an unavailable Proton compatibility tool.")
+            # Legacy configurators always pinned GE-Proton10-34. Keep the old
+            # dependency path only for that version of Tokeer.
+            legacy = str(getattr(module, "TARGET_PROTON", "") or "").strip()
+            if legacy == REQUIRED_PROTON:
+                return {"success": True, "name": legacy, "legacy": True,
+                        "requiresInstall": True, "source": "legacy"}
+        # A missing configurator or a bundle without either selection API
+        # must not cause an unnecessary 500 MiB download.
+        return {"success": True, "name": "proton_experimental",
+                "legacy": False, "requiresInstall": False, "source": "fallback"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 
 
 # Install the exact Tokeer-compatible GE-Proton release independently of the
