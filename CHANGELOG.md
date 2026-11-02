@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.88 — Close dependency warning before installing
+
+- Dismiss the shared dependency confirmation dialog immediately when Continue is pressed, before starting an asynchronous installer.
+- Prevent duplicate confirmations while the modal closes, including GE-Proton10-34 downloads.
+- Keep install progress and result messages in Setup & Dependencies instead of leaving the review dialog stuck on screen.
+
 ## 0.9.87 — Repair Tokeer GE-Proton setup
 
 - Install the exact GE-Proton10-34 release without relying on the removed upstream `ensure_proton_installed` configurator function.

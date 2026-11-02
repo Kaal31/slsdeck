@@ -80,6 +80,34 @@ function DepRow({
 }
 
 /**
+ * Decky injects closeModal into the element passed to showModal(). Calling a
+ * dependency installer directly from ConfirmModal's onOK leaves the dialog
+ * visible while the async installation continues. Dismiss it before starting
+ * the job, and ignore duplicate controller confirms during the close frame.
+ */
+function DependencyReviewModal({
+  item, onConfirmed, closeModal,
+}: {
+  item: InstallDependencyInfo;
+  onConfirmed: () => void;
+  closeModal?: () => void;
+}) {
+  const accepted = useRef(false);
+  return <ConfirmModal
+    closeModal={closeModal}
+    strTitle={`${item.name}: review changes`}
+    strDescription={`${item.optional ? "Optional component. " : "Core component. "}Source: ${item.source}. Risk: ${item.risk}. This action may: ${item.changes.join("; ")}. SLSDeck will not install system packages through apt, pacman or dnf.`}
+    strOKButtonText="Continue"
+    onOK={() => {
+      if (accepted.current) return;
+      accepted.current = true;
+      closeModal?.();
+      onConfirmed();
+    }}
+  />;
+}
+
+/**
  * Setup & Dependencies. First run installs SLSsteam; afterwards each component
  * shows its own health and can be reinstalled individually.
  */
@@ -145,12 +173,7 @@ export function DependenciesSection() {
   const confirmInstall = (component: string, action: () => void) => {
     const item = manifest.find((entry) => entry.id === component);
     if (!item) { action(); return; }
-    showModal(<ConfirmModal
-      strTitle={`${item.name}: review changes`}
-      strDescription={`${item.optional ? "Optional component. " : "Core component. "}Source: ${item.source}. Risk: ${item.risk}. This action may: ${item.changes.join("; ")}. SLSDeck will not install system packages through apt, pacman or dnf.`}
-      strOKButtonText="Continue"
-      onOK={action}
-    />);
+    showModal(<DependencyReviewModal item={item} onConfirmed={action} />);
   };
 
   const saveReceipt = async (component: string, action: string, result: Record<string, any>) => {
