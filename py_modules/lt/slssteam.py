@@ -3921,7 +3921,7 @@ def _moon_log_evidence() -> Dict[str, Any]:
             tail = fh.read(65536).decode("utf-8", errors="replace")
         # Native Moon builds include one boot/PID marker at logger construction.
         # Old logs remain valid, but cannot be associated with a specific boot.
-        markers = re.findall(r"\\[MoonSession boot=([0-9a-fA-F-]+|unknown) pid=(\\d+)\\]", tail)
+        markers = re.findall(r"\[MoonSession boot=([0-9a-fA-F-]+|unknown) pid=(\d+)\]", tail)
         current_boot = None
         try:
             with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as boot_file:
@@ -3934,7 +3934,7 @@ def _moon_log_evidence() -> Dict[str, Any]:
             "currentBoot": bool(current_boot and last_session[0] == current_boot),
         } if last_session else None
         # Timestamp is recorded by Moon itself, not inferred from file mtime.
-        stamps = re.findall(r"^\\[(\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z) pid=(\\d+)\\]", tail, re.MULTILINE)
+        stamps = re.findall(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) pid=(\d+)\]", tail, re.MULTILINE)
         result["lastNativeEvent"] = {"utc": stamps[-1][0], "pid": int(stamps[-1][1])} if stamps else None
         result["loadedMarkerCountInTail"] = tail.lower().count("loaded successfully")
         result["failureMarkersInTail"] = {
@@ -3951,7 +3951,7 @@ def _moon_log_evidence() -> Dict[str, Any]:
 def _injection_failure_analysis(trace: str, inventory: Dict[str, Any],
                                 native: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize read-only injection evidence without claiming functionality."""
-    fields = dict(re.findall(r"([A-Za-z]+)=([^\\s]+)", trace))
+    fields = dict(re.findall(r"([A-Za-z]+)=([^\s]+)", trace))
     hits = inventory.get("hits") or []
     moon = [p["pid"] for p in hits if "SLSsteam.so" in p.get("libraries", [])]
     audit = [p["pid"] for p in hits if "library-inject.so" in p.get("libraries", [])]
