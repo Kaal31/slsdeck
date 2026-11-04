@@ -3774,7 +3774,7 @@ def _moon_log_evidence() -> Dict[str, Any]:
 def _injection_failure_analysis(trace: str, inventory: Dict[str, Any],
                                 native: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize read-only injection evidence without claiming functionality."""
-    fields = dict(re.findall(r"([A-Za-z]+)=([^\\s]+)", trace))
+    fields = dict(re.findall(r"([A-Za-z]+)=([^\s]+)", trace))
     hits = inventory.get("hits") or []
     moon = [p["pid"] for p in hits if "SLSsteam.so" in p.get("libraries", [])]
     audit = [p["pid"] for p in hits if "library-inject.so" in p.get("libraries", [])]
