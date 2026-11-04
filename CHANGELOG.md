@@ -1,5 +1,9 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.90 — Repair injection diagnostics
+
+- Correct launcher trace field parsing so diagnostic failure stages reflect the actual Steam wrapper mode and attempt count.
+
 ## 0.9.89 — Track upstream Tokeer Linux updates
 
 - Detect same-version replacements of the Tokeer Linux release asset using its Forgejo asset metadata; migrate older version-only runtime markers.
