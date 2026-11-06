@@ -144,6 +144,18 @@ class Plugin:
     async def zapret_enable(self) -> Dict[str, Any]:
         return await self._run_dependency_install(zapret.enable)
 
+    async def zapret_profiles(self) -> Dict[str, Any]:
+        return await self._run(zapret.profiles)
+
+    async def zapret_set_profile(self, profile: str) -> Dict[str, Any]:
+        return await self._run_dependency_install(zapret.set_profile, profile)
+
+    async def zapret_get_hosts(self) -> Dict[str, Any]:
+        return await self._run(zapret.get_user_hostlist)
+
+    async def zapret_set_hosts(self, content: str) -> Dict[str, Any]:
+        return await self._run_dependency_install(zapret.save_user_hostlist, content)
+
     async def zapret_disable(self) -> Dict[str, Any]:
         return await self._run_dependency_install(zapret.disable)
 
