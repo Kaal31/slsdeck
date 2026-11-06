@@ -1,0 +1,31 @@
+name: Verify zapret-deck integration
+
+on:
+  push:
+    branches: [zapret-deck-integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-zapret-deck-integration
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Validate Python
+        run: |
+          python3 -m compileall -q main.py py_modules
+          python3 -m unittest discover -s tests -p 'test_zapret_headless.py' -v
+      - name: Build Decky UI
+        run: |
+          npm ci
+          npm run build
