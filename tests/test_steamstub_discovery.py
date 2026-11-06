@@ -6,6 +6,7 @@ import struct
 import tempfile
 import types
 import unittest
+from typing import Any, Dict
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / "py_modules/lt/steamstub.py"
@@ -32,7 +33,7 @@ class SteamStubDiscoveryTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         safe = lambda base, rel: os.path.commonpath([os.path.realpath(base), os.path.realpath(os.path.join(base, rel))]) == os.path.realpath(base)
-        env = {"os": os, "struct": struct, "logger": types.SimpleNamespace(warn=lambda *_: None),
+        env = {"os": os, "struct": struct, "Any": Any, "Dict": Dict, "logger": types.SimpleNamespace(warn=lambda *_: None),
                "_fixes": types.SimpleNamespace(_SKIP_EXE_DIRS={"_commonredist", "engine", "redist"},
                                                 _is_safe_path=safe)}
         exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])),
