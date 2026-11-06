@@ -28,6 +28,7 @@ import {
   zapretEnsureInstalled,
   zapretEnable,
   zapretDisable,
+  zapretSetProfile,
   crInstallStatus,
   getInstallSafetyManifest,
   getInstallReceipts,
@@ -521,8 +522,8 @@ export function DependenciesSection() {
           onAction={() => confirmInstall("ubisoft", installUbisoftPackages)}
         />
         <DepRow
-          label="Zapret ISP bypass"
-          hint="Optional upstream Zapret dependency with the complete 67-entry SteaMidra general hostlist. Intercepts only matching HTTP/HTTPS hostnames; no proxy or Cloudflare Worker."
+          label="Zapret ISP bypass (headless)"
+          hint="Optional headless Zapret engine using managed nftables strategies. Only SLSDeck-owned firewall rules are modified."
           health={zapret?.enabled ? "ok" : zapret?.installed ? "warn" : "off"}
           statusText={note.zapret || (zapret?.installed
             ? `${zapret.version || "installed"} · ${zapret.hostEntries || 0} hosts · ${zapret.enabled ? "active" : "disabled"}`
@@ -536,6 +537,32 @@ export function DependenciesSection() {
             <ButtonItem layout="below" onClick={toggleZapret} disabled={!!busy.zapret}>
               {zapret.enabled ? "Disable ISP bypass" : "Enable ISP bypass"}
             </ButtonItem>
+          </PanelSectionRow>
+        )}
+        {zapret?.installed && (
+          <PanelSectionRow>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, width: "100%" }}>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>Strategy (restarts only SLSDeck's Zapret process)</span>
+              {([
+                ["steam-tcp", "TCP multisplit"],
+                ["steam-fake", "TCP fake"],
+                ["steam-quic", "TCP + QUIC"],
+              ] as const).map(([profile, label]) => (
+                <ButtonItem key={profile} layout="below" disabled={!!busy.zapret || zapret.profile === profile}
+                  onClick={async () => {
+                    setB("zapret", true);
+                    try {
+                      const result = await zapretSetProfile(profile);
+                      setZapret(result);
+                      setN("zapret", result.success ? "Strategy: " + label : result.error || "Strategy change failed");
+                    } catch (e) { setN("zapret", String(e)); }
+                    setB("zapret", false);
+                    refresh();
+                  }}>
+                  {label}{zapret.profile === profile ? " (selected)" : ""}
+                </ButtonItem>
+              ))}
+            </div>
           </PanelSectionRow>
         )}
         <DepRow
