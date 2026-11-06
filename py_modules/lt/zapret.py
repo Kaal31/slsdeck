@@ -194,6 +194,8 @@ def ensure_installed(force: bool = False) -> Dict[str, Any]:
             shutil.copytree(source, os.path.join(staged, "upstream"), dirs_exist_ok=True)
             os.makedirs(os.path.join(staged, "slsdeck"), exist_ok=True)
             shutil.copyfile(_bundled_hostlist(), os.path.join(staged, "slsdeck", "list-general.txt"))
+            if os.path.isfile(_user_hostlist()):
+                shutil.copyfile(_user_hostlist(), os.path.join(staged, "slsdeck", "list-general-user.txt"))
             with open(os.path.join(staged, "install-state.json"), "w", encoding="utf-8") as handle:
                 json.dump({**release, "downloadSha256": _sha256(archive_path),
                            "installedAt": int(time.time()),
