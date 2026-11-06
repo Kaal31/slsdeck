@@ -9,28 +9,46 @@ export function SteamStubFix({ appid, disabled = false, onChanged }: {
 }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof steamlessStatus>> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selectedExe, setSelectedExe] = useState("");
   const [message, setMessage] = useState("");
   useEffect(() => {
     let active = true;
-    setStatus(null); setMessage("");
+    setStatus(null); setMessage(""); setSelectedExe("");
     try { repairSteamlessLaunchOption(appid); } catch (error) { setMessage(String(error)); }
     steamlessStatus(appid).then(r => { if (active) setStatus(r); }).catch(() => {});
     return () => { active = false; };
   }, [appid]);
   const launchOptions = getCurrentLaunchOptions(appid);
   const nativeEnabled = stripSteamlessLaunchOption(launchOptions) !== launchOptions;
-  if (!status?.success || (!status.supported && !nativeEnabled)) return null;
+  if (!status?.success) return null;
   const applied = status.installed && !status.hasStub;
+  const detected = !!status.hasStub;
+  const choiceRequired = !!status.needsSelection && !selectedExe;
   return <div style={{ border: "1px solid rgba(255,255,255,.12)", borderRadius: 8, padding: 10 }}>
     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>SteamStub fix</div>
     <div style={{ fontSize: 11, opacity: .7, marginBottom: 8 }}>
       {status.nativeReady ? "Moon native helper ready." : "Native kit installs on demand; bundled Python method remains the fallback."}
       {" "}Windows executable only. Native success adds --steamless for future launches; Un-fix removes it.
     </div>
-    <DialogButton disabled={disabled || busy || !!applied} onClick={async () => {
+    {!detected && !nativeEnabled && !status.nativeBackupCount && (
+      <div style={{ fontSize: 12, opacity: .8, marginBottom: 8 }}>
+        No SteamStub wrapper detected in the installed game executables. Error 6:0000065432 can also have other causes; this fix cannot safely be applied unless the wrapper is detected.
+      </div>
+    )}
+    {status.needsSelection && (
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 12, marginBottom: 4 }}>Multiple wrapped executables found. Select the executable to repair:</div>
+        {(status.candidates || []).map((path) => (
+          <DialogButton key={path} disabled={disabled || busy} onClick={() => setSelectedExe(path)}>
+            {selectedExe === path ? "Selected: " : "Select: "}{path}
+          </DialogButton>
+        ))}
+      </div>
+    )}
+    <DialogButton disabled={disabled || busy || !!applied || !detected || choiceRequired} onClick={async () => {
       setBusy(true); setMessage("Applying SteamStub fix…");
       try {
-        const result = await steamlessUnstub(appid);
+        const result = await steamlessUnstub(appid, selectedExe);
         if (result.success && result.method === "native") enableSteamlessLaunchOption(appid);
         setMessage(result.success ? result.note || "SteamStub fix applied." : result.error || "SteamStub fix failed.");
         const current = await steamlessStatus(appid);
@@ -39,7 +57,7 @@ export function SteamStubFix({ appid, disabled = false, onChanged }: {
         onChanged?.();
       } catch (error) { setMessage(String(error)); }
       finally { setBusy(false); }
-    }}>{busy ? "Working…" : applied ? "SteamStub fix applied" : "Apply SteamStub fix (native preferred)"}</DialogButton>
+    }}>{busy ? "Working…" : applied ? "SteamStub fix applied" : !detected ? "SteamStub not detected" : choiceRequired ? "Select an executable first" : "Apply SteamStub fix (native preferred)"}</DialogButton>
     {(nativeEnabled || !!status.nativeBackupCount) && <DialogButton disabled={disabled || busy} onClick={async () => {
       setBusy(true); setMessage("Reverting native SteamStub…");
       try {
