@@ -143,6 +143,7 @@ def status() -> Dict[str, Any]:
     host_sha = _sha256(_hostlist()) if os.path.isfile(_hostlist()) else ""
     bundled_sha = _sha256(_bundled_hostlist())
     return {"success": True, "installed": installed, "enabled": bool(_pid()),
+            "profile": _profile(), "backend": "nftables",
             "enableOnBoot": bool(state.get("enableOnBoot", False)),
             "version": str(state.get("version") or ""), "path": _root(),
             "asset": str(state.get("asset") or ""),
@@ -225,6 +226,155 @@ def ensure_installed(force: bool = False) -> Dict[str, Any]:
         return {**status(), "success": False, "error": str(exc)}
 
 
+
+# Headless Steam Deck adapter informed by rosakodu/zapret-deck (BSD-3-Clause).
+# SLSDeck owns its own nftables table; never flushes other applications' rules.
+NFT_TABLE = "slsdeck_zapret"
+NFT_QUEUE = "220"
+PROFILES = {
+    "steam-tcp": {"name": "TCP multisplit", "tcp": "80,443", "udp": "", "method": "multisplit"},
+    "steam-fake": {"name": "TCP fake", "tcp": "80,443", "udp": "", "method": "fake"},
+    "steam-quic": {"name": "TCP + QUIC", "tcp": "80,443", "udp": "443", "method": "fake"},
+}
+
+
+def _profile() -> str:
+    selected = str(_read_state().get("profile") or "steam-tcp")
+    return selected if selected in PROFILES else "steam-tcp"
+
+
+def profiles() -> Dict[str, Any]:
+    return {"success": True, "selected": _profile(),
+            "profiles": [{"id": key, **value} for key, value in PROFILES.items()]}
+
+
+def _user_hostlist() -> str:
+    return os.path.join(_overlay(), "list-general-user.txt")
+
+
+def get_user_hostlist() -> Dict[str, Any]:
+    try:
+        with open(_user_hostlist(), encoding="utf-8") as fh:
+            return {"success": True, "content": fh.read()}
+    except FileNotFoundError:
+        return {"success": True, "content": ""}
+
+
+def save_user_hostlist(content: str) -> Dict[str, Any]:
+    import re
+    if not isinstance(content, str) or len(content) > 64000:
+        return {"success": False, "error": "Hostlist must be under 64 KB."}
+    names = []
+    for line in content.splitlines():
+        name = line.strip().lower()
+        if not name or name.startswith("#"):
+            continue
+        if (len(name) > 253 or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", name)
+                or any(len(part) > 63 or part.startswith("-") or part.endswith("-")
+                       for part in name.split("."))):
+            return {"success": False, "error": "Invalid hostname: " + name[:100]}
+        names.append(name)
+    if len(names) > 2000:
+        return {"success": False, "error": "Maximum 2000 hosts."}
+    was_enabled = bool(_pid())
+    old = get_user_hostlist()["content"]
+    if was_enabled:
+        disable(False)
+    os.makedirs(_overlay(), exist_ok=True)
+    temp = _user_hostlist() + ".new"
+    with open(temp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(dict.fromkeys(names)) + ("\n" if names else ""))
+    os.replace(temp, _user_hostlist())
+    if was_enabled:
+        result = enable()
+        if not result.get("success"):
+            with open(_user_hostlist(), "w", encoding="utf-8") as fh:
+                fh.write(old)
+            enable()
+            return {"success": False, "error": "Hostlist activation failed; previous list restored."}
+    return {"success": True, "hostEntries": len(names)}
+
+
+def set_profile(profile: str) -> Dict[str, Any]:
+    if profile not in PROFILES:
+        return {"success": False, "error": "Unknown Zapret profile."}
+    prior = _profile()
+    if prior == profile:
+        return status()
+    active = bool(_pid())
+    if active:
+        disable(False)
+    _write_state({"profile": profile})
+    if active:
+        result = enable()
+        if not result.get("success"):
+            _write_state({"profile": prior})
+            enable()
+            return {"success": False, "error": "Profile failed; previous profile restored."}
+    return status()
+
+
+def _nft(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["nft", *args], capture_output=True, text=True, timeout=10)
+
+
+def _nft_clear() -> None:
+    if shutil.which("nft"):
+        _nft(["delete", "table", "inet", NFT_TABLE])
+
+
+def _nft_setup(profile: Dict[str, str]) -> None:
+    _nft_clear()
+    commands = [
+        ["add", "table", "inet", NFT_TABLE],
+        ["add", "chain", "inet", NFT_TABLE, "output",
+         "{ type filter hook output priority 0 ; policy accept ; }"],
+    ]
+    for proto in ("tcp", "udp"):
+        if profile[proto]:
+            commands.append(["add", "rule", "inet", NFT_TABLE, "output", proto,
+                             "dport", "{ " + profile[proto].replace(",", ", ") + " }",
+                             "meta", "mark", "!=", "0x40000000", "counter",
+                             "queue", "num", NFT_QUEUE, "bypass"])
+    try:
+        for args in commands:
+            result = _nft(args)
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or "nft command failed")
+    except Exception:
+        _nft_clear()
+        raise
+
+
+def _command() -> list[str]:
+    profile = PROFILES[_profile()]
+    method = profile["method"]
+    hosts = ["--hostlist=" + _hostlist()]
+    if os.path.isfile(_user_hostlist()) and os.path.getsize(_user_hostlist()):
+        hosts.append("--hostlist=" + _user_hostlist())
+    command = [_nfqws(), "--qnum=" + NFT_QUEUE, "--user=daemon",
+               "--dpi-desync-fwmark=0x40000000",
+               "--filter-tcp=" + profile["tcp"], *hosts, "--dpi-desync=" + method]
+    if method == "multisplit":
+        command.append("--dpi-desync-split-pos=1")
+    else:
+        command.append("--dpi-desync-repeats=4")
+        if os.path.isfile(_fake_tls()):
+            command.append("--dpi-desync-fake-tls=" + _fake_tls())
+    if profile["udp"]:
+        command += ["--new", "--filter-udp=" + profile["udp"], *hosts,
+                    "--dpi-desync=fake", "--dpi-desync-repeats=4"]
+    return command
+
+
+def _conflict() -> str:
+    if not shutil.which("nft"):
+        return "nftables is unavailable."
+    if _nft(["list", "table", "inet", "zapretunix"]).returncode == 0:
+        return "zapret-deck is active; disable it before enabling SLSDeck Zapret."
+    return ""
+
+
 def _rule_args(binary: str, delete: bool = False) -> list[str]:
     action = "-D" if delete else "-I"
     return [binary, "-t", "mangle", action, "OUTPUT", "1", "-p", "tcp", "-m", "multiport",
@@ -250,51 +400,44 @@ def _remove_rules() -> list[str]:
 def enable() -> Dict[str, Any]:
     current = status()
     if not current["installed"]:
-        return {**current, "success": False, "error": "Install the Zapret dependency first."}
+        return {**current, "success": False, "error": "Install Zapret first."}
     if os.geteuid() != 0:
-        return {"success": False, "error": "Decky's backend must run as root to activate NFQUEUE."}
+        return {"success": False, "error": "Zapret needs Decky's root backend."}
     if current["enabled"]:
         _write_state({"enableOnBoot": True})
         return current
-    if not shutil.which("iptables"):
-        return {"success": False, "error": "SteamOS iptables is unavailable."}
+    conflict = _conflict()
+    if conflict:
+        return {**current, "success": False, "error": conflict}
     _copy_hostlist()
-    _remove_rules()
-    command = [_nfqws(), "--qnum=" + QUEUE, "--user=daemon", "--dpi-desync-fwmark=0x40000000",
-               "--filter-tcp=80,443", "--hostlist=" + _hostlist(),
-               "--dpi-desync=multisplit", "--dpi-desync-split-seqovl=568",
-               "--dpi-desync-split-pos=1", "--dpi-desync-split-seqovl-pattern=" + _fake_tls()]
+    _remove_rules()  # Remove old SLSDeck queue 210 on migration.
+    process = None
     try:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, start_new_session=True)
-        time.sleep(0.25)
+        _nft_setup(PROFILES[_profile()])
+        process = subprocess.Popen(_command(), stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        time.sleep(0.4)
         if process.poll() is not None:
-            raise RuntimeError(f"nfqws exited immediately with code {process.returncode}.")
-        with open(PID_FILE, "w", encoding="ascii") as handle:
-            handle.write(str(process.pid) + "\n")
-        for binary in ("iptables", "ip6tables"):
-            if shutil.which(binary):
-                result = subprocess.run(_rule_args(binary), stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True)
-                if result.returncode:
-                    raise RuntimeError(f"{binary}: {result.stdout.strip()}")
+            raise RuntimeError(f"nfqws exited immediately ({process.returncode}).")
+        with open(PID_FILE, "w", encoding="ascii") as fh:
+            fh.write(str(process.pid) + "\n")
         _write_state({"enableOnBoot": True})
         return status()
     except Exception as exc:
-        disable()
+        if process and process.poll() is None:
+            process.terminate()
+        _nft_clear()
         return {**status(), "success": False, "error": str(exc)}
 
 
 def disable(persist: bool = True) -> Dict[str, Any]:
+    _nft_clear()
     _remove_rules()
     pid = _pid()
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
-            for _ in range(20):
-                if not os.path.exists(f"/proc/{pid}"):
-                    break
-                time.sleep(0.05)
         except (OSError, ProcessLookupError):
             pass
     try:
