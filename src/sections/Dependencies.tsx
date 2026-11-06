@@ -29,6 +29,8 @@ import {
   zapretEnable,
   zapretDisable,
   zapretSetProfile,
+  zapretGetHosts,
+  zapretSetHosts,
   crInstallStatus,
   getInstallSafetyManifest,
   getInstallReceipts,
@@ -119,6 +121,8 @@ export function DependenciesSection() {
   const [protonStatus, setProtonStatus] = useState<{ installed: boolean; partial?: boolean } | null>(null);
   const [ubisoftPackages, setUbisoftPackages] = useState<{ installed: boolean; healthy?: boolean; version?: string } | null>(null);
   const [zapret, setZapret] = useState<ZapretStatus | null>(null);
+  const [zapretHosts, setZapretHosts] = useState("");
+  const [editingZapretHosts, setEditingZapretHosts] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<{ installed: boolean; partial?: boolean; appInstalled?: boolean; moonHookInstalled?: boolean } | null>(null);
   const [diag, setDiag] = useState("");
   const [manifest, setManifest] = useState<InstallDependencyInfo[]>([]);
@@ -562,6 +566,45 @@ export function DependenciesSection() {
                   {label}{zapret.profile === profile ? " (selected)" : ""}
                 </ButtonItem>
               ))}
+            </div>
+          </PanelSectionRow>
+        )}
+        {zapret?.installed && (
+          <PanelSectionRow>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+              <ButtonItem layout="below" disabled={!!busy.zapret} onClick={async () => {
+                if (editingZapretHosts) { setEditingZapretHosts(false); return; }
+                try {
+                  const response = await zapretGetHosts();
+                  if (!response.success) throw new Error("Unable to load hostlist");
+                  setZapretHosts(response.content);
+                  setEditingZapretHosts(true);
+                } catch (e) { setN("zapret", String(e)); }
+              }}>
+                {editingZapretHosts ? "Close custom hostlist" : "Edit custom DPI bypass hosts"}
+              </ButtonItem>
+              {editingZapretHosts && (
+                <>
+                  <span style={{ fontSize: 12, opacity: 0.75 }}>One domain per line. Added to the bundled SteaMidra list.</span>
+                  <textarea
+                    rows={5}
+                    value={zapretHosts}
+                    onChange={(e) => setZapretHosts(e.currentTarget.value)}
+                    style={{ width: "100%", boxSizing: "border-box", resize: "vertical", background: "#20232a", color: "#fff", borderRadius: 4, padding: 8 }}
+                    placeholder={"steamcommunity.com\\nexample.org"}
+                  />
+                  <ButtonItem layout="below" disabled={!!busy.zapret} onClick={async () => {
+                    setB("zapret", true);
+                    try {
+                      const result = await zapretSetHosts(zapretHosts);
+                      setN("zapret", result.success ? "Custom hostlist saved" : result.error || "Hostlist rejected");
+                      if (result.success) setEditingZapretHosts(false);
+                    } catch (e) { setN("zapret", String(e)); }
+                    setB("zapret", false);
+                    refresh();
+                  }}>Save custom hosts</ButtonItem>
+                </>
+              )}
             </div>
           </PanelSectionRow>
         )}
