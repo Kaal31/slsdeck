@@ -199,7 +199,8 @@ def ensure_installed(force: bool = False) -> Dict[str, Any]:
             with open(os.path.join(staged, "install-state.json"), "w", encoding="utf-8") as handle:
                 json.dump({**release, "downloadSha256": _sha256(archive_path),
                            "installedAt": int(time.time()),
-                           "enableOnBoot": bool(was_enabled or current.get("enableOnBoot"))},
+                           "enableOnBoot": bool(was_enabled or current.get("enableOnBoot")),
+                           "profile": _profile()},
                           handle, indent=2)
                 handle.write("\n")
             old = _root() + ".old"
@@ -440,6 +441,10 @@ def disable(persist: bool = True) -> Dict[str, Any]:
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
+            for _ in range(20):
+                if not os.path.exists(f"/proc/{pid}"):
+                    break
+                time.sleep(0.05)
         except (OSError, ProcessLookupError):
             pass
     try:
