@@ -232,12 +232,17 @@ export const tokeerEnsureUbisoftPackages = callable<[force?: boolean], { success
 export type ZapretStatus = {
   success: boolean; installed: boolean; enabled: boolean; version?: string;
   path?: string; asset?: string; hostEntries?: number; hostlistCurrent?: boolean;
+  profile?: string; backend?: string;
   hostlistSha256?: string; updated?: boolean; skipped?: boolean; latest?: string; error?: string;
 };
 export const zapretStatus = callable<[], ZapretStatus>("zapret_status");
 export const zapretEnsureInstalled = callable<[force?: boolean], ZapretStatus>("zapret_ensure_installed");
 export const zapretEnable = callable<[], ZapretStatus>("zapret_enable");
 export const zapretDisable = callable<[], ZapretStatus>("zapret_disable");
+export const zapretProfiles = callable<[], {success: boolean; selected: string; profiles: {id: string; name: string; method: string}[]}>("zapret_profiles");
+export const zapretSetProfile = callable<[profile: string], ZapretStatus>("zapret_set_profile");
+export const zapretGetHosts = callable<[], {success: boolean; content: string}>("zapret_get_hosts");
+export const zapretSetHosts = callable<[content: string], {success: boolean; hostEntries?: number; error?: string}>("zapret_set_hosts");
 export const zapretUninstall = callable<[], ZapretStatus & { removed?: string[]; errors?: string[] }>("zapret_uninstall");
 export const tokeerApplyUbisoftPackage = callable<[appid: number], { success: boolean; appid?: number; name?: string; installPath?: string; tokenDirectory?: string; tokenRequestIds?: number[]; copied?: string[]; appliedAt?: number; error?: string }>("tokeer_apply_ubisoft_package");
 export const tokeerFindUbisoftToken = callable<[appid: number, sinceMs?: number], { success: boolean; found?: boolean; path?: string; filename?: string; directory?: string; size?: number; tokenRequestIds?: number[]; error?: string }>("tokeer_find_ubisoft_token");
