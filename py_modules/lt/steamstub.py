@@ -190,24 +190,82 @@ def _selected_runtime_env(appid: int) -> Dict[str, str]:
 _LOCK = threading.Lock()
 
 
+def _steamstub_candidates(install_path: str) -> list[str]:
+    """Find actual SteamStub-wrapped game PE files, not the largest/shipping EXE.
+
+    Do not walk symlinks or tool/install directories. Detection is read-only,
+    bounded, and always rechecked just before a fix is applied.
+    """
+    candidates = []
+    skip_files = ("unins", "setup", "vcredist", "dxsetup", "crashreport",
+                  "crashreportclient", "ue4prereq", "unitycrashhandler",
+                  "dotnet", "directx", "redist")
+    inspected = 0
+    for root, dirs, files in os.walk(install_path, followlinks=False):
+        rel_depth = os.path.relpath(root, install_path).count(os.sep)
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))
+                   and d.lower() not in _fixes._SKIP_EXE_DIRS]
+        if rel_depth >= 7:
+            dirs[:] = []
+        for filename in files:
+            if not filename.lower().endswith(".exe") or filename.lower().startswith(skip_files):
+                continue
+            candidate = os.path.join(root, filename)
+            if os.path.islink(candidate):
+                continue
+            rel = os.path.relpath(candidate, install_path)
+            if not _fixes._is_safe_path(install_path, rel):
+                continue
+            inspected += 1
+            if inspected > 400:
+                logger.warn("SteamStub scan: reached 400 executable safety limit")
+                return candidates
+            if has_steamstub(candidate):
+                candidates.append(rel.replace("\\", "/"))
+    return sorted(candidates, key=str.casefold)
+
+
+def _select_executable(install_path: str, executable: str = "") -> Dict[str, Any]:
+    candidates = _steamstub_candidates(install_path)
+    if executable:
+        # Resolve only from this scan; never accept arbitrary UI paths.
+        selected = next((rel for rel in candidates if rel == executable), "")
+        if not selected:
+            return {"success": False, "error": "Selected executable is not a detected SteamStub game executable.",
+                    "candidates": candidates}
+    elif len(candidates) == 1:
+        selected = candidates[0]
+    elif len(candidates) > 1:
+        return {"success": False, "error": "Multiple SteamStub executables detected; select the game executable.",
+                "candidates": candidates}
+    else:
+        return {"success": False, "error": "No SteamStub wrapper detected in game executables.",
+                "candidates": []}
+    return {"success": True, "exe": os.path.join(install_path, selected.replace("/", os.sep)),
+            "relativeExe": selected, "candidates": candidates}
+
+
 def status(install_path: str) -> Dict[str, Any]:
     try:
         native_count = len(native_backups(install_path))
-        r = _fixes.find_main_exe(install_path)
-        exe = r.get("exe") if r.get("success") else ""
-        if not exe or not os.path.isfile(exe):
-            return {"success": True, "supported": native_count > 0, "nativeBackupCount": native_count}
-        stub = has_steamstub(exe)
-        done = os.path.isfile(exe + ".original")
+        selection = _select_executable(install_path)
+        candidates = selection.get("candidates", [])
+        exe = selection.get("exe", "")
         managed = False
         import glob
         for log in glob.glob(os.path.join(install_path, "luatools-fix-log-*.log")):
             with open(log, encoding="utf-8") as fh:
                 if "steamstub-managed" in fh.read():
                     managed = True
-        return {"success": True, "supported": bool(stub or done or managed or native_count),
-                "hasStub": bool(stub), "installed": bool(done or (managed and os.path.isfile(exe + _fixes.ORIG_SUFFIX))),
-                "nativeReady": native_ready(), "nativeBackupCount": native_count, "exe": exe}
+                    break
+        done = bool(exe and (os.path.isfile(exe + ".original") or
+                            os.path.isfile(exe + _fixes.ORIG_SUFFIX)))
+        return {"success": True, "supported": bool(candidates or native_count or managed or done),
+                "hasStub": bool(candidates), "installed": bool(done),
+                "nativeReady": native_ready(), "nativeBackupCount": native_count,
+                "exe": exe, "candidates": candidates,
+                "needsSelection": len(candidates) > 1,
+                "reason": selection.get("error", "")}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
@@ -243,9 +301,9 @@ def _python_unstub(appid, install_path: str, exe: str) -> Dict[str, Any]:
         return {"success": False, "method": "python", "error": str(exc)}
 
 
-def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
+def unstub(appid, install_path: str, game_name: str = "", executable: str = "") -> Dict[str, Any]:
     logger.log(f"SteamStub apply start: appid={appid} install={install_path!r}")
-    result = _unstub_impl(appid, install_path, game_name)
+    result = _unstub_impl(appid, install_path, game_name, executable)
     logger.log(f"SteamStub apply result: appid={appid} success={result.get('success')} method={result.get('method', 'unspecified')} error={result.get('error', '')!r}")
     for key in ('nativeLog', 'log'):
         if result.get(key):
@@ -253,7 +311,7 @@ def unstub(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
     return result
 
 
-def _unstub_impl(appid, install_path: str, game_name: str = "") -> Dict[str, Any]:
+def _unstub_impl(appid, install_path: str, game_name: str = "", executable: str = "") -> Dict[str, Any]:
     """Prefer Moon's helper; record originals before either engine can modify files."""
     if not _LOCK.acquire(blocking=False):
         return {"success": False, "error": "SteamStub processing is already running"}
@@ -261,9 +319,11 @@ def _unstub_impl(appid, install_path: str, game_name: str = "") -> Dict[str, Any
         from .fixes import _get_unfix_state
         if _get_unfix_state(int(appid)).get("status") in {"queued", "removing"}:
             return {"success": False, "error": "Wait for restore to finish"}
-        result = _fixes.find_main_exe(install_path)
-        exe = result.get("exe") if result.get("success") else ""
-        if not exe or not _fixes._is_safe_path(install_path, os.path.relpath(exe, install_path)):
+        result = _select_executable(install_path, executable)
+        if not result.get("success"):
+            return result
+        exe = result["exe"]
+        if not _fixes._is_safe_path(install_path, os.path.relpath(exe, install_path)):
             return {"success": False, "error": "No safe game executable found"}
         logger.log(f"SteamStub selected executable: appid={appid} exe={exe!r} detected={has_steamstub(exe)}")
         if not has_steamstub(exe):
