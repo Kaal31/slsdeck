@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.91 — SteamStub detection for games with multiple executables
+
+- Scan eligible game EXEs for SteamStub wrappers instead of inspecting only the generic main executable. This addresses missing Fixes entries when a separate launcher is SteamStub-wrapped.
+- Require an explicit executable selection if several SteamStub wrappers are detected. Keep safe-path checks and original-file backups before modification.
+- Show a clear diagnostic when the game has no detectable SteamStub wrapper, rather than hiding the fix entirely.
+- Add regression tests for the Disney Dreamlight Valley-style launcher/shipping-executable layout, safe paths, and games without SteamStub.
+
 ## 0.9.90 — Repair injection diagnostics
 
 - Correct launcher trace field parsing so diagnostic failure stages reflect the actual Steam wrapper mode and attempt count.
