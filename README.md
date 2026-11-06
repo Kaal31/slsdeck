@@ -1,5 +1,7 @@
 # SLSDeckUniversal
 
+**Development branch: zapret-deck-integration** — isolated headless integration informed by [rosakodu/zapret-deck](https://github.com/rosakodu/zapret-deck). This does not modify experimental or main.
+
 [![vibecoded with claude | chatgpt](https://img.shields.io/badge/vibecoded%20with-claude%20%7C%20chatgpt-8A2BE2)](https://github.com/Kaal31/slsdeck)
 
 A **Decky Loader plugin for SteamOS / Steam Deck** that brings the SLSDeck workflow to Linux and collects game-management, manifest, compatibility-fix, and related utilities in one interface.
@@ -49,7 +51,7 @@ SLSDeck runs as a root-enabled Decky plugin. Before an installer starts, the plu
 | **Tokeer runtime** | Optional | Tokeer upstream | Installs a user-scoped activation runtime |
 | **GE-Proton10-34** | Optional | GitHub/release asset | Downloads and extracts a large compatibility-tool archive |
 | **Ubisoft packages** | Optional | SLSDeck rolling release | Installs hosted AppID-keyed activation data |
-| **Zapret** | Optional, disabled after install | `bol-van/zapret` | Installs native binaries; when enabled, adds SLSDeck-managed NFQUEUE rules for the bundled SteaMidra host list |
+| **Zapret** | Optional, disabled after install | `bol-van/zapret` and `rosakodu/zapret-deck` concepts | Runs headlessly with three bounded nftables profiles on dedicated NFQUEUE 220; only SLSDeck-owned rules are managed |
 | **CloudRedirect** | Optional | Moon/CloudRedirect upstream | Installs a Steam hook and creates provider cache/credential files |
 | **Hypervisor tools** | Optional, per game | Per-game fix sources | May reload KVM modules or modify UMIP/boot configuration; the UI must ask first |
 
@@ -87,6 +89,7 @@ SLSDeckUniversal is built around, integrates with, downloads from, or interopera
 - **CreamAPI** — Steam DLC compatibility support used where applicable.
 - [UC Online 2](https://github.com/UnionCrax-Team/uc-online2) and [EOS Proxy](https://github.com/yesyes0649/eos-proxy) — optional per-game multiplayer/API compatibility tools.
 - [zapret](https://github.com/bol-van/zapret) — upstream Linux DPI/ISP-bypass engine. SLSDeck supplies its own Steam-oriented lists and integration around the upstream package.
+- [zapret-deck](https://github.com/rosakodu/zapret-deck) by rosakodu — BSD-3-Clause licensed reference for the nftables strategy approach. See [integration notes](docs/zapret-deck-integration.md).
 - [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) and the LinUwUx Proton work distributed through the SLSDeck release assets.
 - [glowing-tribble](https://github.com/PareidoliaDev/glowing-tribble) and its maintained mirrors — optional hypervisor/CPUID module used by the Denuvo workflow.
 - [Denuvo game information](https://github.com/PorcoDio00033/denuvo-game-info) — compatibility metadata reference.
