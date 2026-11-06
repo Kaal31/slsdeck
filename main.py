@@ -1735,12 +1735,12 @@ class Plugin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    async def steamless_unstub(self, appid: int) -> Dict[str, Any]:
+    async def steamless_unstub(self, appid: int, executable: str = "") -> Dict[str, Any]:
         try:
             res = steam.get_game_install_path_response(int(appid))
             if not res.get("success") or not res.get("installPath"):
                 return {"success": False, "error": "game not installed"}
-            return await self._run(steamstub.unstub, int(appid), res["installPath"], res.get("name", ""))
+            return await self._run(steamstub.unstub, int(appid), res["installPath"], res.get("name", ""), executable)
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
