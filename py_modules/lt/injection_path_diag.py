@@ -110,14 +110,12 @@ def snapshot() -> Dict[str, Any]:
     try:
         with open(trace_file, encoding="utf-8", errors="replace") as fh:
             trace = fh.read(4096).strip()
-        trace_mtime = os.path.getmtime(trace_file)
+
     except OSError:
-        trace, trace_mtime = "", 0
+        trace = ""
     boot_time = slssteam._system_boot_epoch()
     wrapper_this_boot = (bool(boot_id and f"boot={boot_id} " in trace)
                          if trace and boot_id else None)
-    if wrapper_this_boot is None and trace and boot_time and trace_mtime >= boot_time:
-        wrapper_this_boot = True
     moon_log = slssteam._slssteam_log_path()
     recent = False
     if moon_log and boot_time:
