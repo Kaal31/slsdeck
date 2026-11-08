@@ -6,7 +6,7 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / "py_modules/lt/injection_path_diag.py"
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-scope = {}
+scope = {"Dict": Dict, "Any": Any}
 only = [node for node in tree.body if isinstance(node, ast.FunctionDef)
         and node.name == "classify"]
 exec(compile(ast.fix_missing_locations(ast.Module(body=only, type_ignores=[])),
