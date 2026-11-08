@@ -148,7 +148,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "SLSDeck experimental-test $VERSION" --notes-file RELEASE_NOTES.md --prerelease
           else
-            gh release create "$TAG" --title "SLSDeck experimental $VERSION" --notes-file RELEASE_NOTES.md --prerelease --target experimental-test
+            gh release create "$TAG" --title "SLSDeck experimental-test $VERSION" --notes-file RELEASE_NOTES.md --prerelease --target experimental-test
           fi
           gh release upload "$TAG" SLSDeckUniversal-experimental-test.zip --clobber
       - uses: actions/upload-artifact@v4
