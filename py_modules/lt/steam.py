@@ -1072,6 +1072,12 @@ def download_preflight(appid: int) -> Dict[str, Any]:
         "SLSsteam is loaded into the running Steam process" if inj else
         "SLSsteam is NOT injecting - Steam will deny the ownership ticket")
 
+    # The stock engine also reports 'Loaded successfully' but it cannot plan
+    # Moon depots. A stale mapped inode after an on-disk repair likewise needs
+    # a Steam restart before the new engine can be used.
+    engine = slssteam.moon_runtime_status()
+    add("moon_runtime", bool(engine.get("ready")), str(engine.get("reason")))
+
     # 2. App registered with SLSsteam.
     try:
         listed = appid in set(slssteam.read_additional_apps())
