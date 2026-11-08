@@ -30,7 +30,7 @@ import decky
 from lt import (apis, art, audit, backup, buildarchive, buildhistory, buildpicker, cloudredirect, cloudsave, compat, confighealer, crakfiles, creamysteamy, custom_fixes, denuvo, dlc,
                 dlcdepot, dlcunlockers, downloads, fixes, hvauto, hypervisor, luatools, netsock, multiplayer_proxies, online_patch,
                 nerai, pinsource, proton, ryuu, settings, slssteam, smokeapi, steam, steamstub, storage, minigame, hubcap_updates,
-                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods, luatools_collections, install_safety,
+                updates, watchdog, workshop, multiplayer, tokeer, tokeer_health, ubisoft_packages, lifecycle, plugin_updates, zapret, nexusmods, luatools_collections, install_safety, injection_path_diag,
 )
 from lt.httpc import close_http_client
 from lt.hv import get_hv
@@ -460,6 +460,20 @@ class Plugin:
                     denuvo.resolve(ids)
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: denuvo warm-up failed: {exc}")
+        # Read-only event/heartbeat injection verification. Never changes launchers
+        # or restarts Steam; log each change and every ten minutes at most.
+        async def _monitor_injection_path():
+            try:
+                await self._run(injection_path_diag.log_snapshot, "plugin-startup", True)
+                while True:
+                    await asyncio.sleep(45)
+                    await self._run(injection_path_diag.log_snapshot, "periodic", False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                decky.logger.warning(f"[INJECTION-DIAG] monitor stopped: {type(exc).__name__}")
+        self._injection_diag_task = asyncio.create_task(_monitor_injection_path())
+
         # Start the background self-healing watchdog daemon (checks health & auto-repairs OS updates every 5 min)
         try:
             watchdog.start_watchdog(self.loop)
@@ -508,6 +522,10 @@ class Plugin:
 
     async def _unload(self):
         decky.logger.info("SLSDeck: unloading")
+        task = getattr(self, "_injection_diag_task", None)
+        if task is not None:
+            task.cancel()
+            self._injection_diag_task = None
         # Decky reloads plugins in place (file watcher, update, manual reload). If
         # the background daemons and pools are not stopped here they survive the
         # reload, so each cycle leaves another watchdog loop and another thread
@@ -554,6 +572,10 @@ class Plugin:
             pass
 
     async def _uninstall(self):
+        task = getattr(self, "_injection_diag_task", None)
+        if task is not None:
+            task.cancel()
+            self._injection_diag_task = None
         if plugin_updates.replacement_pending():
             decky.logger.info(
                 "SLSDeck: Decky update/downgrade detected — preserving dependencies and user data"
@@ -809,11 +831,15 @@ class Plugin:
 
     async def activate_injection(self) -> Dict[str, Any]:
         """Patch steam.sh with the scoped LD_AUDIT wrapper (rootless)."""
-        return await self._run(slssteam.activate_injection)
+        result = await self._run(slssteam.activate_injection)
+        await self._run(injection_path_diag.log_snapshot, "activation-attempt", True)
+        return result
 
     async def deactivate_injection(self) -> Dict[str, Any]:
         """Restore the original steam.sh (removes the LD_AUDIT wrapper)."""
-        return await self._run(slssteam.deactivate_injection)
+        result = await self._run(slssteam.deactivate_injection)
+        await self._run(injection_path_diag.log_snapshot, "deactivation", True)
+        return result
 
     async def get_wrapper_option(self) -> Dict[str, Any]:
         return {"success": True, "skip": settings.get_skip_wrapper()}
@@ -821,6 +847,10 @@ class Plugin:
     async def set_wrapper_option(self, skip: bool) -> Dict[str, Any]:
         settings.set_skip_wrapper(skip)
         return {"success": True}
+
+    async def injection_path_verification(self) -> Dict[str, Any]:
+        """Inspect current effective launcher and Moon state; never mutates Steam."""
+        return await self._run(injection_path_diag.log_snapshot, "requested", True)
 
     async def get_diagnostics(self) -> Dict[str, Any]:
         """Report the exact install/injection state to debug why games don't show."""
