@@ -84,6 +84,14 @@ def classify(snapshot: Dict[str, Any]) -> str:
     """Never report success just because a hook exists or a .so is mapped."""
     if not snapshot.get("steamRunning"):
         return "steam-not-running"
+    runtime = snapshot.get("moonRuntime")
+    if isinstance(runtime, dict) and not runtime.get("ready"):
+        engine = runtime.get("engine")
+        if engine == "stock":
+            return "wrong-engine-loaded"
+        if engine == "stale":
+            return "stale-engine-mapped"
+        return "moon-runtime-not-ready"
     if snapshot.get("functional"):
         return "functional-confirmed"
     if snapshot.get("moonMapped") and snapshot.get("moonLogSuccess") is False:
