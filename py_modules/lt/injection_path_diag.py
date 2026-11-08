@@ -155,6 +155,7 @@ def snapshot() -> Dict[str, Any]:
         "moonLogFreshThisBoot": recent,
         "steamClientVersion": slssteam.steam_client_version() or "unknown",
         "engineInstalled": bool(slssteam.find_installed_lib()),
+        "moonRuntime": slssteam.moon_runtime_status(),
     }
     result["stage"] = classify(result)
     return result
@@ -188,7 +189,10 @@ def log_snapshot(reason: str = "manual", force: bool = False) -> Dict[str, Any]:
                   f"moonLogFresh={result['moonLogFreshThisBoot']} "
                   f"moonInitialized={result['moonLogSuccess']} "
                   f"functional={result['functional']} "
-                  f"clientVersion={result['steamClientVersion']}")
+                  f"clientVersion={result['steamClientVersion']} "
+                  f"runtimeEngine={result['moonRuntime'].get('engine')} "
+                  f"runtimeMatchesDisk={result['moonRuntime'].get('runningMatchesDisk')} "
+                  f"runtimeReady={result['moonRuntime'].get('ready')}")
         return {"success": True, **result}
     except Exception as exc:
         logger.warn(f"[INJECTION-DIAG] event={reason} stage=diagnostic-error type={type(exc).__name__}")
