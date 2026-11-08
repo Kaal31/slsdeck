@@ -362,6 +362,11 @@ def trigger_steam_install(appid, library: int = 0) -> Dict[str, Any]:
         appid = int(appid)
     except Exception:
         return {"success": False, "error": "invalid appid"}
+    runtime = moon_runtime_status()
+    if not runtime.get("ready"):
+        logger.warn(f"SLSsteam: blocking native install for {appid}: {runtime.get('reason')}")
+        return {"success": False, "code": "moon_runtime_not_ready",
+                "error": runtime.get("reason"), "runtime": runtime}
     candidates = []
     try:
         import pwd
