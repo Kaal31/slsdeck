@@ -65,6 +65,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_tokeer_upstream_policy.py' -v
       - name: Test SteamStub executable discovery
         run: python3 -m unittest discover -s tests -p 'test_steamstub_discovery.py' -v
+      - name: Test automatic injection path diagnostics
+        run: python3 -m unittest discover -s tests -p 'test_injection_path_diag.py' -v
       - name: Validate Decky compatibility
         run: |
           python3 -m compileall -q main.py py_modules

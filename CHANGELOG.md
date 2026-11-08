@@ -1,5 +1,12 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.92 — Automatic injection path verification
+
+- Log the configured and effective Steam launcher path, boot-session wrapper evidence, Moon mapping, Moon load status, and current functional injection state.
+- Trigger read-only injection checks at plugin startup, after manual activation/deactivation, on Steam process/injection state changes, and at a throttled heartbeat.
+- Distinguish bypassed service hooks, missing wrappers, incompatible Moon initialization, and missing process mappings without modifying Steam startup.
+- Add regression tests for status classification and read-only boundaries.
+
 ## 0.9.91 — SteamStub detection for games with multiple executables
 
 - Scan eligible game EXEs for SteamStub wrappers instead of inspecting only the generic main executable. This addresses missing Fixes entries when a separate launcher is SteamStub-wrapped.
