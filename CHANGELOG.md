@@ -1,5 +1,13 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.93 — Prevent stock SLSsteam zero-depot installs
+
+- Refuse stock AceSLS fallback when a Moon build is missing; preserve the existing installation and launcher instead of silently downgrading the engine.
+- Verify the SLSsteam.so mapped into the running Steam session matches the installed Moon binary (inode check) and functional injection before allowing new game registrations or native installs.
+- Detect wrong/stale engine in download preflight and automatic injection logs with actionable repair and restart instructions.
+- Re-assert Moon after Headcrab if compatibility repair unexpectedly replaces the engine.
+- Add regression tests for stock, stale, missing and functional Moon runtime states.
+
 ## 0.9.92 — Automatic injection path verification
 
 - Log the configured and effective Steam launcher path, boot-session wrapper evidence, Moon mapping, Moon load status, and current functional injection state.
