@@ -2017,13 +2017,16 @@ def _run_install() -> None:
         bundled = _bundled_moon_archive()
         url = "" if bundled else _resolve_moon_zip_url()
         if not bundled and not url:
-            # Fall back to stock AceSLS SLSsteam (ownership only) if the fork
-            # can't be resolved, so at least install/injection still work.
-            _log("slsteam-moon unavailable; falling back to AceSLS SLSsteam")
-            url = SLS_RELEASE_URL
-            archive = os.path.join(tmp, "SLSsteam-Any.7z")
-        else:
-            archive = os.path.join(tmp, "slsteam-moon.zip")
+            # A stock SLSsteam engine grants ownership but lacks Moon's depot
+            # planner/key support. Substituting it makes games appear installed
+            # with zero depots and a missing executable. Fail without replacing
+            # any existing engine or touching the Steam launcher.
+            message = ("slsteam-moon unavailable; refusing stock AceSLS fallback. "
+                       "Existing engine and Steam launch configuration were preserved.")
+            _log(message)
+            _set_install({"status": "failed", "success": False, "error": message})
+            return
+        archive = os.path.join(tmp, "slsteam-moon.zip")
 
         _stage("downloading", "Downloading engine…")
         if bundled:
@@ -2065,6 +2068,14 @@ def _run_install() -> None:
             _log(f"path wrapper ensure failed: {_wexc}")
         if not find_installed_lib():
             _set_install({"status": "failed", "error": "Failed to place SLSsteam.so"})
+            return
+
+        engine_check = installed_lib_is_moon()
+        if not engine_check.get("moon"):
+            message = ("Moon engine verification failed after extraction; "
+                       "refusing to activate stock SLSsteam.")
+            _log(message)
+            _set_install({"status": "failed", "success": False, "error": message})
             return
 
         ensure_config()
@@ -2139,11 +2150,12 @@ def _run_install() -> None:
         except Exception as _rexc:
             _log(f"desktop launcher restore skipped: {_rexc}")
 
-        installed = bool(find_installed_lib())
+        installed = bool(installed_lib_is_moon().get("moon"))
         injected = is_injected()
         _set_install({
-            "status": "done",
+            "status": "done" if installed else "failed",
             "success": installed,
+            "error": "" if installed else "Install failed: Moon binary not installed",
             "installed": installed,
             "injected": injected,
             "needsDesktopMode": installed and not injected,
@@ -4506,8 +4518,14 @@ def _run_headcrab_shimmed() -> bool:
         return False
     final_engine = installed_lib_is_moon()
     if not final_engine.get("moon"):
-        _log("Client repair rejected: final engine is not slsteam-moon")
-        return False
+        _log("Client repair detected a non-Moon engine; attempting to restore Moon")
+        restored = ensure_moon_engine()
+        final_engine = installed_lib_is_moon()
+        if not restored.get("success") or not final_engine.get("moon"):
+            _log("Client repair rejected: final engine is not slsteam-moon")
+            return False
+    _log("Headcrab client repair verified slsteam-moon remains on disk; "
+         "running Steam must restart before a replaced library becomes active")
     return True
 
 
@@ -4942,6 +4960,80 @@ def installed_lib_is_moon() -> Dict[str, Any]:
         return {"installed": True, "moon": False, "lib": lib, "error": str(exc)}
     hits = [m.decode() for m in _MOON_MARKERS if m in blob]
     return {"installed": True, "moon": bool(hits), "lib": lib, "markers": hits}
+
+
+def moon_runtime_status() -> Dict[str, Any]:
+    """Verify the engine *mapped into Steam*, not merely the file on disk.
+
+    A running stock AceSLS engine can report 'Loaded successfully' while lacking
+    Moon's depot planning. Reinstalling Moon on disk does not update an already
+    mapped library: Linux retains the old inode until Steam restarts.
+    """
+    disk = installed_lib_is_moon()
+    lib = str(disk.get("lib") or "")
+    try:
+        disk_inode = os.stat(lib).st_ino if lib else None
+    except OSError:
+        disk_inode = None
+
+    mapped_inodes = set()
+    mapped_processes = 0
+    # Bound the scan; never read argv, environment or sensitive Steam files.
+    try:
+        pids = [pid for pid in os.listdir("/proc") if pid.isdigit()]
+        for pid in pids[:4096]:
+            try:
+                with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
+                    comm = fh.read(128).strip().lower()
+                # The Steam client may load through a runtime shim, but for an
+                # install preflight we require evidence in a Steam-family process.
+                if "steam" not in comm and "steamclient" not in comm:
+                    continue
+                with open(f"/proc/{pid}/maps", encoding="utf-8", errors="replace") as fh:
+                    found = False
+                    for line in fh:
+                        if "SLSsteam.so" not in line:
+                            continue
+                        fields = line.split(None, 5)
+                        if len(fields) < 5:
+                            continue
+                        found = True
+                        try:
+                            mapped_inodes.add(int(fields[4]))
+                        except ValueError:
+                            pass
+                    if found:
+                        mapped_processes += 1
+            except (OSError, PermissionError):
+                continue
+    except OSError:
+        pass
+
+    matching = bool(disk_inode and disk_inode in mapped_inodes)
+    running_stock = bool(mapped_inodes and not disk.get("moon") and matching)
+    stale = bool(mapped_inodes and disk.get("moon") and not matching)
+    ready = bool(disk.get("moon") and matching and _injection_functional())
+    if running_stock:
+        reason = ("Wrong engine loaded: stock AceSLS SLSsteam is active. "
+                  "Install Moon in Dependencies and fully restart Steam.")
+    elif stale:
+        reason = ("The running Steam session still maps a different SLSsteam.so "
+                  "from the Moon binary on disk; fully restart Steam.")
+    elif not disk.get("moon"):
+        reason = "Moon is not installed on disk; install it in Dependencies."
+    elif not mapped_inodes:
+        reason = "Moon is not mapped in the current Steam session."
+    elif not ready:
+        reason = "Moon is mapped but functional initialization is not confirmed."
+    else:
+        reason = "Moon binary on disk matches the running Steam mapping."
+    return {"success": True, "ready": ready, "reason": reason,
+            "engine": ("stock" if running_stock else "moon" if ready
+                       else "stale" if stale else "unverified"),
+            "diskMoon": bool(disk.get("moon")),
+            "mapped": bool(mapped_inodes),
+            "mappedProcesses": mapped_processes,
+            "runningMatchesDisk": matching}
 
 
 def _bundled_moon_metadata() -> Dict[str, Any]:
