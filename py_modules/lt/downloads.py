@@ -1224,6 +1224,12 @@ def start_add(appid: int) -> Dict[str, Any]:
                     "error": "Injection is off — activate injection in Dependencies before adding games."}
     except Exception:
         pass
+    engine = slssteam.moon_runtime_status()
+    if not engine.get("ready"):
+        logger.warn(f"SLSDeck: refusing add for {appid} — {engine.get('reason')}")
+        return {"success": False, "code": "moon_runtime_not_ready",
+                "error": str(engine.get("reason") or "Moon runtime not ready"),
+                "engine": engine}
     # A previous add of the same appid may have left a set cancel flag; clear it
     # so this fresh add is not cancelled the instant it starts.
     _reset_cancel(appid)
