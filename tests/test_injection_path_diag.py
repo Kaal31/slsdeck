@@ -1,6 +1,7 @@
 """Read-only injection path status classification regression tests."""
 import ast
 import unittest
+from typing import Any, Dict
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / "py_modules/lt/injection_path_diag.py"
