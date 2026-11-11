@@ -858,7 +858,17 @@ const TICKET_GATE_EXPR = `(function(){try{
   for(var i=0;i<all.length;i++){
     var b=all[i];if(seen.indexOf(b)>=0||!rendered(b))continue;seen.push(b);
     var label=text(b);
-    if(/(?:tutorial|instruction(?:s)?|video)/i.test(label)&&/(?:read|agree|acknowledge|understand|watch(?:ed)?)/i.test(label))matches.push({button:b,label:label});
+    var article=b.closest('[role="article"]');
+    var articleText=String(article&&article.innerText||'').slice(0,6000);
+    var legacy=/(?:tutorial|instruction(?:s)?|video)/i.test(label)&&/(?:read|agree|acknowledge|understand|watch(?:ed)?)/i.test(label);
+    // New unified Linux confirmation: a single game-specific embed carries
+    // both setup and TLX1 steps; the gate button is now "Got it, open my ticket".
+    // Scope this short label to the Linux ticket instructions so unrelated
+    // Discord buttons cannot initiate a ticket.
+    var unified=/^got\s+it[,]?\s+open\s+my\s+ticket[.!]?$/i.test(label)&&
+      /(?:how\s+it\s+works\s+on\s+linux|linux\s*\/\s*proton)/i.test(articleText)&&
+      /(?:TLX1|tokeer\s+verify)/i.test(articleText);
+    if(legacy||unified)matches.push({button:b,label:label});
   }
   if(!matches.length)return JSON.stringify({found:false,error:'Waiting for the agreement and tutorial confirmation button…'});
   matches.sort(function(a,b){return a.button.getBoundingClientRect().top-b.button.getBoundingClientRect().top;});
