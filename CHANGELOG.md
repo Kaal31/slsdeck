@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.92 — Unified Linux Tokeer ticket confirmation
+
+- Recognize Discord's newer "Got it, open my ticket" confirmation on game-specific Linux / Proton instructional cards while retaining the older tutorial/agreement gate.
+- Keep ticket confirmation buttons out of game-picker discovery.
+- Continue parsing the paired setup and TLX1 verification commands from the unified ticket message; add a regression fixture.
+
 ## 0.9.91 — SteamStub detection for games with multiple executables
 
 - Scan eligible game EXEs for SteamStub wrappers instead of inspecting only the generic main executable. This addresses missing Fixes entries when a separate launcher is SteamStub-wrapped.
