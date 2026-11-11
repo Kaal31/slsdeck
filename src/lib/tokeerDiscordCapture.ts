@@ -865,12 +865,12 @@ const TICKET_GATE_EXPR = `(function(){try{
     // both setup and TLX1 steps; the gate button is now "Got it, open my ticket".
     // Scope this short label to the Linux ticket instructions so unrelated
     // Discord buttons cannot initiate a ticket.
-    var unified=/^got\s+it[,]?\s+open\s+my\s+ticket[.!]?$/i.test(label)&&
-      /(?:how\s+it\s+works\s+on\s+linux|linux\s*\/\s*proton)/i.test(articleText)&&
-      /(?:TLX1|tokeer\s+verify)/i.test(articleText);
+    var unified=/^got\\s+it[,]?\\s+open\\s+my\\s+ticket[.!]?$/i.test(label)&&
+      /(?:how\\s+it\\s+works\\s+on\\s+linux|linux\\s*\\/\\s*proton)/i.test(articleText)&&
+      /(?:TLX1|tokeer\\s+verify)/i.test(articleText);
     if(legacy||unified)matches.push({button:b,label:label});
   }
-  if(!matches.length)return JSON.stringify({found:false,error:'Waiting for the agreement and tutorial confirmation button…'});
+  if(!matches.length)return JSON.stringify({found:false,error:'Waiting for the Linux ticket confirmation button…'});
   matches.sort(function(a,b){return a.button.getBoundingClientRect().top-b.button.getBoundingClientRect().top;});
   var item=matches[matches.length-1],button=item.button;
   try{button.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}
