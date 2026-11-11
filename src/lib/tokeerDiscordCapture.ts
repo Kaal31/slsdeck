@@ -661,6 +661,8 @@ const SNAPSHOT_EXPR = `(function(){try{
     var identity=String(a.id||a.getAttribute('data-list-item-id')||'').match(/chat-messages-(\\d+)-(\\d+)/),messageId=identity&&identity[2]||'';
     controls(a).forEach(function(e){
       var label=(e.innerText||e.textContent||e.getAttribute('aria-label')||'').replace(/\u00a0/g,' ').replace(/\\s+/g,' ').trim();
+      // A game-specific confirmation embed can look like a selector panel.
+      if(/^got\\s+it[,]?\\s+open\\s+my\\s+ticket[.!]?$/i.test(label))return;
       var kind=classify(label+' '+context),semantic=norm(label)||kind,base=kind+':'+semantic,count=(seen[base]||0)+1;seen[base]=count;
       var controlType=e.getAttribute('aria-haspopup')==='listbox'||e.getAttribute('role')==='combobox'?'select':'button';
       selects.push({index:selects.length,key:base+(count>1?':'+count:''),label:label||context.split(/\\n/)[0]||('Game menu '+(selects.length+1)),kind:kind,controlType:controlType,messageId:messageId,disabled:e.getAttribute('aria-disabled')==='true'||e.disabled===true});
