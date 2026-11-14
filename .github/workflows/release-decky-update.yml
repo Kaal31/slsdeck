@@ -67,6 +67,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_steamstub_discovery.py' -v
       - name: Test unified Discord Linux ticket flow
         run: python3 -m unittest discover -s tests -p 'test_tokeer_unified_ticket.py' -v
+      - name: Test SteamRT3 and failed client repair safety
+        run: python3 -m unittest discover -s tests -p 'test_steam_client_safety.py' -v
       - name: Validate Decky compatibility
         run: |
           python3 -m compileall -q main.py py_modules

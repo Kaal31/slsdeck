@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.93 — SteamRT3 detection and client repair safety
+
+- Detect a running 64-bit Steam client through read-only /proc ELF inspection, report it in injection diagnostics, and decline unsupported Moon injection or Headcrab client repair without changing RT3 selection.
+- Only restore the Steam update block when Headcrab exits cleanly, installed client version matches the target, and Moon remains installed; strip Headcrab-managed update directives after failed verification while retaining unrelated steam.cfg entries.
+- Add Steam client safety regression checks.
+
 ## 0.9.92 — Unified Linux Tokeer ticket confirmation
 
 - Recognize Discord's newer "Got it, open my ticket" confirmation on game-specific Linux / Proton instructional cards while retaining the older tutorial/agreement gate.
