@@ -4392,8 +4392,14 @@ def _run_headcrab_shimmed() -> bool:
         suspended = dict(_cfg_suspended)
         paths = list(suspended)
         for cfg_path in _steam_cfg_paths():
-            if cfg_path not in suspended and os.path.isfile(cfg_path):
-                paths.append(cfg_path)
+            if cfg_path in suspended or not os.path.isfile(cfg_path):
+                continue
+            try:
+                with open(cfg_path, "r", encoding="utf-8", errors="ignore") as fh:
+                    if _HEADCRAB_CFG_RE.search(fh.read()):
+                        paths.append(cfg_path)
+            except OSError:
+                continue
         for cfg_path in paths:
             original_custom = suspended.get(cfg_path, "")
             try:
