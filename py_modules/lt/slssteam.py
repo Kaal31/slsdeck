@@ -4387,7 +4387,15 @@ def _run_headcrab_shimmed() -> bool:
 
     def _finalize_update_block(verified: bool) -> None:
         """Only pin an actually verified client; preserve unrelated settings."""
-        for cfg_path, original_custom in _cfg_suspended:
+        # Upstream may create a fresh steam.cfg even if no previous block was
+        # suspended. Strip its BootStrapper directives too on failed verification.
+        suspended = dict(_cfg_suspended)
+        paths = list(suspended)
+        for cfg_path in _steam_cfg_paths():
+            if cfg_path not in suspended and os.path.isfile(cfg_path):
+                paths.append(cfg_path)
+        for cfg_path in paths:
+            original_custom = suspended.get(cfg_path, "")
             try:
                 current_custom = original_custom
                 if os.path.isfile(cfg_path):
