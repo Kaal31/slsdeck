@@ -1555,7 +1555,7 @@ def steam_rt3_client_status() -> Dict[str, Any]:
                 continue
             with open(f"/proc/{pid}/exe", "rb") as fh:
                 header = fh.read(5)
-            if header[:4] != b"\\x7fELF" or header[4] not in (1, 2):
+            if header[:4] != b"\x7fELF" or header[4] not in (1, 2):
                 continue
             observed.append({"pid": int(pid), "bits": 64 if header[4] == 2 else 32})
         except (OSError, ValueError):
@@ -4395,7 +4395,7 @@ def _run_headcrab_shimmed() -> bool:
                         present = fh.read()
                     normalized = _HEADCRAB_CFG_RE.sub("", present).strip()
                     if normalized:
-                        current_custom = normalized + "\\n"
+                        current_custom = normalized + "\n"
                 content = current_custom + (_STEAM_CFG if verified else "")
                 if content.strip():
                     with open(cfg_path, "w", encoding="utf-8") as fh:
