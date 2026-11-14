@@ -1534,6 +1534,40 @@ def steam_client_version() -> Optional[str]:
     return best
 
 
+def steam_rt3_client_status() -> Dict[str, Any]:
+    """Read-only running Steam architecture probe; never change RT3 selection.
+
+    SteamWebHelper and games are normally 64-bit even with a 32-bit Steam
+    client. Only inspect a process explicitly named 'steam', and read its ELF
+    header from /proc/<pid>/exe. Missing permissions / no live Steam are
+    unknown, not evidence that RT3 is disabled.
+    """
+    observed = []
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        pids = []
+    for pid in pids[:8192]:
+        try:
+            with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
+                name = fh.read().strip().lower()
+            if name != "steam":
+                continue
+            with open(f"/proc/{pid}/exe", "rb") as fh:
+                header = fh.read(5)
+            if header[:4] != b"\\x7fELF" or header[4] not in (1, 2):
+                continue
+            observed.append({"pid": int(pid), "bits": 64 if header[4] == 2 else 32})
+        except (OSError, ValueError):
+            continue
+    bits = {entry["bits"] for entry in observed}
+    rt3 = 64 in bits
+    return {"rt3": rt3, "state": "unsupported-rt3" if rt3 else
+            ("legacy-32bit" if 32 in bits else "unknown"),
+            "processes": observed[:12],
+            "supported": False if rt3 else (True if 32 in bits else None)}
+
+
 def refresh_patterns_now() -> Dict[str, Any]:
     """Manual, user-triggered pattern refresh that CAPTURES output so the UI can
     show what happened — unlike the silent boot pass. Reports whether the helper
@@ -3107,6 +3141,11 @@ def _activate_injection_locked() -> Dict[str, Any]:
     again through steam.sh. Only non-gamescope desktops use the steam.sh fallback.
     """
     _log_injection_action("activate-requested")
+    rt3 = steam_rt3_client_status()
+    if rt3["rt3"]:
+        logger.warn("SLSDeck: SteamRT3 64-bit client detected; refusing unsupported Moon injection")
+        return {"success": False, "rt3": rt3,
+                "error": "SteamRT3 (64-bit Steam client) detected. Moon injection is unsupported; SLSDeck will not change your Steam client setting."}
     preflight = refresh_patterns_now()
     logger.log(
         f"SLSDeck injection preflight success={preflight.get('success')} "
@@ -3986,6 +4025,7 @@ def get_diagnostics() -> Dict[str, Any]:
         out["backupExists"] = os.path.exists(os.path.join(os.path.dirname(sh), "steam.sh.slsorig"))
         cfgp = os.path.join(os.path.dirname(sh), "steam.cfg")
         out["steamCfgExists"] = os.path.exists(cfgp)
+    out["steamRt3"] = steam_rt3_client_status()
     out["steamShWrapped"] = wrapper
     out["steamShHead"] = head[:280]
 
@@ -4232,6 +4272,10 @@ def _run_headcrab_shimmed() -> bool:
     if not _looks_pristine(clean_launcher):
         _log("Refusing Headcrab: no verified pristine Steam launcher")
         return False
+    rt3 = steam_rt3_client_status()
+    if rt3["rt3"]:
+        _log("Refusing Headcrab repair: SteamRT3 64-bit client is active; no Steam client setting changed")
+        return False
     tmp = tempfile.mkdtemp(prefix="headcrab_")
     script = os.path.join(tmp, "headcrab.sh")
 
@@ -4341,30 +4385,29 @@ def _run_headcrab_shimmed() -> bool:
     except Exception as exc:
         _log(f"Could not enumerate stale steam.cfg files: {exc}")
 
-    def _restore_update_block():
-        """Put the update block back no matter how this function exits."""
-        if not _cfg_suspended:
-            return
-        for _cfg_path, _custom in _cfg_suspended:
+    def _finalize_update_block(verified: bool) -> None:
+        """Only pin an actually verified client; preserve unrelated settings."""
+        for cfg_path, original_custom in _cfg_suspended:
             try:
-                # Headcrab may have recreated the active file. Normalize it as
-                # well: preserve unrelated user settings, but never preserve an
-                # old or duplicated BootStrapper directive.
-                if os.path.isfile(_cfg_path):
-                    with open(_cfg_path, "r", encoding="utf-8", errors="ignore") as fh:
-                        _now = _HEADCRAB_CFG_RE.sub("", fh.read()).strip()
-                    if _now:
-                        _custom = _now + "\n"
-                with open(_cfg_path, "w", encoding="utf-8") as fh:
-                    fh.write(_custom + _STEAM_CFG)
-                try:
-                    from .utils import chown_to_user as _c
-                    _c(_cfg_path, recursive=False)
-                except Exception:
-                    pass
-                _log(f"Restored normalized Steam update block: {_cfg_path}")
+                current_custom = original_custom
+                if os.path.isfile(cfg_path):
+                    with open(cfg_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        present = fh.read()
+                    normalized = _HEADCRAB_CFG_RE.sub("", present).strip()
+                    if normalized:
+                        current_custom = normalized + "\\n"
+                content = current_custom + (_STEAM_CFG if verified else "")
+                if content.strip():
+                    with open(cfg_path, "w", encoding="utf-8") as fh:
+                        fh.write(content)
+                    _chown_file_to_user(cfg_path)
+                elif os.path.isfile(cfg_path):
+                    os.remove(cfg_path)
+                _log(("Restored verified Steam update block: " if verified else
+                      "Left Steam updates unblocked after failed client repair: ") + cfg_path)
             except Exception as exc:
-                logger.warn(f"SLSsteam: could not restore steam.cfg at {_cfg_path}: {exc}")
+                logger.warn(f"SLSsteam: could not finalize steam.cfg at {cfg_path}: {exc}")
+
 
     home = _home()
     base_path = f"{shim}:/usr/bin:/bin:/usr/local/bin:/sbin:/usr/sbin"
@@ -4477,9 +4520,16 @@ def _run_headcrab_shimmed() -> bool:
             os.replace(tmp_launcher, launcher_before)
             _chown_file_to_user(launcher_before)
             _log("Restored preserved pristine Steam launcher after Headcrab")
-        # Always re-arm the update block, whatever happened above. Leaving it off
-        # lets Steam self-update within minutes and breaks injection for good.
-        _restore_update_block()
+        # Headcrab may exit 0 yet leave an older client manifest behind.
+        # Do not pin that unverified state. Never restore a block on failure.
+        _actual = steam_client_version()
+        _target = headcrab_compatible_client()
+        _moon_ok = bool(installed_lib_is_moon().get("moon"))
+        _verified = bool(rc == 0 and _actual and _target and
+                         _actual == _target and _moon_ok)
+        if not _verified:
+            _log(f"Client repair verification failed (exit={rc}, installed={_actual}, target={_target}, moon={_moon_ok}); Steam updates left unblocked")
+        _finalize_update_block(_verified)
         if lf:
             try:
                 lf.close()
@@ -4496,7 +4546,7 @@ def _run_headcrab_shimmed() -> bool:
     # An already-installed .so says nothing about whether this run succeeded.
     # Returning it here used to turn permission errors and failed downgrades into
     # a green "Done" state. The compatibility operation itself must exit cleanly.
-    if rc != 0:
+    if not _verified:
         return False
     installed_client = steam_client_version()
     compatible_client = headcrab_compatible_client()
