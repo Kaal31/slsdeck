@@ -1,6 +1,8 @@
 # SteamRT64 Moon integration roadmap (64client-support)
 
 Status: started 2026-11-20. **Only this branch**. Never claim on-device SteamOS success from CI.
+
+2026-11-20 source audit completed: see [MOON_X64_HOTRELOAD_PARITY_AUDIT.md](MOON_X64_HOTRELOAD_PARITY_AUDIT.md). The exact pinned upstream x64 tag contains candidate license-refresh locators, runtime mark/process handling, and optional SteamUI removal hooks. Live SteamOS/Decky and actual client-binary validation are still outstanding.
 Upstream implementation: [ogb4n/slsteam-moon-x64](https://github.com/ogb4n/slsteam-moon-x64), based on
 [swwayps/slsteam-moon](https://github.com/swwayps/slsteam-moon), ultimately AceSLS/SLSsteam.
 
