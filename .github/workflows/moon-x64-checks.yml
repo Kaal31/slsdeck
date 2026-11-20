@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   architecture-safety:
@@ -107,3 +107,42 @@ jobs:
           name: SLSDeckUniversal-64client-support
           path: SLSDeckUniversal-64client-support.zip
           retention-days: 14
+
+  publish-rt64-test-release:
+    needs: [architecture-safety, verify-upstream-x64-engine, package-test-plugin]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: SLSDeckUniversal-64client-support
+          path: release
+      - name: Publish isolated RT64 prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="release/SLSDeckUniversal-64client-support.zip"
+          test -s "$ZIP"
+          unzip -t "$ZIP"
+          TAG="64client-support-test-${GITHUB_RUN_NUMBER}"
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Experimental 64client-support testing build.
+
+          Contains SLSDeck's pinned Moon x86_64 integration based on ogb4n/slsteam-moon-x64,
+          with attribution to ogb4n, swwayps/slsteam-moon and AceSLS/SLSsteam.
+
+          CI validates Python integration, SteamOS launcher simulations, configuration
+          handling, plugin build and packaging, and the pinned upstream x64 ELF/archive.
+
+          NOT YET VALIDATED ON STEAM DECK GAMING MODE. Actual SteamRT64 hook compatibility,
+          live hot reload, SteamOS boot behavior and Decky frontend survival require
+          device tests; this is not a stable production release.
+          NOTES
+          gh release create "$TAG" "$ZIP" \
+            --target "$GITHUB_SHA" \
+            --title "SLSDeck 64client-support test #${GITHUB_RUN_NUMBER}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --prerelease
