@@ -422,9 +422,14 @@ class Plugin:
             except Exception as exc:
                 decky.logger.warning(f"SLSDeck: DLC boot reconcile failed: {exc}")
 
+        # Read-only SteamRT64 signature audit runs in the existing warm-up worker.
+        # Its result appears in Decky logs and ~/.config/SLSsteam/logs/.
+        from lt import moon_x64_audit
+
         warmups = (apis.init_apis, downloads.init_applist, downloads.init_games_db,
                    fixes.init_fixes_index, ryuu.init, slssteam.ensure_launch_wrapper,
                    slssteam.boot_desktop_icon_guard, slssteam.boot_injection_watchdog,
+                   moon_x64_audit.audit_and_log,
                    _provision_if_steam_down, _boot_dlc_reconcile, _boot_cloud_and_updates,
                    _boot_archive_templates)
 
