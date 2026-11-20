@@ -2101,13 +2101,14 @@ def _run_install() -> None:
         bundled = _bundled_moon_archive()
         url = "" if bundled else _resolve_moon_zip_url()
         if not bundled and not url:
-            # Fall back to stock AceSLS SLSsteam (ownership only) if the fork
-            # can't be resolved, so at least install/injection still work.
-            _log("slsteam-moon unavailable; falling back to AceSLS SLSsteam")
-            url = SLS_RELEASE_URL
-            archive = os.path.join(tmp, "SLSsteam-Any.7z")
-        else:
-            archive = os.path.join(tmp, "slsteam-moon.zip")
+            # Never swap in stock SLSsteam as a silent fallback, particularly
+            # on RT64: it has different Moon feature support and verification.
+            _set_install({"status": "failed", "success": False,
+                          "error": "Architecture-matched Moon engine unavailable; "
+                                   "Steam installation was not modified"})
+            _log("Moon download resolution failed; no alternative engine substituted")
+            return
+        archive = os.path.join(tmp, "slsteam-moon.zip")
 
         _stage("downloading", "Downloading engine…")
         if bundled:
