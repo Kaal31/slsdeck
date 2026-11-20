@@ -733,6 +733,7 @@ export const reloadSteamBackend = callable<[], { success: boolean; error?: strin
 export const activateInjection = callable<[], { success: boolean; error?: string; steamSh?: string; backup?: string }>("activate_injection");
 export const deactivateInjection = callable<[], { success: boolean; error?: string }>("deactivate_injection");
 export const getDiagnostics = callable<[], any>("get_diagnostics");
+export const auditSteamrt64Locators = callable<[], any>("audit_steamrt64_locators");
 export const runClientFix = callable<[force?: boolean], { success: boolean; error?: string; skipped?: boolean; reason?: string }>("run_client_fix");
 export const clientFixNeeded = callable<[], { success: boolean; needed?: boolean; reason?: string }>("client_fix_needed");
 // SLSsteam config.yaml validator/healer. `analyze` writes nothing; `heal`
