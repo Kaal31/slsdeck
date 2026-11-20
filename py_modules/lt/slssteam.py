@@ -1555,10 +1555,10 @@ def steam_rt3_client_status() -> Dict[str, Any]:
             executable = os.readlink(f"/proc/{pid}/exe")
             with open(f"/proc/{pid}/exe", "rb") as fh:
                 header = fh.read(5)
-            if header[:4] != b"\\x7fELF" or header[4] not in (1, 2):
+            if header[:4] != b"\x7fELF" or header[4] not in (1, 2):
                 continue
             bits = 64 if header[4] == 2 else 32
-            normalized = executable.replace("\\\\", "/").lower().split(" (deleted)")[0]
+            normalized = executable.replace("\\", "/").lower().split(" (deleted)")[0]
             rt3 = normalized.endswith("/steamrt64/steam") and bits == 64
             legacy = normalized.endswith("/ubuntu12_32/steam") and bits == 32
             observed.append({"pid": int(pid), "bits": bits, "executable": executable,
