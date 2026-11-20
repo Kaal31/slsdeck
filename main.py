@@ -826,6 +826,11 @@ class Plugin:
         """Report the exact install/injection state to debug why games don't show."""
         return await self._run(slssteam.get_diagnostics)
 
+    async def audit_steamrt64_locators(self) -> Dict[str, Any]:
+        """Read-only candidate signature audit on the installed SteamRT64 client."""
+        from lt import moon_x64_audit
+        return await self._run(moon_x64_audit.audit)
+
     async def injection_health(self) -> Dict[str, Any]:
         return await self._run(slssteam.injection_health)
 
