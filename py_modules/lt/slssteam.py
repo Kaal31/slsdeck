@@ -1526,7 +1526,7 @@ def steam_client_version() -> Optional[str]:
     except Exception:
         names = []
     for name in names:
-        if re.match(r"steam_client_.*ubuntu12\.manifest$", name):
+        if re.match(r"steam_client_.*" + ("steamrt64" if _moon_engine_target_bits() == 64 else "ubuntu12") + r"\.manifest$", name):
             try:
                 with open(os.path.join(pkg, name), "r", encoding="utf-8", errors="ignore") as fh:
                     m = re.search(r'"version"\s+"(\d+)"', fh.read())
@@ -1545,7 +1545,7 @@ def _elf_bits(path: str) -> int:
     try:
         with open(path, "rb") as fh:
             header = fh.read(5)
-        if header[:4] == b"\\x7fELF" and header[4] in (1, 2):
+        if header[:4] == b"\x7fELF" and header[4] in (1, 2):
             return 64 if header[4] == 2 else 32
     except OSError:
         pass
@@ -1608,6 +1608,10 @@ def refresh_patterns_now() -> Dict[str, Any]:
     show what happened — unlike the silent boot pass. Reports whether the helper
     is even installed (if not, the engine predates pattern-refresh → reinstall it),
     plus current vs supported client build so a failed downgrade is visible."""
+    if _moon_engine_target_bits() == 64:
+        return {"success": False, "present": False, "unsupported": True,
+                "message": "Legacy 32-bit pattern-refresh cannot audit SteamRT64; "
+                           "use the x64 Moon fork's verified locators."}
     helper = _pattern_refresh_bin()
     client = steam_client_version()
     supported = headcrab_compatible_client()
@@ -4656,6 +4660,10 @@ def client_fix_needed() -> Dict[str, Any]:
     known-good list and, under SafeMode, refuses to load on a mismatch. So if its
     own log shows a clean load, the client is compatible and there is nothing to
     fix."""
+    if _moon_engine_target_bits() != 32:
+        return {"needed": False, "unknown": True, "unsupported": True,
+                "reason": "Headcrab is not a legacy client recovery tool on SteamRT64. "
+                          "The x64 Moon engine does not require a client downgrade."}
     log_path = os.path.join(_home(), ".SLSsteam.log")
     if not os.path.isfile(log_path):
         return {"needed": False, "unknown": True,
