@@ -37,6 +37,16 @@ class ClientSafetyTests(unittest.TestCase):
         self.assertIn('if not _verified:', TEXT)
         self.assertNotIn('_restore_update_block()', TEXT)
 
+    def test_headcrab_cannot_silently_switch_client_architecture(self):
+        functions = {n.name: n for n in TREE.body if isinstance(n, ast.FunctionDef)}
+        repair = ast.get_source_segment(TEXT, functions["_run_headcrab_shimmed"])
+        self.assertIn('"steam_client_steamrt64" in script_text', repair)
+        self.assertIn('".steam-enable-steamrt64-client" in script_text', repair)
+        self.assertIn('".steam-disable-steamrt64-client" in script_text', repair)
+        self.assertIn('Client untouched;', repair)
+        self.assertLess(repair.index('".steam-enable-steamrt64-client" in script_text'),
+                        repair.index("subprocess.Popen("))
+
     def test_python_source_compiles(self):
         compile(TEXT, str(SOURCE), "exec")
 
