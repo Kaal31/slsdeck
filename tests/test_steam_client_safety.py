@@ -15,7 +15,8 @@ class ClientSafetyTests(unittest.TestCase):
         detector = ast.get_source_segment(TEXT, functions["steam_rt3_client_status"])
         self.assertIn('name != "steam"', detector)
         self.assertIn('"/proc/{pid}/exe"', detector)
-        self.assertIn('header[4] == 2', detector)
+        self.assertIn('normalized.endswith("/steamrt64/steam") and bits == 64', detector)
+        self.assertIn('normalized.endswith("/ubuntu12_32/steam") and bits == 32', detector)
         self.assertIn('"unknown"', detector)
         for forbidden in ("os.remove(", "os.replace(", "subprocess.run(", "subprocess.Popen("):
             self.assertNotIn(forbidden, detector)
