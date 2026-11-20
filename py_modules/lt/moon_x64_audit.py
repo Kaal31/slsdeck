@@ -156,6 +156,44 @@ def audit(path: Optional[str] = None) -> Dict[str, Any]:
         return {"success": False, "error": str(exc), "path": normalized}
 
 
+
+def audit_and_log() -> Dict[str, Any]:
+    """Run automatically at plugin startup; log results without touching Steam."""
+    from .logger import logger
+    from .paths import get_user_home
+    from datetime import datetime, timezone
+
+    result = audit()
+    stamp = datetime.now(timezone.utc).isoformat()
+    logger.log(f"Moon x64 locator audit: started {stamp}; readOnly=true")
+    if result.get("success"):
+        logger.log(f"Moon x64 locator audit: client={result['path']} sha256={result['sha256']} size={result['size']}")
+        for name, entry in result["patterns"].items():
+            logger.log(f"Moon x64 locator audit: {name}: count={entry['count']} "
+                       f"offsets={entry.get('offsets', [])} status={entry.get('status', 'candidate-only')}")
+        logger.log("Moon x64 locator audit: hotReloadValidated=false; runtime verification required")
+    else:
+        logger.warn(f"Moon x64 locator audit: skipped/failed: {result.get('error', 'unknown')}")
+    try:
+        log_dir = os.path.join(get_user_home(), ".config", "SLSsteam", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        destination = os.path.join(log_dir, "steamrt64-locator-audit.json")
+        import tempfile
+        fd, temp_path = tempfile.mkstemp(prefix=".steamrt64-locator-", dir=log_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"timestamp": stamp, **result}, fh, indent=2, sort_keys=True)
+                fh.write("\n")
+            os.replace(temp_path, destination)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        logger.log(f"Moon x64 locator audit: report saved to {destination}")
+    except OSError as exc:
+        logger.warn(f"Moon x64 locator audit: could not persist report: {exc}")
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only SteamRT64 Moon locator candidate audit")
     parser.add_argument("--steamclient", help="path ending with steamrt64/steamclient.so")
