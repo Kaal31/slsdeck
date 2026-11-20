@@ -1309,6 +1309,7 @@ HEADCRAB_RAW_URL = "https://raw.githubusercontent.com/Deadboy666/h3adcr-b/refs/h
 MOON_X64_REPO = "ogb4n/slsteam-moon-x64"
 MOON_X64_TAG = "v20261116145432"
 MOON_X64_ASSET = "slsteam-moon-linux-20261116145432-x86_64.zip"
+MOON_X64_SHA256 = "5940e8e5ac2f719196cd09e1918c61f9e6b45fd8e52836635446c0fb189b86c4"
 MOON_X64_URL = (f"https://github.com/{MOON_X64_REPO}/releases/download/"
                 f"{MOON_X64_TAG}/{MOON_X64_ASSET}")
 
@@ -1917,6 +1918,11 @@ def _download(url: str, dest: str, sha256: str = "") -> bool:
         return False
 
 
+def _download_moon_release(url: str, archive: str) -> bool:
+    """Pin and verify the upstream x64 release; do not trust a mutable latest ZIP."""
+    return _download(url, archive, sha256=MOON_X64_SHA256 if url == MOON_X64_URL else "")
+
+
 def _extract_archive(archive: str, dest: str) -> bool:
     os.makedirs(dest, exist_ok=True)
     env = _rich_env()
@@ -2107,7 +2113,7 @@ def _run_install() -> None:
         if bundled:
             shutil.copy2(bundled, archive)
             _log(f"Using bundled slsteam-moon build {_bundled_moon_metadata().get('commit', '')[:12]}")
-        elif not _download(url, archive):
+        elif not _download_moon_release(url, archive):
             detail = _INSTALL_LOG[-1] if _INSTALL_LOG else "unknown download error"
             _set_install({"status": "failed", "error": f"Engine download failed: {detail}"})
             return
@@ -5142,7 +5148,7 @@ def refresh_moon_engine() -> Dict[str, Any]:
         archive = os.path.join(tmp, "slsteam-moon.zip")
         if bundled:
             shutil.copy2(bundled, archive)
-        elif not _download(url, archive):
+        elif not _download_moon_release(url, archive):
             return {"success": False, "error": "moon download failed"}
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
@@ -5237,7 +5243,7 @@ def ensure_moon_engine() -> Dict[str, Any]:
         archive = os.path.join(tmp, "slsteam-moon.zip")
         if bundled:
             shutil.copy2(bundled, archive)
-        elif not _download(url, archive):
+        elif not _download_moon_release(url, archive):
             return {"success": False, "changed": False, "error": "moon download failed"}
         root = os.path.join(tmp, "x")
         if not _extract_any(archive, root):
