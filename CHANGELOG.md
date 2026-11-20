@@ -1,5 +1,11 @@
 # SLSDeckUniversal — changes in this build
 
+## 0.9.94 — Correct SteamRT3 identification
+
+- Diagnose the active Steam executable by /proc/<pid>/exe path and ELF architecture. Only a verified 64-bit steamrt64/steam process is classified as SteamRT3; other 64-bit processes named steam no longer block Headcrab.
+- Preserve read-only detection and refuse unsupported Moon injection when SteamRT3 is genuinely active, without changing the Steam client's selection.
+- Cover verified RT3, legacy 32-bit plus 64-bit helper, ambiguous 64-bit process, and no process with functional regression tests.
+
 ## 0.9.93 — SteamRT3 detection and client repair safety
 
 - Detect a running 64-bit Steam client through read-only /proc ELF inspection, report it in injection diagnostics, and decline unsupported Moon injection or Headcrab client repair without changing RT3 selection.
