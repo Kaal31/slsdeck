@@ -1535,12 +1535,11 @@ def steam_client_version() -> Optional[str]:
 
 
 def steam_rt3_client_status() -> Dict[str, Any]:
-    """Read-only running Steam architecture probe; never change RT3 selection.
+    """Read-only RT3 detection from the *actual* Steam executable identity.
 
-    SteamWebHelper and games are normally 64-bit even with a 32-bit Steam
-    client. Only inspect a process explicitly named 'steam', and read its ELF
-    header from /proc/<pid>/exe. Missing permissions / no live Steam are
-    unknown, not evidence that RT3 is disabled.
+    ELF64 alone is not evidence of SteamRT3: an updater/helper can also have
+    process name 'steam'. A confirmed RT3 process runs steamrt64/steam, while
+    legacy Steam runs ubuntu12_32/steam. No launcher or opt-in flags are changed.
     """
     observed = []
     try:
@@ -1553,19 +1552,27 @@ def steam_rt3_client_status() -> Dict[str, Any]:
                 name = fh.read().strip().lower()
             if name != "steam":
                 continue
+            executable = os.readlink(f"/proc/{pid}/exe")
             with open(f"/proc/{pid}/exe", "rb") as fh:
                 header = fh.read(5)
-            if header[:4] != b"\x7fELF" or header[4] not in (1, 2):
+            if header[:4] != b"\\x7fELF" or header[4] not in (1, 2):
                 continue
-            observed.append({"pid": int(pid), "bits": 64 if header[4] == 2 else 32})
+            bits = 64 if header[4] == 2 else 32
+            normalized = executable.replace("\\\\", "/").lower().split(" (deleted)")[0]
+            rt3 = normalized.endswith("/steamrt64/steam") and bits == 64
+            legacy = normalized.endswith("/ubuntu12_32/steam") and bits == 32
+            observed.append({"pid": int(pid), "bits": bits, "executable": executable,
+                             "rt3": rt3, "legacy": legacy})
         except (OSError, ValueError):
             continue
-    bits = {entry["bits"] for entry in observed}
-    rt3 = 64 in bits
-    return {"rt3": rt3, "state": "unsupported-rt3" if rt3 else
-            ("legacy-32bit" if 32 in bits else "unknown"),
-            "processes": observed[:12],
-            "supported": False if rt3 else (True if 32 in bits else None)}
+    rt3 = any(item["rt3"] for item in observed)
+    legacy = any(item["legacy"] for item in observed)
+    # Never infer an RT3 opt-in from an unrelated 64-bit Steam helper.
+    state = ("unsupported-rt3" if rt3 else
+             "legacy-32bit" if legacy else "unknown")
+    return {"rt3": rt3, "state": state, "processes": observed[:12],
+            "supported": False if rt3 else (True if legacy else None)}
+
 
 
 def refresh_patterns_now() -> Dict[str, Any]:
