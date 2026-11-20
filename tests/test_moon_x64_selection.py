@@ -43,6 +43,18 @@ class MoonX64SelectionTests(unittest.TestCase):
         self.assertIn("Refusing Headcrab: this is not a verified 32-bit", TEXT)
         self.assertIn("if required not in (32, 64) or actual != required:", TEXT)
 
+    def test_install_keeps_steamos_startup_unmodified_until_opt_in(self):
+        # Inspect the original function body without running it: a real install
+        # may stop Steam and must never be invoked by an offline unit test.
+        body = ast.get_source_segment(
+            TEXT, next(n for n in TREE.body
+                       if isinstance(n, ast.FunctionDef) and n.name == "_run_install"))
+        self.assertIn('if _moon_engine_target_bits() == 64:', body)
+        self.assertIn('automatic Steam/Decky', body)
+        self.assertIn('launcher injection DISABLED', body)
+        self.assertIn('Architecture-matched Moon engine unavailable', TEXT)
+        self.assertNotIn('falling back to AceSLS SLSsteam', body)
+
     def test_python_compiles(self):
         compile(TEXT, str(SOURCE), "exec")
 
