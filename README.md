@@ -28,10 +28,11 @@ do not endorse SLSDeck.
 - Pinned upstream version:
   [`v20261116145432`](https://github.com/ogb4n/slsteam-moon-x64/releases/tag/v20261116145432).
   SLSDeck verifies the release ZIP's SHA-256 before installing its binary.
-- The third-party x64 installer is **not executed**: SLSDeck manages its
-  own launch wrapper and SteamOS service hook. The legacy Headcrab repair and
-  32-bit pattern-refresh helper are skipped on RT64; the Steam client is not
-  downgraded or switched.
+- The third-party x64 installer is **not executed**. The x64 binary is staged
+  without automatically patching Steam/Decky startup; injection requires explicit
+  activation for supervised on-device testing and has clean-launch recovery.
+  The legacy Headcrab repair and 32-bit pattern-refresh helper are skipped on
+  RT64; the Steam client is not downgraded or switched.
 - The 64-bit fork's author reports desktop Linux functionality, but explicitly
   does **not support or test Steam Deck, SteamOS, Decky Loader or Game Mode**.
   The engine remains experimental here until on-device boot, launcher,
