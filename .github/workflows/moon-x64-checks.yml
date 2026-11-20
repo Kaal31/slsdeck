@@ -28,7 +28,8 @@ jobs:
           python3 -m pytest -q \
             tests/test_steamos_launch_hook.py \
             tests/test_moon_config_controls.py \
-            tests/test_moon_rolling.py
+            tests/test_moon_rolling.py \
+            tests/test_moon_x64_locator_audit.py
       - name: Verify release checksum pin is present
         run: |
           grep -F '5940e8e5ac2f719196cd09e1918c61f9e6b45fd8e52836635446c0fb189b86c4' py_modules/lt/slssteam.py
