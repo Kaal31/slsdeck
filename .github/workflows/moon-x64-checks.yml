@@ -1,0 +1,26 @@
+name: Moon x64 integration checks
+
+on:
+  push:
+    branches: [64client-support]
+  pull_request:
+    branches: [64client-support]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  architecture-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax and targeted architecture tests
+        run: |
+          python3 -m py_compile py_modules/lt/slssteam.py
+          python3 -m unittest discover -s tests -p 'test_steam_client_safety.py' -v
+          python3 -m unittest discover -s tests -p 'test_steam_rt3_detection.py' -v
+          python3 -m unittest discover -s tests -p 'test_moon_x64_selection.py' -v
+      - name: Verify release checksum pin is present
+        run: |
+          grep -F '5940e8e5ac2f719196cd09e1918c61f9e6b45fd8e52836635446c0fb189b86c4' py_modules/lt/slssteam.py
