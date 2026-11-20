@@ -21,12 +21,24 @@ class ClientSafetyTests(unittest.TestCase):
         for forbidden in ("os.remove(", "os.replace(", "subprocess.run(", "subprocess.Popen("):
             self.assertNotIn(forbidden, detector)
 
-    def test_unsupported_rt3_gates_injection_and_headcrab(self):
-        self.assertIn('rt3 = steam_rt3_client_status()', TEXT)
-        self.assertIn('if rt3["rt3"]:', TEXT)
-        self.assertIn('refusing unsupported Moon injection', TEXT)
-        self.assertIn('Refusing Headcrab repair: SteamRT3', TEXT)
+    def test_rt64_requires_matching_engine_and_skips_headcrab(self):
+        self.assertIn('expected, installed = _moon_engine_target_bits(), _installed_moon_bits()', TEXT)
+        self.assertIn('installed != expected', TEXT)
+        self.assertIn('SteamRT64: skipping Headcrab and client downgrade', TEXT)
+        self.assertIn('MOON_X64_SHA256', TEXT)
         self.assertIn('out["steamRt3"] = steam_rt3_client_status()', TEXT)
+
+    def test_legacy_pattern_refresh_is_not_used_on_x64(self):
+        functions = {n.name: n for n in TREE.body if isinstance(n, ast.FunctionDef)}
+        refresh = ast.get_source_segment(TEXT, functions["refresh_patterns_now"])
+        self.assertIn('if _moon_engine_target_bits() == 64:', refresh)
+        self.assertIn('Legacy 32-bit pattern-refresh cannot audit SteamRT64', refresh)
+
+    def test_x64_release_pinned_and_verified(self):
+        self.assertIn('ogb4n/slsteam-moon-x64', TEXT)
+        self.assertIn('v20261116145432', TEXT)
+        self.assertIn('sha256=MOON_X64_SHA256 if url == MOON_X64_URL else ""', TEXT)
+        self.assertIn('return MOON_X64_URL', TEXT)
 
     def test_update_block_only_restored_after_verified_repair(self):
         self.assertIn('def _finalize_update_block(verified: bool)', TEXT)
