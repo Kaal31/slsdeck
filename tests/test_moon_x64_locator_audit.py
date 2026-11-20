@@ -73,3 +73,34 @@ def test_reject_other_steamclient(tmp_path):
     dest.parent.mkdir()
     dest.write_bytes(b"bad")
     assert audit.audit(str(dest))["success"] is False
+
+
+def test_automatic_audit_writes_report_and_decky_log(tmp_path, monkeypatch):
+    from py_modules.lt import logger as log_module
+    from py_modules.lt import paths as paths_module
+    class FakeLog:
+        def __init__(self):
+            self.messages = []
+        def log(self, msg):
+            self.messages.append(msg)
+        def warn(self, msg):
+            self.messages.append(msg)
+    logs = FakeLog()
+    monkeypatch.setattr(log_module, "logger", logs)
+    monkeypatch.setattr(paths_module, "get_user_home", lambda: str(tmp_path))
+    monkeypatch.setattr(audit, "audit", lambda: {
+        "success": True, "readOnly": True, "path": "/mock/steamrt64/steamclient.so",
+        "sha256": "a" * 64, "size": 64, "patterns": {
+            "CUser::MarkLicenseAsChanged": {
+                "count": 1, "offsets": ["0x123"], "uniqueCandidate": True
+            }
+        }, "hotReloadValidated": False
+    })
+    result = audit.audit_and_log()
+    report = tmp_path / ".config" / "SLSsteam" / "logs" / "steamrt64-locator-audit.json"
+    import json
+    stored = json.loads(report.read_text(encoding="utf-8"))
+    assert stored["sha256"] == result["sha256"]
+    assert stored["patterns"]["CUser::MarkLicenseAsChanged"]["count"] == 1
+    assert stored["hotReloadValidated"] is False
+    assert any("Moon x64 locator audit: report saved" in m for m in logs.messages)
