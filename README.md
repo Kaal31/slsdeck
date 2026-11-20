@@ -6,6 +6,45 @@ A **Decky Loader plugin for SteamOS / Steam Deck** that brings the SLSDeck workf
 
 This repository is the SteamOS/Decky version of the project. The current plugin package is named **SLSDeckUniversal**.
 
+## Experimental SteamRT64 (64-bit Moon) integration
+
+> **Branch-specific work in progress. Not verified on SteamOS/Game Mode.**
+> This section documents `64client-support`; it does not describe the
+> current stable or `experimental` release.
+
+This branch integrates the community **[slsteam-moon-x64](https://github.com/ogb4n/slsteam-moon-x64)**
+port maintained by **[ogb4n](https://github.com/ogb4n)**. Explicit credit goes to
+ogb4n for the 64-bit SteamRT64 port, its 64-bit client layouts, hooks,
+locators, testing and release packaging. The original
+**[slsteam-moon](https://github.com/swwayps/slsteam-moon)** implementation
+is by **[swwayps](https://github.com/swwayps)**, building on
+**[AceSLS/SLSsteam](https://github.com/AceSLS/SLSsteam)**. All upstream
+licenses and attribution remain applicable; the projects and authors
+do not endorse SLSDeck.
+
+- SLSDeck selects the x64 engine when the *running* Steam client is confirmed
+  as `steamrt64/steam`. Legacy `ubuntu12_32/steam` retains the existing Moon
+  path. Unknown client architecture is rejected rather than guessed.
+- Pinned upstream version:
+  [`v20261116145432`](https://github.com/ogb4n/slsteam-moon-x64/releases/tag/v20261116145432).
+  SLSDeck verifies the release ZIP's SHA-256 before installing its binary.
+- The third-party x64 installer is **not executed**: SLSDeck manages its
+  own launch wrapper and SteamOS service hook. The legacy Headcrab repair and
+  32-bit pattern-refresh helper are skipped on RT64; the Steam client is not
+  downgraded or switched.
+- The 64-bit fork's author reports desktop Linux functionality, but explicitly
+  does **not support or test Steam Deck, SteamOS, Decky Loader or Game Mode**.
+  The engine remains experimental here until on-device boot, launcher,
+  injection, manifest, download and recovery tests have passed.
+- A compatible Moon engine is necessary but not sufficient: live game
+  registration, SteamStub and some advanced features of the x64 port require
+  independent validation. Do not treat a successful file copy or hook
+  installation as proof of a successful Steam session.
+
+**Do not run the x64 fork's standalone installer on Steam Deck.** The upstream
+repository documents a report of Decky Gaming Mode frontend breakage. Keep a
+working clean-launch recovery path available while testing this branch.
+
 ## What it does
 
 SLSDeckUniversal integrates with Steam on SteamOS and provides tools for managing added games and their supporting data directly from Decky Loader.
