@@ -4318,6 +4318,18 @@ def _run_headcrab_shimmed() -> bool:
     try:
         with open(script, "r", encoding="utf-8", errors="ignore") as fh:
             script_text = fh.read()
+        # Do not run modern Headcrab as a legacy-client recovery tool.
+        # Its Nov 2026 upstream switched to steamrt64 manifests and actively
+        # writes the .steam-enable-steamrt64-client selection marker. Moon
+        # bundled with SLSDeck is ELF32. Reject BEFORE running the shell script
+        # or touching Steam's client selection / package files.
+        if ("steam_client_steamrt64" in script_text
+                or ".steam-enable-steamrt64-client" in script_text
+                or ".steam-disable-steamrt64-client" in script_text):
+            _log("Refusing Headcrab: upstream targets or switches SteamRT64, "
+                 "but installed slsteam-moon is 32-bit. Client untouched; "
+                 "Headcrab is not a 32-bit recovery option.")
+            return False
         marker = "\n    main\n"
         pos = script_text.rfind(marker)
         if pos < 0:
