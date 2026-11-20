@@ -33,6 +33,52 @@ jobs:
         run: |
           grep -F '5940e8e5ac2f719196cd09e1918c61f9e6b45fd8e52836635446c0fb189b86c4' py_modules/lt/slssteam.py
 
+  verify-upstream-x64-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and inspect pinned upstream Moon x64 release
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="$RUNNER_TEMP/moon-x64.zip"
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 180 \
+            "https://github.com/ogb4n/slsteam-moon-x64/releases/download/v20261116145432/slsteam-moon-linux-20261116145432-x86_64.zip" \
+            -o "$FILE"
+          echo "5940e8e5ac2f719196cd09e1918c61f9e6b45fd8e52836635446c0fb189b86c4  $FILE" | sha256sum -c -
+          unzip -t "$FILE"
+          ENTRY=$(unzip -Z1 "$FILE" | grep -E '(^|/)bin/SLSsteam[.]so    needs: architecture-safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Package isolated RT64 test build
+        run: |
+          set -euo pipefail
+          rm -rf artifact SLSDeckUniversal-64client-support.zip
+          mkdir -p artifact/SLSDeckUniversal
+          cp -a dist main.py plugin.json package.json requirements.txt py_modules artifact/SLSDeckUniversal/
+          for p in defaults assets LICENSE README.md; do
+            [ ! -e "$p" ] || cp -a "$p" artifact/SLSDeckUniversal/
+          done
+          node -e 'const fs=require("fs"); fs.writeFileSync("artifact/SLSDeckUniversal/build.json",JSON.stringify({channel:"64client-support",version:require("./plugin.json").version,unverifiedSteamOS:true}))'
+          (cd artifact && zip -qr ../SLSDeckUniversal-64client-support.zip SLSDeckUniversal)
+          unzip -t SLSDeckUniversal-64client-support.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SLSDeckUniversal-64client-support
+          path: SLSDeckUniversal-64client-support.zip
+          retention-days: 14
+ | head -n 1)
+          test -n "$ENTRY"
+          unzip -p "$FILE" "$ENTRY" > "$RUNNER_TEMP/SLSsteam.so"
+          readelf -h "$RUNNER_TEMP/SLSsteam.so" | grep -E 'Class:.*ELF64'
+          readelf -h "$RUNNER_TEMP/SLSsteam.so" | grep -E 'Machine:.*X86-64'
+
   package-test-plugin:
     needs: architecture-safety
     runs-on: ubuntu-latest
