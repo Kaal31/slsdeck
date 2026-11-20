@@ -11,6 +11,7 @@ import {
   activateInjection,
   deactivateInjection,
   getDiagnostics,
+  auditSteamrt64Locators,
   runClientFix,
   reloadSteam,
 } from "../api";
@@ -40,6 +41,7 @@ export function SlsSteamSection() {
   const [busy, setBusy] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [diag, setDiag] = useState<string>("");
+  const [locatorBusy, setLocatorBusy] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = async () => {
@@ -161,6 +163,30 @@ export function SlsSteamSection() {
     }
   };
 
+  const runLocatorAudit = async () => {
+    setLocatorBusy(true);
+    try {
+      const result: any = await auditSteamrt64Locators();
+      const lines = [
+        "SteamRT64 locator audit (read-only; candidate matches only)",
+        `status: ${result.success ? "scanned" : result.error || "failed"}`,
+        ...(result.success ? [
+          `client: ${result.path}`,
+          `SHA-256: ${result.sha256}`,
+          `all byte patterns unique: ${result.allBytePatternsUnique}`,
+          ...Object.entries(result.patterns || {}).map(([name, raw]: [string, any]) =>
+            `${name}: ${raw.count === null ? raw.status : raw.count + " match(es)"}`),
+          "Hot reload verified: NO (runtime ABI and callback validation pending)",
+        ] : []),
+      ];
+      setDiag(lines.join("\n"));
+    } catch (e) {
+      setDiag(`SteamRT64 audit error: ${e}`);
+    } finally {
+      setLocatorBusy(false);
+    }
+  };
+
   const installing = busy || inst?.status === "running" || inst?.status === "queued";
 
   return (
@@ -216,6 +242,11 @@ export function SlsSteamSection() {
           <PanelSectionRow>
             <ButtonItem layout="below" onClick={doClientFix} disabled={installing}>
               Fix client compatibility (h3adcr-b)
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={locatorBusy} onClick={runLocatorAudit}>
+              {locatorBusy ? "Auditing SteamRT64…" : "Audit SteamRT64 hot-reload locators (read-only)"}
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
