@@ -1,6 +1,5 @@
 """Architecture gate tests for the isolated Moon SteamRT64 integration."""
 import ast
-import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,7 +23,7 @@ class MoonX64SelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "engine.so"
             for cls, expected in ((1, 32), (2, 64), (0, 0)):
-                p.write_bytes(b"\\x7fELF" + bytes([cls]))
+                p.write_bytes(b"\x7fELF" + bytes([cls]))
                 self.assertEqual(check(str(p)), expected)
             self.assertEqual(check(str(p) + "-missing"), 0)
 
