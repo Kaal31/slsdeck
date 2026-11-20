@@ -1305,6 +1305,12 @@ def remove_apps(appids: List[int]) -> Dict[str, Any]:
 SLS_RELEASE_URL = "https://github.com/AceSLS/SLSsteam/releases/latest/download/SLSsteam-Any.7z"
 SLS_RELEASE_API = "https://api.github.com/repos/AceSLS/SLSsteam/releases/latest"
 HEADCRAB_RAW_URL = "https://raw.githubusercontent.com/Deadboy666/h3adcr-b/refs/heads/main/headcrab.sh"
+# Experimental x64 Moon build: do not invoke its SteamOS-unsupported installer.
+MOON_X64_REPO = "ogb4n/slsteam-moon-x64"
+MOON_X64_TAG = "v20261116145432"
+MOON_X64_ASSET = "slsteam-moon-linux-20261116145432-x86_64.zip"
+MOON_X64_URL = (f"https://github.com/{MOON_X64_REPO}/releases/download/"
+                f"{MOON_X64_TAG}/{MOON_X64_ASSET}")
 
 
 def _rich_env() -> Dict[str, str]:
@@ -1532,6 +1538,28 @@ def steam_client_version() -> Optional[str]:
             except Exception:
                 continue
     return best
+
+
+def _elf_bits(path: str) -> int:
+    """Return 32/64 from ELF e_ident, otherwise 0."""
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(5)
+        if header[:4] == b"\\x7fELF" and header[4] in (1, 2):
+            return 64 if header[4] == 2 else 32
+    except OSError:
+        pass
+    return 0
+
+
+def _moon_engine_target_bits() -> int:
+    """Use the actual running Steam executable, never an RT64 marker guess."""
+    state = steam_rt3_client_status()
+    return 64 if state["rt3"] else (32 if state["state"] == "legacy-32bit" else 0)
+
+
+def _installed_moon_bits() -> int:
+    return _elf_bits(find_installed_lib() or "")
 
 
 def steam_rt3_client_status() -> Dict[str, Any]:
@@ -1965,6 +1993,11 @@ def _place_libraries(extract_root: str) -> bool:
     so = _find_file(extract_root, "SLSsteam.so")
     if not so:
         return False
+    actual = _elf_bits(so)
+    required = _moon_engine_target_bits()
+    if required not in (32, 64) or actual != required:
+        _log(f"Refusing Moon install: engine ELF{actual or '?'} != Steam ELF{required or '?'}")
+        return False
     bin_dir = os.path.dirname(so)
     target = lib_dir()
     try:
@@ -2094,9 +2127,13 @@ def _run_install() -> None:
         # password prompts, restart Steam, and install competing launch wrappers.
         # We place every binary and install both launch paths ourselves below.
         _log("Placing SLSsteam libraries (SLSsteam.so, library-inject.so, pattern-refresh)…")
-        _place_libraries(extract_root)
-        if not _place_steamstub_tools(extract_root):
-            raise RuntimeError("Moon archive is missing the SteamStub helper kit")
+        if not _place_libraries(extract_root):
+            raise RuntimeError("Moon library install failed or ELF class mismatch")
+        if _moon_engine_target_bits() == 32:
+            if not _place_steamstub_tools(extract_root):
+                raise RuntimeError("Moon archive is missing the SteamStub helper kit")
+        else:
+            _log("Moon x64: SteamStub helper is unvalidated; skipping its installation")
         _record_engine_version(str(_bundled_moon_metadata().get("commit") or ""))
         # setup.sh only makes the path/steam wrapper for fish; ensure the bash
         # one exists too, so any .desktop patched to it can't dangle.
@@ -2114,14 +2151,18 @@ def _run_install() -> None:
         # 1) Pin the Steam client to a SLSsteam-compatible build via h3adcr-b
         # (fixes "Failed to find all patterns"). headcrab also patches steam.sh
         # its own way — do it FIRST so our proven wrapper is applied last and wins.
-        _fetch_headcrab_for_desktop()
-        _chown_to_user(os.path.join(config_dir(), "tools"))
-        _stage("client-compatibility", "Setting up Steam client compatibility (h3adcr-b)… this can take a few minutes")
-        try:
-            client_compatible = _run_headcrab_shimmed()
-        except Exception as hc_exc:
-            client_compatible = False
-            _log(f"Client-compatibility step failed: {hc_exc}")
+        if _moon_engine_target_bits() == 64:
+            _stage("client-compatibility", "SteamRT64: skipping Headcrab and client downgrade")
+            client_compatible = True
+        else:
+            _fetch_headcrab_for_desktop()
+            _chown_to_user(os.path.join(config_dir(), "tools"))
+            _stage("client-compatibility", "Checking legacy Steam compatibility (Headcrab)…")
+            try:
+                client_compatible = _run_headcrab_shimmed()
+            except Exception as hc_exc:
+                client_compatible = False
+                _log(f"Client-compatibility step failed: {hc_exc}")
         if not client_compatible:
             _set_install({
                 "status": "failed",
@@ -2517,7 +2558,10 @@ for _c in "{slsdir}" "$HOME/.local/share/SLSsteam" \\
 done
 SLSDIR="$_slsdir"
 _a=""
-[ -n "$SLSDIR" ] && [ -f "$SLSDIR/library-inject.so" ] && _a="$SLSDIR/library-inject.so"
+# The legacy library-inject audit helper is only valid with 32-bit Moon.
+_so_class=$(LC_ALL=C od -An -tu1 -j4 -N1 "$SLSDIR/SLSsteam.so" 2>/dev/null | tr -d ' ')
+_li_class=$(LC_ALL=C od -An -tu1 -j4 -N1 "$SLSDIR/library-inject.so" 2>/dev/null | tr -d ' ')
+[ "$_so_class" = "1" ] && [ "$_li_class" = "1" ] && _a="$SLSDIR/library-inject.so"
 [ -n "$SLSDIR" ] && [ -f "$SLSDIR/SLSsteam.so" ] && _a="${{_a:+$_a:}}$SLSDIR/SLSsteam.so"
 [ -n "$_a" ] && export LD_AUDIT="$_a"
 source "{client}" "$@"
@@ -2805,7 +2849,7 @@ def _ensure_path_wrapper() -> str:
     parts = []
     li = os.path.join(ld, "library-inject.so")
     so = os.path.join(ld, "SLSsteam.so")
-    if os.path.isfile(li):
+    if _elf_bits(so) == 32 and _elf_bits(li) == 32:
         parts.append(li)
     if os.path.isfile(so):
         parts.append(so)
@@ -2845,7 +2889,7 @@ def _ensure_path_wrapper() -> str:
         'logger -t slsdeck-launch "boot=$BOOT pid=$$ mode=$MODE attempts=$n" 2>/dev/null || true',
         'if [ -f "$SO" ] && [ "$n" -lt 2 ]; then',
         '  printf "%s:%s\\n" "$BOOT" "$((n+1))" > "$FAIL" 2>/dev/null',
-        '  AUD="$SO"; [ -f "$LI" ] && AUD="$LI:$SO"',
+        '  AUD="$SO"; [ "$SO_CLASS" = "1" ] && [ "$LI_CLASS" = "1" ] && AUD="$LI:$SO"',
         '  LD_AUDIT="$AUD" exec "$REAL" "$@"',
         'fi',
         '# failsafe: too many failed injected launches — run Steam clean.',
@@ -3149,11 +3193,16 @@ def _activate_injection_locked() -> Dict[str, Any]:
     """
     _log_injection_action("activate-requested")
     rt3 = steam_rt3_client_status()
-    if rt3["rt3"]:
-        logger.warn("SLSDeck: SteamRT3 64-bit client detected; refusing unsupported Moon injection")
+    expected, installed = _moon_engine_target_bits(), _installed_moon_bits()
+    if expected not in (32, 64) or installed != expected:
+        logger.warn(f"SLSDeck Moon ELF mismatch: Steam {expected}, engine {installed}")
         return {"success": False, "rt3": rt3,
-                "error": "SteamRT3 (64-bit Steam client) detected. Moon injection is unsupported; SLSDeck will not change your Steam client setting."}
-    preflight = refresh_patterns_now()
+                "error": f"Moon ELF{installed or '?'} cannot inject into Steam "
+                         f"ELF{expected or '?'}. Install the matching engine."}
+    # x64 has its own locator table; never execute the old 32-bit pattern helper.
+    preflight = ({"success": True, "present": False,
+                  "message": "x64 pattern compatibility requires live SteamOS validation"}
+                 if expected == 64 else refresh_patterns_now())
     logger.log(
         f"SLSDeck injection preflight success={preflight.get('success')} "
         f"present={preflight.get('present')} returncode={preflight.get('returncode')} "
@@ -4263,6 +4312,9 @@ def _write_shims(shim_dir: str) -> None:
 def _run_headcrab_shimmed() -> bool:
     """Download + run the latest h3adcr-b with wget/7z shims, as the desktop
     user. Returns True if SLSsteam ends up installed. Streams to the install log."""
+    if _moon_engine_target_bits() != 32:
+        _log("Refusing Headcrab: this is not a verified 32-bit legacy Steam client")
+        return False
     import tempfile
     # Headcrab's patchsteam deletes steam.sh before downloading its replacement.
     # SLSDeck owns injection, so that unrelated launcher replacement is disabled.
@@ -5039,6 +5091,8 @@ def _bundled_moon_metadata() -> Dict[str, Any]:
 
 
 def _bundled_moon_archive() -> str:
+    if _moon_engine_target_bits() == 64:
+        return ""  # the bundled Moon archive is ELF32
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                         "assets", "moon", "slsteam-moon-head.zip")
     return path if os.path.isfile(path) and os.path.getsize(path) > 0 else ""
@@ -5050,6 +5104,9 @@ def _record_engine_version(commit: str = "") -> None:
     releases/latest, so the just-installed version IS the latest right now."""
     try:
         from . import settings as _s, ghrel as _g
+        if _moon_engine_target_bits() == 64:
+            _s.set_dep_version("engine", MOON_X64_TAG)
+            return
         sha = commit or str(_bundled_moon_metadata().get("commit") or "")
         if sha:
             _s.set_dep_version("engine", f"git:{sha}")
@@ -5085,7 +5142,8 @@ def refresh_moon_engine() -> Dict[str, Any]:
         _chown_to_user(tmp)
         # Decky owns launcher installation; upstream setup.sh is interactive and
         # must not be run from the plugin repair path.
-        _place_libraries(root)
+        if not _place_libraries(root):
+            return {"success": False, "error": "Moon ELF mismatch or installation error"}
         commit = str(_bundled_moon_metadata().get("commit") or "")
         _record_engine_version(commit)
         ok = installed_lib_is_moon()
@@ -5157,8 +5215,8 @@ def ensure_moon_engine() -> Dict[str, Any]:
     headcrab is also fetched from the network at run time, patching our bundled
     copy is not enough; re-assert afterwards instead."""
     state = installed_lib_is_moon()
-    if state.get("moon"):
-        return {"success": True, "changed": False, "reason": "slsteam-moon already installed"}
+    if state.get("moon") and _installed_moon_bits() == _moon_engine_target_bits():
+        return {"success": True, "changed": False, "reason": "matching Moon engine installed"}
     bundled = _bundled_moon_archive()
     url = "" if bundled else _resolve_moon_zip_url()
     if not bundled and not url:
@@ -5181,7 +5239,9 @@ def ensure_moon_engine() -> Dict[str, Any]:
         # Always place the full bin/* (incl. pattern-refresh), not only when the
         # moon .so is missing — headcrab's AceSLS overlay strips pattern-refresh,
         # so re-asserting the .so alone would leave the helper gone.
-        _place_libraries(root)
+        if not _place_libraries(root):
+            return {"success": False, "changed": False,
+                    "error": "Moon ELF mismatch or installation error"}
         ok = installed_lib_is_moon()
         if ok.get("moon"):
             logger.log("SLSsteam: re-asserted slsteam-moon over stock SLSsteam")
@@ -5199,7 +5259,14 @@ def ensure_moon_engine() -> Dict[str, Any]:
 
 
 def _resolve_moon_zip_url() -> str:
-    """Find the latest slsteam-moon-linux-*.zip download URL."""
+    """Resolve the architecture-matched engine, pinning the x64 source release."""
+    bits = _moon_engine_target_bits()
+    if bits == 64:
+        _log(f"Moon x64 release: {MOON_X64_REPO} {MOON_X64_TAG}; SteamOS unverified")
+        return MOON_X64_URL
+    if bits != 32:
+        _log("Moon: running Steam client architecture unknown; refusing download")
+        return ""
     try:
         from . import ghrel
         release = ghrel.latest("swwayps/slsteam-moon", force=True)
