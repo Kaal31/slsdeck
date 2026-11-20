@@ -2193,7 +2193,14 @@ def _run_install() -> None:
             _skip = get_skip_wrapper()
         except Exception:
             _skip = False
-        if _skip:
+        if _moon_engine_target_bits() == 64:
+            # SteamOS/Game Mode has not been validated for the third-party x64
+            # build. Installing binaries must never silently replace the only
+            # functioning Steam/Decky startup path. Manual activation remains
+            # available after a user can confirm they have a recovery path.
+            _log("Moon x64 installed as staged test engine; automatic Steam/Decky "
+                 "launcher injection DISABLED until explicit user activation")
+        elif _skip:
             _log("Skipping plugin steam.sh wrapper (headcrab-only mode)")
         else:
             _stage("activating-injection", "Activating injection (patching steam.sh)…")
